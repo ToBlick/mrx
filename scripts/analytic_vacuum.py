@@ -25,7 +25,7 @@ preconditioner):
       c-fit); for 1/R it is degenerate (grad of a coordinate is exact in V1).
   Route C (vector potential):  B = curl A,          A in V1,  B in V2 (free).
       Div-free B-field: <curl A, curl W> = <B*, curl W>  =>  L1 A = C^T load2,
-      the preconditioned k=1 Hodge-Laplacian saddle (well conditioned; NO k=2
+      the k=1 Hodge-Laplacian solve (the Hodge split since 2026-09-02; NO k=2
       Laplacian inverse). On the solid torus b2 = 0 so B* = curl A fully, flux
       included -- no harmonic term. The weak-grad-of-a-3-form route is WRONG
       here: it yields co-exact (compressible) 2-forms, of which a solenoidal
@@ -58,6 +58,10 @@ def parse_args(argv=None):
     ap.add_argument("--p", type=int, default=2)
     ap.add_argument("--maxiter", type=int, default=10000)
     ap.add_argument("--tol", type=float, default=None)
+    ap.add_argument("--gap-sweeps", type=int, default=5,
+                    help="inverse-iteration sweeps for the harmonic-form quality diagnostics "
+                         "(compute_nullspaces and Route A's harm_ratio); 0 skips them -- "
+                         "five shifted k=1 saddle solves, most of Route A's time at n >= 32")
     ap.add_argument("--routes", default="A,C")
     ap.add_argument("--out", default="outputs/analytic_vacuum")
     return ap.parse_args(argv)
@@ -146,7 +150,7 @@ def circulation_alpha(seq, h1, Bphys, rho0=0.5, nt=16, nz=64):
     return circ_t / circ_h, circ_t, circ_h
 
 
-def run_rung(seq, ops, routes, field, lam, tag):
+def run_rung(seq, ops, routes, field, lam, tag, gap_sweeps=5):
     import numpy as np
     from mrx.nullspace import estimate_spectral_gap, harmonic_rayleigh
 
@@ -174,10 +178,13 @@ def run_rung(seq, ops, routes, field, lam, tag):
         MHh = seq.apply_mass_matrix(Hh, 1, False)
         err_sq = float(Hh @ MHh) - 2.0 * float(Hh @ load1) + bstar_sq
         relerr = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(bstar_sq))
-        rq = harmonic_rayleigh(seq, h1, 1, False, ops)
-        lam1, _ = estimate_spectral_gap(seq, ops, 1, False, maxiter=5)
+        harm_ratio = None
+        if gap_sweeps:
+            rq = harmonic_rayleigh(seq, h1, 1, False, ops)
+            lam1, _ = estimate_spectral_gap(seq, ops, 1, False, maxiter=gap_sweeps)
+            harm_ratio = float(rq / lam1)
         out["A"] = dict(relerr=relerr, alpha=a1, alpha_proj=a1_proj, circ_target=circ_t,
-                        circ_h1=circ_h, solve_res=solve_res, harm_ratio=float(rq / lam1),
+                        circ_h1=circ_h, solve_res=solve_res, harm_ratio=harm_ratio,
                         n=int(seq.n(1, False)), t=time.perf_counter() - t0)
         _log(f"{tag} A: relerr {relerr:.4e}  alpha_circ {a1:+.4e} (proj {a1_proj:+.4e})  "
              f"circ_target {circ_t:+.4e}  solve_res {solve_res:.1e}  n1 {seq.n(1, False)}  "
@@ -241,8 +248,8 @@ def main(cli):
         tag = f"{ns[0]}x{ns[1]}x{ns[2]}_p{cli.p}"
         t0 = time.perf_counter()
         seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol)
-        ops = seq.set_operators(compute_nullspaces(seq, ops))
-        rec = run_rung(seq, ops, routes, cli.field, cli.lam, tag)
+        ops = seq.set_operators(compute_nullspaces(seq, ops, gap_sweeps=cli.gap_sweeps))
+        rec = run_rung(seq, ops, routes, cli.field, cli.lam, tag, gap_sweeps=cli.gap_sweeps)
         rec.update(ns=list(ns), p=cli.p, h=1.0 / (ns[0] - cli.p),
                    n_elements=ns[0] - cli.p, tol=float(seq.tol),
                    t_total=time.perf_counter() - t0)
