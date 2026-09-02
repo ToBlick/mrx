@@ -789,7 +789,8 @@ class DeRhamSequence():
         - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T``, exact because
         ``D_k D_{k-1} = 0``; see
         :func:`mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`.
-        ``'auto'`` is the metric-lumped mass atom on both solves.
+        ``'auto'`` is the shifted-stiffness atom ``(M^ + eps S^)^-1`` of
+        each level, from the metric-lumped Laplacian atom on the bundle.
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_plus_eps_laplace_matrix(

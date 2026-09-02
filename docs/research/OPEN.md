@@ -119,9 +119,19 @@ exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
 + eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass
 atom, no inner mass solve. li383 p=3 at the smoothing eps: 330 / 772 / 1326
 iterations at (8,16,8) / (12,24,12) / (16,32,16) against 2134 / 8478 /
-20362 for the MINRES (`docs/research/shifted_split_2026-09-02.md`). The
-joint `(M + eps S)` atom stays open and is now a drop-in for each split
-system; the count still grows like `n_r^2`.
+20362 for the MINRES (`docs/research/shifted_split_2026-09-02.md`).
+*Same day:* the joint atom exists: the Laplacian atom's strong-half
+(primal-axis) Kronecker terms divided by `1 + eps lambda` in their own
+eigenbasis are `(M^ + eps S^)^-1` for the atom's separable mass
+(`MetricLumpingLaplacian.shifted_stiffness_apply`, the diffusion slot's
+`'auto'`). CG on `M_k + eps S_k`, li383 p=3, smoothing eps: k=2 69 / 117
+and k=1 74 / 128 at (8,16,8) / (12,24,12) against 153 / 371 and 181 / 422
+with the mass atom -- the whole smoothing solve 145 / 249 iterations from
+2134 / 8478 in the morning. Two factorisations with the Jacobian in the
+1-D masses (J profiles; the mass atom's exact-diagonal sandwich) were
+measured and lost (~100 / ~200). The count still grows, ~`n_r^1.3`; the
+dropped cross-component blocks of `S_k` and the uncoupled core are the
+remaining candidates. RESOLVED as a production item.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
 
