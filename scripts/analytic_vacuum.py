@@ -108,7 +108,12 @@ def analytic_norm_sq(seq, Bphys):
     B* (physical L2 of the vector field, identical in V1 and V2)."""
     import jax
     import numpy as np
-    Bq = np.asarray(jax.vmap(Bphys)(seq.quad.x))            # (Nq, 3) lab frame
+
+    import mrx
+    # lax.map, not vmap: vmap materialises the map's local-support gather over
+    # all N_q points at once, 4.8 GiB at (36, 72, 36) p=4.
+    Bq = np.asarray(jax.lax.map(Bphys, seq.quad.x,
+                                batch_size=mrx.MAP_BATCH_SIZE_INNER or None))   # (Nq, 3) lab frame
     w = np.asarray(seq.quad.w)
     J = np.asarray(seq.jacobian_j)
     return float(np.sum(w * J * np.sum(Bq ** 2, axis=1)))
