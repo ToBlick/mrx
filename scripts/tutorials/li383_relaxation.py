@@ -46,6 +46,14 @@ def main():
     ap.add_argument("--floor-tol", type=float, default=1e-3,
                     help="stop once ||F|| falls below this")
     ap.add_argument("--cuts", type=int, default=6)
+    ap.add_argument("--gap-sweeps", type=int, default=5,
+                    help="inverse-iteration sweeps for the reported lambda_1; "
+                         "0 skips the estimate entirely. This is a diagnostic, "
+                         "not part of the construction, and it dominates setup: "
+                         "6.8 of 9 minutes at (12,24,12) p=3 on a 112-core host")
+    ap.add_argument("--quiet-nullspace", action="store_true",
+                    help="suppress the per-form nullspace report (also skips "
+                         "the lambda_1 estimate)")
     ap.add_argument("--out", default="outputs/tutorials/li383_relaxation")
     cli = ap.parse_args()
     ns = tuple(int(v) for v in cli.ns.split(","))
@@ -76,7 +84,9 @@ def main():
     print(f"[env] mrx precision {mrx.DTYPE}")
 
     seq, ops = build_sequence(cli.geometry, ns, cli.p)
-    seq.set_operators(compute_nullspaces(seq, ops))
+    seq.set_operators(compute_nullspaces(
+        seq, ops, gap_sweeps=cli.gap_sweeps,
+        verbose=not cli.quiet_nullspace))
 
     # --- the initial condition: the equilibrium field as B = dA' -------------------
     cb = load_clebsch(cli.geometry)
