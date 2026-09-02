@@ -395,6 +395,14 @@ class TimeStepper(eqx.Module):
             0 (the default) leaves the direction as it is.
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``.
+        velocity_smoothing_preconditioner: Preconditioner kind for that
+            solve. ``'laplacian'``, the default, is ``(1/mu) P_L``: at this
+            ``mu`` the operator is Laplacian-dominated
+            (``mu * lambda_max(M^-1 L)`` measures 91.5 at ``ns=(8,16,8)`` and
+            360.3 at ``(12,24,12)``), so preconditioning the mass term alone
+            costs 1.3x the iterations at the first and 2.3x at the second.
+            ``'auto'`` restores the mass atom, which is the better choice
+            below the crossover near ``mu = 1e-4``.
         descent_method: GRADIENT or LBFGS (see :class:`DescentMethod`).
         dt_mode: FIXED or ANALYTIC_LINESEARCH.
         cfl: Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
@@ -423,6 +431,7 @@ class TimeStepper(eqx.Module):
     seq: DeRhamSequence
     velocity_smoothing_order: int = 0
     velocity_smoothing_scale: float = 0.0
+    velocity_smoothing_preconditioner: str = 'laplacian'
     descent_method: DescentMethod = DescentMethod.LBFGS
     dt_mode: TimeStepChoice = TimeStepChoice.ANALYTIC_LINESEARCH
     cfl: float = 0.5
@@ -535,7 +544,8 @@ class TimeStepper(eqx.Module):
         for _ in range(self.velocity_smoothing_order):
             rhs = self.seq.apply_mass_matrix(u, 2, True)
             u = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
-                rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
+                rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u,
+                preconditioner=self.velocity_smoothing_preconditioner)
         return u
 
     def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy'], value) -> State:  # noqa: E501

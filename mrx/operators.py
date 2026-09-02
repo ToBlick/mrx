@@ -173,10 +173,25 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # M + eps L is MASS-DOMINATED in the regime this solve is used in
-        # (the relaxation's velocity smoothing: eps * lambda_max(M^-1 L) ~ 0.26
-        # at ns=(8,16,8)), so the production MASS preconditioner is the right
-        # object.
+        # 'auto' is the MASS atom, which is right while M + eps L is
+        # mass-dominated. That is the resistive step's regime (eps = dt*eta),
+        # not the velocity smoothing's.
+        #
+        # This comment used to claim eps * lambda_max(M^-1 L) ~ 0.26 at
+        # ns=(8,16,8) and to conclude the mass atom was right everywhere.
+        # Power iteration says otherwise, by two and a half orders of
+        # magnitude, and the value is not resolution-flat either:
+        #
+        #   ns           eps        lambda_max(M^-1 L_hodge)   eps*lambda_max
+        #   (8,16,8)     1.00e-03   9.15e+04                    91.5
+        #   (12,24,12)   4.44e-04   8.11e+05                   360.3
+        #
+        # lambda_max grows ~8.9x between those while eps only falls 2.25x, so
+        # refining moves FURTHER from mass dominance rather than staying put.
+        # At the velocity smoothing's eps the LAPLACIAN atom is the right
+        # object and is what TimeStepper.smooth_velocity asks for; measured
+        # crossover is near eps = 1e-4 at ns=(8,16,8). See
+        # test/test_diffusion_preconditioner.py, which pins both sides of it.
         del seq, operators, k
         return default_mass_preconditioner()
     if isinstance(preconditioner, MassPreconditionerSpec):
@@ -1191,7 +1206,7 @@ def _build_diffusion_preconditioner_apply(
     # out: what this branch wants is "whatever the production mass
     # preconditioner currently is", and saying that literally is rename-proof.
     production_kind = default_mass_preconditioner().kind
-    valid_kinds = ('none', 'jacobi', production_kind)
+    valid_kinds = ('none', 'jacobi', 'laplacian', production_kind)
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -1200,6 +1215,25 @@ def _build_diffusion_preconditioner_apply(
         if not allow_none:
             raise ValueError("this preconditioner slot does not allow kind='none'")
         return lambda x: x
+    if spec.kind == 'laplacian':
+        # (1/eps) P_L, for when eps L dominates M rather than the other way
+        # round. Measured on li383 k=2 against the mass atom, MINRES iterations
+        # to sqrt_eps, lower is better:
+        #
+        #   eps       mass    (1/eps) P_L      ns=(8,16,8)
+        #   1e-06      498          3682
+        #   1e-04      750          2919
+        #   1e-03     2130          1655       <- the smoothing eps here
+        #   1e-02     5774           950
+        #
+        #   ns=(12,24,12), eps=4.44e-04:  8493  vs  3636
+        #
+        # Note the scaling as well as the level: mass goes 2130 -> 8493 across
+        # those two resolutions (4.0x) where this goes 1655 -> 3636 (2.2x).
+        # Below the crossover it is much worse, which is why it is a kind the
+        # caller selects and not the 'auto' default.
+        return lambda x: (1.0 / eps) * apply_laplacian_preconditioner(
+            seq, operators, x, k, dirichlet=dirichlet)
     if spec.kind == 'jacobi':
         # The shifted diagonal 1 / (diag(M) + eps diag(L)): valid for every eps.
         mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
@@ -1636,12 +1670,20 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
         preconditioner=preconditioner,
         allow_none=True,
     )
+    # The two blocks are not the same kind of operator, so one kind string
+    # cannot serve both. The upper block is M_k + eps L_k and takes whatever
+    # the caller asked for; the lower block is -eps M_{k-1}, a plain mass
+    # matrix, which is why kinds that only make sense against a Laplacian are
+    # replaced here rather than forwarded into a slot that would reject them.
+    lower_preconditioner = (
+        default_mass_preconditioner() if preconditioner == 'laplacian'
+        else preconditioner)
     lower_preconditioner_apply = _build_mass_preconditioner_apply(
         seq,
         operators,
         k=k - 1,
         dirichlet=dirichlet,
-        preconditioner=preconditioner,
+        preconditioner=lower_preconditioner,
         allow_none=True,
     )
 
