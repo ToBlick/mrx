@@ -111,18 +111,27 @@ is a k=3 solve which under 2.2 deflates against `h_2` itself.
 
 ## 4. Numbers (QA p=3, warm wall time; `res` = exact `L_k` residual in the coefficient 2-norm, `err` = `|x-w|_M/|w|_M`)
 
+Split iterations are given as `x_perp` count (what `info` reports) and,
+in brackets, the cumulative `g + x_perp + a` count (`hodge_counts.log`);
+the `(k-1)`-level sub-solves are cheap at k=1 (k=0 PCG) and two thirds of
+the work at k=2 (two k=1-level solves).
+
 | n | k, BC | saddle MINRES | Hodge split (production for k=1,2) | singular `S_k` (rhs `S_k w`; not viable) |
 | --- | --- | --- | --- | --- |
-| 16 | 1 dbc | 1022 its, 2.7 s, res 4e-8, err 1.1e-7 | **307**, 3.1 s, 4e-7, 3.7e-8 | 120, 3.0 s |
-| 16 | 1 free | 2584, 7.7 s, 1e-8, 5.1e-5 | **1458**, 5.5 s, 1e-8, 9.0e-5 | 118, 4.0 s |
-| 16 | 2 dbc | 2555, 8.8 s, 2e-7, 8.1e-8 | **367**, 4.7 s, 5e-6, 6.7e-8 | -- |
-| 16 | 2 free | 7122, 9.6 s, 4e-8, 1.9e-5 | **1636**, 9.5 s, 1e-7, 1.7e-5 | -- |
+| 16 | 1 dbc | 1022 its, 2.7 s, res 4e-8, err 1.1e-7 | **307 [450]**, 3.1 s, 4e-7, 3.7e-8 | 120, 3.0 s |
+| 16 | 1 free | 2584, 7.7 s, 1e-8, 5.1e-5 | **1458 [1707]**, 5.5 s, 1e-8, 9.0e-5 | 118, 4.0 s |
+| 16 | 2 dbc | 2555, 8.8 s, 2e-7, 8.1e-8 | **367 [987]**, 4.7 s, 5e-6, 6.7e-8 | -- |
+| 16 | 2 free | 7122, 9.6 s, 4e-8, 1.9e-5 | **1636 [4415]**, 9.5 s, 1e-7, 1.7e-5 | -- |
 | 16 | 3 dbc | 696, 3.0 s, 6e-8, 4.5e-8 | 399, 3.5 s, 4e-6, 1.9e-8 (not used) | -- |
-| 24 | 1 dbc | 1553, 7.1 s, 5e-8, 2.3e-7 | **418**, 4.1 s, 2e-6, 4.5e-8 | 164, 3.5 s |
-| 24 | 1 free | 3889, 26.2 s, 2e-8, 7.1e-5 | **2174**, 14.1 s, 5e-8, 2.6e-4 | 164, 5.2 s |
-| 24 | 2 dbc | 4556, 35.5 s, 3e-7, 8.1e-8 | **500**, 8.6 s, 4e-5, 8.4e-8 | -- |
-| 24 | 2 free | **cap 10000**, 35.2 s, 2e-7, 1.6e-4 | **2390**, 29.9 s, 5e-7, 9.0e-6 | -- |
+| 24 | 1 dbc | 1553, 7.1 s, 5e-8, 2.3e-7 | **418 [602]**, 4.1 s, 2e-6, 4.5e-8 | 164, 3.5 s |
+| 24 | 1 free | 3889, 26.2 s, 2e-8, 7.1e-5 | **2174 [2481]**, 14.1 s, 5e-8, 2.6e-4 | 164, 5.2 s |
+| 24 | 2 dbc | 4556, 35.5 s, 3e-7, 8.1e-8 | **500 [1337]**, 8.6 s, 4e-5, 8.4e-8 | -- |
+| 24 | 2 free | **cap 10000**, 35.2 s, 2e-7, 1.6e-4 | **2390 [6485]**, 29.9 s, 5e-7, 9.0e-6 | -- |
 | 24 | 3 dbc | 997, 6.3 s, 1e-7, 6.1e-8 | 555, 7.1 s, 2e-5, 1.8e-7 (not used) | -- |
+
+Cumulative gain 1.5-3.4x in iterations, 1-4x in wall time.  The k=1 FREE
+solve (1500-2200 iterations, called twice inside every k=2 free solve) is
+where the leverage is.
 
 - Tolerance 1.5e-8 on each solver's own preconditioned residual
   (`sqrt(r^T P r)`, ~ the energy norm of the error, relative to the same
