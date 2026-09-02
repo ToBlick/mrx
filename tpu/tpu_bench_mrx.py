@@ -308,6 +308,141 @@ def bench_structured_scatter(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
         "note": f"max rel err {err:.2e}"}
 
 
+def bench_structured_gather(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
+                            dtype="float32"):
+    """The mirror of :func:`bench_structured_scatter` for the read side.
+
+    ``_to_quadrature`` starts with ``x_flat[gather_idx]``, and ``gather_idx``
+    is the same separable ``_flat_dof_plan``. So the gather is algebraically
+
+        x_local[e,l] = x[(e + l) mod n]
+
+    which is a stack of rolled slices -- again with every source known at
+    compile time. Taken axis by axis it is ``nlx + nly + nlz`` rolls rather
+    than ``prod(nloc)``, the same factorisation the assembly uses.
+
+    Whether that is worth doing is an open question and this row answers it: a
+    TPU has no fast path for indexed *writes*, but an indexed *read* of a small
+    array may already be cheap, in which case the structured version buys
+    nothing and costs materialisation. Priced before anything is written.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    nex, ney, nez = ne
+    nlx, nly, nlz = nloc
+    n_in = nex * ney * nez
+    n_read = n_in * nlx * nly * nlz
+
+    print(f"\n[primitive] mass-kernel gather: indexed vs structured\n"
+          f"            ({n_in} dofs -> {n_read} reads, "
+          f"periodic tensor product)", flush=True)
+
+    rng = np.random.default_rng(11)
+    x = jnp.asarray(rng.standard_normal(n_in).astype(dtype))
+
+    gx = (np.arange(nex)[:, None] + np.arange(nlx)[None, :]) % nex
+    gy = (np.arange(ney)[:, None] + np.arange(nly)[None, :]) % ney
+    gz = (np.arange(nez)[:, None] + np.arange(nlz)[None, :]) % nez
+    idx = (gx[:, None, None, :, None, None] * (ney * nez)
+           + gy[None, :, None, None, :, None] * nez
+           + gz[None, None, :, None, None, :]).astype(np.int32)
+    idx_j = jnp.asarray(idx)
+
+    f_indexed = jax.jit(lambda v: v[idx_j])
+    bench.measure("mass gather: x[gather_idx] (current)",
+                  lambda: f_indexed(x), inner=20,
+                  note=f"{n_read} indexed reads")
+
+    def structured(v):
+        # Roll by -l so that entry e of the rolled array is source e + l, then
+        # take the first ne entries. One axis at a time: the intermediate after
+        # the x pass is (ne_x, Sy, Sz, nlx), so the y pass rolls a smaller
+        # array than a full prod(nloc) expansion would.
+        a = v.reshape(nex, ney, nez)
+        a = jnp.stack([jnp.roll(a, -lx, axis=0)[:nex]
+                       for lx in range(nlx)], axis=3)
+        a = jnp.stack([jnp.roll(a, -ly, axis=1)[:, :ney]
+                       for ly in range(nly)], axis=4)
+        a = jnp.stack([jnp.roll(a, -lz, axis=2)[:, :, :nez]
+                       for lz in range(nlz)], axis=5)
+        return a
+
+    f_structured = jax.jit(structured)
+    bench.measure("mass gather: rolled slices (proposed)",
+                  lambda: f_structured(x), inner=20,
+                  note=f"{nlx + nly + nlz} rolls, separable")
+
+    a = np.asarray(f_indexed(x))
+    b = np.asarray(f_structured(x))
+    err = float(np.max(np.abs(a - b)) / max(np.max(np.abs(a)), 1e-30))
+    print(f"  agreement between the two: max rel err {err:.2e}"
+          f"  {'OK' if err < 1e-5 else 'MISMATCH'}", flush=True)
+    bench.rows["mass gather: agreement"] = {
+        "first_s": None, "steady_s": None, "compile_s": None,
+        "note": f"max rel err {err:.2e}"}
+
+
+def bench_mass_attribution(bench, seq, dtype):
+    """Split ``mass_core_apply`` into gather, einsums and assembly.
+
+    The whole kernel is one number; deciding what to fix next needs to know
+    which third of it is which. Each piece is timed as its own jitted program
+    on the real per-component shapes, so the parts do not have to add exactly
+    to the whole -- fused into one kernel XLA overlaps them -- but the ranking
+    is what the decision turns on.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+    from mrx.mass import (_flat_dof_plan, _form_bases, _from_quadrature,
+                          _shift_plan, _structured_accumulate, _to_quadrature)
+
+    print("\n[attribution] inside mass_core_apply", flush=True)
+
+    for k in (1, 2):
+        try:
+            form, comp, n_comp = _form_bases(seq, k)
+            c = 0
+            Bx, gx, By, gy, Bz, gz = comp[c]
+            shape = form.shape[c]
+            n_raw = int(np.prod(shape))
+            rng = np.random.default_rng(50 + k)
+            x = jnp.asarray(rng.standard_normal(n_raw).astype(dtype))
+            gidx = _flat_dof_plan(gx, gy, gz, shape)
+            Bvals = (Bx, By, Bz)
+
+            f_gather = jax.jit(lambda v, g=gidx: v[g])
+            bench.measure(f"  k={k} c=0 gather only",
+                          lambda f=f_gather, v=x: f(v),
+                          inner=MICRO_INNER, note=f"n_raw={n_raw}")
+
+            f_toq = jax.jit(lambda v, B=Bvals, g=gidx: _to_quadrature(B, v, g))
+            bench.measure(f"  k={k} c=0 gather + 3 einsums",
+                          lambda f=f_toq, v=x: f(v),
+                          inner=MICRO_INNER, note="_to_quadrature")
+
+            u = f_toq(x)
+            f_fromq = jax.jit(lambda w, B=Bvals: _from_quadrature(B, w))
+            bench.measure(f"  k={k} c=0 3 einsums back",
+                          lambda f=f_fromq, w=u: f(w),
+                          inner=MICRO_INNER, note="_from_quadrature")
+
+            y_local = f_fromq(u)
+            plan = _shift_plan(gx, gy, gz, shape)
+            if plan is not None:
+                f_asm = jax.jit(lambda w, p=plan: _structured_accumulate(w, p))
+                bench.measure(f"  k={k} c=0 assembly (structured)",
+                              lambda f=f_asm, w=y_local: f(w),
+                              inner=MICRO_INNER, note="shifted adds")
+            else:
+                print(f"  k={k} c=0 assembly: no shift plan", flush=True)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"  k={k} attribution skipped "
+                  f"({type(exc).__name__}: {exc})", flush=True)
+
+
 def bench_recompilation(bench, seq, ops, dtype):
     """Test whether the inner solve is recompiled on every single call.
 
@@ -750,11 +885,13 @@ def main():
         # run for half an hour.
         bench_scatter_ab(bench, n_out=8700, n_nz=40000, dtype=dtype)
         bench_structured_scatter(bench, dtype=dtype)
+        bench_structured_gather(bench, dtype=dtype)
 
         if not args.skip_phases:
             seq, ops = bench_phases(bench, args, dtype)
             bench_extraction(bench, seq, dtype)
             bench_mass(bench, seq, dtype)
+            bench_mass_attribution(bench, seq, dtype)
             bench_operators(bench, seq, ops, dtype)
             bench_recompilation(bench, seq, ops, dtype)
             if not args.skip_relax:

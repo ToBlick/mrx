@@ -1,22 +1,25 @@
-"""The index-free element assembly against the ``segment_sum`` it replaces.
+"""The index-free mass kernel against the indexed one it replaces.
 
-:func:`mrx.mass._structured_accumulate` performs the element-to-DoF sum of the
-sum-factorised kernel as shifted dense adds rather than a scatter, which is
-taken whenever every axis' element-to-DoF map is a pure shift
-(:func:`mrx.mass._shift_plan`). Both paths are live: the shift plan is checked
-rather than assumed, and anything it rejects still assembles through
-``segment_sum``.
+Both ends of :func:`mrx.mass._sumfact_kernel` used an index tensor: a gather
+``x[gather_idx]`` to read the element-local input, and a ``segment_sum`` to
+write the element contributions back. Both index plans are separable tensor
+products of per-axis element-to-DoF maps, and when every axis' map is a pure
+shift (:func:`mrx.mass._shift_plan`) both are algebraically pure data
+movement, done as rolled slices (:func:`mrx.mass._structured_gather`) and
+shifted dense adds (:func:`mrx.mass._structured_accumulate`).
 
-So the two have to agree. Here the structured path is compared against the
-scatter on the same sequence, for the mass apply and for the closed-form
-diagonal, by forcing the fallback with a patched ``_shift_plan``. The plan
-predicate itself is tested directly on hand-built maps, because a basis whose
-map is not a shift would otherwise assemble silently wrong rather than fail.
+Both paths stay live: the shift is checked rather than assumed, and anything
+it rejects still runs through the index tensors. So the two have to agree.
+Here they are compared on the same sequence, for the mass apply and for the
+closed-form diagonal, by forcing the fallback with a patched ``_shift_plan``,
+which disqualifies the gather and the assembly together. The plan predicate
+itself is tested on hand-built maps, because a basis whose map is not a shift
+would otherwise read and write silently wrong rather than fail.
 
-The motivation is a TPU: indexed writes are the one thing it has no fast path
-for. Measured on a v5e at (12,24,12) p=3, the assembly went from 2.011 ms to
-0.061 ms. Nothing about the result should change, and that is what this file
-pins.
+The motivation is a TPU, which has no fast path for indexed access. Measured
+on a v5e at (12,24,12) p=3: the gather 1.624 ms -> 0.049 ms, the assembly
+2.011 ms -> 0.061 ms. Nothing about the result should change, and that is what
+this file pins.
 """
 
 import numpy as np
@@ -27,7 +30,8 @@ import mrx
 import mrx.mass as mass_mod
 from mrx.derham_sequence import DeRhamSequence
 from mrx.mappings import rotating_ellipse_map
-from mrx.mass import (_shift_plan, _shift_plan_axis, _structured_accumulate,
+from mrx.mass import (_flat_dof_plan, _shift_plan, _shift_plan_axis,
+                      _structured_accumulate, _structured_gather,
                       build_mass_diagonal, build_matrixfree_mass_apply)
 
 # The two paths sum the same terms in a different order, so they differ only by
@@ -140,11 +144,42 @@ def test_structured_accumulate_matches_the_index_sum(plan):
     npt.assert_allclose(got, want, rtol=0.0, atol=ATOL * np.abs(want).max())
 
 
+@pytest.mark.parametrize("plan", (
+    ((4, 3, 4), (6, 3, 6), (5, 2, 5)),      # every axis wraps
+    ((2, 3, 4), (6, 3, 6), (4, 2, 4)),      # first axis clamped: ne < S
+))
+def test_structured_gather_matches_the_index_read(plan):
+    """The rolled slices equal the gather the index plan performs.
+
+    This is exact, not approximate: both are permuted reads of the same
+    values, so a single differing element is a wrong answer rather than
+    round-off. Compared against ``_flat_dof_plan`` itself, which is the plan
+    the fallback actually indexes with.
+    """
+    (ne_x, nl_x, S_x), (ne_y, nl_y, S_y), (ne_z, nl_z, S_z) = plan
+    rng = np.random.default_rng(2)
+    x = np.asarray(rng.standard_normal(S_x * S_y * S_z), dtype=mrx.DTYPE)
+
+    gx = (np.arange(ne_x)[:, None] + np.arange(nl_x)[None, :]) % S_x
+    gy = (np.arange(ne_y)[:, None] + np.arange(nl_y)[None, :]) % S_y
+    gz = (np.arange(ne_z)[:, None] + np.arange(nl_z)[None, :]) % S_z
+    idx = np.asarray(_flat_dof_plan(gx, gy, gz, (S_x, S_y, S_z)))
+
+    want = x[idx]
+    got = np.asarray(_structured_gather(x, plan))
+    assert got.shape == want.shape == (ne_x, ne_y, ne_z, nl_x, nl_y, nl_z)
+    npt.assert_array_equal(got, want)
+
+
 # ------------------------------------------------ the two paths on a sequence ---
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_real_sequence_takes_the_structured_path(mf_seq, k):
-    """Guards the comparisons below: without this they could be scatter vs scatter."""
+    """Guards the comparisons below: without this they could be indexed vs indexed.
+
+    A mass operator has the same form on both sides, so these components are
+    the gather plan and the assembly plan at once.
+    """
     form, comp, n_comp = mass_mod._form_bases(mf_seq, k)
     for c in range(n_comp):
         plan = _shift_plan(comp[c][1], comp[c][3], comp[c][5], form.shape[c])
