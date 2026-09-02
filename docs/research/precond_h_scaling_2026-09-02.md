@@ -132,8 +132,11 @@ is a k=3 solve which under 2.2 deflates against `h_2` itself.
   err/res ~ 5000 there, ~1 for Dirichlet.
 - The split's exact residual in the coefficient 2-norm is 10-100x looser
   than MINRES's at equal error: the DoF scaling of `M_{k-1}^{-1}` acting
-  on the `L^` residual.  Compare in the `M^{-1}` norm (mass atom) instead;
-  never use the 2-norm exact residual as a convergence criterion.
+  on the `L^` residual.  In the `M^{-1}` norm (the L2 norm of the residual
+  function) they agree, n=16, MINRES vs split: k=1 dbc 2.4e-8 vs 7.2e-8,
+  k=1 free 8.7e-8 vs 5.9e-8, k=2 dbc 2.1e-8 vs 2.5e-7, k=2 free 7.5e-8 vs
+  5.1e-8.  Report and test residuals in that norm (mass atom as the cheap
+  proxy); never the 2-norm.
 - Test suite (`test/`, k=1,2 split, k=3 MINRES): 246 passed, 7 skipped.
 
 The gap between the split and the singular route (2.5x dbc, 12x free at
@@ -189,7 +192,6 @@ in isolation.
 
 - Close the split-vs-singular gap (section 4).
 - Mechanism 1: the per-mode radial atom.
-- Report / test residuals in the `M^{-1}` norm (section 4); the k=2 split's
-  2-norm exact residual (4e-5 at n=24 dbc) is that artefact.  No consumer
-  of the k=2 unshifted solve exists today (the resistive step is shifted).
+- Switch downstream residual checks (the Leray divergence test included)
+  to the `M^{-1}` norm; the 2-norm is the h-fickle one (section 4).
 - `OPEN.md` 3.13: recheck `nbc_k1` under 0c3aa4d.
