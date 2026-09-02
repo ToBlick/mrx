@@ -24,12 +24,14 @@ Two things to take away before anything else:
    it.** Nothing will stop it for you. See [Cost discipline](#7-cost-discipline).
 2. **Always run with the compilation cache on, which `run_on_tpu.sh` now does.**
    Without it the relaxation solver could not finish its setup phase in 40
-   minutes on a v5e; with it, setup takes 1.5 minutes and a step costs 43 s
-   against the same VM's CPU at 60 s. The cause was XLA recompiling the same
+   minutes on a v5e; with it, setup takes under a minute and a step costs 13 s
+   against the same VM's CPU at 46 s. The cause was XLA recompiling the same
    inner solve on every call, not the device being slow. Read
    [section 6.1](#61-what-actually-runs-well-and-what-does-not) before you plan
-   a campaign, and note that a v5e is still about 105x behind one H100 on a
-   single li383 equilibrium.
+   a campaign: it also shows why replacing indexed gathers and scatters with
+   dense shifted reads and adds turned this hardware from 5-23x slower than the
+   VM's own CPU into 3-5x faster on the same operation. A v5e is still about
+   32x behind one H100 on a single li383 equilibrium.
 
 ---
 
@@ -293,7 +295,7 @@ is the one the Google documentation cannot tell you.
 work. It ran in 107 s at `--n 6 8 --p 2` and reproduced the CPU float32
 reference to 0.00%.
 
-**The relaxation solver was initially unusable on v5e, and two changes fixed
+**The relaxation solver was initially unusable on v5e, and four changes fixed
 it.** An earlier version of this guide said the relaxation was simply the wrong
 shape for the hardware. That was wrong, and the way it was wrong is worth
 knowing, because the same mistake is easy to repeat: the run was not slow, it
@@ -302,18 +304,20 @@ times distinguishes those two.
 
 Everything below was measured with `tpu_bench_mrx.py` at `--ns 12,24,12 --p 3`,
 float32, on one v5e node, with the host CPU of the *same VM* as the control, so
-only the backend differs.
+only the backend differs. Both columns run the same fixed code.
 
 | Measurement | v5e before | v5e after | Same VM's CPU | H100 (docs) |
 |---|---|---|---|---|
-| `build_sequence` | 203 s | **41 s** | 39 s | - |
-| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **51 s** | 61 s | - |
-| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **98 ms** | 275 ms | - |
-| `mass_core_apply` k=1 | 6.60 ms | **3.20 ms** | 3.88 ms | - |
-| relaxation, per step | 100.3 s | **43.1 s** | 59.7 s | 0.41 s |
+| `build_sequence` (warm cache) | 203 s | **35.5 s** | 40.6 s | - |
+| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **17.5 s** | 55.1 s | - |
+| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
+| `mass_core_apply` k=1 | 6.60 ms | **0.505 ms** | 3.79 ms | - |
+| `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
+| relaxation, per step | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
 
-So the TPU went from 1.7x *slower* than the VM's own CPU to 1.4x faster, a 2.3x
-end-to-end gain, and setup dropped from 7 minutes to 1.5.
+So the TPU went from 1.7x *slower* than the VM's own CPU to **3.5x faster**, a
+7.7x end-to-end gain, and setup dropped from 7 minutes to under one. It is now
+about 32x behind a single H100, down from 105x.
 
 **Fix 1, and it is almost all of the win: turn on the persistent compilation
 cache.** MRX's inner solves run as eager `jax.lax.while_loop`s. Nothing wraps
@@ -336,20 +340,67 @@ for a few large training programs and would skip almost every kernel this
 workload compiles. Point the directory at the data disk and the cache survives
 the node, so the *next* session starts warm.
 
-**Fix 2: the mass kernel's final scatter, replaced by shifted dense adds.**
-`_sumfact_kernel` ended in a `jax.ops.segment_sum`, and indexed writes are the
-one thing a TPU has no fast path for. The segment ids come from
-`_flat_dof_plan`, which is a separable tensor product of the per-axis DoF ids,
-and on a periodic B-spline axis `g[e, l] = (e + l) mod n`. So the scatter is
-algebraically a sum of shifted dense arrays, with every destination known at
-compile time. Measured at 221k contributions into 3456 DoFs: **2.011 ms as a
-`segment_sum`, 0.061 ms as shifted adds**, agreeing to 3e-7 in float32. `mass.py`
-now detects the shift structure per axis and falls back to `segment_sum` if any
-axis fails the check, so a basis built differently still assembles correctly.
+A node in a zone with no data disk has nowhere local to keep it. `JAX_CACHE_DIR`
+also accepts a `gs://` path, which works but is second best:
 
-This also removed the `Constant folding an instruction is taking > 1s`
-warnings on the `scatter-add`: with no index tensor, there is nothing left for
-XLA to fold.
+| setup = `build_sequence` + `compute_nullspaces` | v5e |
+|---|---|
+| no cache | 143 s |
+| `gs://` cache, cold (writing 177 entries) | 210 s |
+| `gs://` cache, warm | 98 s |
+| local data disk, warm | **53 s** |
+
+Two traps if you use a bucket. Put it in the node's own region, or every miss
+is a cross-region round trip. And note that **JAX does not fail on a `gs://`
+path it cannot use**: without `etils[epath,epath-gcs]` installed it writes
+nothing, reads nothing and reports nothing, so the run is simply slow. That
+cost an hour here. `startup.sh` now installs it, and
+
+```bash
+python gcs_cache_smoke.py --cache gs://<bucket>/mrx --platform tpu
+```
+
+proves the path in about ten seconds before a real run depends on it.
+
+**Fixes 2 and 3: the mass kernel now holds no index tensors at all.**
+`_sumfact_kernel` began with a gather, `x[gather_idx]`, and ended with a
+`jax.ops.segment_sum`. Indexed access is the one thing a TPU has no fast path
+for. Both index plans come from `_flat_dof_plan`, a separable tensor product of
+the per-axis DoF ids, and on a tensor-product B-spline axis
+`g[e, l] = (e + l) mod n`. So both are algebraically pure data movement with
+every source and destination known at compile time: rolled slices one way,
+shifted dense adds the other.
+
+| at (12,24,12) p=3 | v5e indexed | v5e structured | CPU indexed | CPU structured |
+|---|---|---|---|---|
+| gather, 3456 dofs read 221k times | 1.624 ms | **0.049 ms** | 0.070 ms | 0.113 ms |
+| scatter, 221k contributions | 2.011 ms | **0.060 ms** | 0.398 ms | 0.303 ms |
+
+That table is the most useful thing in this guide. On the indexed forms the
+v5e is 23x and 5x *slower* than the VM's own CPU; on the structured forms it
+is 2.8x and 5x *faster*. Identical work, identical answers -- exactly for the
+gather, to 3.4e-07 in float32 for the scatter. Only the access pattern
+changed. If your kernel is slow on a TPU, look here first.
+
+The gather was the bigger half and was found by attribution rather than
+guessed: of `mass_core_apply` k=1 at 3.196 ms, the gather was 0.854 ms per
+component against 0.100 ms for the forward einsums, 0.076 ms for the reverse
+and 0.050 ms for the assembly. About 80% of the kernel was spent reading 3456
+numbers.
+
+`mass.py` checks the shift structure per axis and falls back to the index
+tensors if any axis fails, so a basis built differently still assembles
+correctly. When the plan holds the index tensors are dropped from the kernel
+signature rather than left unused, which is also what removed the
+`Constant folding an instruction is taking > 1s` warnings: with no index
+tensor there is nothing left for XLA to fold.
+
+**Fix 4: the extraction operator was two eager ops.**
+`MatrixFreeExtraction._apply` dispatched a gather and a `segment_sum`
+separately. `E` and `E^T` measured a flat 1.93 ms whether there were 4584 or
+11484 non-zeros, against a 0.037 ms floor for dispatching one device call, so
+the cost was per indexed op and not per element. Compiling the pair as one
+program took it to 0.16-0.20 ms.
 
 **Three things that sounded right and were not.** All three were measured
 rather than argued about, which is the only reason we know:
@@ -364,14 +415,24 @@ rather than argued about, which is the only reason we know:
   fusing 20 scatters into a single `jit` gave 0.531 ms per scatter against
   0.533 ms unfused. The time is real device work, not launch overhead.
 
-**What is still 105x off an H100, and why.** `relaxation_loop` is already
-`@jax.jit` around a `lax.scan`, so the 43 s per step is genuine compiled device
+**What is still 32x off an H100, and why.** `relaxation_loop` is already
+`@jax.jit` around a `lax.scan`, so the 13 s per step is genuine compiled device
 execution with no compilation left in it. The remaining gap is that one li383
-step is a long chain of small dependent kernels: a mass apply is ~3 ms of work
-on arrays of ~10^4 floats, which uses a rounding error of a v5e's width. There
-is no fix for that at one equilibrium. The hardware pays off only when the
-arrays get bigger or when many equilibria are solved at once (`vmap` over an
-ensemble), and that is a real design change, not a flag.
+step is a long chain of small dependent kernels: the largest single apply is
+now half a millisecond on arrays of ~10^4 floats, which uses a rounding error
+of a v5e's width. There is no fix for that at one equilibrium. The hardware
+pays off only when the arrays get bigger or when many equilibria are solved at
+once (`vmap` over an ensemble), and that is a real design change, not a flag.
+A `v5litepod-4` is also four chips of which MRX uses one, so there is a further
+4x behind a sharded or ensembled solve.
+
+One flag-sized item does remain: wrapping `apply_laplacian` in `jax.jit`
+measured 4.5 ms against 75 ms eager, a 17x. It was not taken here because it
+changes how the library is called rather than what it computes.
+
+**Precision is not a concern.** Inverse-mass CG at the same tolerance took the
+same iteration count on both backends (20 at k=1, 24 at k=2), so float32 on the
+MXU is not degrading convergence.
 
 **Practical guidance.** Never conclude "this hardware is wrong for this code"
 from wall-clock phase times alone. Time everything twice: first call versus
@@ -411,7 +472,7 @@ on by default.
 OUT=outputs/tutorials/li383_relaxation
 
 # 1. relax in float32 on the TPU -> B.h5, trace.png, torus_pw.png
-#    (~43 s/step, so ~75 min for 100 steps, plus ~2 min setup)
+#    (~13 s/step, so ~22 min for 100 steps, plus <1 min setup on a warm cache)
 SCRIPT=scripts/tutorials/li383_relaxation.py OUTDIR=$OUT \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_PLATFORM=tpu RUN_DTYPE=float32 RUN_TIMEOUT=7200 \
   ./run_on_tpu.sh --ns 12,24,12 --p 3 --precision float32 \
@@ -578,10 +639,12 @@ section 6.1 fixes:
 - Helicity `+5.002e-03 -> +5.002e-03`, `dH = +2.8e-09` (5.6e-07 relative)
 - `||div B||` at the end: 1.9e-06
 - Weak pressure on axis: 3.7304e-02 (in `||B||_M = 1` units)
-- Cost: **1.9 min setup, then 41.3 s/step**; 72 minutes end to end
+- Cost of that run: 1.9 min setup, then 41.3 s/step; 72 minutes end to end
 
-For scale, the same 100 steps on this VM's host CPU is 60 s/step plus a longer
-setup, and one H100 is documented at 0.36-0.41 s/step.
+That run predates fixes 2-4. Re-timed afterwards on the same geometry the step
+is **13.03 s**, so the same 100 steps is about 22 minutes. For scale, this VM's
+host CPU running the identical fixed code is 45.7 s/step, and one H100 is
+documented at 0.36-0.41 s/step.
 
 **Poincare sections** (`poincare_relax.py`, `--planes 0,0.25,0.5`, float64 on the
 host CPU, 160 field lines x 400 periods), 2 minutes end to end:
@@ -603,9 +666,9 @@ rose to 7.76e-02 at step 10, above its starting value, before falling to
 explicit that "the force residual need not fall monotonically, what matters is
 the floor it settles at". And 100 steps is a **partial descent**: the tutorial
 documents a clean nested floor at roughly 1000 steps with velocity smoothing,
-which at the measured 41.3 s/step is about 11.5 hours. What is shown here is a
-well-behaved 5.5x reduction in force with helicity conserved to 5.6e-07, not a
-converged equilibrium.
+which at 13.03 s/step is about 3.6 hours. What is shown here is a well-behaved
+5.5x reduction in force with helicity conserved to 5.6e-07, not a converged
+equilibrium.
 
 The MRX solve is single-device matrix-free CG, so it occupies one chip; the
 71.7 TFLOP/s figure is the headroom available to a sharded implementation, not
@@ -627,6 +690,8 @@ what the solve achieves.
 - `tpu_bench_mrx.py` - phase and primitive benchmark; separates compile time
   from execute time, and has a `--compare` mode for the TPU/CPU table
 - `profile_top_ops.py` - reduces a `jax.profiler` trace to a top-N op table
+- `gcs_cache_smoke.py` - proves a `gs://` compilation cache path in ~10 s,
+  because JAX does not fail on one it cannot reach
 
 Environment overrides worth knowing: `GENERATIONS`, `ZONES`, `MACHINE_TYPE`,
 `MODELS`, `APIS`, `VM_NAME`, `RUN_TIMEOUT`, `MAX_RUN_DURATION`, `KEEP_LOGS`,

@@ -52,6 +52,16 @@ LOCAL_MRX="${LOCAL_MRX:-${HOME}/mrx}"
 PUSH_FILES="${PUSH_FILES:-}"
 # Persistent XLA compilation cache. On the data disk when there is one, so it
 # survives the VM; set to empty to disable.
+#
+# A gs:// path also works and is the only way to carry compiled kernels to a
+# node that has no data disk, which is every node in a zone where the disk cap
+# has been reached. Two warnings. Put the bucket in the node's own region or
+# every miss pays a cross-region round trip, and prove the path with
+# gcs_cache_smoke.py first: JAX retries an unreachable cache rather than
+# raising, so a wrong path or a missing scope looks like a hang inside
+# compilation. Measured here, a warm gs:// cache in the same region was not
+# meaningfully slower than the local disk, because the entries are small and
+# the reads happen once per program.
 JAX_CACHE_DIR="${JAX_CACHE_DIR:-/mnt/data/jax_cache}"
 # Which JAX backend the remote command should use. JAX_PLATFORMS=cpu lets a
 # float64 stage run on the host CPU, since TPUs have no usable float64.

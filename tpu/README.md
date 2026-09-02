@@ -86,6 +86,11 @@ unusable on a v5e for a while; see section 6.1 of the guide.
    recompiles them on every call: one `apply_laplacian` cost 10 s of compiling
    to do 20 ms of work. The cache takes that to 105 ms, a 93x difference, and
    it is the single largest effect measured on this hardware.
+5. **Indexed access is what a TPU is bad at, not arithmetic.** Replacing the
+   mass kernel's gather and scatter with dense shifted reads and adds took them
+   from 1.624 ms and 2.011 ms to 0.049 ms and 0.060 ms, which is the difference
+   between 5-23x *slower* than the VM's own CPU and 3-5x *faster*. If something
+   is slow here, look for an index tensor before you blame the hardware.
 
 ## What is in `results/`
 
@@ -116,3 +121,4 @@ against a known-good run before trusting your own:
 | `mrx_tpu_report.py` | Poisson driver that checks TPU vs CPU reference |
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
 | `profile_top_ops.py` | Reduces a `jax.profiler` trace to a top-N op table |
+| `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |

@@ -85,6 +85,14 @@ The thresholds matter as much as the directory. Their defaults are tuned
 for a few large training programs and skip nearly every kernel this
 workload compiles.
 
+A node in a zone with no data disk has nowhere local to keep the cache.
+`JAX_CACHE_DIR` also takes a `gs://` path, which works but is second best:
+setup costs 143 s with no cache, 98 s from a warm bucket and 53 s from a
+warm local disk. Put the bucket in the node's region, and prove the path
+with `tpu/gcs_cache_smoke.py` first -- without `etils[epath,epath-gcs]`
+installed JAX writes nothing, reads nothing and reports nothing, so a
+misconfigured bucket looks like nothing more than a slow run.
+
 MRX's inner solves are eager `lax.while_loop`s, not wrapped in `jax.jit`,
 so without a cache XLA recompiles them on every call. One `apply_laplacian`
 at k=1 cost about 10 s of compiling to do about 20 ms of arithmetic, and
@@ -99,25 +107,38 @@ backend differs:
 
 | | v5e before | v5e after | same VM's CPU | H100 |
 |---|---|---|---|---|
-| `build_sequence` | 203 s | 41 s | 39 s | - |
-| `compute_nullspaces` | 222 s | 51 s | 61 s | - |
-| `apply_laplacian` k=1 | 10 020 ms | 98 ms | 275 ms | - |
-| relaxation, per step | 100.3 s | 43.1 s | 59.7 s | 0.41 s |
+| `build_sequence` | 203 s | 35.5 s | 40.6 s | - |
+| `compute_nullspaces` | 222 s | 17.5 s | 55.1 s | - |
+| `mass_core_apply` k=1 | 6.60 ms | 0.505 ms | 3.79 ms | - |
+| `apply_laplacian` k=1 | 10 020 ms | 76.4 ms | 108 ms | - |
+| relaxation, per step | 100.3 s | 13.03 s | 45.7 s | 0.41 s |
 
-Two fixes account for that: the compilation cache above, and assembling the
-mass kernel by shifted dense adds instead of a `segment_sum`
-(`mrx/mass.py`), which is 33x on that operation because indexed writes are
-the one thing a TPU has no fast path for.
+Two things account for that. The compilation cache above, and removing every
+index tensor from the mass kernel: the gather and the scatter at its two
+ends are both separable shift maps, so both are pure data movement with
+sources and destinations known at compile time.
+
+| at (12,24,12) p=3 | v5e indexed | v5e structured | CPU indexed | CPU structured |
+|---|---|---|---|---|
+| gather | 1.624 ms | 0.049 ms | 0.070 ms | 0.113 ms |
+| scatter | 2.011 ms | 0.060 ms | 0.398 ms | 0.303 ms |
+
+That is the most transferable fact here. On the indexed forms a v5e is 23x
+and 5x slower than the VM's own CPU; on the structured forms it is 2.8x and
+5x faster. Identical work, identical answers. If a kernel is slow on this
+hardware, look for an index tensor first.
 
 What is left is not compilation. `relaxation_loop` is already `@jax.jit`
 around a `lax.scan`. The remaining gap to a GPU is that one li383 step is a
-long chain of small dependent kernels -- a mass apply does about 3 ms of
-work on arrays of order 10^4 floats -- and on indexed primitives a v5e is
-6-7x slower than this VM's CPU while being 12x faster on a dense matmul.
-Widening the per-step work is the only route to using the chip properly,
-either at much higher resolution or by solving many equilibria at once with
-`vmap`, and the latter is a design change rather than a flag. A
-`v5litepod-4` is four chips and MRX uses one.
+long chain of small dependent kernels, the largest now half a millisecond on
+arrays of order 10^4 floats. Widening the per-step work is the only route to
+using the chip properly, either at much higher resolution or by solving many
+equilibria at once with `vmap`, and that is a design change rather than a
+flag. A `v5litepod-4` is four chips and MRX uses one.
+
+float32 on the MXU is not a numerical concern: inverse-mass CG at the same
+tolerance takes the same iteration count on both backends (20 at k=1, 24 at
+k=2).
 
 Benchmark a solver before committing a long run, and read the two calls
 separately, because the first is XLA compiling and the second is the device

@@ -29,6 +29,7 @@ FILES=(
     mrx_tpu_report.py
     tpu_bench_mrx.py
     profile_top_ops.py
+    gcs_cache_smoke.py
     make_kit.sh
 )
 

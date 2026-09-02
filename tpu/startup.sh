@@ -131,6 +131,13 @@ echo "--- installing jax[tpu] ---"
 "${PY}" -m pip install "jax[tpu]" \
     -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
+# etils is what lets JAX put its persistent compilation cache on a gs:// path,
+# which is the only way to carry compiled kernels onto a node with no data
+# disk. It is installed unconditionally because without it JAX does not fail on
+# a gs:// cache dir -- it writes nothing, reads nothing and reports nothing, so
+# the cache silently does not exist and the only symptom is a slow run.
+"${PY}" -m pip install "etils[epath,epath-gcs]"
+
 # ----------------------------------------------------------------------- mrx ---
 # The branch matters. `main` is ten months stale and its Laplacian assembly path
 # raises a reshape TypeError inside the k=0 tensor Hodge preconditioner;
