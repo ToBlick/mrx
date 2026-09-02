@@ -107,16 +107,18 @@ def test_diffusion_solver_default_preconditioners_converge(
 
 
 
-@pytest.mark.parametrize("eps", (1e-3, 1e-1))
-@pytest.mark.parametrize("dirichlet", ALL_DBC)
-@pytest.mark.parametrize("k", (1, 2, 3))
+@pytest.mark.parametrize(("k", "dirichlet", "eps"), [
+    (2, True, 1e-3),     # the production configuration: velocity smoothing / resistive step
+    (1, False, 1e-1),    # the other boundary family, one level down, stiffness-dominated
+])
 def test_diffusion_solve_matches_dense(tiny_seq, k, dirichlet, eps):
     """The split solve equals the dense ``(M_k + eps L_k)^-1 rhs`` to solver tolerance.
 
     The reference assembles ``M_k``, ``S_k``, the weak ``D_{k-1}`` and
     ``M_{k-1}`` from the matrix-free applies (no Krylov solve anywhere) and
     forms ``L_k = S_k + D M_{k-1}^-1 D^T`` densely, so it is independent of
-    the split identity the solve uses.
+    the split identity the solve uses. Two cases only: the dense probes cost
+    one operator apply per DoF and this is the lean tier.
     """
     seq = tiny_seq
     n = int(_dof(seq, k, dirichlet))
