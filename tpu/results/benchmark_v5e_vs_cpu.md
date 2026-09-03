@@ -604,10 +604,22 @@ The reason is visible at `eps = 0`, where both model the same operator with
 the same 1-D factors and the only difference is that the new atom has no
 polar-core block: **82 iterations against 57**. That 1.44x core deficit is
 larger than anything the shift handling wins back. Correcting for it projects
-~1.16x at the shift the relaxation actually uses -- the smoothing solve runs
-at `eps = 0.064 / n_r^2 = 4.4e-4`, where `M + eps L` is still mass-dominated
-and the mass atom is already close to the right preconditioner. The large
-misses live at `eps >= 0.1`, outside the operating range.
+~1.16x at the shift the *velocity smoothing* solve uses, `eps = 0.064 / n_r^2
+= 4.4e-4`, where `M + eps L` is still mass-dominated and the mass atom is
+already close to the right preconditioner.
+
+**One case is not settled by this, and it is the case the open item is about.**
+The *resistive* solve is the other user of `M + eps L`, and it runs much
+further out: `docs/research/OPEN.md` section 3.9 measures `eta = 1e-1` giving
+`eps ~ 0.17`, where the mass atom needs 612-1938 iterations and at `eta = 1`
+fails to converge at all. That is squarely inside the range measured above,
+not outside it, and it is where the norm advantage is largest -- 3.27 against
+1158 at `eps = 0.1`. The iteration count there was *also* worse (it hit the
+2000 cap against the mass atom's 1595), but at `eps = 0.1` the operator is
+Laplacian-dominated and the untreated core rows matter most, so that number
+confounds the core deficit with the atom itself and cannot separate them. The
+honest statement is that **the atom is refuted for the smoothing solve and
+untested for the resistive one**, and separating them needs the core block.
 
 **It cannot help the Leray upper block at all**, contrary to the plan that
 asked for it. That block inverts the Schur complement `S_3`, not `M_3 + eps
@@ -645,8 +657,10 @@ succeeds on all three axes of all three k=2 components, so `_structured_gather`
 runs and the indexed read is dead code on li383. A clamped radial axis still
 satisfies `g[e, l] == (e + l) % S`, because for `ne = n - p` elements and
 `nloc = p + 1` local DoFs the largest index `(ne - 1) + p = n - 1` never
-wraps. `gather_cost.py` was timing the fallback path. `roofline.py` prints the
-plan per component so this cannot be assumed again.
+wraps. `gather_cost.py` was timing the fallback path, and has been deleted
+rather than fixed: its premise was a v5e-versus-H200 deficit that no longer
+exists, and the path it measured is unreachable on this geometry.
+`roofline.py` prints the plan per component so this cannot be assumed again.
 
 What the kernel actually asks for, counted rather than estimated
 (`roofline.py`, `mass_core_apply` k=2 at `(12,24,12)` p=3):
@@ -867,8 +881,8 @@ norms, and run anywhere.
 contraction dimension of every einsum from the sequence alone, and takes the
 measured time and the machine's peaks as arguments. It also prints whether the
 shift plan holds per component, which is what decides between
-`_structured_gather` and the indexed fallback. `gather_cost.py` is kept only
-because it measures the fallback path, which li383 does not take.
+`_structured_gather` and the indexed fallback -- the question `gather_cost.py`
+was deleted for getting wrong.
 
 The 100-step li383 run of the previous session (41.3 s/step, before fixes 2-4)
 had `||F||` falling 5.540e-02 -> 1.004e-02 with helicity conserved to 5.6e-07

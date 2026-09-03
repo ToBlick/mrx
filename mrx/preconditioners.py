@@ -259,9 +259,19 @@ def build_shifted_mass_laplace_atom(seq, k: int, *, dirichlet: bool = False):
     that this atom has no polar-core block: 82 iterations against 57. That
     1.44x core deficit is larger than anything the shift handling wins back,
     and even removing it entirely projects only ~1.16x at the shift the
-    relaxation uses -- the smoothing solve runs at ``eps = 0.064 / n_r^2 =
-    4.4e-4``, where ``M + eps L`` is still mass-dominated and the mass atom is
-    already close to the right preconditioner.
+    VELOCITY SMOOTHING solve uses -- ``eps = 0.064 / n_r^2 = 4.4e-4``, where
+    ``M + eps L`` is still mass-dominated and the mass atom is already close
+    to the right preconditioner.
+
+    THE RESISTIVE SOLVE IS A SEPARATE QUESTION AND IS NOT SETTLED. It is the
+    other user of ``M + eps L`` and runs much further out: ``OPEN.md`` section
+    3.9 measures ``eta = 1e-1`` giving ``eps ~ 0.17``, where the mass atom
+    takes 612-1938 iterations and at ``eta = 1`` does not converge. That is
+    where this atom's norm advantage is largest (3.27 against 1158 at ``eps =
+    0.1``). Its iteration count there was worse too, but at that shift the
+    operator is Laplacian-dominated and the missing core rows matter most, so
+    the number confounds the core with the atom. Refuted for smoothing,
+    untested for resistive.
 
     IT CANNOT HELP THE LERAY UPPER BLOCK EITHER, contrary to the plan that
     asked for it. That block's operator is the Schur complement ``S_3``, not

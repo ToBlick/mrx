@@ -101,19 +101,59 @@ linesearch (`dt ~ 1.7`, `eps ~ 0.17`) and `eta = 1` hit `maxiter = 10000` on
 longer monotone (`+3e-7`) and `div B` reaches `6e-6`. The working range of
 the current preconditioner is `eta <= 1e-2` (the production range is
 `<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
-and so keeps `eps` in range for `eta <= 1e-1` too. *Fix (follow-up task, no
-implementation yet):* a dedicated separable `(M + eps L)` atom. NOT a spectral
-shift of either existing atom: the metric-lumping MASS atom lumps the metric
-while the LAPLACIAN atom averages it differently, so their Kronecker
-structures do not share a generalised eigenbasis and a shift of either is
-wrong. The atom has to be built from ONE consistent 1-D factorisation (the
-same metric treatment for both terms) and fast-diagonalised as a whole for
-each `eps` -- or for a small set of `eps` values, since
-`eps = eta * (accumulated dt)` changes every step under the line search.
+and so keeps `eps` in range for `eta <= 1e-1` too.
+
+*Fix: BUILT AND MEASURED (2026-09-03), NOT ADOPTED.* The atom is
+`mrx.preconditioners.build_shifted_mass_laplace_atom`, with
+`apply_shifted_mass_laplace_atom` and tests in `test/test_shifted_atom.py`.
+**Both reasons this entry gave for it being hard were wrong**, and the
+correction matters more than the atom does:
+
+* *"Their Kronecker structures do not share a generalised eigenbasis."* They
+  do. `_kron_mass_model_1d` and `metric_lumping_laplacian.component_factors`
+  both assemble the axis mass as
+  `_assemble_weighted_1d_mass(basis, quad_w[a])` on the same derivative-axis
+  pattern, both deliberately UNWEIGHTED with the metric carried outside as a
+  diagonal. The 1-D factors come out bit-identical for k=0..3 and every
+  component. Only *which* outer diagonal differs, and that is a choice, not a
+  structural obstruction. `test_shifted_atom.py` now asserts the identity so a
+  change to either builder fails loudly.
+* *"Fast-diagonalised as a whole for each `eps`."* Once, for all `eps`. Where
+  `V.T M V = I` and `V.T L V = diag(mu)`, `M + eps L` is `1 + eps*mu`, so
+  `eps` reaches the apply through a diagonal reciprocal only and can be a
+  tracer. One build serves the whole line search.
+
+The construction does what it was built to do. Relative miss at k=2, li383
+`(8,16,8)` p=3 f64: 2.20 at `eps = 4.4e-4` against the mass atom's 6.02, and
+3.27 at `eps = 0.1` against 1158. Bounded over four decades.
+
+**It still loses on iteration count**, which is what a solve pays: 185 against
+149 at `eps = 4.4e-4`, and worse at `eps = 0.1`. The cause is isolated: at
+`eps = 0` both atoms model the SAME operator with the SAME 1-D factors, and it
+is 82 iterations against 57. The difference there is only that this atom is a
+BULK atom with no polar-core block. That a 354x better norm still loses on
+iterations is consistent with the untreated core rows contributing outlier
+eigenvalues that a random-probe 2-norm averages away, but that was not
+verified.
+
+*So the open item is narrower than it was, and different:* not "build a
+separable atom" but "give the separable atom a polar-core block, then decide".
+The velocity smoothing solve runs at `eps = 0.064/n_r^2 = 4.4e-4` where
+`M + eps L` is mass-dominated and the projected win is only ~1.16x. The
+RESISTIVE regime this entry is actually about -- `eta = 1e-1`, `eps ~ 0.17` --
+is where the mass atom collapses and the atom's norm advantage is largest, and
+it is exactly where the core deficit was not separated out. That is the
+measurement worth doing.
+
+Note also that a shifted atom cannot help the k=3 Leray/Schur block: `L_3` is
+identically zero (no 4-form for `G_3` to map into, measured as `||L_3 x|| = 0`
+exactly), so at k=3 a shifted atom IS the mass atom.
+
 The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
-*Detail:* `docs/source/concepts/relaxation.md` §2.
+*Detail:* `docs/source/concepts/relaxation.md` §2,
+`tpu/results/benchmark_v5e_vs_cpu.md`, `tpu/shifted_atom_measure.py`.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
 

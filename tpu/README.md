@@ -129,7 +129,25 @@ each should look like, which is what you actually need to check yours against.
 | `watch_request.sh` | Non-blocking status of a queued request |
 | `mrx_tpu_report.py` | Poisson driver that checks TPU vs CPU reference |
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
+| `matvec_bench.py` | Times each operator apply eagerly, jitted and inside a `lax.scan` |
+| `summarize_matvec.py` | Joins per-backend `matvec_bench.py` runs and composes a step |
+| `roofline.py` | Counts a kernel's FLOPs, bytes and contraction widths; needs no device |
+| `map_precision.py` | Checks what `jax_default_matmul_precision` does to the geometry map |
 | `profile_top_ops.py` | Reduces a `jax.profiler` trace to a top-N op table |
 | `pmap_sweep.py` | Runs one equilibrium per chip, and checks it really is one per chip |
 | `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |
 | `make_kit.sh` | Builds `tpu_access_kit.zip`, the standalone copy of this directory |
+
+Everything above ships in `tpu_access_kit.zip`. The following stay in the repo
+only: they each answered one question, are cited from
+`results/benchmark_v5e_vs_cpu.md`, and are kept so the numbers there can be
+re-derived rather than because you would run them.
+
+| File | The question it answered |
+|---|---|
+| `mxu_occupancy.py` | Does the MXU pad a width-4 contraction up to 128? (No.) |
+| `factorization_ab.py` | Which of five ways of folding the element transform is fastest? (Two stages.) |
+| `shifted_atom_measure.py` | Is a separable `(M + eps L)` atom closer than the mass atom? (In norm yes, in iterations no.) |
+| `dispatch_ab.py` | Was a 13x discrepancy in one kernel a measurement artefact? (No, a stale checkout.) |
+| `gpu_baseline.slurm` | The H200 control column, on NYU Torch |
+| `gpu_factorization.slurm` | The H200 column of the factorization A/B |
