@@ -704,9 +704,36 @@ the run. `startup.sh` now does `chmod -R a+rwX` on the repo after the clone.
 
 ## 7. Cost discipline
 
-**Cloud TPU API nodes have no `--max-run-duration`. They bill until deleted.**
-A `v5litepod-4` runs roughly USD 5-6/hour. Nothing stops it: not a job finishing,
-not your SSH session closing, not your laptop sleeping.
+**Cloud TPU API nodes have no `--max-run-duration`.** A `v5litepod-4` runs
+roughly USD 5-6/hour, and none of the things you would expect to stop it do: not
+a job finishing, not your SSH session closing, not your laptop sleeping.
+
+What stops it is `idle_reaper.sh`, which every node now installs from
+`startup.sh`. It deletes the node after `IDLE_TIMEOUT_MIN` minutes (default 20,
+set in `zones.sh`) with no environment python running, nobody logged in, and no
+accelerator device held. Any one of those resets the clock, so it will not
+interrupt a long run, a long think, or an SSH session left open. `0` installs it
+without arming it.
+
+Two things to know about it. It does not arm until the environment sentinel
+exists, so a 10-12 minute cold build is not mistaken for idleness -- but that
+gate expires after 45 minutes, because a node whose setup failed is precisely
+the node that would otherwise bill forever. And it needs `tpu.nodes.delete` on
+the node's service account; `startup.sh` checks that at install time and prints
+a loud warning to the serial log if it is missing, so the failure is visible
+rather than silent. Verify on a new node shape with:
+
+```bash
+gcloud compute tpus tpu-vm ssh "${VM_NAME}" --zone="${ZONE}" \
+  --command='/usr/local/bin/mrx_idle_reaper.sh --check'
+```
+
+It prints which API it would call, with which node name and zone, whether the
+sentinel is present and whether it currently reads the node as busy. It deletes
+nothing.
+
+The reaper is a safety net, not a substitute for deleting a node you are done
+with. Twenty minutes of a v5e is still about two dollars.
 
 Two real incidents from building these scripts, both worth learning from:
 

@@ -32,6 +32,7 @@ FILES=(
     acquire_tpu.sh
     run_on_tpu.sh
     startup.sh
+    idle_reaper.sh
     watch_request.sh
     mrx_tpu_report.py
     tpu_bench_mrx.py

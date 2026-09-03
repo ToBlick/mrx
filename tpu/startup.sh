@@ -79,6 +79,79 @@ GEOM=data/wout_li383_low_res_reference.nc
 sudo mkdir -p /tmp/tpu_logs
 sudo chmod 1777 /tmp/tpu_logs
 
+# ------------------------------------------------------------- idle reaper ---
+# Installed here, above the warm-disk early exit below, so that a node which
+# skips the build still gets a reaper. It arrives as a second metadata file
+# rather than being embedded in this script, so there is one copy of it and
+# tpu/idle_reaper.sh is the copy.
+#
+# This is the only self-termination a Cloud TPU API node has: that API takes no
+# --max-run-duration, and on this project it is the only way to reach v5e.
+install_idle_reaper() {
+    local md="http://metadata.google.internal/computeMetadata/v1"
+    local hdr="Metadata-Flavor: Google"
+    local dest=/usr/local/bin/mrx_idle_reaper.sh
+    local timeout
+
+    if ! curl -sf -H "${hdr}" "${md}/instance/attributes/idle-reaper" \
+         | sudo tee "${dest}" >/dev/null; then
+        echo "WARNING: no idle-reaper in metadata; this node will NOT self-delete."
+        return 0
+    fi
+    sudo chmod 0755 "${dest}"
+    timeout="$(curl -sf -H "${hdr}" "${md}/instance/attributes/idle-timeout-min" || echo 20)"
+
+    if [ "${timeout}" = "0" ]; then
+        echo "--- idle reaper installed but disabled (idle-timeout-min=0) ---"
+        return 0
+    fi
+
+    # Does this node's service account actually have the permission the reaper
+    # needs? Ask before we need it: a reaper that cannot delete fails silently
+    # at the one moment nobody is watching, which is the whole failure mode.
+    # roles/editor carries both of these.
+    local token held
+    token="$(curl -sf -H "${hdr}" "${md}/instance/service-accounts/default/token" |
+             python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' 2>/dev/null)"
+    held="$(curl -sf -X POST -H "Authorization: Bearer ${token}" \
+              -H "Content-Type: application/json" \
+              -d '{"permissions":["tpu.nodes.delete","compute.instances.delete"]}' \
+              "https://cloudresourcemanager.googleapis.com/v1/projects/$(curl -sf -H "${hdr}" "${md}/project/project-id"):testIamPermissions" \
+            | python3 -c 'import sys,json; print(",".join(json.load(sys.stdin).get("permissions",[])))' 2>/dev/null)"
+    case "${held}" in
+        *delete*)
+            echo "--- idle reaper: service account holds ${held} ---" ;;
+        *)
+            echo "=================================================================="
+            echo "WARNING: this node's service account holds NEITHER"
+            echo "         tpu.nodes.delete NOR compute.instances.delete, so the"
+            echo "         idle reaper CANNOT delete this node. It will run and"
+            echo "         log, but you must delete this VM yourself."
+            echo "==================================================================" ;;
+    esac
+
+    sudo tee /etc/systemd/system/mrx-idle-reaper.service >/dev/null <<UNIT
+[Unit]
+Description=Delete this node after ${timeout} idle minutes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=IDLE_TIMEOUT_MIN=${timeout}
+ExecStart=${dest}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now mrx-idle-reaper.service
+    echo "--- idle reaper armed: deletes this node after ${timeout} idle min ---"
+}
+install_idle_reaper
+
 if [ -f "${SENTINEL}" ]; then
     echo "Environment already present (${SENTINEL}); skipping build."
     # A warm data disk can carry a checkout older than the data commits, so

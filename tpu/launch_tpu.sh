@@ -51,7 +51,8 @@ build_args() {
         --image-project="${IMAGE_PROJECT}"
         --image-family="${IMAGE_FAMILY}"
         --maintenance-policy=TERMINATE
-        --metadata-from-file=startup-script=startup.sh
+        --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
+        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}"
     )
     # Only FLEX_START takes a wait time; passing it elsewhere is rejected.
     if [[ "${model}" == "FLEX_START" ]]; then
@@ -108,8 +109,11 @@ attach_disk_after_create() {
 # ct5lp-hightpu-4t returns 403 "user agent is not allowed to use the machine
 # type" regardless of the 512 chips of quota.
 #
-# It has no --max-run-duration, so there is no self-termination safety net; the
-# caller is responsible for deleting the node.
+# It has no --max-run-duration, so the only self-termination it gets is
+# idle_reaper.sh, shipped in as a second metadata file and installed by
+# startup.sh. That makes the reaper load-bearing here rather than a convenience:
+# on this path it is the sole thing standing between a forgotten node and an
+# unbounded bill.
 create_tpuapi() {
     local accel="$1" zone="$2" model="$3" log="$4"
     local args=(
@@ -117,7 +121,8 @@ create_tpuapi() {
         --zone="${zone}"
         --accelerator-type="${accel}"
         --version="${TPU_RUNTIME}"
-        --metadata-from-file=startup-script=startup.sh
+        --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
+        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}"
     )
     case "${model}" in
         SPOT)        args+=(--spot) ;;
@@ -136,8 +141,11 @@ announce_success() {
         gcloud compute tpus tpu-vm describe "${VM_NAME}" --zone="${zone}" \
             --format="table(name.basename(),state,acceleratorType,runtimeVersion)"
         echo ""
-        echo "NOTE: Cloud TPU API nodes have no max-run-duration. This one bills"
-        echo "      until deleted:  gcloud compute tpus tpu-vm delete ${VM_NAME} --zone=${zone}"
+        echo "NOTE: Cloud TPU API nodes have no max-run-duration. This one is"
+        echo "      bounded only by idle_reaper.sh, which deletes it after"
+        echo "      ${IDLE_TIMEOUT_MIN} idle minutes. To go now, or if the reaper"
+        echo "      did not install:"
+        echo "        gcloud compute tpus tpu-vm delete ${VM_NAME} --zone=${zone}"
     else
         gcloud compute instances describe "${VM_NAME}" --zone="${zone}" \
             --format="table(name,status,machineType.basename(),scheduling.provisioningModel)"

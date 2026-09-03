@@ -7,8 +7,16 @@
 # comfortably above RUN_TIMEOUT in run_on_tpu.sh: the 30m that suited the
 # Poisson example would delete the machine partway through a relaxation.
 # The Cloud TPU API has no equivalent flag, which is why v5e sessions are
-# unaffected by this setting -- and why they need manual deletion instead.
+# unaffected by this setting. They are covered instead by idle_reaper.sh, which
+# both paths carry.
 MAX_RUN_DURATION="${MAX_RUN_DURATION:-4h}"
+# Minutes of no python, no login and no accelerator activity before a node
+# deletes itself. This, not MAX_RUN_DURATION, is what actually bounds the bill:
+# four hours is a backstop against catastrophe, twenty minutes is cost control.
+# Long enough to read output, think, and start another run against a warm
+# compilation cache; short enough that forgetting costs one coffee. Set to 0 to
+# install the reaper but never let it fire.
+IDLE_TIMEOUT_MIN="${IDLE_TIMEOUT_MIN:-20}"
 DATA_DISK="${DATA_DISK:-my-data-disk}"
 DATA_SNAPSHOT="${DATA_SNAPSHOT:-my-data-snapshot}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-accelerator-images}"

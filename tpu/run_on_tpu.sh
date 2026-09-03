@@ -271,9 +271,17 @@ done
 # ------------------------------------------------- report session lifetime ---
 print_remaining() {
     local created max_secs
-    # Cloud TPU API nodes have no max-run-duration to report against.
+    # Cloud TPU API nodes have no max-run-duration to report against. Their
+    # bound is the idle reaper, whose countdown starts when this run ends.
     if (( TPU_API )); then
-        echo "Session: Cloud TPU API node (no max-run-duration; delete when done)"
+        local idle
+        idle="$(ssh_vm "systemctl show -p Environment --value mrx-idle-reaper 2>/dev/null" |
+                sed -n 's/.*IDLE_TIMEOUT_MIN=\([0-9]*\).*/\1/p')"
+        if [[ -n "${idle}" ]]; then
+            echo "Session: Cloud TPU API node; self-deletes after ${idle} idle min"
+        else
+            echo "Session: Cloud TPU API node with NO reaper running -- delete when done"
+        fi
         return
     fi
     created="$(gcloud compute instances describe "${VM_NAME}" --zone="${ZONE}" \

@@ -126,6 +126,7 @@ each should look like, which is what you actually need to check yours against.
 | `acquire_tpu.sh` | Daemon that retries until hardware lands |
 | `run_on_tpu.sh` | Drives one session: wait, run, pull results |
 | `startup.sh` | VM startup script that builds the conda environment |
+| `idle_reaper.sh` | Deletes the node after `IDLE_TIMEOUT_MIN` idle minutes; the only self-termination a TPU API node has |
 | `watch_request.sh` | Non-blocking status of a queued request |
 | `mrx_tpu_report.py` | Poisson driver that checks TPU vs CPU reference |
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
