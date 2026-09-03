@@ -76,7 +76,9 @@ def main():
     print(f"[env] mrx precision {mrx.DTYPE}")
 
     seq, ops = build_sequence(cli.geometry, ns, cli.p)
-    seq.set_operators(compute_nullspaces(seq, ops))
+    # gap_sweeps=0: the reported lambda_1 is a diagnostic rather than part of
+    # the construction, and it costs 6.8 of the 9 minutes of setup here.
+    seq.set_operators(compute_nullspaces(seq, ops, gap_sweeps=0))
 
     # --- the initial condition: the equilibrium field as B = dA' -------------------
     cb = load_clebsch(cli.geometry)
