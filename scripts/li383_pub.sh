@@ -195,14 +195,19 @@ adaptive() {  # adaptive [smoke]
     fi
 }
 
+# Sections and movies run THIS checkout's plotter (branch poincare-plotter merged
+# 2026-09-03: .pgf output, logical-r profile) in float32, as slurm/regen_poincare.sh
+# does; TeX for the .pgf comes from the same place as there.
+PLOTTER_ENV="PYTHONPATH=$WT PATH=$HOME/texlive/2026/bin/x86_64-linux:$PATH"
+
 sections() {  # sections NAME [TIMEOUT_MIN]
-    submit sec "$1" scripts/poincare_relax.py \
-        "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
+    export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_relax.py" \
+        "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
 }
 
 movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
-    submit mov "$1" scripts/poincare_relax.py \
-        "$PUB/$1/B.h5 --fields snapshots --snapshot-steps $3 --planes $2 --out $PUB/$1/movie" "${4:-120}"
+    export EXTRA_ENV="$PLOTTER_ENV"; submit mov "$1" "$WT/scripts/poincare_relax.py" \
+        "$PUB/$1/B.h5 --fields snapshots --snapshot-steps $3 --planes $2 --precision float32 --out $PUB/$1/movie" "${4:-120}"
 }
 
 case ${1:-} in
