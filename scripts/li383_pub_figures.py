@@ -10,6 +10,7 @@ the note). Arms that have not finished are skipped.
 """
 
 import argparse
+import glob
 import json
 import os
 
@@ -434,6 +435,65 @@ def eta_figure(plain, seeded, ideal, figdir):
     fig.savefig(os.path.join(figdir, "eta_sweep.png"), dpi=150)
 
 
+def eta_traces(arms, ideal, figdir):
+    """1-D traces of every resistivity arm against the ideal twin: residual,
+    ||J||/||B||, beta, helicity and energy released vs step, log x."""
+    fig, ax = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
+    ax = ax.ravel()
+    entries = [(ideal, r"$\eta = 0$", "k", "-")]
+    colors = {}
+    for j in arms:
+        e = j["params"]["eta_max"]
+        colors.setdefault(e, f"C{len(colors)}")
+        seeded = bool(j["params"]["seed"])
+        lab = rf"$\eta_{{max}}$ = {e:.0e}" + (" seeded" if seeded else "")
+        if j["arm"].endswith("_floor1e-5"):
+            lab += " (floor 1e-5)"
+        entries.append(
+            (
+                j,
+                lab,
+                colors[e],
+                ":" if j["arm"].endswith("_floor1e-5") else ("--" if seeded else "-"),
+            )
+        )
+    for j, lab, c, ls in entries:
+        if j is None:
+            continue
+        q = j["qoi"]
+        E = np.asarray(j["trace"]["E"])
+        h = np.asarray(q["helicity"])
+        ax[0].plot(it(j), F(j), color=c, ls=ls, lw=0.9, label=lab)
+        ax[1].plot(q["it"], q["JoverB"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
+        ax[2].plot(
+            q["it"], q["beta_vol"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab
+        )
+        ax[3].plot(q["it"], h, ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
+        ax[4].plot(it(j), E[0] - E, color=c, ls=ls, lw=0.9, label=lab)
+        if j is not ideal:
+            ax[5].plot(
+                it(j), np.asarray(j["trace"]["eta"]), color=c, ls=ls, lw=0.9, label=lab
+            )
+    ax[0].set_yscale("log")
+    ax[0].set_ylabel(r"$\|F\|_M$")
+    ax[1].set_ylabel(r"$\|J\| / \|B\|$")
+    ax[2].set_ylabel(r"$\beta_{vol}$")
+    ax[3].set_ylabel("helicity")
+    ax[4].set_yscale("log")
+    ax[4].set_ylabel("$E_0 - E$")
+    ax[5].set_yscale("log")
+    ax[5].set_ylabel(r"$\eta$ (schedule)")
+    for a in ax:
+        a.set_xscale("log")
+        a.set_xlabel("step")
+        a.grid(alpha=0.3, which="both")
+    ax[0].legend(fontsize=7)
+    fig.suptitle(
+        r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: resistivity traces, tanh schedule over 5000 steps"
+    )
+    fig.savefig(os.path.join(figdir, "eta_traces.png"), dpi=150)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -482,6 +542,15 @@ def main():
         etadir = os.path.join(root, "li383_eta", "figures")
         os.makedirs(etadir, exist_ok=True)
         eta_figure(eta_plain, eta_seeded, load(root, "li383_pub", "h16_p2_g1"), etadir)
+        eta_all = [
+            j
+            for j in (
+                load(root, "li383_eta", os.path.basename(d))
+                for d in sorted(glob.glob(os.path.join(root, "li383_eta", "*eta1e-*")))
+            )
+            if j is not None and len(j["trace"]["F"]) > 1
+        ]
+        eta_traces(eta_all, load(root, "li383_pub", "h16_p2_g1"), etadir)
         open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
             "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"
         )
