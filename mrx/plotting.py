@@ -385,21 +385,18 @@ def _profile_ray_thetas(n):
     return base + [((k + 1) * golden) % 1.0 for k in range(n - len(base))]
 
 
-def _ray_line(lr, lth, R, Z, pressure, th0):
-    """Per-line logical r, physical (R, Z) and p sampled EXACTLY at the poloidal
-    ray ``theta = th0``: F(r, th0) traced through the actual data (logical theta
-    is not the physical poloidal angle).
+def _ray_line(lr, lth, pressure, th0):
+    """Per-line logical r and p sampled EXACTLY at the poloidal ray
+    ``theta = th0`` (logical theta is not the physical poloidal angle).
 
     The line's crossings are 8/period apart in theta (~0.06), so the crossing
     *nearest* th0 lands at th0 +- up to half a step, a poloidal offset that
-    differs line to line and makes the marked ray zig-zag -- not because the map
-    is rough but because the sampling is discrete. So each consecutive crossing
-    pair that brackets th0 is linearly interpolated TO th0 (theta is quasi-
-    linear in zeta between two crossings 0.06 apart, so the interpolant is
-    O(dtheta^2)-accurate), and the interpolants are averaged over turns: tight
-    on a flux surface, and honestly spread on a chaotic line. Interpolating
-    between two neighbouring crossings also has no branch-point trouble at
-    th0 = 0, unlike snapping to the nearest.
+    differs line to line and makes a ray built from nearest crossings zig-zag --
+    not because the map is rough but because the sampling is discrete. So each
+    consecutive crossing pair that brackets th0 is linearly interpolated TO th0
+    (theta is quasi-linear in zeta between two crossings 0.06 apart, so the
+    interpolant is O(dtheta^2)-accurate), and the interpolants are averaged over
+    turns: tight on a flux surface, and honestly spread on a chaotic line.
     """
     s = ((lth - th0 + 0.5) % 1.0) - 0.5                # (nL, nC) signed dist in (-.5, .5]
     s0, s1 = s[:, :-1], s[:, 1:]                        # consecutive-crossing pairs
@@ -416,7 +413,7 @@ def _ray_line(lr, lth, R, Z, pressure, th0):
         return out
 
     p_at = None if pressure is None else at_ray(pressure)
-    return at_ray(lr), (at_ray(R), at_ray(Z)), p_at
+    return at_ray(lr), p_at
 
 
 @house_style()
@@ -652,14 +649,14 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         # chains are fattest (their O-points), the others sit off the symmetry
         # line and are non-resonant; theta = 0 is avoided (the poloidal-angle
         # branch point, where the ray flips across the midplane). Each ray is
-        # one LINE STYLE, and is marked in that
-        # style on BOTH section panels -- the physical curve F(r, theta0), and
-        # theta = theta0 in the chart -- so the reader can place it. Where the
-        # rays agree logical r is a faithful surface label; where they fan
-        # (edge, islands) it is not, and the fan is the signal.
+        # one LINE STYLE, marked as the theta = theta0 line in the logical chart
+        # so the reader can place it (the physical F(r, theta0) marker is left
+        # out -- its per-turn average overshoots the boundary at the edge).
+        # Where the rays agree logical r is a faithful surface label; where they
+        # fan (edge, islands) it is not, and the fan is the signal.
         styles = ["-", "--", ":", "-."]
         lr_all, lth_all = np.asarray(logical[0]), np.asarray(logical[1])
-        Rn, Zn, sn = np.asarray(R), np.asarray(Z), np.asarray(shown)
+        sn = np.asarray(shown)
         iota_n, band_n = np.asarray(iota), np.asarray(band)
         pn = None if pressure is None else np.asarray(pressure)
         pstd = None if pn is None else pressure_scale * np.nanstd(pn, axis=1)
@@ -667,7 +664,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         thetas = _profile_ray_thetas(profile_rays)
         for i, th0 in enumerate(thetas):
             ls = styles[i % len(styles)]
-            r_line, (Rr, Zr), p_at = _ray_line(lr_all, lth_all, Rn, Zn, pn, th0)
+            r_line, p_at = _ray_line(lr_all, lth_all, pn, th0)
             m = sn & np.isfinite(r_line)
             if not m.any():
                 continue
@@ -682,8 +679,6 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                 px.plot(rr, pm[m][o], color=P_COLOR, linestyle=ls, lw=1.2)
                 px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
                                 color=P_COLOR, alpha=0.10, lw=0)
-            ax.plot(Rr[m][o], Zr[m][o], color="black", linestyle=ls, lw=1.0,
-                    alpha=0.85, zorder=6)
             if lx is not None:
                 lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
                            alpha=0.85, zorder=6)
