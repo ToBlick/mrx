@@ -6,7 +6,7 @@
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
-#   bash scripts/li383_pub.sh eta        # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
+#   bash scripts/li383_pub.sh eta [ETA...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
@@ -105,11 +105,15 @@ eta() {
     # steps, dropped to ~0 over the middle third, ideal at the end), unseeded
     # and with the (6, 1) chain at eps 3e-3. --eta-every keeps eta K dt >= 2e-5
     # per resistive solve (dt is about 2 under gamma = 1). SUB=li383_eta.
-    local common="--ns 16,32,32 --p 2 --floor-tol 1e-5 --steps 5000 $G1_16 --eta-schedule tanh --seconds 7200"
+    # Floor 0 since 2026-09-03 (the first launch used 1e-5 and the eta >= 1e-5
+    # arms tripped it inside the resistive phase, ending resistive instead of
+    # ideal); `eta ETA...` reruns only the named etas.
+    local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000 $G1_16 --eta-schedule tanh --seconds 7200"
     local s61="--seed 6,1,0.544,0.1 --seed-eps 3e-3"
     local e K
     for e in 1e-7:100 1e-6:10 1e-5:1 1e-4:1; do
         K=${e#*:}; e=${e%:*}
+        if [ $# -gt 0 ] && [[ " $* " != *" $e "* ]]; then continue; fi
         arm eta$e     "$GEOM_HI" "$common --eta-max $e --eta-every $K"      300
         arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
     done
@@ -145,7 +149,7 @@ case ${1:-} in
     seeded) seeded ;;
     deep) deep ;;
     hsweep_p2) hsweep_p2 ;;
-    eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; eta ;;
+    eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
