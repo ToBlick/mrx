@@ -94,10 +94,15 @@ def main() -> int:
     # --- contractions: the reduced dimension is the MXU question ----------
     print("\ncontractions, one per einsum (K is what the MXU sees)")
     rows = []
+    folded = set()
     flops = 0
     for c in range(n_comp):
         Bx, _, By, _, Bz, _ = comp[c]
         nlx, nly, nlz = Bx.shape[-1], By.shape[-1], Bz.shape[-1]
+        # What mass.py actually contracts once _fuse_yz has folded the last
+        # two axes together. Reported alongside the three-stage widths because
+        # the narrow-K reading below is about the reference form, not this one.
+        folded.update((nly * nlz, qy * qz))
         # column half: contract the local dof index of each axis in turn
         for axis, (K, out) in enumerate((
                 (nlx, n_el * qx * nly * nlz),
@@ -119,6 +124,9 @@ def main() -> int:
     all_k = sorted({r[3] for r in rows})
     print(f"  every contraction has K in {all_k}; an MXU systolic array is "
           f"128 wide")
+    print(f"  production folds y and z, so the shipped kernel contracts "
+          f"K in {sorted(folded)} in two stages, not three, for 1.5x these "
+          f"FLOPs -- the count above is the FLOP-minimal reference")
 
     # the metric mix at quadrature: one multiply-add per column component
     flops += n_comp * n_quad * (2 * n_comp - 1)
