@@ -42,6 +42,7 @@ CPUS_PER_TASK=${CPUS_PER_TASK:-32}
 # Node with a broken cuSolver (handle creation fails); override with EXCLUDE=.
 EXCLUDE=${EXCLUDE:-x3101c0s17b0n0}
 DRYRUN=${DRYRUN:-0}
+FROMNPZ=${FROMNPZ:-0}                 # 1 = re-render plots from an existing sections.npz, no re-trace
 
 n=0
 for root in $ROOTS; do
@@ -53,12 +54,13 @@ for root in $ROOTS; do
     fi
     n=$((n + 1))
     name="poinc_$(echo "${dir#"$REPO"/}" | sed 's#outputs/##; s#/#_#g')"
+    fromnpz=""; [ "$FROMNPZ" = "1" ] && fromnpz="--from-npz"   # re-render only
     CMD="set -euo pipefail; source $VENV/bin/activate; \
 export PYTHONPATH=$CODE; export PATH=$TEXBIN:\$PATH; export PYTHONUNBUFFERED=1; \
-python -u $CODE/scripts/poincare_relax.py $bh5 --precision float32 \
+python -u $CODE/scripts/poincare_relax.py $bh5 $fromnpz --precision float32 \
 --fields $FIELDS --planes $PLANES --periods $PERIODS --out $dir/poincare"
     if [ "$DRYRUN" = "1" ]; then
-      echo "[dryrun] $name  <-  ${bh5#"$REPO"/}  ->  ${dir#"$REPO"/}/poincare  (planes $PLANES, f32, pgf)"
+      echo "[dryrun] $name  <-  ${bh5#"$REPO"/}  ->  ${dir#"$REPO"/}/poincare  (planes $PLANES, f32, pgf$([ "$FROMNPZ" = "1" ] && echo ', from-npz re-render'))"
       continue
     fi
     sbatch \

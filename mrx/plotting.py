@@ -386,34 +386,22 @@ def _profile_ray_thetas(n):
 
 
 def _ray_line(lr, lth, pressure, th0):
-    """Per-line logical r and p sampled EXACTLY at the poloidal ray
-    ``theta = th0`` (logical theta is not the physical poloidal angle).
+    """Per-line logical r and p at the crossing nearest the poloidal ray
+    ``theta = th0`` (circular nearest, one crossing per line): r is the radius
+    that field line actually sits at where it crosses the ray -- the surface it
+    is on -- so a resonant line reads at its own r and an island chain keeps its
+    true radial width in the profile.
 
-    The line's crossings are 8/period apart in theta (~0.06), so the crossing
-    *nearest* th0 lands at th0 +- up to half a step, a poloidal offset that
-    differs line to line and makes a ray built from nearest crossings zig-zag --
-    not because the map is rough but because the sampling is discrete. So each
-    consecutive crossing pair that brackets th0 is linearly interpolated TO th0
-    (theta is quasi-linear in zeta between two crossings 0.06 apart, so the
-    interpolant is O(dtheta^2)-accurate), and the interpolants are averaged over
-    turns: tight on a flux surface, and honestly spread on a chaotic line.
+    Averaging each line over its turns was tried (to smooth a ray drawn on the
+    physical section); it collapses island lines to their mean radius and erases
+    the resonant shelf, so it is NOT used. Those physical ray-markers are gone,
+    and p is sampled the same way as r, so both stay per-line, un-averaged.
     """
-    s = ((lth - th0 + 0.5) % 1.0) - 0.5                # (nL, nC) signed dist in (-.5, .5]
-    s0, s1 = s[:, :-1], s[:, 1:]                        # consecutive-crossing pairs
-    # A pair brackets th0 where s changes sign; exclude the ~1 wrap jump.
-    brack = (s0 * s1 <= 0) & (s0 != s1) & (np.abs(s1 - s0) < 0.5)
-    w = np.where(brack, -s0 / np.where(brack, s1 - s0, 1.0), np.nan)  # frac in [0, 1]
-    cnt = brack.sum(axis=1)
-    good = cnt > 0
-
-    def at_ray(A):
-        vals = np.where(brack, A[:, :-1] + w * (A[:, 1:] - A[:, :-1]), 0.0)
-        out = np.full(A.shape[0], np.nan)
-        out[good] = vals[good].sum(axis=1) / cnt[good]
-        return out
-
-    p_at = None if pressure is None else at_ray(pressure)
-    return at_ray(lr), p_at
+    dth = np.abs(((lth - th0 + 0.5) % 1.0) - 0.5)      # (nL, nC) circular distance
+    k = np.argmin(dth, axis=1)                          # nearest crossing per line
+    rows = np.arange(lr.shape[0])
+    p_at = None if pressure is None else pressure[rows, k]
+    return lr[rows, k], p_at
 
 
 @house_style()
