@@ -199,7 +199,10 @@ tpu_running_zone() {
 # not exist there.
 classify_failure() {
     local log="$1"
-    if rg -q "reason: stockout|ZONE_RESOURCE_POOL_EXHAUSTED|Insufficient capacity" "${log}"; then
+    # "There is no more capacity in the zone" is the Cloud TPU API's wording and
+    # was falling through to OTHER, which printed a line of raw JSON where the
+    # one classification that matters most should have been.
+    if rg -q "reason: stockout|ZONE_RESOURCE_POOL_EXHAUSTED|Insufficient capacity|no more capacity in the zone" "${log}"; then
         echo "STOCKOUT"
     elif rg -q "user agent is not allowed to use the machine type|not allowed to use" "${log}"; then
         echo "NOT_ALLOWLISTED"
