@@ -231,9 +231,11 @@ def plot_lines(ax, entries):
 
 
 HSWEEP = ["h8_p2_g1", "h12_p2_g1", "h16_p2_g1", "h24_p2_g1", "h32_p2_g1"]
+PSWEEP = ["h16_p1_g1", "h16_p2_g1", "h16_p3_g1", "h16_p4_g1"]
 
 
-def hsweep_rows(arms):
+def hsweep_rows(arms, key="ns"):
+    """Rows of the h-sweep (``key="ns"``) or the p-sweep (``key="p"``) table."""
     out = []
     for j in arms:
         r = row_common(j)
@@ -243,7 +245,7 @@ def hsweep_rows(arms):
             + " | ".join(
                 [
                     j["arm"],
-                    r["ns"],
+                    r["ns"] if key == "ns" else str(r["p"]),
                     fmt(j["params"]["velocity_smoothing_scale"], "e1"),
                     str(r["steps"]),
                     r["stop"],
@@ -607,6 +609,67 @@ def eta_islands(plain, seeded, figdir):
     fig.savefig(os.path.join(figdir, "eta_islands.png"), dpi=150)
 
 
+def psweep_figure(arms, figdir):
+    """The p-sweep twin of :func:`hsweep_figure`: degree on the x axis."""
+    fig, ax = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    plot_lines(ax[0, 0], [(j, f"p={j['params']['p']}", "-") for j in arms])
+    ax[0, 0].set_title(r"(16,32,32), $\gamma=1$: force residual under p-refinement")
+    pp = np.array([j["params"]["p"] for j in arms], float)
+    ax[0, 1].semilogy(
+        pp, [j["ic"]["F"] for j in arms], "s--", label=r"IC $\|F\|_M$ (reference file)"
+    )
+    ax[0, 1].semilogy(
+        pp, [float(F(j).min()) for j in arms], "o-", label=r"min $\|F\|_M$"
+    )
+    ax[0, 1].semilogy(
+        pp,
+        [j["summary"]["resid_window_mean"] for j in arms],
+        "^-",
+        label="window mean at stop",
+    )
+    ax[0, 1].set_xlabel("$p$")
+    ax[0, 1].set_ylabel(r"$\|F\|_M$")
+    ax[0, 1].set_xticks(pp)
+    ax[0, 1].grid(alpha=0.3, which="both")
+    ax[0, 1].legend(fontsize=8)
+    ax[0, 1].set_title("floor versus degree")
+    for j in arms:
+        z = sections(j)
+        if z is None:
+            continue
+        keep = z["final_keep"] & ~z["final_chaotic"]
+        r, io = z["final_seed_r"][keep], z["final_iota"][keep]
+        o = np.argsort(r)
+        ax[1, 0].plot(r[o], io[o], ".-", ms=3, lw=0.8, label=f"p={j['params']['p']}")
+    z = sections(arms[-1])
+    if z is not None:
+        keep = z["ic_keep"] & ~z["ic_chaotic"]
+        r, io = z["ic_seed_r"][keep], z["ic_iota"][keep]
+        o = np.argsort(r)
+        ax[1, 0].plot(
+            r[o], io[o], "k:", lw=1.0, label=f"IC, p={arms[-1]['params']['p']}"
+        )
+    ax[1, 0].set_xlabel(r"$\rho$")
+    ax[1, 0].set_ylabel(r"$\iota$ (final)")
+    ax[1, 0].grid(alpha=0.3)
+    ax[1, 0].legend(fontsize=8)
+    ax[1, 0].set_title("rotational transform after relaxation")
+    for j in arms:
+        E = np.asarray(j["trace"]["E"])
+        plot_trace(ax[1, 1], E[0] - E, lw=1.0, label=f"p={j['params']['p']}")
+    ax[1, 1].set_xscale("log")
+    ax[1, 1].set_yscale("log")
+    ax[1, 1].set_xlabel("step")
+    ax[1, 1].set_ylabel("$E_0 - E$")
+    ax[1, 1].grid(alpha=0.3)
+    ax[1, 1].legend(fontsize=8)
+    ax[1, 1].set_title("energy released")
+    fig.suptitle(
+        r"li383 (ns = 49 reference), (16,32,32), $\gamma=1$, $\mu$ = 2.5e-4: p-sweep"
+    )
+    fig.savefig(os.path.join(figdir, "psweep_p16.png"), dpi=150)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -643,6 +706,9 @@ def main():
     hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
     if hsweep:
         hsweep_figure(hsweep, figdir)
+    psweep = [j for j in (load(root, "li383_pub", a) for a in PSWEEP) if j is not None]
+    if len(psweep) > 1:
+        psweep_figure(psweep, figdir)
     eta_plain = [
         j for j in (load(root, "li383_eta", f"eta{e}") for e in ETAS) if j is not None
     ]
@@ -841,6 +907,9 @@ def main():
         "",
         "## section 5c rows",
         *hsweep_rows(hsweep),
+        "",
+        "## section 5d rows",
+        *hsweep_rows(psweep, key="p"),
         "",
     ]
     for j in [a for a in seeded if a["params"]["seed"]]:
