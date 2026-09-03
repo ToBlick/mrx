@@ -792,16 +792,13 @@ class DeRhamSequence():
         """
         Solve (M_k + eps * L_k) x = rhs for the k-form x.
 
-        For k=0: (M_0 + eps * S_0) is SPD, solved with CG.
-        For k>=1: uses MINRES on the symmetric saddle-point system:
-
-            | M_k + eps*S_k    eps*D_{k-1}   | | u |   | rhs |
-            | eps*D_{k-1}^T   -eps*M_{k-1}   | | σ | = | 0 |
-
-        The system is nonsingular (no nullspace) since M_k + eps*L_k is SPD.
-        ``'auto'`` resolves to the metric-lumped mass atom, which
-        preconditions the dominant (mass) term in the regime this solve is
-        used in (``eps * lambda_max(M^-1 L) << 1``).
+        Two SPD PCG solves through the split identity
+        ``(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1
+        - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T``, exact because
+        ``D_k D_{k-1} = 0``; see
+        :func:`mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`.
+        ``'auto'`` is the shifted-stiffness atom ``(M^ + eps S^)^-1`` of
+        each level, from the metric-lumped Laplacian atom on the bundle.
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_plus_eps_laplace_matrix(

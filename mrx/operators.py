@@ -173,10 +173,10 @@ def _materialize_default_scalar_hodge_preconditioner(
 def _coerce_diffusion_preconditioner_spec(
         seq, operators: SequenceOperators, *, k: int, preconditioner):
     if preconditioner is None or preconditioner == 'auto':
-        # M + eps L is MASS-DOMINATED in the regime this solve is used in
-        # (the relaxation's velocity smoothing: eps * lambda_max(M^-1 L) ~ 0.26
-        # at ns=(8,16,8)), so the production MASS preconditioner is the right
-        # object.
+        # 'auto' is the shifted-stiffness atom, (M^_j + eps S^_j)^-1 built
+        # from the metric-lumped Laplacian atom of level j (kind
+        # 'metric_lumping' in this slot); see
+        # MetricLumpingLaplacian.shifted_stiffness_apply.
         del seq, operators, k
         return default_mass_preconditioner()
     if isinstance(preconditioner, MassPreconditionerSpec):
@@ -223,16 +223,34 @@ def _dense_incidence_1d(n0: int, typ: str) -> jnp.ndarray:
         return jnp.zeros((n0, n0))
     raise ValueError(f"Unknown basis type {typ!r}")
 
-def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
-    """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``."""
-    # Forward transform: y = V^T x (in all three axes).
+def _fd_forward(V_r, V_t, V_z, x):
+    """``y = V^T x`` on all three axes of a 3-tensor."""
     y = jnp.einsum('ji,jkl->ikl', V_r, x)
     y = jnp.einsum('ji,kjl->kil', V_t, y)
-    y = jnp.einsum('ji,klj->kli', V_z, y)
-    # Diagonal solve in the eigenbasis.
-    denom = (alpha[0] * lam_r[:, None, None]
-             + alpha[1] * lam_t[None, :, None]
-             + alpha[2] * lam_z[None, None, :]) + eps
+    return jnp.einsum('ji,klj->kli', V_z, y)
+
+
+def _fd_backward(V_r, V_t, V_z, y):
+    """``x = V y`` on all three axes of a 3-tensor."""
+    y = jnp.einsum('ij,jkl->ikl', V_r, y)
+    y = jnp.einsum('ij,kjl->kil', V_t, y)
+    return jnp.einsum('ij,klj->kli', V_z, y)
+
+
+def _fd_denominator(lam_r, lam_t, lam_z, alpha):
+    return (alpha[0] * lam_r[:, None, None]
+            + alpha[1] * lam_t[None, :, None]
+            + alpha[2] * lam_z[None, None, :])
+
+
+def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
+    """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``.
+
+    ``eps`` is a Python float (the ``eps == 0`` branch is static); a traced
+    shift goes through :func:`_fd_apply_3d_shifted`.
+    """
+    y = _fd_forward(V_r, V_t, V_z, x)
+    denom = _fd_denominator(lam_r, lam_t, lam_z, alpha) + eps
     if eps == 0:
         # The pure-constant 0-form is in the null space; threshold relative
         # to the largest entry so we don't amplify it into a huge spurious
@@ -243,11 +261,18 @@ def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0)
         y = jnp.where(null_mask, 0.0, y / safe)
     else:
         y = y / denom
-    # Back transform: x_out = V y (in all three axes).
-    y = jnp.einsum('ij,jkl->ikl', V_r, y)
-    y = jnp.einsum('ij,kjl->kil', V_t, y)
-    y = jnp.einsum('ij,klj->kli', V_z, y)
-    return y
+    return _fd_backward(V_r, V_t, V_z, y)
+
+
+def _fd_apply_3d_shifted(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, shift):
+    """Apply ``(sum_a alpha_a K_a-term + shift M)^{-1}`` on a 3-tensor ``x``.
+
+    ``shift > 0`` may be traced: no branch, nothing singular. This is the
+    shifted-stiffness atom's kernel (``shift = 1/eps``).
+    """
+    y = _fd_forward(V_r, V_t, V_z, x)
+    y = y / (_fd_denominator(lam_r, lam_t, lam_z, alpha) + shift)
+    return _fd_backward(V_r, V_t, V_z, y)
 
 
 def mass_core_apply(seq, k: int):
@@ -1186,12 +1211,8 @@ def _build_diffusion_preconditioner_apply(
         k=k,
         preconditioner=preconditioner,
     )
-    # The accept list names exactly what is dispatched below.  The production
-    # kind is named through default_mass_preconditioner() rather than spelled
-    # out: what this branch wants is "whatever the production mass
-    # preconditioner currently is", and saying that literally is rename-proof.
-    production_kind = default_mass_preconditioner().kind
-    valid_kinds = ('none', 'jacobi', production_kind)
+    # The accept list names exactly what is dispatched below.
+    valid_kinds = ('none', 'jacobi', 'metric_lumping')
     if spec.kind not in valid_kinds:
         raise ValueError(
             "preconditioner kind must be one of "
@@ -1206,27 +1227,25 @@ def _build_diffusion_preconditioner_apply(
         stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
         shifted = 1.0 / (1.0 / mass_diaginv + eps / stiffness_diaginv)
         return lambda x, d=shifted: d * x
-    if spec.kind == production_kind:
-        # The production MASS preconditioner.  It approximates M_k and knows
-        # nothing about eps L_k, so it is admissible exactly while the
-        # operator is mass-dominated, i.e. eps * lambda_max(M^-1 L) << 1
-        # (lambda_max ~ h^-2, so ~ n^2 on these grids).  That is the regime
-        # the relaxation's hyperregularisation uses.
-        #
-        # The mass atom approximates M_k and knows nothing about eps L_k: it
-        # is admissible while the operator is mass-dominated, i.e.
-        # eps * lambda_max(M^-1 L) << 1 (lambda_max ~ h^-2), which is the
-        # regime the relaxation's velocity smoothing uses. A first-order
-        # correction P_M - theta eps P_M L P_M exists (2 applies + 1 matvec,
-        # SPD only with damping) and was judged not worth it at that eps.
-        return _build_mass_preconditioner_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            preconditioner=default_mass_preconditioner(),
-            allow_none=allow_none,
-        )
+    if spec.kind == 'metric_lumping':
+        # The shifted-stiffness atom: the strong-half (primal-axis) Kronecker
+        # terms of the metric-lumped Laplacian atom, divided by
+        # 1 + eps lambda in their eigenbasis, i.e. (M^ + eps S^)^-1 for the
+        # atom's own separable mass, plus the dense (M + eps S)^-1 on the
+        # core rows. Measured on li383 p=3 at the smoothing eps against the
+        # mass atom (CG iterations on M_k + eps S_k): k=2 69 vs 153 at
+        # (8,16,8), 117 vs 371 at (12,24,12); k=1 74 vs 181 and 128 vs 422.
+        # Two "consistent" factorisations with the Jacobian in the 1-D masses
+        # were measured and lost to this plain shift (~200 at (12,24,12)).
+        # Its implied mass is a worse M than the mass atom's, so below
+        # eps n_r^2 ~ 0.006 (the resistive step's eta dt) the mass atom
+        # wins by up to 2x on ~100 iterations; the smoothing eps is 10x
+        # above the crossover. docs/research/shifted_split_2026-09-02.md.
+        if not _metric_lumping_available(operators, k, dirichlet):
+            raise ValueError(
+                f"metric_lumping Laplacian atom not assembled for k={k}, "
+                f"dirichlet={dirichlet}; seq.build_preconditioners() builds it")
+        return operators.laplacian_lumping[(int(k), bool(dirichlet))].shifted_stiffness_apply(eps)
     raise ValueError(
         f"unsupported diffusion preconditioner kind {spec.kind!r}")
 
@@ -1711,94 +1730,76 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
                                                maxiter: Optional[int] = None,
                                                preconditioner='auto',
                                                return_info: bool = False):
-    """Solve with the inverse of M_k + eps L_k using an explicit operator bundle.
+    """Solve ``(M_k + eps L_k) x = rhs`` as two SPD solves.
+
+    With ``S_k = D_k^T M_{k+1} D_k`` the strong stiffness and
+    ``L_k = S_k + M_k D_{k-1} M_{k-1}^{-1} D_{k-1}^T M_k`` the Hodge
+    Laplacian, ``D_k D_{k-1} = 0`` gives, exactly,
+
+        (M_k + eps L_k)^{-1} = (M_k + eps S_k)^{-1}
+                               - eps D_{k-1} (M_{k-1} + eps S_{k-1})^{-1} D_{k-1}^T
+
+    (multiply out: ``(M_k + eps S_k) D_{k-1} = M_k D_{k-1}``, and the cross
+    terms cancel through ``(M_{k-1} + eps S_{k-1}) M_{k-1}^{-1} = I + eps
+    S_{k-1} M_{k-1}^{-1}``). Each system is a mass plus a semidefinite
+    stiffness -- SPD, matrix-free, PCG -- so there is no saddle system, no
+    inner mass solve and nothing to deflate. ``k = 0`` is the first solve
+    alone; ``k = 3`` has ``S_3 = 0``. ``'auto'`` is the shifted-stiffness
+    atom of each level (:meth:`~mrx.metric_lumping_laplacian.
+    MetricLumpingLaplacian.shifted_stiffness_apply`), ``(M^ + eps S^)^-1``
+    from the Laplacian atom already on the bundle.
+
+    Measured on li383 p=3 at the velocity-smoothing ``eps = 0.064 / n_r^2``,
+    both solves together, against the saddle MINRES with the mass atom this
+    replaced (same tolerance): 145 / 249 iterations at (8,16,8) /
+    (12,24,12) against 2134 / 8478; with the mass atom on the split instead
+    330 / 772 / 1326 at (8,16,8) / (12,24,12) / (16,32,16) against 2134 /
+    8478 / 20362. The solutions agree to ``3 tol`` in the mass norm
+    (``docs/research/shifted_split_2026-09-02.md``).
 
     ``eps`` may be a traced scalar: the relaxation's resistive step passes
     ``dt * eta`` from inside a jitted step. Nothing here branches on its
-    value, so ``eps = 0`` runs the diffusion solver on the (then singular)
-    saddle system rather than dispatching to the mass solve -- a caller with
-    ``eps = 0`` wants :func:`apply_inverse_mass_matrix` and should say so.
+    value, so ``eps = 0`` runs two mass solves rather than dispatching to
+    :func:`apply_inverse_mass_matrix` -- a caller with ``eps = 0`` wants
+    that function and should say so. ``info`` is the summed signed
+    iteration count of the two solves, negative when both converged.
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
-    if k == 0:
-        def operator_apply(x):
-            return apply_mass_matrix(
-                seq, x, 0, dirichlet=dirichlet) + eps * apply_stiffness(
-                    seq, x, 0, dirichlet=dirichlet)
-
+    def shifted_solve(j, b, x0):
         precond_apply = _build_diffusion_preconditioner_apply(
             seq,
             operators,
-            k=0,
+            k=j,
             dirichlet=dirichlet,
             eps=eps,
             preconditioner=preconditioner,
             allow_none=True,
         )
-        x, info = solve_singular_cg(
-            operator_apply,
-            rhs,
-            jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
+        return solve_singular_cg(
+            lambda x: apply_mass_matrix(seq, x, j, dirichlet=dirichlet)
+            + eps * apply_stiffness(seq, x, j, dirichlet=dirichlet),
+            b,
+            jnp.zeros((0, b.shape[0]), dtype=b.dtype),
             precond_matvec=precond_apply,
-            x0=guess,
+            x0=x0,
             tol=tol,
             maxiter=maxiter,
         )
+
+    x, info = shifted_solve(k, rhs, guess)
+    if k == 0:
         return (x, info) if return_info else x
 
-    n_upper = seq.n(k, dirichlet)
-    n_lower = seq.n(k-1, dirichlet)
-
-    def upper_operator_apply(x):
-        return apply_mass_matrix(
-            seq, x, k, dirichlet=dirichlet) + eps * apply_stiffness(
-                seq, x, k, dirichlet=dirichlet)
-
-    upper_preconditioner = _build_diffusion_preconditioner_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        preconditioner=preconditioner,
-        allow_none=True,
-    )
-    lower_preconditioner_apply = _build_mass_preconditioner_apply(
-        seq,
-        operators,
-        k=k - 1,
-        dirichlet=dirichlet,
-        preconditioner=preconditioner,
-        allow_none=True,
-    )
-
-    def precond_lower(x):
-        return (1.0 / eps) * lower_preconditioner_apply(x)
-
-    def precond_upper(x):
-        return upper_preconditioner(x)
-
-    u, sigma, info = solve_saddle_point_minres(
-        stiffness_matvec=upper_operator_apply,
-        derivative_matvec=lambda s: eps * apply_derivative_matrix(
-            seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
-        derivative_T_matvec=lambda u: eps * apply_derivative_matrix(
-            seq, u, k - 1, dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet, transpose=True),
-        mass_lower_matvec=lambda s: eps * apply_mass_matrix(
-            seq, s, k - 1, dirichlet=dirichlet),
-        b_upper=rhs,
-        n_upper=n_upper,
-        n_lower=n_lower,
-        precond_upper=precond_upper,
-        precond_lower=precond_lower,
-        x0_upper=guess,
-        tol=tol,
-        maxiter=maxiter,
-    )
-    return (u, info) if return_info else u
+    z, info_lower = shifted_solve(
+        k - 1,
+        apply_incidence_matrix(seq, rhs, k - 1, dirichlet, dirichlet, transpose=True),
+        None)
+    x = x - eps * apply_incidence_matrix(seq, z, k - 1, dirichlet, dirichlet)
+    total = jnp.abs(info) + jnp.abs(info_lower)
+    info = jnp.where((info <= 0) & (info_lower <= 0), -total, total)
+    return (x, info) if return_info else x
 
 
 def apply_laplacian(seq, operators: SequenceOperators, v, k: int,

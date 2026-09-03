@@ -73,6 +73,7 @@ import jax.numpy as jnp
 from mrx.operators import (
     _assemble_weighted_1d_mass,
     _fd_apply_3d,
+    _fd_apply_3d_shifted,
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
 )
@@ -424,8 +425,7 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
     ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
     mass_weight = {0: jac, 1: ginv[c] * jac,
                    2: met[c] / jac, 3: 1.0 / jac}[k]
-    deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
-        k, tuple(a for a in range(3) if a != c))
+    deriv_axes = derivative_axes(k, c)
     # DIAGONAL lumping. w(c,a) = g^{cc} * (g^{aa}J) factors into a component
     # part and an axis part, so assemble the 1-D factors with the k=0 weights
     # ONLY -- shared by every component and every degree -- and carry g^{cc}
@@ -523,8 +523,7 @@ def component_diagonal(seq, k, c, shape):
     w_comp = {0: jnp.ones_like(jac), 1: fields["ginv_aa"][c],
               2: fields["met_aa"][c] / jac ** 2, 3: 1.0 / jac ** 2}[k]
     primal, deriv, quad_w = _axis_bases(seq)
-    deriv_axes = {0: (), 1: (c,), 3: (0, 1, 2)}.get(
-        k, tuple(a for a in range(3) if a != c))
+    deriv_axes = derivative_axes(k, c)
     tabs = [(deriv[a] if a in deriv_axes else primal[a]) ** 2
             for a in range(3)]
     wq = seq.quad.w.reshape(seq.quad.shape)
@@ -562,6 +561,16 @@ def build_bulk_atom(seq, k, c, window=None, bc_entry="ibpd", dirichlet=False,
 # --------------------------------------------------------------------------- #
 # Core block: probed and densely inverted                                      #
 # --------------------------------------------------------------------------- #
+
+def derivative_axes(k, c):
+    """Axes on which component ``c`` of a k-form is a derivative spline.
+
+    k=0 none, k=1 axis ``c``, k=2 every axis but ``c``, k=3 all three. The
+    strong half of ``L_k`` (``S_k``) lives on the other, primal, axes.
+    """
+    return {0: (), 1: (c,), 3: (0, 1, 2)}.get(
+        k, tuple(a for a in range(3) if a != c))
+
 
 def trace_components(k):
     """Components whose radial axis is a DERIVATIVE axis, i.e. the ones the
@@ -742,6 +751,34 @@ def _apply_lump_payload(payload: _LumpPayload, x):
     return _place(payload, parts)
 
 
+class _ShiftedPayload(eqx.Module):
+    """The shifted-stiffness atom's leaves: the Laplacian blocks with their
+    strong-half mask as ``alpha``, and the core's ``M`` and ``S`` blocks
+    (the core inverse depends on ``eps`` and is formed per solve)."""
+
+    blocks: tuple                # leaves, one _LumpBlock per component
+    core: jnp.ndarray            # leaf
+    mass_core: jnp.ndarray       # leaf: M_k on the core rows
+    stiffness_core: jnp.ndarray  # leaf: S_k on the core rows
+    perm: jnp.ndarray            # leaf
+    has_core: bool = eqx.field(static=True)
+    identity_perm: bool = eqx.field(static=True)
+
+
+def _apply_shifted_payload(payload: _ShiftedPayload, core_inv, inv_eps, x):
+    """``(M^ + eps S^)^-1 x``: per block ``(1/eps) D^{-1/2} FD(alpha_strong,
+    shift 1/eps) D^{-1/2}``, and ``core_inv`` on the core rows."""
+    parts = []
+    for b in payload.blocks:
+        buf = _block_input(b, x) * b.dscale
+        sol = _fd_apply_3d_shifted(b.v_r, b.v_t, b.v_z,
+                                   b.lam_r, b.lam_t, b.lam_z, b.alpha, buf, inv_eps)
+        parts.append(inv_eps * _block_output(b, sol * b.dscale))
+    if payload.has_core:
+        parts.append(core_inv @ x[payload.core])
+    return _place(payload, parts)
+
+
 def _tensor_blocks(seq, k, dirichlet):
     """Split the extraction into per-component tensor blocks plus the core.
 
@@ -891,9 +928,15 @@ class MetricLumpingLaplacian:
             # D_i is a ratio of two positive integrals; no floor.
             d_full = component_diagonal(seq, k, c, self.shapes[c])
             dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
+            # The strong half S_k lives on the primal axes of the component
+            # (component_factors); this mask selects its Kronecker terms for
+            # the shifted-stiffness atom.
+            alpha_strong = tuple(
+                0.0 if a in derivative_axes(k, c) else 1.0 for a in range(3))
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape,
-                "offset": offset, "atom": atom, "dscale": dscale})
+                "offset": offset, "atom": atom, "dscale": dscale,
+                "alpha_strong": alpha_strong})
 
         # Probe the whole core (polar ring + any extra/outer rings) and invert
         # it exactly. A separable 2-D ring atom was tried instead and dropped:
@@ -905,7 +948,17 @@ class MetricLumpingLaplacian:
         self.probe_rows = core
         self.core_inv = _dense_symmetric_inverse(
             probe_core_block(seq, operators, k, dirichlet, core), core_tol)
+        # M_k and S_k on the core rows, for the shifted-stiffness atom's
+        # (M + eps S)^-1 core block (eps is only known at solve time).
+        from mrx.operators import apply_mass_matrix, apply_stiffness  # noqa: PLC0415
+        size = int(seq.n(k, dirichlet))
+        self.mass_core = _probe_rows(
+            lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet), size, core)
+        self.stiffness_core = _probe_rows(
+            lambda x: apply_stiffness(seq, x, k, dirichlet=dirichlet), size, core)
+        self.core_tol = core_tol
         self._flat = _flatten_payload(self._build_payload())
+        self._shifted = self._build_shifted_payload()
 
     def _build_payload(self):
         """Pack the factors into the :class:`_LumpPayload` pytree.
@@ -953,6 +1006,60 @@ class MetricLumpingLaplacian:
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
         return jitted(leaves, jnp.asarray(x))
+
+    def _build_shifted_payload(self):
+        """The Laplacian blocks with ``alpha`` = the strong-half mask."""
+        blocks = []
+        for blk in self.blocks:
+            if blk is None:
+                continue
+            (v_r, v_t, v_z), (l_r, l_t, l_z), _alpha = blk["atom"]
+            blocks.append(_LumpBlock(
+                rows=jnp.asarray(blk["rows"]),
+                vals=jnp.asarray(blk["vals"], dtype=DTYPE),
+                v_r=v_r, v_t=v_t, v_z=v_z,
+                lam_r=l_r, lam_t=l_t, lam_z=l_z,
+                alpha=jnp.asarray(blk["alpha_strong"], dtype=DTYPE),
+                dscale=blk["dscale"],
+                shape=blk["shape"],
+                offset=blk["offset"],
+            ))
+        perm, identity = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None],
+            self.probe_rows, self.n_ext)
+        return _ShiftedPayload(
+            blocks=tuple(blocks),
+            core=jnp.asarray(self.probe_rows),
+            mass_core=self.mass_core,
+            stiffness_core=self.stiffness_core,
+            perm=perm,
+            has_core=bool(self.probe_rows.size > 0),
+            identity_perm=identity,
+        )
+
+    def shifted_stiffness_apply(self, eps):
+        """``x -> (M^_k + eps S^_k)^-1 x``, the preconditioner of ``M_k + eps S_k``.
+
+        Per component the strong-half (primal-axis) Kronecker terms of this
+        atom, divided by ``1 + eps lambda`` in their eigenbasis: exactly
+        ``(M^ + eps S^)^-1`` for the atom's own separable mass
+        ``D_c^{1/2} (m_r x m_t x m_z) D_c^{1/2}`` (unweighted 1-D masses,
+        the component factor as the sandwich). It tends to ``M^-1`` as
+        ``eps -> 0`` and to ``(1/eps) S^-1`` as ``eps -> inf``. The core
+        rows get the dense ``(M + eps S)^-1`` from the probed ``M`` and
+        ``S`` core blocks, formed once here -- ``eps`` may be traced -- and
+        hoisted out of the solve. Both split systems of
+        :func:`~mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`
+        use it (``'auto'``).
+        """
+        payload = self._shifted
+        core_inv = _dense_symmetric_inverse(
+            payload.mass_core + eps * payload.stiffness_core, self.core_tol)
+        inv_eps = 1.0 / eps
+
+        def apply(x):
+            return _apply_shifted_payload(payload, core_inv, inv_eps, jnp.asarray(x))
+        return apply
 
 
 class _MassBlock(eqx.Module):

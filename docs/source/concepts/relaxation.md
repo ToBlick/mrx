@@ -71,8 +71,8 @@ resistivity does not act on `B_n`.
    `(M_2 + eps L_2) delta = -eps L_2 B_ideal`, `B_{n+1} = B_ideal + delta`,
    with `eps = eta · (time since the last resistive solve)` and initial
    guess 0, through `apply_inverse_mass_plus_eps_laplace_matrix` (k=2,
-   Dirichlet, the saddle form under MINRES with the metric-lumping
-   preconditioners; `L_2 B_ideal` is one Hodge-Laplacian apply). `eta` is
+   Dirichlet, two SPD CG solves through the split identity with the
+   shifted-stiffness atom; `L_2 B_ideal` is one Hodge-Laplacian apply). `eta` is
    the resistivity carried on the state; the solve runs every
    `TimeStepper.eta_every` steps (default 1) and a `lax.cond` skips it at
    zero cost otherwise, so at `eta = 0` the step is the ideal one bit for
