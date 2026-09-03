@@ -37,6 +37,17 @@ the mass-preconditioner row includes it. Folding took the step from 13.04 s to
 **11.72 s** on the v5e and 17.92 s to **12.61 s** on the H200 (24.16 to 15.23
 in float64), with the trajectory unchanged on both.
 
+**These step times are a floor, not a current reading.** They were measured
+before the development branch replaced the smoothing solve's saddle MINRES
+with the split identity and the shifted-stiffness atom, which cut its
+iteration count roughly 15x (2134 to 145 at `(8,16,8)`; see
+`docs/research/OPEN.md` section 3.9). Every per-step number here is therefore
+stale on the high side, and by a large factor. What survives unchanged is the
+comparison, which is what this document is for: an apply-count change moves
+the v5e, the H200 and the CPU by the same factor, so the ratios between the
+columns hold. The per-apply costs in the matvec tables below are likewise
+unaffected -- they time operators, not solves.
+
 The v5e went from 1.7x slower than the VM's own CPU to **3.5x faster**, and
 setup from about 7 minutes to under a minute. Four things did that, in order
 of size: the persistent compilation cache, the gather, the assembly, and
@@ -534,8 +545,11 @@ recording that an inexact inner solve costs only 3% more outer iterations, so
 flexible CG is not the obstacle; the inner solve simply is not cheap.
 
 The condition number is still resolution-dependent, so this is a large constant
-rather than a cure. The principled object is a separable `(M + eps L)` atom,
-right at every eps, which `docs/research/OPEN.md` section 3.9 already proposes.
+rather than a cure. The cure arrived on the development branch while this was
+being written: the split identity `D_k D_{k-1} = 0` turns `(M + eps L)^-1`
+into two SPD PCG solves, and the Laplacian atom's strong half supplies
+`(M + eps S)^-1` directly. See the update to `docs/research/OPEN.md` section
+3.9.
 
 ### The Leray projections, now about 28% of a step
 
@@ -628,13 +642,19 @@ into, measured as `||L_3 x|| = 0` exactly. A shifted atom at k=3 **is** the
 mass atom. The 1.88 miss needs a Schur model, which is a different object and
 is not this.
 
-The code is **not** kept. An atom that is wired into no solve and loses on the
-one comparison that decides adoption is a maintenance cost with no caller, so
-`build_shifted_mass_laplace_atom`, its test and its measurement script were
-reverted once the numbers above were recorded. They are the deliverable. The
-construction is a page of `_simultaneous_diagonalize_pair` on the existing 1-D
-factors and is quick to rebuild; anyone revisiting it should start with the
-polar-core block and expect ~1.16x, not the four decades of norm advantage.
+The code is **not** kept, and it has since been overtaken. An atom that is
+wired into no solve and loses the one comparison that decides adoption is a
+maintenance cost with no caller, so `build_shifted_mass_laplace_atom`, its test
+and its measurement script were reverted once the numbers above were recorded.
+They are the deliverable.
+
+The development branch then solved the same problem properly and in
+production, by not building a new atom at all: `D_k D_{k-1} = 0` splits
+`(M + eps L)^-1` into two SPD PCG solves, and the existing Laplacian atom's
+strong half already *is* `(M + eps S)^-1` once its primal-axis Kronecker terms
+are divided by `1 + eps lambda`. That reaches 145 iterations where the mass
+atom took 2134. The lesson is worth stating plainly: the win came from
+reformulating the solve, not from a better preconditioner for the old one.
 
 Every alternative available today is worse, so nothing was changed:
 
