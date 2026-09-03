@@ -462,7 +462,13 @@ def eta_figure(plain, seeded, ideal, figdir):
     fig.savefig(os.path.join(figdir, "eta_sweep.png"), dpi=150)
 
 
-def eta_traces(arms, ideal, ideal_seeded, figdir):
+def eta_traces(
+    arms,
+    ideal,
+    ideal_seeded,
+    figdir,
+    title="resistivity traces, tanh schedule over 5000 steps",
+):
     """1-D traces of every resistivity arm against the ideal twins: residual,
     ||J||/||B||, beta, helicity and energy released vs step, log x. A floored
     arm (``*_floor1e-5``) is shown only when its floor-0 rerun is missing."""
@@ -521,9 +527,7 @@ def eta_traces(arms, ideal, ideal_seeded, figdir):
         a.set_xlabel("step")
         a.grid(alpha=0.3, which="both")
     ax[0].legend(fontsize=7)
-    fig.suptitle(
-        r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: resistivity traces, tanh schedule over 5000 steps"
-    )
+    fig.suptitle(r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: " + title)
     fig.savefig(os.path.join(figdir, "eta_traces.png"), dpi=150)
 
 
@@ -756,7 +760,13 @@ def main():
             )
             if j is not None
         ]
-        eta_traces(same_dose + pulse, load(root, "li383_pub", "h16_p2_g1"), None, pdir)
+        eta_traces(
+            same_dose + pulse,
+            load(root, "li383_pub", "h16_p2_g1"),
+            None,
+            pdir,
+            title="resistive pulses after 2000 ideal steps against the tanh rungs of equal dose",
+        )
         os.replace(
             os.path.join(pdir, "eta_traces.png"), os.path.join(pdir, "pulse_traces.png")
         )
