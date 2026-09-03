@@ -366,11 +366,12 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
 IOTA_COLOR = "black"
 P_COLOR = "#6a3d9a"
 
-#: Poloidal rays for the logical profile, in order. theta = 0 is the symmetry
-#: line where odd island chains have their X-points; theta = 0.5 is where those
-#: same chains are fattest (their O-points), so the pair brackets an odd chain;
-#: 1/3 catches three-fold structure off both. Further rays fill in.
-PROFILE_RAY_THETAS = (0.0, 0.5, 1.0 / 3.0, 1.0 / 6.0, 0.25, 0.75)
+#: Poloidal rays for the logical profile, in order. theta = 0 is deliberately
+#: NOT used: it is the branch point of the poloidal angle, where the ray flips
+#: across the midplane (see :func:`_ray_line`). theta = 0.5 is where odd island
+#: chains are fattest (their O-points); 1/3 and 0.2 sit off the symmetry line
+#: and are non-resonant. Further rays fill in.
+PROFILE_RAY_THETAS = (1.0 / 3.0, 0.5, 0.2, 1.0 / 6.0, 0.25, 0.75)
 
 
 def _profile_ray_thetas(n):
@@ -386,12 +387,14 @@ def _profile_ray_thetas(n):
 
 def _ray_line(lr, lth, R, Z, pressure, th0):
     """Per-line logical r, physical (R, Z) and p at the crossing nearest the
-    poloidal ray ``theta = th0`` (circular nearest, one crossing per line).
+    poloidal ray ``theta = th0`` (circular nearest, one crossing per line): a
+    real point ON the ray, so the marked line is F(r, th0) traced through the
+    actual data (logical theta is not the physical poloidal angle).
 
-    Used to draw the logical-r profile along a ray and to mark that ray on the
-    section panels: the crossing nearest th0 is a real point ON the ray, so the
-    marked line is F(r, th0) traced through the actual data, not an assumed
-    straight radius (logical theta is not the physical poloidal angle).
+    The default rays avoid ``theta = 0`` (:data:`PROFILE_RAY_THETAS`): that is
+    the branch point of the poloidal angle, where the nearest crossing flips
+    between just above and just below the midplane from line to line and the ray
+    zig-zags across Z = 0.
     """
     dth = np.abs(((lth - th0 + 0.5) % 1.0) - 0.5)      # (nL, nC) circular distance
     k = np.argmin(dth, axis=1)                          # nearest crossing per line
@@ -628,11 +631,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
 
     if logical_prof:
         # iota (black, left axis) and p (purple, right axis) against LOGICAL r,
-        # sampled along ``profile_rays`` poloidal rays (:data:`PROFILE_RAY_THETAS`):
-        # theta = 0 is the symmetry line where odd island chains have their
-        # X-points, theta = 0.5 is where the same chains are fattest (their
-        # O-points), so the pair brackets an odd chain; 1/3 catches three-fold
-        # structure off both. Each ray is one LINE STYLE, and is marked in that
+        # sampled along ``profile_rays`` poloidal rays (:data:`PROFILE_RAY_THETAS`,
+        # theta = 0.5, 1/3, 0.2 by default): theta = 0.5 is where odd island
+        # chains are fattest (their O-points), the others sit off the symmetry
+        # line and are non-resonant; theta = 0 is avoided (the poloidal-angle
+        # branch point, where the ray flips across the midplane). Each ray is
+        # one LINE STYLE, and is marked in that
         # style on BOTH section panels -- the physical curve F(r, theta0), and
         # theta = theta0 in the chart -- so the reader can place it. Where the
         # rays agree logical r is a faithful surface label; where they fan
