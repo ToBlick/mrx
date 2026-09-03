@@ -682,7 +682,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             if lx is not None:
                 lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
                            alpha=0.85, zorder=6)
-        bx.set_xlabel(r"logical $r$")
+        bx.set_xlabel(r"$r$")
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
         bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
