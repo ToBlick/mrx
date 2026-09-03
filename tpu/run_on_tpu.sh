@@ -8,8 +8,9 @@
 #
 # Two modes:
 #
-#   default        run mrx_tpu_report.py, the toroidal Poisson driver that
-#                  checks TPU results against the CPU float32 reference
+#   default        run scripts/benchmark/poisson_regression.py, the toroidal
+#                  Poisson driver that checks TPU results against the CPU
+#                  float32 reference
 #   SCRIPT=...     run an arbitrary script from the mrx repo and pull back the
 #                  directory named by OUTDIR
 #
@@ -51,8 +52,8 @@ OUTDIR="${OUTDIR:-}"
 SYNC_LOCAL_MRX="${SYNC_LOCAL_MRX:-0}"
 LOCAL_MRX="${LOCAL_MRX:-${HOME}/mrx}"
 # Space-separated local files copied into the repo directory before the run, so
-# a driver that lives in this kit rather than in mrx (tpu_bench_mrx.py) can be
-# used as SCRIPT and still resolve the repo's relative data paths.
+# a driver that is not yet committed can be used as SCRIPT and still resolve the
+# repo's relative data paths.
 PUSH_FILES="${PUSH_FILES:-}"
 # Persistent XLA compilation cache. On the data disk when there is one, so it
 # survives the VM; set to empty to disable.
@@ -86,7 +87,7 @@ if [[ -z "${ZONE}" ]]; then
     if [[ -z "${ZONE}" ]]; then
         echo "ERROR: could not find ${VM_NAME} as a GCE instance or as a" >&2
         echo "Cloud TPU API node in any candidate zone." >&2
-        echo "Set ZONE explicitly, or launch one with ./launch_tpu.sh" >&2
+        echo "Set ZONE explicitly, or acquire one with ./acquire_tpu.sh" >&2
         exit 1
     fi
     echo "  found in ${ZONE}"
@@ -429,11 +430,6 @@ if [[ -n "${SCRIPT}" ]]; then
     RUN_STATUS=$?
     REMOTE_OUT="${MRX_DIR}/${OUTDIR}"
 else
-    echo ""
-    echo "Copying mrx_tpu_report.py to the VM..."
-    scp_to_vm mrx_tpu_report.py "~/mrx_tpu_report.py" || {
-        echo "ERROR: scp failed" >&2; exit 1; }
-
     print_remaining
     echo ""
     echo "Running MRX with MRX_DTYPE=${RUN_DTYPE}..."
@@ -443,9 +439,12 @@ else
     # so carried the same double-launch exposure that run_detached exists to
     # remove; there is no reason to keep two code paths with different failure
     # modes.
-    run_detached "mrx_tpu_report" \
+    #
+    # Run from the repo checkout rather than copied in: the driver lives in
+    # mrx now, so the clone on the VM already has it at the branch under test.
+    run_detached "poisson_regression" \
         "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE}; \
-         ${PYBIN} -u ~/mrx_tpu_report.py ${RUN_ARGS}"
+         ${PYBIN} -u scripts/benchmark/poisson_regression.py ${RUN_ARGS}"
     RUN_STATUS=$?
     REMOTE_OUT=/mnt/data/mrx_tpu_results
 fi

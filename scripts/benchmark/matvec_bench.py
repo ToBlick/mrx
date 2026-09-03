@@ -123,11 +123,11 @@ def main() -> None:
 
     import mrx
     from mrx.geometry import build_sequence
-    from mrx.operators import (_mass_extraction, apply_derivative_matrix,
+    from mrx.operators import (apply_derivative_matrix,
                                apply_laplacian_preconditioner,
                                apply_mass_matrix,
                                apply_mass_matrix_preconditioner,
-                               apply_stiffness, mass_core_apply)
+                               apply_stiffness, extraction, mass_core_apply)
 
     if cli.matmul_precision:
         # mrx.precision pins 'highest' at import for a GPU reason (TF32 made
@@ -201,7 +201,8 @@ def main() -> None:
     print("\n--- mass, decomposed into E / core / E^T ------------------------",
           flush=True)
     for k in range(4):
-        e, e_T = _mass_extraction(seq, k, dbc)
+        e = extraction(seq, k, dbc)
+        e_T = e.T
         core = mass_core_apply(seq, k)
         n_raw = e.shape[1]
         two_ways(f"  E^T k={k}", lambda v, _t=e_T: _t @ v, vec(k),

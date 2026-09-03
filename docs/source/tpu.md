@@ -6,7 +6,17 @@ TPU does not exist until you create it. So these scripts provision the
 hardware from your laptop as well as run on it, and a node bills until
 something deletes it -- which is why `tpu/idle_reaper.sh` runs on every node.
 
-Read `tpu/TPU_GUIDE.md` before a first session. This page is the summary.
+| script | role |
+|---|---|
+| `zones.sh` | shared config: the candidate ladder, failure classification |
+| `check_quota.sh` | read-only preflight; `--probe` spot-tests real capacity |
+| `acquire_tpu.sh` | acquire a node and run on it; `--park`, `--watch`, `--gc` |
+| `run_on_tpu.sh` | drive one session on a node you already hold |
+| `startup.sh` | builds the environment on the node (runs there, not here) |
+| `idle_reaper.sh` | deletes the node when it goes idle (runs there, not here) |
+| `gcs_cache_smoke.py` | check a GCS compilation cache before relying on it |
+
+Benchmarks live in `scripts/benchmark/` and are not TPU-specific.
 
 ## Before anything else
 
@@ -17,7 +27,9 @@ cd tpu && ./check_quota.sh          # read-only preflight, ~40 s
 ```
 
 `check_quota.sh` reports quota, subnets and accelerator availability per
-zone without creating anything.
+zone without creating anything. Add `--probe` to follow it with a real Spot
+create per surviving candidate, deleted immediately; that is the only way to
+tell a stockout from a quota problem, and the only mode here that bills.
 
 Quota is not permission. This project holds 512 chips of v5e quota and
 Compute Engine still refuses the machine type with
@@ -25,6 +37,17 @@ Compute Engine still refuses the machine type with
 reachable only through the Cloud TPU API (`gcloud compute tpus tpu-vm`),
 which the scripts use; v6e goes through Compute Engine. `zones.sh` records
 which candidate takes which API, so the ladder is walked correctly.
+
+The first thing that will confuse you is a create that appears to hang.
+It is not hung: `FLEX_START` is Dynamic Workload Scheduler, and if no capacity
+is free the instance is created `PENDING` while the scheduler waits up to
+`--request-valid-for-duration` for hardware. `gcloud` blocks for that whole
+window, so `2h` blocks for two hours. Ctrl-C does not cancel it -- the request
+lives server-side -- and cancelling a `PENDING` flex-start is slow, one took
+39 minutes to delete. Every attempt `acquire_tpu.sh` makes therefore passes
+`--request-valid-for-duration=0`, so a zone fails in seconds instead. Google
+exposes no queue position and no global capacity view; `./acquire_tpu.sh
+--watch` shows everything that is observable.
 
 ## Getting a node and running on it
 
@@ -34,7 +57,7 @@ VM_NAME=mrx-tpu ./acquire_tpu.sh --acquire-only
 SCRIPT=scripts/tutorials/li383_relaxation.py \
   OUTDIR=outputs/tutorials/li383_relaxation \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_TIMEOUT=7200 \
-  ./run_on_tpu.sh --ns 12,24,12 --p 3
+  ./run_on_tpu.sh --ns 12,24,24 --p 3
 
 # The reaper will do this after 20 idle minutes; this is how to do it now.
 # v5e is a TPU API node, v5p/v6e are GCE instances.
@@ -52,6 +75,7 @@ gcloud compute instances delete mrx-tpu --zone=<zone>
 | `RUN_TIMEOUT` | seconds | 7200 |
 | `PUSH_FILES` | local files to copy into the checkout on the VM | |
 | `SYNC_LOCAL_MRX` | rsync a local working tree over the VM's checkout | |
+| `MRX_BRANCH` | branch the node clones | `static-dynamic-refactor` |
 
 Everything after `run_on_tpu.sh` is passed to the script. Jobs are launched
 detached under `setsid` into a log that is streamed back, because a dropped
@@ -60,7 +84,22 @@ same chip fails with `The TPU is already in use`.
 
 Capacity is scarce and a request can fail for reasons that are not capacity;
 `acquire_tpu.sh` retries the ladder, re-parks expired requests and stops on
-the classifications that will never succeed.
+the classifications that will never succeed. `zones.sh` names them:
+`STOCKOUT` (no hardware, nothing you can fix), `NOT_ALLOWLISTED` (wrong API,
+quota is irrelevant), `QUOTA`, `NO_SUBNET` and `POLICY` (the location org
+policy, usually), `DISK_INCOMPATIBLE` (v5p rejects hyperdisk-balanced; the
+sweep retries once without the data disk, since losing persistence beats
+losing the zone) and `TRANSIENT` (a Google-side blip, retried once).
+
+`startup.sh` builds the environment on the node and is idempotent: it mounts
+the data disk at `/mnt/data` when one is attached and otherwise falls back to
+the boot disk, installs Miniforge and `jax[tpu]`, clones `MRX_BRANCH`, and
+writes `/mnt/data/.mrx_env_ready` once a JAX and MRX smoke test passes. A cold
+build is 4-12 minutes; a warm data disk skips to the sentinel and computes
+within a minute. It also `chmod 1777 /tmp/tpu_logs`, which is not cosmetic:
+root creates that directory, so an ordinary user cannot write to it and libtpu
+emits `Could not open the log file ... Permission denied` several times a
+second, burying real tracebacks.
 
 ## Precision
 
@@ -73,12 +112,11 @@ That setting is the one precision knob that costs a TPU and not a GPU: the MXU
 multiplies bfloat16 natively, so float32 at `highest` is six passes, `high` is
 three and `default` is one, while in float64 the setting does nothing at all.
 It is worth up to 1.55x on the mass kernel, and it is kept anyway. Measured on
-li383 `(12,24,12)` p=3 in float32, `high` costs a 1.9e-04 relative error on
-`DF` and `default` **folds the map** -- `det DF` reaches -1.3e-01 and
-`set_geometry` refuses it. `high` also changed the relaxation's trajectory,
-which spends much of the 1.22x it saves per step. Both `matvec_bench.py` and
-`tpu_bench_mrx.py` accept `--matmul-precision` if you want to measure it
-yourself.
+li383 in float32, `high` costs a 1.9e-04 relative error on `DF` and `default`
+**folds the map** -- `det DF` reaches -1.3e-01 and `set_geometry` refuses it.
+`high` also changed the relaxation's trajectory, which spends much of the 1.22x
+it saves per step. Both benchmarks in `scripts/benchmark/` accept
+`--matmul-precision` if you want to measure it yourself.
 
 Where double precision is required -- field-line tracing for a Poincare
 section is the case in practice -- run that stage on the host CPU of the
@@ -102,10 +140,11 @@ workload compiles.
 A node in a zone with no data disk has nowhere local to keep the cache.
 `JAX_CACHE_DIR` also takes a `gs://` path, which works but is second best:
 setup costs 143 s with no cache, 98 s from a warm bucket and 53 s from a
-warm local disk. Put the bucket in the node's region, and check it is
-non-empty after the first run -- without `etils[epath,epath-gcs]` installed
-JAX writes nothing, reads nothing and reports nothing, so a misconfigured
-bucket looks like nothing more than a slow run.
+warm local disk. Put the bucket in the node's region, and run
+`tpu/gcs_cache_smoke.py` against it before relying on it -- without
+`etils[epath,epath-gcs]` installed JAX writes nothing, reads nothing and
+reports nothing, so a misconfigured bucket looks like nothing more than a
+slow run.
 
 MRX's inner solves are eager `lax.while_loop`s, not wrapped in `jax.jit`,
 so without a cache XLA recompiles them on every call. One `apply_laplacian`
@@ -115,12 +154,11 @@ is 105 ms.
 
 ## What the hardware is and is not for
 
-Measured on one `v5litepod-4`, li383 at `--ns 12,24,12 --p 3` in float32,
-against the host CPU of the same VM so that only the backend differs. Per
-matvec one H200 is about 4x faster than the v5e; end to end the v5e is slightly
-ahead, because a relaxation step is a chain of roughly 250 000 sequentially
-dependent kernels and the v5e executes the whole `lax.scan` body as a single
-on-device program. This workload suits a TPU.
+Per matvec one H200 is faster than a v5e; end to end the v5e is ahead, because
+a relaxation step is a chain of roughly 250 000 sequentially dependent kernels
+and the v5e executes the whole `lax.scan` body as a single on-device program.
+This workload suits a TPU. The numbers are in
+`docs/research/tpu_v5e_benchmark.md`.
 
 Getting there took three changes, and two of the three are library changes
 rather than configuration: the compilation cache above; removing every index
@@ -130,16 +168,12 @@ destinations known at compile time; and folding the sum factorization's y and
 z stages into one contraction, which trades 1.5x the arithmetic for one fewer
 stage and is worth 1.2-1.7x on every backend, GPU and CPU included.
 
-The index tensors are the transferable part:
-
-| at (12,24,12) p=3 | v5e indexed | v5e structured | CPU indexed | CPU structured |
-|---|---|---|---|---|
-| gather | 1.624 ms | 0.049 ms | 0.070 ms | 0.113 ms |
-| scatter | 2.011 ms | 0.060 ms | 0.398 ms | 0.303 ms |
-
-On the indexed forms a v5e is 23x and 5x slower than the VM's own CPU; on the
-structured forms it is 2.8x and 5x faster. Identical work, identical answers.
-**If a kernel is slow on this hardware, look for an index tensor first.**
+The index tensors are the transferable part. At `(12,24,12)` p=3 the gather
+costs 1.624 ms indexed and 0.049 ms structured, the scatter 2.011 ms and
+0.060 ms; on the indexed forms a v5e is 23x and 5x *slower* than the VM's own
+CPU, and on the structured forms 2.8x and 5x faster. Identical work, identical
+answers. **If a kernel is slow on this hardware, look for an index tensor
+first.**
 
 Two things that surprised us and are worth knowing before you profile. The cost
 was never compilation -- `relaxation_loop` is already `@jax.jit` around a
@@ -148,7 +182,8 @@ was right while the apply *count* was not. And apply count is a
 backend-independent property, so the preconditioner work it led to helps CPU and
 GPU by the same factor; a TPU only made it visible. A `v5litepod-4` is also four
 chips where MRX uses one, so a parameter sweep takes all four through `jax.pmap`
-with no library change, measured at 3.99x.
+with no library change, measured at 3.99x (`scripts/pmap_sweep.py`, which needs
+only two devices and so works on a multi-GPU node too).
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at
@@ -159,16 +194,13 @@ separately, because the first is XLA compiling and the second is the device
 computing:
 
 ```bash
-PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
+SCRIPT=scripts/benchmark/relaxation_bench.py OUTDIR=outputs/bench \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_PLATFORM=tpu \
   ./run_on_tpu.sh --skip-relax --out outputs/bench/tpu.json
 # again with RUN_PLATFORM=cpu, then
-python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
+python scripts/benchmark/relaxation_bench.py \
+  --compare script_outputs/bench/{tpu,cpu}.json
 ```
-
-`tpu/results/benchmark_v5e_vs_cpu.md` is where the per-backend tables, the
-step composition and the per-operator costs are maintained, along with several
-hypotheses that sounded right and that measurement refuted.
 
 ## Cost
 

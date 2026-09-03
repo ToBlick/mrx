@@ -1,30 +1,25 @@
 #!/usr/bin/env python3
-"""Phase and primitive benchmark for MRX, to compare a TPU against a CPU.
+"""Phase and primitive benchmark for MRX, to compare one backend against another.
 
-The question this answers: when MRX is slow on a TPU, is it slow because XLA
-spends minutes compiling, or because the compiled program runs slowly? Every
-measurement below therefore reports the FIRST call and the SECOND call
-separately. The first includes tracing and compilation; the second is steady
-state. A phase with a huge first call and a fast second call is a compilation
-problem and a persistent cache fixes it. A phase where both are slow is a real
-execution problem and needs the kernel changed.
+The question this answers: when MRX is slow on a given backend, is it slow
+because XLA spends minutes compiling, or because the compiled program runs
+slowly? Every measurement below therefore reports the FIRST call and the SECOND
+call separately. The first includes tracing and compilation; the second is
+steady state. A phase with a huge first call and a fast second call is a
+compilation problem and a persistent cache fixes it. A phase where both are
+slow is a real execution problem and needs the kernel changed.
 
 Run it twice on the same machine so the comparison isolates the backend:
 
-    JAX_PLATFORMS=tpu python -u tpu_bench_mrx.py --out bench_tpu.json
-    JAX_PLATFORMS=cpu python -u tpu_bench_mrx.py --out bench_cpu.json
-    python -u tpu_bench_mrx.py --compare bench_tpu.json bench_cpu.json
+    JAX_PLATFORMS=tpu python -u scripts/benchmark/relaxation_bench.py --out tpu.json
+    JAX_PLATFORMS=cpu python -u scripts/benchmark/relaxation_bench.py --out cpu.json
+    python -u scripts/benchmark/relaxation_bench.py --compare tpu.json cpu.json
 
-Reference numbers for the same code on one H100, from the MRX docs, are folded
-into the comparison so a TPU result can be read against the hardware the code
-was actually tuned on:
-
-  - relaxation, W7-X (8,16,8) p=3 float64: setup ~330 s, first step ~90 s of
-    compilation, then 0.7-0.9 s/step   (docs/source/concepts/relaxation.md)
-  - relaxation, W7-X (12,24,12): 0.36-0.41 s/step
-    (docs/research/release_review_sweep_2026-08-27.md)
-  - compute_nullspaces gap sweeps, W7-X (12,24,12) p=3: ~17 s
-    (mrx/nullspace.py)
+The comparison folds in one reference number for the same code on an H100
+(0.41 s/step for W7-X at (12,24,12), from
+``docs/research/release_review_sweep_2026-08-27.md``) so a result can be read
+against the hardware the code was tuned on. Measured TPU, CPU and H200 numbers
+are in ``docs/research/tpu_v5e_benchmark.md``.
 """
 from __future__ import annotations
 
@@ -61,12 +56,6 @@ def parse_args():
                     help="read result JSONs and print the comparison table")
     ap.add_argument("--skip-phases", action="store_true",
                     help="primitives only; skips the multi-minute phase timings")
-    ap.add_argument("--smoothing-precond", default=None,
-                    help="velocity-smoothing preconditioner kind for the "
-                         "relaxation phase. Omit to take TimeStepper's own "
-                         "default; pass 'auto' to time the mass atom that "
-                         "shipped before the laplacian kind, which is the "
-                         "A/B the guide's section 6.1 reports")
     ap.add_argument("--skip-relax", action="store_true",
                     help="skip the relaxation phase (the slowest item)")
     ap.add_argument("--map-batch-size", type=int, default=None,
@@ -152,10 +141,9 @@ def bench_structured_scatter(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
                              dtype="float32"):
     """Compare the mass kernel's scatter against a shift-and-add equivalent.
 
-    ``_sumfact_kernel`` finishes with a ``segment_sum`` whose segment ids come
-    from ``_flat_dof_plan``, which is
-    ``gx * (Sy * Sz) + gy * Sz + gz`` -- a *separable tensor product* of the
-    per-axis global DoF ids. For a periodic B-spline axis ``gx[e, l] = e + l``
+    ``_sumfact_kernel`` used to finish with a ``segment_sum`` whose segment ids
+    were ``gx * (Sy * Sz) + gy * Sz + gz`` -- a *separable tensor product* of
+    the per-axis global DoF ids. For a periodic B-spline axis ``gx[e, l] = e + l``
     (mod n), so the whole scatter is algebraically
 
         out[i,j,k] = sum over local (lx,ly,lz) of contrib[i-lx, j-ly, k-lz, ...]
@@ -182,7 +170,7 @@ def bench_structured_scatter(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
     contrib = jnp.asarray(
         rng.standard_normal((nex, ney, nez, nlx, nly, nlz)).astype(dtype))
 
-    # The index plan exactly as _flat_dof_plan builds it, periodic.
+    # The flat index plan the indexed form needs, periodic.
     gx = (np.arange(nex)[:, None] + np.arange(nlx)[None, :]) % nex
     gy = (np.arange(ney)[:, None] + np.arange(nly)[None, :]) % ney
     gz = (np.arange(nez)[:, None] + np.arange(nlz)[None, :]) % nez
@@ -230,8 +218,8 @@ def bench_structured_gather(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
                             dtype="float32"):
     """The mirror of :func:`bench_structured_scatter` for the read side.
 
-    ``_to_quadrature`` starts with ``x_flat[gather_idx]``, and ``gather_idx``
-    is the same separable ``_flat_dof_plan``. So the gather is algebraically
+    ``_to_quadrature`` used to start with ``x_flat[gather_idx]``, over the same
+    separable index plan. So the gather is algebraically
 
         x_local[e,l] = x[(e + l) mod n]
 
@@ -300,78 +288,6 @@ def bench_structured_gather(bench, ne=(12, 24, 12), nloc=(4, 4, 4),
     bench.rows["mass gather: agreement"] = {
         "first_s": None, "steady_s": None, "compile_s": None,
         "note": f"max rel err {err:.2e}"}
-
-
-def bench_mass_attribution(bench, seq, dtype):
-    """Split ``mass_core_apply`` into gather, einsums and assembly.
-
-    The whole kernel is one number; deciding what to fix next needs to know
-    which third of it is which.
-
-    These are UPPER BOUNDS on each piece's share, not an attribution, for two
-    reasons, and a part can and does come out larger than the whole. Each row
-    is one component of the ``n_comp`` the kernel applies, so it is a fraction
-    of the work; and isolating a piece forces XLA to materialise an
-    intermediate that the fused kernel never writes. ``v[gather_idx]`` expands
-    its input 39x at k=1 on li383 ``(12,24,12)`` p=3 -- 3168 values in, 124 416
-    out -- and standing alone that expansion has to be written to memory,
-    while inside ``mass_core_apply`` it is consumed by the einsum in place.
-    The ranking is what the decision turns on; the levels are not shares of
-    the kernel and must not be quoted as such.
-    """
-    import jax
-    import jax.numpy as jnp
-    import numpy as np
-    from mrx.mass import (_flat_dof_plan, _form_bases, _from_quadrature,
-                          _fuse_yz, _shift_plan, _structured_accumulate,
-                          _to_quadrature)
-
-    print("\n[attribution] inside mass_core_apply", flush=True)
-
-    for k in (1, 2):
-        try:
-            form, comp, n_comp = _form_bases(seq, k)
-            c = 0
-            Bx, gx, By, gy, Bz, gz = comp[c]
-            shape = form.shape[c]
-            n_raw = int(np.prod(shape))
-            rng = np.random.default_rng(50 + k)
-            x = jnp.asarray(rng.standard_normal(n_raw).astype(dtype))
-            gidx = _flat_dof_plan(gx, gy, gz, shape)
-            # The kernel carries the fused y-z table alongside the three 1-D
-            # ones, so the halves take a 4-tuple and there are two einsums per
-            # half rather than three.
-            Bvals = (Bx, By, Bz, _fuse_yz(By, Bz))
-
-            f_gather = jax.jit(lambda v, g=gidx: v[g])
-            bench.measure(f"  k={k} c=0 gather only (upper bound)",
-                          lambda f=f_gather, v=x: f(v),
-                          inner=MICRO_INNER,
-                          note=f"n_raw={n_raw} -> {gidx.size}, materialised")
-
-            f_toq = jax.jit(lambda v, B=Bvals, g=gidx: _to_quadrature(B, v, g))
-            bench.measure(f"  k={k} c=0 gather + einsums (upper bound)",
-                          lambda f=f_toq, v=x: f(v),
-                          inner=MICRO_INNER, note="_to_quadrature")
-
-            u = f_toq(x)
-            f_fromq = jax.jit(lambda w, B=Bvals: _from_quadrature(B, w))
-            bench.measure(f"  k={k} c=0 einsums back (upper bound)",
-                          lambda f=f_fromq, w=u: f(w),
-                          inner=MICRO_INNER, note="_from_quadrature")
-
-            y_local = f_fromq(u)
-            plan = _shift_plan(gx, gy, gz, shape)
-            if plan is not None:
-                f_asm = jax.jit(lambda w, p=plan: _structured_accumulate(w, p))
-                bench.measure(f"  k={k} c=0 assembly, structured (upper bound)",
-                              lambda f=f_asm, w=y_local: f(w),
-                              inner=MICRO_INNER, note="shifted adds")
-            else:
-                print(f"  k={k} c=0 assembly: no shift plan", flush=True)
-        except Exception as exc:                          # noqa: BLE001
-            print(f"  k={k} attribution skipped "
-                  f"({type(exc).__name__}: {exc})", flush=True)
 
 
 def bench_extraction(bench, seq, dtype):
@@ -581,17 +497,11 @@ def bench_relaxation(bench, seq, args, dtype):
     cb = load_clebsch(args.geometry)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 
-    # Only passed when asked for, so this still runs against a tree that
-    # predates the field rather than failing on an unexpected keyword.
-    extra = ({} if args.smoothing_precond is None
-             else {"velocity_smoothing_preconditioner": args.smoothing_precond})
     ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                      dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                      eta_every=1, resistive=False, history_size=1,
                      velocity_smoothing_order=1,
-                     velocity_smoothing_scale=0.064 / ns[0] ** 2, **extra)
-    print(f"[phase] velocity smoothing preconditioner: "
-          f"{args.smoothing_precond or 'TimeStepper default'}", flush=True)
+                     velocity_smoothing_scale=0.064 / ns[0] ** 2)
 
     inner = 5
     # Two identical calls. The first compiles the scanned step; the second does
@@ -765,7 +675,6 @@ def main():
             seq, ops = bench_phases(bench, args, dtype)
             bench_extraction(bench, seq, dtype)
             bench_mass(bench, seq, dtype)
-            bench_mass_attribution(bench, seq, dtype)
             bench_operators(bench, seq, ops, dtype)
             if not args.skip_relax:
                 bench_relaxation(bench, seq, args, dtype)

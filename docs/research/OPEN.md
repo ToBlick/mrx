@@ -109,7 +109,7 @@ again: it was wired into no solve, and it lost the comparison that decides
 adoption -- 185 CG iterations against the mass atom's 149 at the smoothing
 shift -- because it carried no polar-core block, even though its relative miss
 was bounded over four decades of `eps` where the mass atom grows linearly. The
-measurements are kept in `tpu/results/benchmark_v5e_vs_cpu.md`; the code is
+measurements are kept in `docs/research/tpu_v5e_benchmark.md`; the code is
 not.
 
 **Both reasons this entry originally gave for a separable atom being hard were
@@ -143,7 +143,7 @@ The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
 *Detail:* `docs/source/concepts/relaxation.md` §2,
-`tpu/results/benchmark_v5e_vs_cpu.md`.
+`docs/research/tpu_v5e_benchmark.md`.
 *Update 2026-09-02:* the saddle MINRES is gone. `D_k D_{k-1} = 0` gives the
 exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
 + eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass

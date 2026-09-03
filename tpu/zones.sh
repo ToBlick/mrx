@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Shared configuration and helpers for the TPU probe, launcher and daemon.
+# Shared configuration and helpers for the quota check, the daemon and the runner.
 
 # GCE-path self-termination. This is paired with --instance-termination-action
-# =DELETE in launch_tpu.sh, so it does not merely stop the job at expiry, it
+# =DELETE in acquire_tpu.sh, so it does not merely stop the job at expiry, it
 # destroys the VM and anything on its boot disk. It must therefore stay
 # comfortably above RUN_TIMEOUT in run_on_tpu.sh: the 30m that suited the
 # Poisson example would delete the machine partway through a relaxation.
