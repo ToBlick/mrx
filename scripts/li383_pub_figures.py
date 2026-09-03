@@ -185,11 +185,125 @@ def plot_lines(ax, entries):
         if j is not None:
             ax.plot(it(j), F(j), lw=1.0, ls=st, label=lab)
     ax.set_yscale("log")
+    ax.set_xscale("log")
     ax.set_xlabel("step")
     ax.set_ylabel(r"$\|F\|_M$")
     ax.axhline(1e-3, color="k", lw=0.6, ls=":")
     ax.grid(alpha=0.3)
     ax.legend(fontsize=8)
+
+
+HSWEEP = ["h8_p2_g1", "h12_p2_g1", "h16_p2_g1", "h24_p2_g1", "h32_p2_g1"]
+
+
+def hsweep_rows(arms):
+    out = []
+    for j in arms:
+        r = row_common(j)
+        f = F(j)
+        out.append(
+            "| "
+            + " | ".join(
+                [
+                    j["arm"],
+                    r["ns"],
+                    fmt(j["params"]["velocity_smoothing_scale"], "e1"),
+                    str(r["steps"]),
+                    r["stop"],
+                    fmt(r["spst"], "f2"),
+                    f"{r['F0']:.2e} -> {r['F1']:.2e}",
+                    fmt(float(f.min()), "e"),
+                    fmt(j["summary"]["resid_window_mean"], "e"),
+                    fmt(r["dH"], "e1"),
+                    fmt(r["beta"], "f4"),
+                    fmt(r["chaotic"], "d"),
+                    fmt(r["gpuh"], "f2"),
+                ]
+            )
+            + " |"
+        )
+    return out
+
+
+def hsweep_figure(arms, figdir):
+    fig, ax = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    plot_lines(
+        ax[0, 0],
+        [
+            (
+                j,
+                f"({j['params']['ns'][0]},{j['params']['ns'][1]},{j['params']['ns'][2]})",
+                "-",
+            )
+            for j in arms
+        ],
+    )
+    ax[0, 0].set_title(r"p=2, $\gamma=1$: force residual under h-refinement")
+    n = np.array([j["params"]["ns"][0] for j in arms], float)
+    ax[0, 1].loglog(
+        n, [j["ic"]["F"] for j in arms], "s--", label=r"IC $\|F\|_M$ (reference file)"
+    )
+    ax[0, 1].loglog(n, [float(F(j).min()) for j in arms], "o-", label=r"min $\|F\|_M$")
+    ax[0, 1].loglog(
+        n,
+        [j["summary"]["resid_window_mean"] for j in arms],
+        "^-",
+        label="window mean at stop",
+    )
+    for q, st in ((1, ":"), (2, "-.")):
+        ax[0, 1].loglog(
+            n,
+            F(arms[0]).min() * (n[0] / n) ** q,
+            color="k",
+            lw=0.6,
+            ls=st,
+            label=f"$n^{{-{q}}}$",
+        )
+    ax[0, 1].set_xlabel("$n_r$ (mesh $(n, 2n, 2n)$)")
+    ax[0, 1].set_ylabel(r"$\|F\|_M$")
+    ax[0, 1].set_xticks(n)
+    ax[0, 1].set_xticklabels([str(int(v)) for v in n])
+    ax[0, 1].grid(alpha=0.3, which="both")
+    ax[0, 1].legend(fontsize=8)
+    ax[0, 1].set_title("floor versus resolution")
+    for j in arms:
+        z = sections(j)
+        if z is None:
+            continue
+        keep = z["final_keep"] & ~z["final_chaotic"]
+        ax[1, 0].plot(
+            z["final_seed_r"][keep],
+            z["final_iota"][keep],
+            ".-",
+            ms=3,
+            lw=0.8,
+            label=f"n={j['params']['ns'][0]}",
+        )
+    z = sections(arms[-1])
+    if z is not None:
+        keep = z["ic_keep"] & ~z["ic_chaotic"]
+        ax[1, 0].plot(
+            z["ic_seed_r"][keep],
+            z["ic_iota"][keep],
+            "k:",
+            lw=1.0,
+            label=f"IC, n={arms[-1]['params']['ns'][0]}",
+        )
+    ax[1, 0].set_xlabel(r"$\rho$")
+    ax[1, 0].set_ylabel(r"$\iota$ (final)")
+    ax[1, 0].grid(alpha=0.3)
+    ax[1, 0].legend(fontsize=8)
+    ax[1, 0].set_title("rotational transform after relaxation")
+    for j in arms:
+        E = np.asarray(j["trace"]["E"])
+        ax[1, 1].loglog(it(j), E[0] - E, lw=1.0, label=f"n={j['params']['ns'][0]}")
+    ax[1, 1].set_xlabel("step")
+    ax[1, 1].set_ylabel("$E_0 - E$")
+    ax[1, 1].grid(alpha=0.3)
+    ax[1, 1].legend(fontsize=8)
+    ax[1, 1].set_title("energy released")
+    fig.suptitle(r"li383 (ns = 49 reference), p=2, $\gamma=1$, $\mu = 0.064/n_r^2$")
+    fig.savefig(os.path.join(figdir, "hsweep_p2.png"), dpi=150)
 
 
 def main():
@@ -225,6 +339,9 @@ def main():
         ]
     }
     fix = {a: load(root, "li383_axisfix", a) for a in ["r16_p3_g0", "r24_p3_g0"]}
+    hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
+    if hsweep:
+        hsweep_figure(hsweep, figdir)
 
     # force residual, three panels
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
@@ -280,6 +397,7 @@ def main():
     ax[1].set_title(r"helicity drift $(H - H_0)/H_0$")
     for a in ax:
         a.set_xlabel("step")
+        a.set_xscale("log")
         a.grid(alpha=0.3)
         a.legend(fontsize=8)
     fig.suptitle(r"li383 relaxation, $\eta = 0$")
@@ -384,6 +502,9 @@ def main():
         "",
         "## section 5 rows",
         *seeded_rows(seeded),
+        "",
+        "## section 5c rows",
+        *hsweep_rows(hsweep),
         "",
     ]
     for j in [a for a in seeded if a["params"]["seed"]]:
