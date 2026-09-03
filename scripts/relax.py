@@ -142,7 +142,8 @@ optimiser restarted on the diffused field. At the next stall the pulse is
 judged: accepted when the new floor is below ``(1 - --pulse-gain)`` times the
 floor before it, and ``c`` grows by ``--pulse-grow``; otherwise the state is
 reverted to the snapshot and ``c`` shrinks by the same factor. Pulses are at
-least ``--pulse-spacing`` steps apart and stop once the helicity has moved by
+least ``--pulse-spacing`` steps apart (the detector only sees the history since
+the last event) and stop once the helicity has moved by
 more than ``--pulse-helicity`` of its initial value. ``results["pulses"]``
 records every event; the trace keeps the trial steps of a reverted pulse
 (marked by the event's ``reverted`` range) since their wall time was spent.
@@ -280,8 +281,9 @@ def parse_args(argv=None):
                     help="accept a pulse when the next floor is below (1 - gain) x the previous")
     ap.add_argument("--pulse-helicity", type=float, default=0.01,
                     help="stop pulsing once |H - H_0| / |H_0| exceeds this")
-    ap.add_argument("--pulse-spacing", type=int, default=500,
-                    help="minimum steps between pulse events (fire or judge)")
+    ap.add_argument("--pulse-spacing", type=int, default=1200,
+                    help="minimum steps between pulse events (fire or judge); the stall "
+                         "detector needs 1200 steps of history since the last event")
     ap.add_argument("--checkpoint", default=None,
                     help="write the descent state (equinox pytree + step) here at every "
                          "save and at the end; default <out>/state.eqx")
@@ -655,7 +657,9 @@ def main(cli):
                   f"res_delta={tr['res_delta'][-1]:.2e}",
                   flush=True)
         if cli.pulse_adaptive and it - pulse_last >= cli.pulse_spacing:
-            is_stalled, floor_now = stalled(tr["resid"])
+            # Only the history since the last event counts: after a revert the
+            # older trace entries are the rejected trial's, not this trajectory's.
+            is_stalled, floor_now = stalled(tr["resid"][pulse_last - it0:])
             if is_stalled and pulse_pending is not None:
                 ev = pulse_pending
                 ev["judged_at"], ev["floor_after"] = it, floor_now

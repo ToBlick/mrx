@@ -671,6 +671,68 @@ def eta_label(j):
     return rf"$\eta_{{max}}$ = {e:.0e}"
 
 
+def dose(j):
+    """The resistive dose actually applied, sum of eta dt over the trace."""
+    t = j["trace"]
+    return float(np.sum(np.asarray(t["eta"]) * np.asarray(t["dt"])))
+
+
+def pulse_islands(tanh_arms, pulse_arms, ideal, figdir):
+    """Island width at 3/5 and 1/2 against the dose, tanh rungs vs pulses."""
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
+    for a, (m, n) in zip(ax, ((5, 1), (6, 1))):
+        target = NFP * n / m
+        for arms, lab, mk in (
+            (tanh_arms, "tanh schedule", "o-"),
+            (pulse_arms, "pulse after 2000 ideal steps", "s--"),
+        ):
+            pts = []
+            for j in arms:
+                z = sections(j)
+                if z is None:
+                    continue
+                keep = z["final_keep"] & ~z["final_chaotic"]
+                io = np.abs(z["final_iota"][keep])
+                w = island_width(z, m, n) if io.min() <= target <= io.max() else 0.0
+                cyc = (
+                    j["params"].get("eta_schedule") == "pulse"
+                    and j["params"]["eta_pulse"][2] > 0
+                )
+                pts.append((dose(j), w, cyc))
+            single = sorted(q for q in pts if not q[2])
+            if single:
+                a.semilogx(
+                    [q[0] for q in single], [q[1] for q in single], mk, label=lab
+                )
+            for q in pts:
+                if q[2]:
+                    a.semilogx(
+                        [q[0]],
+                        [q[1]],
+                        "D",
+                        color="C1",
+                        label="pulse every 1000 steps (3 pulses)",
+                    )
+        if ideal is not None and sections(ideal) is not None:
+            a.axhline(
+                island_width(sections(ideal), m, n),
+                color="k",
+                lw=0.6,
+                ls=":",
+                label=r"$\eta = 0$",
+            )
+        a.set_xlabel(r"dose $\int \eta\, dt$")
+        a.set_ylabel(r"final island width in $\rho$")
+        a.grid(alpha=0.3, which="both")
+        a.legend(fontsize=8)
+        g = math.gcd(NFP * n, m)
+        a.set_title(rf"({m}, {n}) chain at $\iota = {NFP * n // g}/{m // g}$")
+    fig.suptitle(
+        r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: island width against the resistive dose"
+    )
+    fig.savefig(os.path.join(figdir, "pulse_islands.png"), dpi=150)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -769,6 +831,16 @@ def main():
         )
         os.replace(
             os.path.join(pdir, "eta_traces.png"), os.path.join(pdir, "pulse_traces.png")
+        )
+        pulse_islands(
+            [
+                j
+                for j in (load(root, "li383_eta", f"eta{e}") for e in ETAS)
+                if j is not None
+            ],
+            pulse,
+            load(root, "li383_pub", "h16_p2_g1"),
+            pdir,
         )
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
