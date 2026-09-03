@@ -570,27 +570,59 @@ preconditioner that is actually near `S_3`, not a different assembly of the
 ones that exist -- the same conclusion the smoothing solve reached, and the
 same object would serve both.
 
-### The one indexed read that is left
+### Which roof the mass kernel is under: neither
 
-Fixes 2 and 3 removed the index tensors from `_sumfact_kernel`. One indexed
-read survives, in `_to_quadrature`, and it is still the expensive half of what
-it feeds. `gather_cost.py` times the einsum round trip with and without it,
-inside a scan, keeping the carry shape identical so only the access pattern
-differs:
+An earlier version of this section claimed one indexed read survived in
+`_to_quadrature` and was worth 4.2x. **That was wrong.** `_shift_plan`
+succeeds on all three axes of all three k=2 components, so `_structured_gather`
+runs and the indexed read is dead code on li383. A clamped radial axis still
+satisfies `g[e, l] == (e + l) % S`, because for `ne = n - p` elements and
+`nloc = p + 1` local DoFs the largest index `(ne - 1) + p = n - 1` never
+wraps. `gather_cost.py` was timing the fallback path. `roofline.py` prints the
+plan per component so this cannot be assumed again.
 
-| v5e, li383 (12,24,12) p=3 f32 | gather + einsums | einsums only | ratio |
-|---|---|---|---|
-| k=1, 3 168 -> 124 416 (39x expansion) | 1.053 ms | 0.250 ms | **4.2x** |
-| k=2, 3 456 -> 93 312 (27x expansion) | 0.827 ms | 0.191 ms | **4.3x** |
+What the kernel actually asks for, counted rather than estimated
+(`roofline.py`, `mass_core_apply` k=2 at `(12,24,12)` p=3):
 
-The **ratio** is the result, not the level: isolating the read materialises an
-intermediate the fused kernel never writes, which is why 1.053 ms exceeds the
-0.504 ms of the whole `mass_core_apply` it sits inside. Read that way it says
-the same thing the gather and scatter tables said before the fix -- on this
-hardware an indexed read costs several times the arithmetic it serves -- and
-it makes a structured `_to_quadrature` the natural next TPU-side item. It was
-not done here: it is a larger change than the two that preceded it, and the
-apply count is the bigger lever.
+- 2 592 elements x 64 quadrature points = 165 888 points, 9 792 DoFs
+- **19.08 MFLOP** against **4.06 MB** of essential HBM traffic, so 4.70
+  FLOP/byte. 98% of those bytes are the six memoised metric weight blocks;
+  the vectors themselves are 0.078 MB.
+
+Placed against each machine's roofs:
+
+| | per apply | achieved | of compute peak | of bandwidth peak |
+|---|---|---|---|---|
+| v5e `highest` | 0.458 ms | 41.6 GFLOP/s, 8.9 GB/s | **0.13%** | **1.1%** |
+| v5e `high` | 0.295 ms | 64.6 GFLOP/s, 13.8 GB/s | 0.10% | 1.7% |
+| H200 f32 | 0.127 ms | 150 GFLOP/s, 31.9 GB/s | **0.22%** | **0.7%** |
+| VM CPU f32 | 1.356 ms | 14.1 GFLOP/s, 3.0 GB/s | - | - |
+
+**Neither machine is near either roof.** Both are two to three orders of
+magnitude below compute peak and two below bandwidth peak, so the honest
+statement is that this kernel is limited by neither, and the 3.6x between them
+is not a bandwidth or a FLOPs story.
+
+The matmul-precision A/B says where the v5e's time does go. Halving the bf16
+passes bought 1.55x on `mass_core`; if `f` is the matmul fraction then
+`1 / ((1 - f) + f/2) = 1.55` gives **f = 0.71**. So about 71% of the kernel is
+MXU work, achieving 0.13% of the MXU's peak.
+
+The reason is the contraction dimension. `roofline.py` reports every
+contraction in the kernel, and they are all the same size:
+
+```282:284:/Users/aak572/mrx/mrx/mass.py
+    t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bx, x_local)
+    t2 = jnp.einsum('yrd,xyzqdf->xyzqrf', By, t1)
+    return jnp.einsum('zsf,xyzqrf->xyzqrs', Bz, t2)
+```
+
+`b`, `d`, `f` are `nloc`, which is 3 or 4; the row half contracts `q = p + 1
+= 4`. The batch is large (165 888) but **K is 4 against a 128-wide systolic
+array**. That is the leading hypothesis for the whole per-matvec gap: sum
+factorization splits one 64-wide contraction into three 4-wide ones to save
+FLOPs, which is the right trade on a CPU and neutral on a GPU, but here FLOPs
+are free at 0.13% of peak and occupancy is what is scarce.
 
 ### The rest, in order of what they would buy
 
@@ -665,9 +697,21 @@ benchmark the unfixed tree: that is what produced a `mass_core_apply k=1` of
 dispatch protocols to establish that the discrepancy was not a measurement
 artefact before anyone thought to check `git log` on the node.
 
-The map-precision probe and the isolated gather are separate scripts:
-`map_precision.py --matmul-precision {highest,high,default}` and
-`gather_cost.py`.
+The roofline count and the map-precision probe are separate scripts, and both
+run anywhere:
+
+```bash
+python tpu/roofline.py --ns 12,24,12 --p 3 --k 2 \
+  --measured-ms 0.4582 --peak-tflops 33 --peak-gbs 819
+python tpu/map_precision.py --matmul-precision {highest,high,default}
+```
+
+`roofline.py` needs no device: it counts FLOPs, essential bytes and the
+contraction dimension of every einsum from the sequence alone, and takes the
+measured time and the machine's peaks as arguments. It also prints whether the
+shift plan holds per component, which is what decides between
+`_structured_gather` and the indexed fallback. `gather_cost.py` is kept only
+because it measures the fallback path, which li383 does not take.
 
 The 100-step li383 run of the previous session (41.3 s/step, before fixes 2-4)
 had `||F||` falling 5.540e-02 -> 1.004e-02 with helicity conserved to 5.6e-07

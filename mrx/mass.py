@@ -266,6 +266,37 @@ def _structured_gather(x_flat, plan):
     return a
 
 
+def _fuse_yz(By, Bz):
+    """Fuse the last two 1-D bases into one two-axis table.
+
+    ``Byz[y, z, (r,s), (d,f)] = By[y, r, d] * Bz[z, s, f]``, which lets the y
+    and z stages of the sum factorization run as a single contraction of width
+    ``nly * nlz`` instead of two of width ``nly`` and ``nlz``.
+
+    That is a deliberate trade of arithmetic for shape. Three sequential
+    contractions of width 3-4 is the FLOP-minimal factorization and the right
+    one on a machine that charges per FLOP, but both a v5e and an H200 charge
+    per contraction far more than per FLOP at these widths: measured over both
+    halves of a k=2 component, folding costs 1.5x the FLOPs and returns
+    1.48-1.70x on a v5e, 1.23-1.49x on an H200 and 1.62x on a CPU
+    (``tpu/factorization_ab.py``). Folding all three axes was also measured and
+    loses -- 4.8x the FLOPs is too much to buy back, and it needs a per-element
+    basis tensor two orders of magnitude larger.
+
+    Args:
+        By: y basis values, ``(ne_y, qy, nly)``.
+        Bz: z basis values, ``(ne_z, qz, nlz)``.
+
+    Returns:
+        ``(ne_y, ne_z, qy * qz, nly * nlz)``. Small: 166 KB at ``(12,24,12)``
+        p=3 in float32, growing only with the y-z element count.
+    """
+    ne_y, qy, nly = By.shape
+    ne_z, qz, nlz = Bz.shape
+    return jnp.einsum('yrd,zsf->yzrsdf', By, Bz).reshape(
+        ne_y, ne_z, qy * qz, nly * nlz)
+
+
 def _to_quadrature(Bvals, x_flat, gather_idx, gather_plan=None):
     """Column half of :func:`_elem_block_mixed` folded against a vector.
 
@@ -273,24 +304,40 @@ def _to_quadrature(Bvals, x_flat, gather_idx, gather_plan=None):
     holds, otherwise with the precomputed flat index plan -- and evaluates the
     component's field at the element quadrature points,
     ``(ne_x, ne_y, ne_z, qx, qy, qz)``.
+
+    Two stages, not three: see :func:`_fuse_yz` for why the y and z
+    contractions are fused.
     """
-    Bx, By, Bz = Bvals
+    Bx, By, Bz, Byz = Bvals
     if gather_plan is None:
         x_local = x_flat[gather_idx]  # (ne_x,ne_y,ne_z,nxc,nyc,nzc)
     else:
         x_local = _structured_gather(x_flat, gather_plan)
+    ne_x, qx, _ = Bx.shape
+    ne_y, qy, nly = By.shape
+    ne_z, qz, nlz = Bz.shape
     t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bx, x_local)
-    t2 = jnp.einsum('yrd,xyzqdf->xyzqrf', By, t1)
-    return jnp.einsum('zsf,xyzqrf->xyzqrs', Bz, t2)
+    t1 = t1.reshape(ne_x, ne_y, ne_z, qx, nly * nlz)
+    u = jnp.einsum('yzQD,xyzqD->xyzqQ', Byz, t1)
+    return u.reshape(ne_x, ne_y, ne_z, qx, qy, qz)
 
 
 def _from_quadrature(Bvals, u):
     """Row half of :func:`_elem_block_mixed`: test a quadrature-point field
-    (Gauss weights already folded in) against the element-local row basis."""
-    Bx, By, Bz = Bvals
-    s1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx, u)
-    s2 = jnp.einsum('yrc,xyzars->xyzacs', By, s1)
-    return jnp.einsum('zse,xyzacs->xyzace', Bz, s2)
+    (Gauss weights already folded in) against the element-local row basis.
+
+    The transpose of :func:`_to_quadrature`, and it reuses the same fused
+    table: contracting ``(r,s)`` against ``(c,e)`` needs exactly the tensor
+    that the column half contracts the other way round.
+    """
+    Bx, By, Bz, Byz = Bvals
+    ne_x, qx, _ = Bx.shape
+    ne_y, qy, nly = By.shape
+    ne_z, qz, nlz = Bz.shape
+    v = u.reshape(ne_x, ne_y, ne_z, qx, qy * qz)
+    s1 = jnp.einsum('yzQD,xyzqQ->xyzqD', Byz, v)
+    s1 = s1.reshape(ne_x, ne_y, ne_z, qx, nly, nlz)
+    return jnp.einsum('xqa,xyzqdf->xyzadf', Bx, s1)
 
 
 def _form_bases(seq, k):
@@ -462,8 +509,11 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     # index plans, which depend only on the mesh topology: flat gather indices
     # per column component and one flat scatter (segment-id) array for the
     # whole output, offset by the component starts.
-    Bvals_r = tuple((c[0], c[2], c[4]) for c in comp_r)
-    Bvals_c = tuple((c[0], c[2], c[4]) for c in comp_c)
+    # The fused y-z table is built once here, not inside the kernel: it is a
+    # function of the kernel's arguments, so building it there would leave it
+    # to XLA to hoist out of a solver's scan body.
+    Bvals_r = tuple((c[0], c[2], c[4], _fuse_yz(c[2], c[4])) for c in comp_r)
+    Bvals_c = tuple((c[0], c[2], c[4], _fuse_yz(c[2], c[4])) for c in comp_c)
     col_plans = tuple(_shift_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5],
                                   form_c.shape[c]) for c in range(n_c))
     gather_plans = None if any(p is None for p in col_plans) else col_plans
