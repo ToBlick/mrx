@@ -139,17 +139,22 @@ def seeded_rows(arms):
     out = []
     for j in arms:
         r = row_common(j)
-        m, n, rho0, width = (float(v) for v in j["params"]["seed"].split(","))
+        seed = j["params"]["seed"]
         z = sections(j)
-        w = island_width(z, int(m), int(n)) if z is not None else (None, None)
-        wtxt = "--" if w[0] is None else f"{w[0]:.3f} / {w[1]:.3f}"
+        if seed:
+            m, n = (int(float(v)) for v in seed.split(",")[:2])
+            w = island_width(z, m, n) if z is not None else (None, None)
+            wtxt = "--" if w[0] is None else f"{w[0]:.3f} / {w[1]:.3f}"
+            seedtxt, epstxt = f"({m}, {n})", f"{j['params']['seed_eps']:.0e}"
+        else:
+            wtxt, seedtxt, epstxt = "--", "--", "0"
         out.append(
             "| "
             + " | ".join(
                 [
                     j["arm"],
-                    f"({int(m)}, {int(n)})",
-                    f"{j['params']['seed_eps']:.0e}",
+                    seedtxt,
+                    epstxt,
                     str(r["g"]),
                     r["ns"],
                     str(r["steps"]),
@@ -381,7 +386,7 @@ def main():
         *seeded_rows(seeded),
         "",
     ]
-    for j in seeded:
+    for j in [a for a in seeded if a["params"]["seed"]]:
         z = sections(j)
         if z is None:
             continue

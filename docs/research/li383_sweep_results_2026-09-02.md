@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: reruns and seeded arms running (sections 4, 5 filled as they land). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce.
+Status: complete 2026-09-02 (reruns, seeded arms, floor-1e-4 arms; 14 GPU-h). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -60,13 +60,20 @@ Arms behind the figures of section 6, rerun against e815a86 with the settings of
 | r12_p1_g0 | 12,24,12 | 1 | 0 | f32 | ns 16 | 6000 | steps | 0.10 | 1.34e-01 -> 2.72e-03 | -3.8e-03 | 0.0209 | -- | 0.16 |
 | r12_p2_g0 | 12,24,12 | 2 | 0 | f32 | ns 16 | 3147 | floor | 0.21 | 5.35e-02 -> 7.79e-04 | 5.9e-05 | 0.0422 | 10 | 0.18 |
 | r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 16 | 5445 | floor | 0.36 | 5.54e-02 -> 8.08e-04 | 2.3e-05 | 0.0425 | 4 | 0.54 |
-| r12_p4_g0 | 12,24,12 | 4 | 0 | f32 | ns 16 | 5000 | steps | 0.57 | 5.59e-02 -> 2.62e-03 | 3.4e-05 | 0.0428 | -- | 0.80 |
-| r12_p3_g0_f64 | 12,24,12 | 3 | 0 | f64 | ns 16 | 2500 | steps | 1.14 | 5.54e-02 -> 3.13e-03 | 1.9e-05 | 0.0426 | -- | 0.79 |
+| r12_p4_g0 | 12,24,12 | 4 | 0 | f32 | ns 16 | 6000 | steps | 0.57 | 5.59e-02 -> 3.98e-03 | 2.0e-05 | 0.0427 | 4 | 0.94 |
+| r12_p3_g0_f64 | 12,24,12 | 3 | 0 | f64 | ns 16 | 6000 | steps | 1.12 | 5.54e-02 -> 1.11e-03 | -3.4e-05 | 0.0422 | 1 | 1.86 |
 | r12_p3_g1 | 12,24,12 | 3 | 1 | f32 | ns 16 | 5376 | floor | 0.39 | 5.54e-02 -> 8.56e-04 | 6.7e-05 | 0.0416 | 1 | 0.59 |
-| r16_p3_g1 | 16,32,16 | 3 | 1 | f32 | ns 16 | 4000 | steps | 0.75 | 5.58e-02 -> 1.33e-03 | -2.1e-05 | 0.0410 | -- | 0.84 |
+| r16_p3_g1 | 16,32,16 | 3 | 1 | f32 | ns 16 | 6000 | steps | 0.74 | 5.58e-02 -> 1.53e-03 | -1.0e-05 | 0.0410 | 3 | 1.23 |
 | hi_r12_p3_g0 | 12,24,12 | 3 | 0 | f32 | ns 49 | 1654 | floor | 0.39 | 1.34e-02 -> 8.05e-04 | -6.2e-06 | 0.0427 | 3 | 0.18 |
 
 (`r16_p3_g0` and `r24_p3_g0` on the current reader: `outputs/li383_axisfix/`, section 2.)
+
+- The reader change helps: p = 2, 3 and gamma = 1 reach the 1e-3 floor in 3.1 .. 5.4 k steps where the old-reader runs used the 6000 steps at 1 .. 2e-3. p = 1 does not floor (helicity drift 4e-3, worst arm); p = 4 does not floor at either reader (4.0e-3 vs 3.0e-3 before).
+- gamma = 1 costs 0.39 s/step against 0.36 unsmoothed at (12,24,12) (1.14 in August, MINRES smoothing solve) and floors in the same number of steps; at (16,32,16) it ends at 1.5e-3 in 6000 steps (2.6e-3 before).
+- Reference floor at the same mesh (`figures/reference_floor.png`): ns = 16 starts at 5.5e-2 and needs 5445 steps to 1e-3; ns = 49 starts at 1.3e-2 and needs 1654.
+- float64 ends at 1.11e-3 after 6000 steps against the float32 floor 8.1e-4 at 5445, same helicity behaviour, 3.1x the cost per step.
+- Energy released (0.9 .. 1.2)e-4 of E_0; |dH/H_0| <= 7e-5 for p >= 2 (`figures/energy_helicity.png`).
+- Topology (`r12_p3_g0`, zeta = 0.5 final, movie 0 .. 6000 in `r12_p3_g0/movie/`): chains at 3/5, 9/16, 6/11 with iota locked, p_w a flux function, 0 of 160 lost, 4 chaotic. The ns = 49 reference relaxes to a cleaner nested state.
 
 ## 5. Seeded islands (2026-09-02, `outputs/li383_pub/`)
 
@@ -76,14 +83,14 @@ The island width is measured from `poincare/sections.npz` (`scripts/li383_pub_fi
 
 | arm | seed (m, n) | eps | g | ns | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | width plateau / excursion (rho) | chaotic | GPU-h |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| hi_r12x24_p3_g0 | 12,24,24 | 3 | 0 | f32 | ns 49 | 1426 | floor | 0.55 | 1.53e-02 -> 7.06e-04 | 1.3e-06 | 0.0427 | 0 | 0.22 |
+| hi_r12x24_p3_g0 | -- | 0 | 0 | 12,24,24 | 1426 | floor | 0.55 | 1.53e-02 -> 7.06e-04 | 1.3e-06 | -- | 0 | 0.22 |
 | s61_e1e-3_g0 | (6, 1) | 1e-03 | 0 | 12,24,24 | 1444 | floor | 0.55 | 1.53e-02 -> 6.18e-04 | -6.1e-06 | 0.031 / 0.060 | 2 | 0.22 |
 | s61_e3e-3_g0 | (6, 1) | 3e-03 | 0 | 12,24,24 | 1699 | floor | 0.54 | 1.53e-02 -> 6.28e-04 | -9.3e-07 | 0.079 / 0.098 | 2 | 0.25 |
 | s61_e1e-2_g0 | (6, 1) | 1e-02 | 0 | 12,24,24 | 1593 | floor | 0.54 | 1.53e-02 -> 6.84e-04 | -4.6e-06 | 0.153 / 0.167 | 6 | 0.24 |
 | s61_e3e-3_g1 | (6, 1) | 3e-03 | 1 | 12,24,24 | 991 | floor | 0.67 | 1.53e-02 -> 9.16e-04 | -1.2e-05 | 0.083 / 0.096 | 4 | 0.18 |
 | s51_e3e-3_g0 | (5, 1) | 3e-03 | 0 | 12,24,24 | 1516 | floor | 0.55 | 1.53e-02 -> 6.93e-04 | -2.5e-06 | 0.080 / 0.088 | 1 | 0.23 |
 | s51_e3e-3_g1 | (5, 1) | 3e-03 | 1 | 12,24,24 | 930 | floor | 0.67 | 1.53e-02 -> 9.12e-04 | -2.8e-05 | 0.081 / 0.084 | 1 | 0.17 |
-| r16_s61_e3e-3_g1 | (6, 1) | 3e-03 | 1 | 16,32,32 | 681 | floor | 1.49 | 1.51e-02 -> 8.40e-04 | -1.1e-05 | -- | -- | 0.28 |
+| r16_s61_e3e-3_g1 | (6, 1) | 3e-03 | 1 | 16,32,32 | 681 | floor | 1.49 | 1.51e-02 -> 8.40e-04 | -1.1e-05 | 0.077 / 0.095 | 2 | 0.28 |
 
 IC widths (plateau / excursion, rho): (6, 1) 0.025 / 0.028 at eps 1e-3, 0.074 / 0.093 at 3e-3, 0.147 / 0.164 at 1e-2; (5, 1) 0.074 / 0.084 at 3e-3. The tracer spacing is 0.006.
 
@@ -97,26 +104,29 @@ Same arms as above, run on to the step / wall cap.
 
 | arm | seed (m, n) | eps | g | ns | steps | stop | s/step | `||F||` 0 -> end | dH/H_0 | width plateau / excursion (rho) | chaotic | GPU-h |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| hi_r12x24_p3_g0_f4 | -- | 0 | 0 | 12,24,24 | | | | | | | | |
-| s61_e3e-3_g0_f4 | (6, 1) | 3e-3 | 0 | 12,24,24 | | | | | | | | |
-| s61_e3e-3_g1_f4 | (6, 1) | 3e-3 | 1 | 12,24,24 | | | | | | | | |
+| hi_r12x24_p3_g0_f4 | -- | 0 | 0 | 12,24,24 | 6000 | steps | 0.48 | 1.53e-02 -> 7.70e-04 | 1.7e-06 | -- | 2 | 0.80 |
+| s61_e3e-3_g0_f4 | (6, 1) | 3e-03 | 0 | 12,24,24 | 6000 | steps | 0.48 | 1.53e-02 -> 5.41e-04 | 1.1e-06 | 0.080 / 0.097 | 2 | 0.80 |
+| s61_e3e-3_g1_f4 | (6, 1) | 3e-03 | 1 | 12,24,24 | 6000 | steps | 0.57 | 1.53e-02 -> 5.67e-04 | -3.4e-06 | 0.082 / 0.098 | 0 | 0.95 |
+
+- The residual bottoms out at about 6e-4 on the ns = 49 reference at (12,24,24) p = 3 (100-step window means 6.0e-4, 6.7e-4, 5.8e-4): 3.5 .. 6x more steps than the 1e-3 stop buy a factor 1.2 .. 1.6, seeded or not, gamma = 0 or 1.
+- The islands do not move: (6, 1) at eps 3e-3 is 0.080 / 0.097 wide after 6000 steps against 0.079 / 0.098 at the 1e-3 stop and 0.074 / 0.093 at the IC. The tearing-stable verdict holds past the floor.
 
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
-2. Force residual vs step: degree scan at (12,24,12) gamma = 0; resolution scan at p = 3 gamma = 0 (r12, r16 from `li383_axisfix`, r24 from `li383_axisfix`); gamma = 0 vs 1 at r12 and r16. Generator: `li383_traces.py` (job scratch; to be moved to `scripts/`).
-3. Reference floor: `r12_p3_g0` vs `hi_r12_p3_g0`, residual vs step on one axis (table row in section 4).
-4. Energy released and helicity drift vs step, eta = 0 (same generator).
+2. Force residual vs step (`figures/force_convergence.png`): degree scan at (12,24,12) gamma = 0; resolution scan at p = 3 gamma = 0 (r12 from section 4, r16 and r24 from `li383_axisfix`); gamma = 0 vs 1 at r12 and r16. Generator: `scripts/li383_pub_figures.py`.
+3. Reference floor (`figures/reference_floor.png`): `r12_p3_g0` vs `hi_r12_p3_g0`, residual vs step on one axis.
+4. Energy released and helicity drift vs step, eta = 0 (`figures/energy_helicity.png`).
 5. Final topology: zeta = 0.5 section of `r12_p3_g0` (logical chart + iota / p_w panel) and a frame strip from its movie (steps 0, 1000, 2000, 4000, 6000).
 6. Precision: one table row (`r12_p3_g0` vs `r12_p3_g0_f64`).
-7. Seeded islands: final zeta = 0.5 sections of the (6, 1) eps ladder, gamma = 0, with the island width vs eps; gamma = 1 arm alongside.
+7. Seeded islands: final zeta = 0.5 section of `s61_e1e-2_g0` and the island width vs eps (`figures/seeded.png`, right); the gamma = 1 and (16,32,32) widths as a sentence.
 8. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
 
 ## 7. Open
 
-- Floor: every 2026-09-02 arm that "floored" stopped at the 1e-3 criterion (7 .. 9e-4 reached), so the tables do not show where the residual bottoms out. Rule since 2026-09-02: `--floor-tol 1e-4` and let the step / wall cap end the run (`scripts/li383_pub.sh deep`: the ns = 49 control and the (6, 1) eps 3e-3 arms at gamma 0 / 1, section 5b).
-- `r24_p3_g1` exists only on the old reader (8.3 GPU-h); rerun if the r24 rung goes in.
+- Floor rule since 2026-09-02: `--floor-tol 1e-4` and let the step / wall cap end the run (section 5b: the 1e-3 stop sat 1.2 .. 1.6x above the bottom). The section 4 arms ran at 1e-3.
+- `r24_p3_g1` exists only on the old reader (8.3 GPU-h); rerun if the r24 rung goes in. The reruns keep (n, 2n, n); a paper that adopts (n, 2n, 2n) throughout needs the section 4 arms redone at that mesh (about 2x the cost).
 - The 2026-08-28 baseline `outputs/vmec_sections/li383_relaxed` is gone; `r12_p3_g0` of section 4 replaces it.
-- Island width from the sections: measured by hand from the logical chart so far; a width extractor over `sections.npz` (O-point to X-point separation at fixed theta) would make the eps ladder quantitative.
+- Seeded islands: only eps <= 1e-2 at two surfaces; a larger seed (3e-2, width 0.3 in rho) or a surface closer to the axis (9/22) would test whether any li383 surface tears.
