@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: complete 2026-09-03 (reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2; 25 GPU-h). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
+Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs complete (43 GPU-h); p-sweep at (16,32,32) running. Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -130,6 +130,43 @@ Does the relaxed residual go down with the mesh? Five rungs on the ns = 49 refer
 - Topology (`h24_p2_g1/poincare/poincare_final_zeta0.5.png`, same at n = 32): nested surfaces throughout, 0 chaotic lines at n >= 24 (5 at n = 8), a smooth iota profile with no resolved plateau at 1/2 or 3/5, p_w a flux function. The ns = 49 reference relaxes without forming the chains the ns = 16 file forms (section 4).
 - Cost: 0.15 / 0.30 / 0.58 / 1.77 / 4.61 s/step, i.e. about h^-3 from n = 16 up; the five rungs took 10.3 GPU-h of the 20 budgeted (plus about 0.5 for the sections).
 
+### 5e. Resistivity sweep (2026-09-03, `outputs/li383_eta/`)
+
+Same mesh, degree and smoothing as the h-sweep's (16,32,32) rung: p = 2, gamma = 1 with mu 2.5e-4, 5000 steps, floor 0 (a first launch at floor 1e-5 stopped the eta >= 1e-5 arms inside the resistive phase; those runs are kept as `*_floor1e-5`). Resistivity is backward Euler in defect form after the ideal step, `--eta-schedule tanh`: eta_max for the first third of the run, dropped to ~0 over the middle third, ideal for the last third. `--eta-every K` batches the solve so each carries eta K dt = 2e-5 (dt about 2 under gamma = 1), the smallest correction float32 resolves; K = 1000 at 1e-8 is why the ladder stops there. Seven rungs, each unseeded and with the (6, 1) seed at eps 3e-3, plus the eta = 0 twins (`li383_pub/h16_p2_g1`, `s61_eta0`). `last 500` is the mean residual over the ideal tail; `dH` the absolute helicity change (H_0 = 5.0e-3); `(6,1) width` the final island width of the seeded arms.
+
+| arm | eta_max | K | seed | steps | stop | s/step | `||F||` 0 -> end | min | last 500 | J/B 0 -> end | beta_vol 0 -> end | dH (abs) | (6,1) width | chaotic | GPU-h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| eta1e-8 | 1e-08 | 1000 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 4.23e-04 | 3.98e-04 | 4.27e-04 | 0.659 -> 0.615 | 0.0442 -> 0.0402 | -3.7e-05 | -- | 2 | 0.82 |
+| eta3e-8 | 3e-08 | 300 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 3.50e-04 | 3.38e-04 | 3.58e-04 | 0.659 -> 0.563 | 0.0442 -> 0.0356 | -1.3e-04 | -- | 5 | 0.82 |
+| eta1e-7 | 1e-07 | 100 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 2.71e-04 | 2.67e-04 | 3.00e-04 | 0.659 -> 0.451 | 0.0442 -> 0.0261 | -4.3e-04 | -- | 4 | 0.81 |
+| eta3e-7 | 3e-07 | 30 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 1.64e-04 | 1.55e-04 | 1.78e-04 | 0.659 -> 0.311 | 0.0442 -> 0.0150 | -1.1e-03 | -- | 1 | 0.81 |
+| eta1e-6 | 1e-06 | 10 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 6.98e-05 | 5.64e-05 | 6.51e-05 | 0.659 -> 0.167 | 0.0442 -> 0.0051 | -2.4e-03 | -- | 0 | 0.82 |
+| eta1e-5 | 1e-05 | 1 | -- | 5000 | steps | 0.63 | 1.52e-02 -> 1.35e-05 | 5.11e-06 | 1.27e-05 | 0.659 -> 0.005 | 0.0442 -> 0.0001 | -4.9e-03 | -- | 0 | 0.88 |
+| eta1e-4 | 1e-04 | 1 | -- | 5000 | steps | 0.70 | 1.52e-02 -> 3.32e-06 | 3.10e-06 | 3.59e-06 | 0.656 -> 0.000 | 0.0440 -> 0.0000 | -5.0e-03 | -- | 1 | 0.98 |
+| s61_eta1e-8 | 1e-08 | 1000 | (6, 1) 3e-03 | 5000 | steps | 0.58 | 1.52e-02 -> 4.29e-04 | 4.07e-04 | 4.24e-04 | 0.659 -> 0.615 | 0.0442 -> 0.0402 | -3.7e-05 | 0.091 | 2 | 0.81 |
+| s61_eta3e-8 | 3e-08 | 300 | (6, 1) 3e-03 | 5000 | steps | 0.58 | 1.52e-02 -> 3.58e-04 | 3.43e-04 | 3.58e-04 | 0.659 -> 0.563 | 0.0442 -> 0.0356 | -1.3e-04 | 0.078 | 4 | 0.81 |
+| s61_eta1e-7 | 1e-07 | 100 | (6, 1) 3e-03 | 5000 | steps | 0.59 | 1.52e-02 -> 3.06e-04 | 2.63e-04 | 3.02e-04 | 0.659 -> 0.451 | 0.0442 -> 0.0261 | -4.3e-04 | 0.075 | 5 | 0.81 |
+| s61_eta3e-7 | 3e-07 | 30 | (6, 1) 3e-03 | 5000 | steps | 0.59 | 1.52e-02 -> 1.66e-04 | 1.53e-04 | 1.82e-04 | 0.659 -> 0.312 | 0.0442 -> 0.0151 | -1.1e-03 | 0.076 | 0 | 0.81 |
+| s61_eta1e-6 | 1e-06 | 10 | (6, 1) 3e-03 | 5000 | steps | 0.59 | 1.52e-02 -> 5.98e-05 | 5.65e-05 | 6.18e-05 | 0.659 -> 0.167 | 0.0442 -> 0.0051 | -2.4e-03 | 0.000 | 0 | 0.82 |
+| s61_eta1e-5 | 1e-05 | 1 | (6, 1) 3e-03 | 5000 | steps | 0.64 | 1.52e-02 -> 4.27e-06 | 3.35e-06 | 3.83e-06 | 0.659 -> 0.004 | 0.0442 -> 0.0000 | -4.9e-03 | 0.000 | 1 | 0.89 |
+| s61_eta1e-4 | 1e-04 | 1 | (6, 1) 3e-03 | 5000 | steps | 0.70 | 1.52e-02 -> 3.92e-06 | 3.07e-06 | 3.59e-06 | 0.656 -> 0.000 | 0.0440 -> 0.0000 | -5.0e-03 | 0.000 | 1 | 0.97 |
+
+| eta_max | sqrt(eta T) (T about 3000) | final iota range | (6,1) width unseeded / seeded | (5,1) width |
+|---|---|---|---|---|
+| 0 | 0 | 0.393 .. 0.660 | 0 / 0.093 | 0.027 |
+| 1e-8 | 0.0055 | 0.397 .. 0.655 | 0 / 0.091 | 0.041 |
+| 3e-8 | 0.0095 | 0.403 .. 0.646 | 0.008 / 0.078 | 0.081 |
+| 1e-7 | 0.017 | 0.421 .. 0.620 | 0.029 / 0.075 | 0.180 |
+| 3e-7 | 0.030 | 0.459 .. 0.581 | 0.072 / 0.076 | gone (3/5 outside the profile) |
+| 1e-6 | 0.055 | 0.529 .. 0.540 | gone | gone |
+| 1e-5 | 0.17 | 0.440 .. 0.489 | vacuum | vacuum |
+
+- The floor drops with eta from the first rung: 5.2e-4 (ideal) -> 4.3e-4 (1e-8) -> 3.6e-4 -> 3.0e-4 -> 1.8e-4 -> 6.5e-5 -> 1.3e-5 -> 3.6e-6, while the current fraction J/B goes 0.645 -> 0.615 -> 0.563 -> 0.451 -> 0.311 -> 0.167 -> 0.005 -> 0. Nothing plateaus while eta is on: J/B, beta and helicity decay exponentially in time at every rung until the schedule cuts eta (`figures/eta_traces.png`). There is no eta at which a resistive equilibrium with the current intact is reached; the lower floors are the residuals of lower-current fields.
+- What the small rungs do is open the rational surfaces the ideal descent held closed (`figures/eta_islands.png`). The (5, 1) chain at 3/5 grows from nothing to 0.04 / 0.08 / 0.18 in rho at 1e-8 / 3e-8 / 1e-7 (five O-points at logical r 0.8, iota locked on 0.6, p_w flat across them: `eta1e-7/poincare/poincare_final_zeta0.5.png`) and is gone at 3e-7 because the flattened profile no longer reaches 3/5. The (6, 1) chain at 1/2 opens later, 0.008 / 0.029 / 0.072 at 3e-8 / 1e-7 / 3e-7. The current sheets of the ideal descent reconnect at a diffusion length of a tenth of a cell (1e-8): the h-independent floor of section 5c is an ideal-constraint floor.
+- Seeded and unseeded arms agree to 2% in residual, J/B, beta and helicity at every rung. The seeded (6, 1) island shrinks from 0.093 to 0.075 by 1e-7 while the unseeded one grows to 0.072 at 3e-7: both settle on the same resistive width, about 0.075 in rho, independent of the seed. That is the width the surface wants once it may reconnect; the ideal runs of section 5 froze whichever width they were given.
+- From 1e-6 up the equilibrium is gone: iota flattens to 0.53 .. 0.54 at 1e-6 and to the wall's vacuum profile 0.44 .. 0.49 at 1e-5, beta and helicity to zero. The bulk-mode estimate of the useful range (10 eta T ~ 1 at 1e-5) was off by two decades: the current lives at wavenumbers around 20, not at the bulk scale.
+- Cost: 14 arms x 0.8 GPU-h plus 1.7 for the floored first attempts and 0.1 per sections job; 14 GPU-h in all.
+
 ### 5f. Helicity without the auxiliary H: the B-only step (2026-09-03, `outputs/li383_bonly/`)
 
 The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H and u x H; helicity is conserved because its discrete rate is the integral of (u x H) . H, zero pointwise. `mrx/experimental/bonly_relaxation.py` (behind `scripts/relax.py --stepper bonly`, a hook to be removed) forms J x B and u x B from the 2-form directly. The energy identity survives ((u x B) . J = -u . (J x B) pointwise with the same J); the helicity rate becomes the integral of (u x B) . (H_h - B_h), a product of two projection errors. Twins of the production arms, helicity every 50 steps:
@@ -155,7 +192,9 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 6. Precision: one table row (`r12_p3_g0` vs `r12_p3_g0_f64`).
 7. Seeded islands: final zeta = 0.5 section of `s61_e1e-2_g0` and the island width vs eps (`figures/seeded.png`, right); the gamma = 1 and (16,32,32) widths as a sentence.
 8. gamma = 1 h-sweep at p = 2 (`figures/hsweep_p2.png`): residual vs step for five meshes, floor vs n with the IC residual, final iota profiles, energy released.
-9. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
+9. Resistivity (`li383_eta/figures/eta_islands.png` and `eta_traces.png`): island width at 1/2 and 3/5 vs eta_max, seeded and unseeded; traces of residual, J/B, beta, helicity, energy vs step per rung; the zeta = 0.5 section of `eta1e-7`.
+10. Helicity without H: one table row per pair (section 5f).
+11. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
 
