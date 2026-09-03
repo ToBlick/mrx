@@ -29,8 +29,13 @@ Reproduce with `tpu_bench_mrx.py` and `matvec_bench.py`.
 | `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
 | `apply_derivative_matrix` k=1 | 7.15 ms | **2.74 ms** | 6.28 ms | - |
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | **13.04 s** | 45.7 s | 17.92 s |
+| relaxation, per step (mass precond) | 100.3 s | **11.72 s** | 45.7 s | 12.61 s |
 | relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
+
+The last row of the "after" column predates the folded factorization below;
+the mass-preconditioner row includes it. Folding took the step from 13.04 s to
+**11.72 s** on the v5e and 17.92 s to **12.61 s** on the H200 (24.16 to 15.23
+in float64), with the trajectory unchanged on both.
 
 The v5e went from 1.7x slower than the VM's own CPU to **3.5x faster**, and
 setup from about 7 minutes to under a minute. Four things did that, in order
@@ -44,7 +49,8 @@ one.** Earlier versions of this file claimed the v5e was "32x behind one
 H100", from a `0.41 s/step` figure that was never the same measurement --
 [a warm-start A/B on W7-X](../../docs/research/release_review_sweep_2026-08-27.md),
 not li383. The H200 column above is the like-for-like measurement, and the
-v5e is **1.37x ahead** of it. The comparison, not the hardware, was the
+v5e is **1.08x ahead** of it (it was 1.37x before the folded factorization,
+which helped the GPU more). The comparison, not the hardware, was the
 problem. "The matvec baseline", "The step, composed from measured parts" and
 "Why the GPU loses" measure where that goes, and the short version is that the
 v5e runs the relaxation at its own matvec rate while the GPU pays 8x over
@@ -177,19 +183,23 @@ operator here is therefore also timed **inside a jitted `lax.scan`** of length
 
 Per-apply cost in **ms**, scan form:
 
-| operator | v5e `highest` | v5e `high` | H200 f32 | H200 f64 | VM CPU f32 |
+| operator | v5e before fold | v5e after fold | H200 f32 | H200 f64 | VM CPU f32 |
 |---|---|---|---|---|---|
-| `apply_mass_matrix` k=1 | 0.836 | 0.657 | 0.128 | 0.163 | 1.417 |
-| `apply_mass_matrix` k=2 | 0.749 | 0.586 | 0.121 | 0.156 | 1.369 |
-| &nbsp;&nbsp;`mass_core` k=1 | 0.504 | 0.324 | 0.135 | 0.155 | 1.406 |
-| &nbsp;&nbsp;`mass_core` k=2 | 0.458 | 0.295 | 0.127 | 0.163 | 1.356 |
-| &nbsp;&nbsp;`E` k=1 | 0.299 | 0.293 | 0.632 | 0.300 | 0.043 |
-| &nbsp;&nbsp;`E^T` k=1 | 0.311 | 0.293 | 0.400 | 0.441 | 0.027 |
-| `apply_stiffness` k=1 | 0.790 | 0.627 | 0.134 | 0.168 | 1.472 |
-| `apply_stiffness` k=2 | 0.433 | 0.383 | 0.064 | 0.079 | 0.561 |
-| `apply_derivative` `D^T D` k=1 | 1.537 | 1.208 | 0.234 | 0.304 | 2.832 |
-| mass atom k=2 (precond) | 0.065 | 0.065 | 0.039 | 0.038 | 0.030 |
-| laplacian atom k=2 (precond) | 0.072 | 0.070 | 0.084 | 0.074 | 0.044 |
+| `apply_mass_matrix` k=1 | 0.836 | **0.716** | 0.090 | 0.102 | 1.417 |
+| `apply_mass_matrix` k=2 | 0.749 | **0.659** | 0.082 | 0.100 | 1.369 |
+| &nbsp;&nbsp;`mass_core` k=1 | 0.504 | **0.394** | 0.105 | 0.120 | 1.406 |
+| &nbsp;&nbsp;`mass_core` k=2 | 0.458 | **0.365** | 0.090 | 0.108 | 1.356 |
+| &nbsp;&nbsp;`E` k=1 | 0.299 | 0.295 | 0.406 | 0.059 | 0.043 |
+| &nbsp;&nbsp;`E^T` k=1 | 0.311 | 0.297 | 0.322 | 0.393 | 0.027 |
+| `apply_stiffness` k=1 | 0.790 | **0.697** | 0.108 | - | 1.472 |
+| `apply_stiffness` k=2 | 0.433 | **0.390** | 0.047 | - | 0.561 |
+| `apply_derivative` `D^T D` k=1 | 1.537 | **1.354** | 0.170 | - | 2.832 |
+| mass atom k=2 (precond) | 0.065 | 0.065 | 0.036 | - | 0.030 |
+| laplacian atom k=2 (precond) | 0.072 | 0.072 | 0.086 | - | 0.044 |
+
+The H200 columns are noisy at this scale -- its eager numbers move by 2x
+between adjacent rows for the same operator -- so read them as a magnitude,
+not to three digits. The v5e columns are stable to the last digit shown.
 
 Three things this settles.
 
@@ -235,7 +245,11 @@ iteration of the velocity smoothing solve is:
 | `apply_derivative_matrix` k=1, forward and transpose | 2 |
 | mass-atom preconditioner, k=2 and k=1 | 2 |
 
-Priced with the scan-form costs above, at the solve's 3 497 iterations:
+Priced with the scan-form costs above, at the solve's 3 497 iterations. Every
+number in this section and the next is from **before** the folded
+factorization: they are a reconciliation of a step against its own parts, and
+both sides moved together, so re-deriving them post-fold would change the
+levels and not the conclusion.
 
 | | v5e `highest` | v5e `high` | H200 f32 | H200 f64 | VM CPU f32 |
 |---|---|---|---|---|---|
@@ -554,6 +568,59 @@ iterations": it is an exact inverse of the *lumped* operator, and the lumped
 operator is not close to `S_3`. `lambda_max(P M_2)` is 2.66, so the lower
 block is off by a similar factor.
 
+### A separable `(M + eps L)` atom: built, measured, not adopted
+
+The obvious response to those misses is a preconditioner that models the
+operator the solves actually invert. `docs/research/OPEN.md` section 3.9
+proposed one and gave two reasons it looked hard. **Both are wrong**, and
+`mrx/preconditioners.py` now has the atom, with tests.
+
+*"The atoms share no generalised eigenbasis."* They already do. The mass atom
+and the Laplacian atom build their 1-D axis masses through different code for
+different purposes, and both come out **bit-identical** -- verified for k=0..3
+and every component, and now asserted in `test_shifted_atom.py`. Both leave
+the axis mass unweighted and carry the metric outside as a diagonal. Only
+*which* diagonal differs, and that is a choice.
+
+*"`eps = eta * (accumulated dt)` changes every step, so the factorisation
+would be rebuilt."* It would not. Where `V.T M V = I` and `V.T L V =
+diag(mu)`, `M + eps L` is `1 + eps * mu` -- diagonal for **every** `eps`, same
+`V`. One build serves the whole line search, and `eps` stays a tracer.
+
+The construction works. Relative miss at k=2, li383 `(8,16,8)` p=3 float64:
+
+| eps | shifted atom | mass atom (today) |
+|---|---|---|
+| 0 | 3.26 | **2.92** |
+| 4.4e-4 (operative) | **2.20** | 6.02 |
+| 1e-2 | **2.94** | 116.0 |
+| 1e-1 | **3.27** | 1158.2 |
+
+Bounded over four decades where the mass atom grows linearly. **And it still
+loses**, because CG counts iterations and not norms: 185 against 149 at the
+operative shift.
+
+The reason is visible at `eps = 0`, where both model the same operator with
+the same 1-D factors and the only difference is that the new atom has no
+polar-core block: **82 iterations against 57**. That 1.44x core deficit is
+larger than anything the shift handling wins back. Correcting for it projects
+~1.16x at the shift the relaxation actually uses -- the smoothing solve runs
+at `eps = 0.064 / n_r^2 = 4.4e-4`, where `M + eps L` is still mass-dominated
+and the mass atom is already close to the right preconditioner. The large
+misses live at `eps >= 0.1`, outside the operating range.
+
+**It cannot help the Leray upper block at all**, contrary to the plan that
+asked for it. That block inverts the Schur complement `S_3`, not `M_3 + eps
+L_3`, and `L_3` is *identically zero* -- there is no 4-form for `G_3` to map
+into, measured as `||L_3 x|| = 0` exactly. A shifted atom at k=3 **is** the
+mass atom. The 1.88 miss needs a Schur model, which is a different object and
+is not this.
+
+Kept rather than deleted: it is the measured answer to an open proposal, and
+anyone revisiting it should start with a core block and expect ~1.16x.
+`shifted_atom_measure.py` reproduces all of the above and needs no
+accelerator.
+
 Every alternative available today is worse, so nothing was changed:
 
 | variant | iterations | seconds |
@@ -589,7 +656,9 @@ What the kernel actually asks for, counted rather than estimated
   FLOP/byte. 98% of those bytes are the six memoised metric weight blocks;
   the vectors themselves are 0.078 MB.
 
-Placed against each machine's roofs:
+Placed against each machine's roofs. These are the numbers **before** the
+folded factorization two sections down, because they are the diagnosis that
+led to it; the v5e row is 0.365 ms and 52.3 GFLOP/s after:
 
 | | per apply | achieved | of compute peak | of bandwidth peak |
 |---|---|---|---|---|
@@ -619,10 +688,86 @@ contraction in the kernel, and they are all the same size:
 
 `b`, `d`, `f` are `nloc`, which is 3 or 4; the row half contracts `q = p + 1
 = 4`. The batch is large (165 888) but **K is 4 against a 128-wide systolic
-array**. That is the leading hypothesis for the whole per-matvec gap: sum
-factorization splits one 64-wide contraction into three 4-wide ones to save
-FLOPs, which is the right trade on a CPU and neutral on a GPU, but here FLOPs
-are free at 0.13% of peak and occupancy is what is scarce.
+array**. The obvious hypothesis is that sum factorization is a pessimization
+here: it splits one wide contraction into three narrow ones to save FLOPs,
+which is the right trade on a CPU and neutral on a GPU, but here FLOPs are
+free at 0.13% of peak.
+
+### The width is not the problem, and the sweep that says so
+
+If the MXU were padding K = 4 up to 128, a matmul at fixed output size would
+cost the same at every K up to 128. `mxu_occupancy.py` sweeps exactly that, at
+the kernel's own batch of 165 888 and its own output width of 4, inside a
+jitted scan:
+
+| K | per apply | useful GFLOP/s |
+|---|---|---|
+| 4 | 0.0152 ms | 349 |
+| 8 | 0.0156 ms | 679 |
+| 16 | 0.0188 ms | 1 132 |
+| 64 | 0.0480 ms | 1 771 |
+| 128 | 0.0913 ms | 1 860 |
+
+**Padding is not the limit.** Cost is flat from 4 to 8 and then tracks K: 128
+costs 6.0x what 4 does for 32x the arithmetic. So a K = 4 contraction is not
+being charged for 128, and the hypothesis above is wrong as stated.
+
+What the sweep does establish is the size of the prize, and it is not where
+the hypothesis said. A plain K = 4 matmul at this batch reaches **349
+GFLOP/s**; `mass_core_apply`, whose contractions are all K = 3-4, reaches
+**41.6**. The kernel is **8.4x off what its own contraction width achieves on
+this chip**, and efficiency still rises 5.3x from K = 4 to K = 128. Both point
+the same way: not *padded* narrow contractions, just *too many* of them, each
+too small to amortise what surrounds it.
+
+### Folding two stages into one: 1.5x the FLOPs, 1.2-1.7x faster
+
+`factorization_ab.py` prices five ways of doing the same element transform,
+all timed inside a jitted scan at the real shapes, on one k=2 component:
+
+| formulation | v5e | H200 f32 | VM CPU |
+|---|---|---|---|
+| `chain3`, three stages, K = nloc (before) | 1.00x | 1.00x | 1.00x |
+| `chain3_bt`, contracted axis moved to the front | 0.98x | 0.91x | 0.91x |
+| **`fold2`, y and z contracted jointly, K = 9-16** | **1.48-1.70x** | **1.23-1.49x** | **1.62x** |
+| `fold3`, all three, K = 36 | 0.87-0.94x | 1.01x | 0.69x |
+| `gemm`, K = 36 flat | 1.28-1.38x | 1.31-1.37x | 0.75x |
+
+All five agree with the current chain to float32 round-off, 1.2e-7 or better.
+
+`chain3_bt` gaining nothing rules out layout: XLA was already handling the
+transposes, so the six-axis einsums were not the problem either. `fold3`
+losing despite reaching 153 GFLOP/s against `chain3`'s 34 rules out "wider is
+simply better" -- it does 4.8x the arithmetic and needs a 24 MB per-element
+basis tensor, and neither buys its way back. **`fold2` is the sweet spot**:
+two stages instead of three, 1.5x the FLOPs, and a fused table of 166 KB that
+carries no radial extent at all (it is the three-axis table divided by
+`ne_x * qx * nlx`, which is 144 here).
+
+This is now `_fuse_yz` in `mrx/mass.py`, used by both halves of the kernel:
+the row half contracts `(r,s)` against `(c,e)`, which needs exactly the tensor
+the column half contracts the other way. It is an einsum reassociation, so
+there is no basis it cannot handle and it needs no fallback, unlike the shift
+plan above. End to end:
+
+| | before fold | after fold |
+|---|---|---|
+| v5e, s/step | 13.04 | **11.72** |
+| H200 f32, s/step | 17.92 | **12.61** |
+| H200 f64, s/step | 24.16 | **15.23** |
+
+The trajectory is unchanged on both backends -- v5e `|F| = 3.09e-02`, `dH/H =
+-6.98e-06`, `dt = 3.11` at iteration 5, exactly as before. The GPU gains more
+than the TPU, which narrows the v5e's lead from 1.37x to 1.08x: the fold is a
+portable improvement, not a TPU workaround.
+
+Note what the composite operators did *not* gain. `mass_core` k=2 improved
+1.25x but `apply_mass_matrix` k=2 only 1.14x, because `E` and `E^T` are
+untouched and now make up **45% of a mass apply on the v5e** (0.365 ms of core
+against 0.297 ms of extraction). They are 7-11x cheaper on the CPU, being pure
+data movement with nothing to hide behind. That moves a structured extraction
+operator from "under 1% of a step" to the largest remaining TPU-specific item,
+and it is the one item in this file whose priority the fold changed.
 
 ### The rest, in order of what they would buy
 
@@ -651,10 +796,15 @@ are free at 0.13% of peak and occupancy is what is scarce.
   contiguous copy plus a small dense block: only 36/60/24 of the extracted rows
   actually mix for k=0/1/2, k=3 is pure selection, and over 99% of rows are
   single value-1.0 pass-throughs. It is the natural mirror of what fixes 2 and
-  3 did to the mass kernel. **It was not done, and should not be**: at 700
-  extraction applies of ~28 700, making `E` free saves under 1% of a step.
-  Recorded so the idea is not re-derived; it becomes worth doing only once the
-  MINRES iteration counts come down.
+  3 did to the mass kernel. **This entry is now out of date in the caller's
+  favour and is the top TPU-side candidate.** It said "under 1% of a step",
+  which counted only the ~700 standalone extraction applies. But `E` and `E^T`
+  also sit inside every `apply_mass_matrix`, and after the folded
+  factorization they are **45% of one on the v5e** -- 0.297 ms of extraction
+  against 0.365 ms of kernel, where before the fold the kernel was the larger
+  half. They are 7-11x cheaper on the CPU, which is the signature of indexed
+  data movement with no arithmetic to hide behind, exactly what fixes 2 and 3
+  addressed. Not done here, and it is the next thing to do.
 
 ## Reproducing this
 
@@ -702,9 +852,16 @@ run anywhere:
 
 ```bash
 python tpu/roofline.py --ns 12,24,12 --p 3 --k 2 \
-  --measured-ms 0.4582 --peak-tflops 33 --peak-gbs 819
+  --measured-ms 0.3653 --peak-tflops 33 --peak-gbs 819
+python tpu/mxu_occupancy.py --batch 165888 --n-out 4 --ks 4,8,16,32,64,128
+python tpu/factorization_ab.py --ns 12,24,12 --p 3 --k 2 --component 0
+python tpu/shifted_atom_measure.py --ns 8,16,8 --p 3 --k 2 --iterations
 python tpu/map_precision.py --matmul-precision {highest,high,default}
 ```
+
+Of these only `factorization_ab.py` and `mxu_occupancy.py` want an
+accelerator. `roofline.py` and `shifted_atom_measure.py` are counts and
+norms, and run anywhere.
 
 `roofline.py` needs no device: it counts FLOPs, essential bytes and the
 contraction dimension of every einsum from the sequence alone, and takes the

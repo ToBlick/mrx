@@ -122,21 +122,23 @@ backend differs:
 |---|---|---|---|---|
 | `build_sequence` | 203 s | 35.5 s | 40.6 s | - |
 | `compute_nullspaces` | 222 s | 17.5 s | 55.1 s | - |
-| `mass_core_apply` k=1 | 6.60 ms | 0.505 ms | 3.79 ms | 0.135 ms |
+| `mass_core_apply` k=1 | 6.60 ms | 0.394 ms | 3.79 ms | 0.105 ms |
 | `apply_laplacian` k=1 | 10 020 ms | 76.4 ms | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | 13.04 s | 45.7 s | 17.92 s |
+| relaxation, per step (mass precond) | 100.3 s | 11.72 s | 45.7 s | 12.61 s |
 | relaxation, per step (laplacian precond) | - | 8.05 s | - | - |
 
 The GPU column is one H200 running the same script at the same resolution, in
-float32. Per matvec it is 5.9x faster than the v5e; end to end it is 1.37x
+float32. Per matvec it is about 4x faster than the v5e; end to end it is 1.08x
 slower, because a step is a chain of about 250 000 sequentially dependent
 kernels and the v5e executes the whole `lax.scan` body as one on-device
 program. This workload suits a TPU.
 
-Two things account for that. The compilation cache above, and removing every
-index tensor from the mass kernel: the gather and the scatter at its two
-ends are both separable shift maps, so both are pure data movement with
-sources and destinations known at compile time.
+Three things account for that. The compilation cache above; removing every
+index tensor from the mass kernel, since the gather and the scatter at its two
+ends are both separable shift maps and so pure data movement with sources and
+destinations known at compile time; and folding the sum factorization's y and
+z stages into one contraction, which trades 1.5x the arithmetic for one fewer
+stage and is worth 1.2-1.7x on every backend, GPU and CPU included.
 
 | at (12,24,12) p=3 | v5e indexed | v5e structured | CPU indexed | CPU structured |
 |---|---|---|---|---|

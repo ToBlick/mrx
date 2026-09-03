@@ -323,7 +323,8 @@ def bench_mass_attribution(bench, seq, dtype):
     import jax.numpy as jnp
     import numpy as np
     from mrx.mass import (_flat_dof_plan, _form_bases, _from_quadrature,
-                          _shift_plan, _structured_accumulate, _to_quadrature)
+                          _fuse_yz, _shift_plan, _structured_accumulate,
+                          _to_quadrature)
 
     print("\n[attribution] inside mass_core_apply", flush=True)
 
@@ -337,7 +338,10 @@ def bench_mass_attribution(bench, seq, dtype):
             rng = np.random.default_rng(50 + k)
             x = jnp.asarray(rng.standard_normal(n_raw).astype(dtype))
             gidx = _flat_dof_plan(gx, gy, gz, shape)
-            Bvals = (Bx, By, Bz)
+            # The kernel carries the fused y-z table alongside the three 1-D
+            # ones, so the halves take a 4-tuple and there are two einsums per
+            # half rather than three.
+            Bvals = (Bx, By, Bz, _fuse_yz(By, Bz))
 
             f_gather = jax.jit(lambda v, g=gidx: v[g])
             bench.measure(f"  k={k} c=0 gather only (upper bound)",
@@ -346,13 +350,13 @@ def bench_mass_attribution(bench, seq, dtype):
                           note=f"n_raw={n_raw} -> {gidx.size}, materialised")
 
             f_toq = jax.jit(lambda v, B=Bvals, g=gidx: _to_quadrature(B, v, g))
-            bench.measure(f"  k={k} c=0 gather + 3 einsums (upper bound)",
+            bench.measure(f"  k={k} c=0 gather + einsums (upper bound)",
                           lambda f=f_toq, v=x: f(v),
                           inner=MICRO_INNER, note="_to_quadrature")
 
             u = f_toq(x)
             f_fromq = jax.jit(lambda w, B=Bvals: _from_quadrature(B, w))
-            bench.measure(f"  k={k} c=0 3 einsums back (upper bound)",
+            bench.measure(f"  k={k} c=0 einsums back (upper bound)",
                           lambda f=f_fromq, w=u: f(w),
                           inner=MICRO_INNER, note="_from_quadrature")
 
