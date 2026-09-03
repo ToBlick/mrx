@@ -114,66 +114,40 @@ is 105 ms.
 
 ## What the hardware is and is not for
 
-Measured on one `v5litepod-4` in `us-west4-a`, li383 at `--ns 12,24,12
---p 3` in float32, against the host CPU of the same VM so that only the
-backend differs:
+Measured on one `v5litepod-4`, li383 at `--ns 12,24,12 --p 3` in float32,
+against the host CPU of the same VM so that only the backend differs. Per
+matvec one H200 is about 4x faster than the v5e; end to end the v5e is slightly
+ahead, because a relaxation step is a chain of roughly 250 000 sequentially
+dependent kernels and the v5e executes the whole `lax.scan` body as a single
+on-device program. This workload suits a TPU.
 
-| | v5e before | v5e after | same VM's CPU | one H200 |
-|---|---|---|---|---|
-| `build_sequence` | 203 s | 35.5 s | 40.6 s | - |
-| `compute_nullspaces` | 222 s | 17.5 s | 55.1 s | - |
-| `mass_core_apply` k=1 | 6.60 ms | 0.394 ms | 3.79 ms | 0.105 ms |
-| `apply_laplacian` k=1 | 10 020 ms | 76.4 ms | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | 11.72 s | 45.7 s | 12.61 s |
-| relaxation, per step (laplacian precond) | - | 8.05 s | - | - |
-
-The GPU column is one H200 running the same script at the same resolution, in
-float32. Per matvec it is about 4x faster than the v5e; end to end it is 1.08x
-slower, because a step is a chain of about 250 000 sequentially dependent
-kernels and the v5e executes the whole `lax.scan` body as one on-device
-program. This workload suits a TPU.
-
-Three things account for that. The compilation cache above; removing every
-index tensor from the mass kernel, since the gather and the scatter at its two
-ends are both separable shift maps and so pure data movement with sources and
+Getting there took three changes, and two of the three are library changes
+rather than configuration: the compilation cache above; removing every index
+tensor from the mass kernel, since the gather and the scatter at its two ends
+are both separable shift maps and so pure data movement with sources and
 destinations known at compile time; and folding the sum factorization's y and
 z stages into one contraction, which trades 1.5x the arithmetic for one fewer
 stage and is worth 1.2-1.7x on every backend, GPU and CPU included.
+
+The index tensors are the transferable part:
 
 | at (12,24,12) p=3 | v5e indexed | v5e structured | CPU indexed | CPU structured |
 |---|---|---|---|---|
 | gather | 1.624 ms | 0.049 ms | 0.070 ms | 0.113 ms |
 | scatter | 2.011 ms | 0.060 ms | 0.398 ms | 0.303 ms |
 
-That is the most transferable fact here. On the indexed forms a v5e is 23x
-and 5x slower than the VM's own CPU; on the structured forms it is 2.8x and
-5x faster. Identical work, identical answers. If a kernel is slow on this
-hardware, look for an index tensor first.
+On the indexed forms a v5e is 23x and 5x slower than the VM's own CPU; on the
+structured forms it is 2.8x and 5x faster. Identical work, identical answers.
+**If a kernel is slow on this hardware, look for an index tensor first.**
 
-What was left was not compilation either. `relaxation_loop` is already
-`@jax.jit` around a `lax.scan`, so the 13 s per step was pure device
-execution. From the primitives above it ought to have been 350 ms. The
-per-apply arithmetic was right and the apply *count* was not: **one step is
-about 28 700 operator applies**, at roughly half a millisecond each. Three
-MINRES solves are 99.3% of them, and the velocity smoothing solve alone took
-3 497 iterations and was 85% of the step; the inverse-mass CG solves usually
-blamed for the cost take 20-27 iterations and are 0.7%.
-
-That solve was preconditioned by the mass atom, on the strength of a claim
-that `eps * lambda_max(M^-1 L) ~ 0.26` at `(8,16,8)`. Power iteration says
-91.5, and 360.3 at `(12,24,12)`: `lambda_max` grows 8.9x between the two
-while `eps` falls only 2.25x, so the operator is Laplacian-dominated and
-refining makes it more so. Preconditioning with the metric-lumped Laplacian
-atom instead, as `(1/eps) P_L`, takes the step from **13.02 s to 8.05 s** on
-the same node, a 1.62x, with the trajectory unchanged to 4.3e-09 against a
-solver tolerance of 1.49e-08.
-
-None of that is a TPU property -- apply count is backend-independent, so the
-same counts hold on CPU and GPU -- but a TPU made it visible. A `v5litepod-4` is
-also four chips and MRX uses one; a parameter sweep takes all four with
-`jax.pmap` over a stacked batch of initial states and no library change,
-measured at 3.99x on real chips once compilation is timed separately from
-execution.
+Two things that surprised us and are worth knowing before you profile. The cost
+was never compilation -- `relaxation_loop` is already `@jax.jit` around a
+`lax.scan`, so the time was pure device execution, and the per-apply arithmetic
+was right while the apply *count* was not. And apply count is a
+backend-independent property, so the preconditioner work it led to helps CPU and
+GPU by the same factor; a TPU only made it visible. A `v5litepod-4` is also four
+chips where MRX uses one, so a parameter sweep takes all four through `jax.pmap`
+with no library change, measured at 3.99x.
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at
@@ -191,13 +165,19 @@ PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
 python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
 
-`tpu/results/benchmark_v5e_vs_cpu.md` has the full table, including three
-fixes that sounded right and that measurement refuted.
+`tpu/results/benchmark_v5e_vs_cpu.md` is where the per-backend tables, the
+step composition and the per-operator costs are maintained, along with several
+hypotheses that sounded right and that measurement refuted. Read the staleness
+note at its headline before quoting a per-step number: they predate the
+development branch's reformulation of the smoothing solve.
 
 ## Cost
 
-A Cloud TPU API node bills until deleted, and a failed script does not stop
-it. Audit after every session:
+A Cloud TPU API node has no `--max-run-duration`, so `tpu/idle_reaper.sh` runs
+on every node and deletes it after 20 minutes with nothing running, no login
+session and no accelerator held. That is a safety net rather than a policy: a
+failed script still costs up to twenty minutes of a v5e. Audit after every
+session:
 
 ```bash
 gcloud compute tpus tpu-vm list --zone=-
