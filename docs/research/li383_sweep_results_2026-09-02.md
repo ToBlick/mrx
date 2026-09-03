@@ -130,6 +130,21 @@ Does the relaxed residual go down with the mesh? Five rungs on the ns = 49 refer
 - Topology (`h24_p2_g1/poincare/poincare_final_zeta0.5.png`, same at n = 32): nested surfaces throughout, 0 chaotic lines at n >= 24 (5 at n = 8), a smooth iota profile with no resolved plateau at 1/2 or 3/5, p_w a flux function. The ns = 49 reference relaxes without forming the chains the ns = 16 file forms (section 4).
 - Cost: 0.15 / 0.30 / 0.58 / 1.77 / 4.61 s/step, i.e. about h^-3 from n = 16 up; the five rungs took 10.3 GPU-h of the 20 budgeted (plus about 0.5 for the sections).
 
+### 5f. Helicity without the auxiliary H: the B-only step (2026-09-03, `outputs/li383_bonly/`)
+
+The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H and u x H; helicity is conserved because its discrete rate is the integral of (u x H) . H, zero pointwise. `mrx/experimental/bonly_relaxation.py` (behind `scripts/relax.py --stepper bonly`, a hook to be removed) forms J x B and u x B from the 2-form directly. The energy identity survives ((u x B) . J = -u . (J x B) pointwise with the same J); the helicity rate becomes the integral of (u x B) . (H_h - B_h), a product of two projection errors. Twins of the production arms, helicity every 50 steps:
+
+| arm pair | mesh, p, precision | steps | s/step | energy identity max | H-form dH | B-only dH | ratio |
+|---|---|---|---|---|---|---|---|
+| h16_p2_g1 / bonly_h16_p2_g1 | (16,32,32) p2 f32 | 5000 | 0.58 / 0.58 | 1.3e-7 / 1.8e-7 | -8.7e-8 | -7.6e-8 | 0.9 |
+| h12_p2_f64_h / _bonly | (12,24,24) p2 f64 | 5000 | 0.95 / 0.93 | 3.5e-14 / 3.7e-14 | -3.1e-8 | -3.4e-8 | 1.1 |
+| h8_p1_h / _bonly | (8,16,16) p1 f32 | 5000 | 0.08 / 0.08 | 3.9e-4 / 3.5e-4 | +2.6e-5 | +6.2e-5 | 2.4 |
+
+- Dropping H does break helicity conservation, but at p >= 2 the effect is under the time-stepping error the production scheme already has: in float64, with the energy identity at 3e-14, the H-form still drifts 3e-8 over 5000 steps. E perp H makes the RATE vanish (the semi-discrete statement); the explicit step B + dt curl E changes the helicity by dt^2 (E, curl E) per step, and the line-search step of about 2 makes that the dominant term.
+- The B-only term is a tenth of it at p = 2 and the larger term only at p = 1 on the coarse mesh (2.4x). H_0 = 5.0e-3 in every arm.
+- A clean demonstration of "H conserves, B does not" needs either p = 1 or a helicity-conserving time integrator (midpoint in A) as the baseline. Not done. The dt^2 attribution is argued, not measured; a float64 H-form arm with the CFL cap forcing dt down by 4 would confirm it (about 1.3 GPU-h).
+- Cost: 0.8 + 1.3 + 1.3 + 0.1 + 0.1 GPU-h.
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
