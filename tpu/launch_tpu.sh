@@ -52,7 +52,7 @@ build_args() {
         --image-family="${IMAGE_FAMILY}"
         --maintenance-policy=TERMINATE
         --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
-        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}"
+        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}",mrx-branch="${MRX_BRANCH}"
     )
     # Only FLEX_START takes a wait time; passing it elsewhere is rejected.
     if [[ "${model}" == "FLEX_START" ]]; then
@@ -122,7 +122,7 @@ create_tpuapi() {
         --accelerator-type="${accel}"
         --version="${TPU_RUNTIME}"
         --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
-        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}"
+        --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}",mrx-branch="${MRX_BRANCH}"
     )
     case "${model}" in
         SPOT)        args+=(--spot) ;;

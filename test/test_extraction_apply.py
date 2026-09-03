@@ -11,18 +11,38 @@ exactly the kind of thing that can silently drop duplicate contributions.
 So the oracle here is not another matrix-free apply: it is the dense matrix
 assembled from the operator's own ``(rows, cols, vals)`` with ``np.add.at``,
 which sums repeated ``(row, col)`` entries by construction. Agreement means
-the compiled program implements the COO semantics the class documents. The
-accumulation is genuinely exercised: on the ``(4, 6, 4)`` p=2 torus the
-polar k=0 operator scatters 160 weighted values into 36 rows, so most rows
-are a sum of several contributions rather than a relabelled copy.
+the compiled program implements the COO semantics the class documents.
+
+The accumulation is genuinely exercised, though not uniformly: on the
+session's li383 ``(8, 12, 12)`` p=2 sequence the k=0 operator scatters 1704
+values into 900 rows, and 864 of those rows are a relabelled copy of a single
+entry. The 36 that are not are the polar core, which takes up to 24
+contributions each -- so the rows that would expose a dropped duplicate are a
+small and specific minority, which is the reason to check them rather than
+to trust that a gather-plus-scatter is obviously a matrix.
 """
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 import mrx
 from mrx.operators import extraction
 
-from test.dense import dense_from_apply
+
+def _dense_from_apply(apply, n, batch_size=16):
+    """Densify a matrix-free ``apply`` by probing one-hot vectors.
+
+    ``jax.lax.map`` rather than a ``vmap`` over ``jnp.eye``: the latter
+    compiles to a single kernel that has crashed ptxas on the larger probes.
+    """
+    apply(jnp.zeros(n, dtype=mrx.DTYPE))  # build any host-side plan eagerly
+
+    def column(j):
+        return apply(jnp.zeros(n, dtype=mrx.DTYPE).at[j].set(1.0))
+
+    return np.asarray(
+        jax.lax.map(column, jnp.arange(n), batch_size=batch_size)).T
 
 
 def _dense_oracle(e):
@@ -37,36 +57,33 @@ def _dense_oracle(e):
 
 @pytest.mark.parametrize("k", [0, 1, 2, 3])
 @pytest.mark.parametrize("dirichlet", [False, True])
-def test_extraction_apply_matches_its_coo_triplets(tiny_seq, k, dirichlet):
+def test_extraction_apply_matches_its_coo_triplets(seq, k, dirichlet):
     """``E`` and ``E^T`` densify to the triplets' matrix and its transpose."""
-    e = extraction(tiny_seq, k, dirichlet)
+    e = extraction(seq, k, dirichlet)
     oracle = _dense_oracle(e)
     n_row, n_col = e.forward_shape
 
-    got = dense_from_apply(e._apply, n_col)
+    got = _dense_from_apply(e._apply, n_col)
     assert got.shape == (n_row, n_col)
     # The apply is a weighted gather and a sum of at most a few terms per
     # row, so the error is a handful of eps times the entry scale.
     scale = max(1.0, np.abs(oracle).max())
     assert np.abs(got - oracle).max() < mrx.eps(1e3) * scale
 
-    got_T = dense_from_apply(e.T._apply, n_row)
+    got_T = _dense_from_apply(e.T._apply, n_row)
     assert got_T.shape == (n_col, n_row)
     assert np.abs(got_T - oracle.T).max() < mrx.eps(1e3) * scale
 
 
 @pytest.mark.parametrize("k", [0, 1, 2, 3])
-def test_extraction_transpose_is_the_adjoint(tiny_seq, k):
+def test_extraction_transpose_is_the_adjoint(seq, k):
     """``<E x, y> == <x, E^T y>``, the property every solve relies on.
 
     Densifying cannot catch an apply that is wrong in a way its own
     transpose repeats; this pairs the two orientations against each other on
     random vectors instead of on unit ones.
     """
-    import jax
-    import jax.numpy as jnp
-
-    e = extraction(tiny_seq, k, True)
+    e = extraction(seq, k, True)
     n_row, n_col = e.forward_shape
     key = jax.random.PRNGKey(k)
     kx, ky = jax.random.split(key)
@@ -80,17 +97,14 @@ def test_extraction_transpose_is_the_adjoint(tiny_seq, k):
 
 
 @pytest.mark.parametrize("k", [1, 2])
-def test_extraction_apply_handles_a_matrix_argument(tiny_seq, k):
+def test_extraction_apply_handles_a_matrix_argument(seq, k):
     """The apply broadcasts over columns, which ``_apply_coo`` special-cases.
 
     ``vals`` is reshaped to ``vals[:, None]`` for a 2-D argument, so the
     two-dimensional path is a separate branch of the compiled program and
     has to agree with applying to each column on its own.
     """
-    import jax
-    import jax.numpy as jnp
-
-    e = extraction(tiny_seq, k, True)
+    e = extraction(seq, k, True)
     n_row, n_col = e.forward_shape
     x = jax.random.normal(jax.random.PRNGKey(7 + k), (n_col, 3), dtype=mrx.DTYPE)
 

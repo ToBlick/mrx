@@ -28,8 +28,6 @@ import pytest
 
 import mrx
 import mrx.mass as mass_mod
-from mrx.derham_sequence import DeRhamSequence
-from mrx.mappings import rotating_ellipse_map
 from mrx.mass import (_flat_dof_plan, _shift_plan, _shift_plan_axis,
                       _structured_accumulate, _structured_gather,
                       build_mass_diagonal, build_matrixfree_mass_apply)
@@ -37,15 +35,6 @@ from mrx.mass import (_flat_dof_plan, _shift_plan, _shift_plan_axis,
 # The two paths sum the same terms in a different order, so they differ only by
 # round-off: 1e3 eps = 2.2e-13 f64 / 1.2e-4 f32, as elsewhere in the suite.
 ATOL = mrx.eps(1e3)
-
-
-@pytest.fixture(scope="module")
-def mf_seq():
-    """(4, 6, 4) p=2 polar rotating ellipse, matching test_matrixfree_masses."""
-    seq = DeRhamSequence((4, 6, 4), (2, 2, 2), 3,
-                         ("clamped", "periodic", "periodic"), polar=True)
-    seq.set_map(rotating_ellipse_map(eps=0.33, kappa=1.2, R0=1.0, nfp=3))
-    return seq
 
 
 def _n_raw(seq, k):
@@ -174,22 +163,22 @@ def test_structured_gather_matches_the_index_read(plan):
 # ------------------------------------------------ the two paths on a sequence ---
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_real_sequence_takes_the_structured_path(mf_seq, k):
+def test_real_sequence_takes_the_structured_path(seq, k):
     """Guards the comparisons below: without this they could be indexed vs indexed.
 
     A mass operator has the same form on both sides, so these components are
     the gather plan and the assembly plan at once.
     """
-    form, comp, n_comp = mass_mod._form_bases(mf_seq, k)
+    form, comp, n_comp = mass_mod._form_bases(seq, k)
     for c in range(n_comp):
         plan = _shift_plan(comp[c][1], comp[c][3], comp[c][5], form.shape[c])
         assert plan is not None, f"k={k} component {c} fell back to segment_sum"
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_structured_mass_apply_matches_segment_sum(mf_seq, k, monkeypatch):
+def test_structured_mass_apply_matches_segment_sum(seq, k, monkeypatch):
     """``M_k x`` is the same vector whichever assembly the kernel chose."""
-    seq = mf_seq
+    seq = seq
     x = _probe(seq, k)
     structured = np.asarray(build_matrixfree_mass_apply(seq, k)(x))
 
@@ -203,9 +192,9 @@ def test_structured_mass_apply_matches_segment_sum(mf_seq, k, monkeypatch):
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_structured_mass_diagonal_matches_segment_sum(mf_seq, k, monkeypatch):
+def test_structured_mass_diagonal_matches_segment_sum(seq, k, monkeypatch):
     """``diag(M_k)`` agrees too, and is positive as a mass diagonal must be."""
-    seq = mf_seq
+    seq = seq
     structured = np.asarray(build_mass_diagonal(seq, k))
 
     monkeypatch.setattr(mass_mod, "_shift_plan", lambda *a, **kw: None)
@@ -217,14 +206,14 @@ def test_structured_mass_diagonal_matches_segment_sum(mf_seq, k, monkeypatch):
                         rtol=0.0, atol=ATOL * np.abs(scattered).max())
 
 
-def test_fallback_apply_still_agrees_with_the_diagonal(mf_seq, monkeypatch):
+def test_fallback_apply_still_agrees_with_the_diagonal(seq, monkeypatch):
     """With the plan disabled end to end, the scatter path is self-consistent.
 
     ``diag(M)_i = e_i . M e_i``, so probing the fallback apply with unit vectors
     has to reproduce the fallback diagonal. This is what says the ``segment_sum``
     branch is still a working assembly and not merely dead code that compiles.
     """
-    seq = mf_seq
+    seq = seq
     monkeypatch.setattr(mass_mod, "_shift_plan", lambda *a, **kw: None)
     k = 0
     apply = build_matrixfree_mass_apply(seq, k)

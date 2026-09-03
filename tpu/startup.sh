@@ -66,7 +66,15 @@ echo "=================================================================="
 FORGE_DIR=/mnt/data/miniforge3
 ENV_DIR=/mnt/data/envs/mrx
 REPO_DIR=/mnt/data/mrx
-MRX_BRANCH=static-dynamic-refactor
+# Which branch a fresh node checks out. Overridable from the launcher via the
+# `mrx-branch` metadata key, because the default is the development branch and
+# a node measuring a feature branch would otherwise silently benchmark the
+# wrong tree -- a failure that reads as a performance result, not as an error.
+# Irrelevant under SYNC_LOCAL_MRX=1, which overwrites the checkout wholesale.
+MRX_BRANCH="$(curl -sf -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/attributes/mrx-branch \
+    || echo static-dynamic-refactor)"
+MRX_BRANCH="${MRX_BRANCH:-static-dynamic-refactor}"
 PY_VERSION=3.12
 # The one geometry file the finite-beta tutorial needs. It is whitelisted in
 # .gitignore (data/* is otherwise ignored), so it arrives with the clone.

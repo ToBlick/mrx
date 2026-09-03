@@ -17,6 +17,9 @@ MAX_RUN_DURATION="${MAX_RUN_DURATION:-4h}"
 # compilation cache; short enough that forgetting costs one coffee. Set to 0 to
 # install the reaper but never let it fire.
 IDLE_TIMEOUT_MIN="${IDLE_TIMEOUT_MIN:-20}"
+# The branch a fresh node checks out. Override to measure a feature branch
+# without SYNC_LOCAL_MRX; the node otherwise clones the development branch.
+MRX_BRANCH="${MRX_BRANCH:-static-dynamic-refactor}"
 DATA_DISK="${DATA_DISK:-my-data-disk}"
 DATA_SNAPSHOT="${DATA_SNAPSHOT:-my-data-snapshot}"
 IMAGE_PROJECT="${IMAGE_PROJECT:-ubuntu-os-accelerator-images}"
