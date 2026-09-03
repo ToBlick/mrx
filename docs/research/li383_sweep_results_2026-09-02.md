@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: complete 2026-09-02 (reruns, seeded arms, floor-1e-4 arms; 14 GPU-h). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
+Status: complete 2026-09-03 (reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2; 25 GPU-h). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -111,6 +111,24 @@ Same arms as above, run on to the step / wall cap.
 - The residual bottoms out at about 6e-4 on the ns = 49 reference at (12,24,24) p = 3 (100-step window means 6.0e-4, 6.7e-4, 5.8e-4): 3.5 .. 6x more steps than the 1e-3 stop buy a factor 1.2 .. 1.6, seeded or not, gamma = 0 or 1.
 - The islands do not move: (6, 1) at eps 3e-3 is 0.080 / 0.097 wide after 6000 steps against 0.079 / 0.098 at the 1e-3 stop and 0.074 / 0.093 at the IC. The tearing-stable verdict holds past the floor.
 
+### 5c. gamma = 1 under h-refinement at fixed p = 2 (launched 2026-09-02 21:53)
+
+Does the relaxed residual go down with the mesh? Five rungs on the ns = 49 reference, mesh (n, 2n, 2n), p = 2, gamma = 1 with mu = 0.064 / n^2, `--floor-tol 1e-5` (never reached) and 5000 steps; wall caps 0.5 / 1 / 2 / 5 / 10 h. `min` is the smallest `||F||` on the trace, `window` the 100-step mean at the stop.
+
+| arm | ns | mu | steps | stop | s/step | `||F||` 0 -> end | min | window | dH/H_0 | beta_vol | chaotic | GPU-h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| h8_p2_g1 | 8,16,16 | 1.0e-03 | 5000 | steps | 0.15 | 2.82e-02 -> 5.99e-04 | 5.38e-04 | 5.52e-04 | -2.9e-05 | 0.0425 | 5 | 0.21 |
+| h12_p2_g1 | 12,24,24 | 4.4e-04 | 5000 | steps | 0.30 | 1.55e-02 -> 5.42e-04 | 5.22e-04 | 5.77e-04 | -2.7e-05 | 0.0434 | 1 | 0.42 |
+| h16_p2_g1 | 16,32,32 | 2.5e-04 | 5000 | steps | 0.58 | 1.52e-02 -> 5.19e-04 | 4.95e-04 | 5.40e-04 | -1.7e-05 | 0.0431 | 1 | 0.80 |
+| h24_p2_g1 | 24,48,48 | 1.1e-04 | 5000 | steps | 1.77 | 1.51e-02 -> 5.31e-04 | 4.66e-04 | 5.26e-04 | -1.1e-05 | 0.0428 | 0 | 2.46 |
+| h32_p2_g1 | 32,64,64 | 6.3e-05 | 5000 | steps | 4.61 | 1.50e-02 -> 5.60e-04 | 4.93e-04 | 5.94e-04 | -1.0e-05 | 0.0426 | -- | 6.40 |
+
+- The bottom does not move with h: after 5000 steps the residual sits at (5.0 .. 5.8)e-4 on every rung from (8,16,16) to (32,64,64) (`figures/hsweep_p2.png`, top right, against n^-1 and n^-2 guides). The IC residual is set by the file, 1.5e-2 from n = 12 on (2.8e-2 at n = 8, where the mesh under-resolves the reference), so the descent takes out a factor 30 that is the same at every resolution.
+- The traces are not at a fixed point: over the second half of each run `||F||` still falls as step^(-0.1 .. -0.3) at a line-search step of about 2 that is h-independent under gamma = 1. Whatever remains at 5e-4 is the case's residual under ideal descent (rational surfaces, the file's own imbalance), not a discretisation error; more steps buy a little on every mesh, more cells buy nothing.
+- Energy released converges with h: E_0 - E = 1.5e-5, 2.1e-6, 8.9e-7, 6.6e-7, 6.9e-7 for n = 8 .. 32, i.e. the ns = 49 state is within 1.4e-6 of the relaxed energy on the fine meshes (the ns = 16 file released 1e-4, section 4). The absolute helicity change shrinks with h too, -1.5e-7, -1.4e-7, -8.7e-8, -5.4e-8, -5.0e-8 (H_0 = 5.0e-3).
+- Rotational transform (`figures/hsweep_p2.png`, bottom left): the final profiles of n = 12, 16, 24 lie on the reference (axis 0.395 / 0.394 / 0.392 against 0.396 / 0.395 / 0.394 at the IC, edge 0.659 .. 0.660); n = 8 sits 0.004 high at the axis. The gamma = 1 axis dip is at most 0.002 on li383 at n >= 12 (the W7-X arms of 2026-08-27 dipped 0.005 on every mesh).
+- Cost: 0.15 / 0.30 / 0.58 / 1.77 / 4.61 s/step, i.e. about h^-3 from n = 16 up; the five rungs took 10.3 GPU-h of the 20 budgeted (plus about 0.5 for the sections).
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
@@ -120,7 +138,8 @@ Same arms as above, run on to the step / wall cap.
 5. Final topology: zeta = 0.5 section of `r12_p3_g0` (logical chart + iota / p_w panel) and a frame strip from its movie (steps 0, 1000, 2000, 4000, 6000).
 6. Precision: one table row (`r12_p3_g0` vs `r12_p3_g0_f64`).
 7. Seeded islands: final zeta = 0.5 section of `s61_e1e-2_g0` and the island width vs eps (`figures/seeded.png`, right); the gamma = 1 and (16,32,32) widths as a sentence.
-8. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
+8. gamma = 1 h-sweep at p = 2 (`figures/hsweep_p2.png`): residual vs step for five meshes, floor vs n with the IC residual, final iota profiles, energy released.
+9. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
 

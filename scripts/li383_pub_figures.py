@@ -263,6 +263,7 @@ def hsweep_figure(arms, figdir):
     ax[0, 1].set_ylabel(r"$\|F\|_M$")
     ax[0, 1].set_xticks(n)
     ax[0, 1].set_xticklabels([str(int(v)) for v in n])
+    ax[0, 1].tick_params(axis="x", which="minor", labelbottom=False)
     ax[0, 1].grid(alpha=0.3, which="both")
     ax[0, 1].legend(fontsize=8)
     ax[0, 1].set_title("floor versus resolution")
@@ -271,23 +272,20 @@ def hsweep_figure(arms, figdir):
         if z is None:
             continue
         keep = z["final_keep"] & ~z["final_chaotic"]
+        r, io = z["final_seed_r"][keep], z["final_iota"][keep]
+        o = np.argsort(
+            r
+        )  # the archive stores the two golden-angle rays one after the other
         ax[1, 0].plot(
-            z["final_seed_r"][keep],
-            z["final_iota"][keep],
-            ".-",
-            ms=3,
-            lw=0.8,
-            label=f"n={j['params']['ns'][0]}",
+            r[o], io[o], ".-", ms=3, lw=0.8, label=f"n={j['params']['ns'][0]}"
         )
     z = sections(arms[-1])
     if z is not None:
         keep = z["ic_keep"] & ~z["ic_chaotic"]
+        r, io = z["ic_seed_r"][keep], z["ic_iota"][keep]
+        o = np.argsort(r)
         ax[1, 0].plot(
-            z["ic_seed_r"][keep],
-            z["ic_iota"][keep],
-            "k:",
-            lw=1.0,
-            label=f"IC, n={arms[-1]['params']['ns'][0]}",
+            r[o], io[o], "k:", lw=1.0, label=f"IC, n={arms[-1]['params']['ns'][0]}"
         )
     ax[1, 0].set_xlabel(r"$\rho$")
     ax[1, 0].set_ylabel(r"$\iota$ (final)")
