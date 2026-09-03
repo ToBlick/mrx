@@ -10,6 +10,7 @@
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
+#   bash scripts/li383_pub.sh adaptive [smoke]  # stall-triggered pulse controller, outputs/li383_pulse
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -183,6 +184,17 @@ pulse() {
     submit relax pulse5e-7_cyc "$WT/scripts/relax.py" "$common --eta-max 5e-7 --eta-pulse 2000,100,1000 --out $PUB/pulse5e-7_cyc" 300
 }
 
+adaptive() {  # adaptive [smoke]
+    # 2026-09-03: the stall-triggered pulse controller (--pulse-adaptive) at
+    # the (16,32,32) p = 2 gamma = 1 rung; 8000 steps so several cycles fit.
+    export EXTRA_ENV="PYTHONPATH=$WT"
+    if [ "${1:-}" = smoke ]; then
+        submit relax adaptive_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --qoi-every 100 --pulse-adaptive --pulse-spacing 300 --out $PUB/adaptive_smoke" 40
+    else
+        submit relax adaptive_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --save-every 100 --qoi-every 100 --pulse-adaptive --out $PUB/adaptive_h16_p2_g1" 400
+    fi
+}
+
 sections() {  # sections NAME [TIMEOUT_MIN]
     submit sec "$1" scripts/poincare_relax.py \
         "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
@@ -200,9 +212,10 @@ case ${1:-} in
     hsweep_p2) hsweep_p2 ;;
     psweep_p16) psweep_p16 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
+    adaptive) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; adaptive "${2:-}" ;;
     pulse) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; pulse ;;
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | adaptive [smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac

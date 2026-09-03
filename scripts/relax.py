@@ -132,6 +132,21 @@ Output (``--out``):
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
+``--pulse-adaptive`` runs the ideal descent and fires a resistive pulse, one
+backward-Euler solve of ``(M + eps L) delta = -eps L B``, whenever the descent
+stalls: the 200-step block mean of the residual has dropped by less than
+``--pulse-stall`` over the last 1000 steps. The dose is ``eps = c h^2`` with
+``h = 1 / n_r`` and ``c`` starting at ``--pulse-eps0`` (a diffusion length of
+``sqrt(c)`` cells); the descent state is snapshotted before the pulse and the
+optimiser restarted on the diffused field. At the next stall the pulse is
+judged: accepted when the new floor is below ``(1 - --pulse-gain)`` times the
+floor before it, and ``c`` grows by ``--pulse-grow``; otherwise the state is
+reverted to the snapshot and ``c`` shrinks by the same factor. Pulses are at
+least ``--pulse-spacing`` steps apart and stop once the helicity has moved by
+more than ``--pulse-helicity`` of its initial value. ``results["pulses"]``
+records every event; the trace keeps the trial steps of a reverted pulse
+(marked by the event's ``reverted`` range) since their wall time was spent.
+
 ``--checkpoint PATH`` (default ``<out>/state.eqx``) serialises the full
 descent state -- B, the pressure and warm-start guesses, the L-BFGS pair,
 the resistive clock -- together with the step number at every save and at
@@ -253,6 +268,20 @@ def parse_args(argv=None):
                     help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
                          "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--pulse-adaptive", action="store_true",
+                    help="resistive pulses fired by the stall detector (see the docstring)")
+    ap.add_argument("--pulse-stall", type=float, default=0.05,
+                    help="stalled when the residual dropped by less than this over 1000 steps")
+    ap.add_argument("--pulse-eps0", type=float, default=0.01,
+                    help="first dose eps = c h^2 with this c")
+    ap.add_argument("--pulse-grow", type=float, default=2.0,
+                    help="factor on c after an accepted (x) or rejected (/) pulse")
+    ap.add_argument("--pulse-gain", type=float, default=0.10,
+                    help="accept a pulse when the next floor is below (1 - gain) x the previous")
+    ap.add_argument("--pulse-helicity", type=float, default=0.01,
+                    help="stop pulsing once |H - H_0| / |H_0| exceeds this")
+    ap.add_argument("--pulse-spacing", type=int, default=500,
+                    help="minimum steps between pulse events (fire or judge)")
     ap.add_argument("--checkpoint", default=None,
                     help="write the descent state (equinox pytree + step) here at every "
                          "save and at the end; default <out>/state.eqx")
@@ -522,7 +551,9 @@ def main(cli):
             resid_window_mean=float(np.mean(window)) if window else resid0,
             **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
-            json.dump(results, fh, indent=1)
+            # the pulse events carry their snapshot pytree until judged
+            json.dump(dict(results, pulses=[{k: v for k, v in ev.items() if k != "snapshot"}
+                                            for ev in results["pulses"]]), fh, indent=1)
         eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
         # The field goes out with every save, not only the last one: a run
         # that hits its wall-time limit leaves the state it reached.
@@ -539,6 +570,21 @@ def main(cli):
                 fh.create_dataset("pw_snapshots", data=np.stack([w for _, _, w in snaps]))
             for k, v in params.items():
                 fh.attrs[k] = "" if v is None else v
+
+    results["pulses"] = []
+    pulse_c = cli.pulse_eps0
+    pulse_h2 = (1.0 / ns[0]) ** 2
+    pulse_pending = None
+    pulse_last = it0
+    pulses_off = False
+    pulse_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
+
+    def stalled(resid):
+        """The 200-step block mean dropped by less than --pulse-stall over 1000 steps."""
+        if len(resid) < 1200:
+            return False, None
+        now, before = float(np.mean(resid[-200:])), float(np.mean(resid[-1200:-1000]))
+        return now > (1.0 - cli.pulse_stall) * before, now
 
     for it in range(it0 + 1, it0 + cli.steps + 1):
         if cli.eta_max > 0.0:
@@ -608,6 +654,48 @@ def main(cli):
                   f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
                   f"res_delta={tr['res_delta'][-1]:.2e}",
                   flush=True)
+        if cli.pulse_adaptive and it - pulse_last >= cli.pulse_spacing:
+            is_stalled, floor_now = stalled(tr["resid"])
+            if is_stalled and pulse_pending is not None:
+                ev = pulse_pending
+                ev["judged_at"], ev["floor_after"] = it, floor_now
+                if floor_now < (1.0 - cli.pulse_gain) * ev["floor_before"]:
+                    ev["outcome"] = "accepted"
+                    pulse_c *= cli.pulse_grow
+                else:
+                    ev["outcome"] = "rejected"
+                    ev["reverted"] = [ev["it"] + 1, it]
+                    state = ev.pop("snapshot")
+                    pulse_c /= cli.pulse_grow
+                ev.pop("snapshot", None)
+                print(f"  [pulse] {ev['outcome']} at it={it}: floor {ev['floor_before']:.3e} -> "
+                      f"{floor_now:.3e}; next c = {pulse_c:.3g}", flush=True)
+                pulse_pending = None
+                pulse_last = it
+            elif is_stalled and not pulses_off:
+                tq = time.perf_counter()
+                H_now, A_new = get_helicity(state.B_n, seq, state.A)
+                state = eqx.tree_at(lambda t: t.A, state, A_new)
+                t_qoi += time.perf_counter() - tq
+                loss = abs(float(H_now) - float(H0)) / abs(float(H0))
+                if loss > cli.pulse_helicity:
+                    pulses_off = True
+                    print(f"  [pulse] helicity budget spent ({loss:.2e} > {cli.pulse_helicity:g}); "
+                          f"no more pulses", flush=True)
+                else:
+                    eps = pulse_c * pulse_h2
+                    B_new, info, rel = pulse_fn(state.B_n, eps)
+                    pulse_pending = dict(it=it, eps=float(eps), c=pulse_c, floor_before=floor_now,
+                                         F_before=float(state.F_norm), H_before=float(H_now),
+                                         helicity_loss_before=loss, solve_it=int(info),
+                                         moved=float(rel), outcome="pending", snapshot=state)
+                    state = initial_state(B_new, ts, dt=float(state.dt))
+                    results["pulses"].append(pulse_pending)
+                    pulse_last = it
+                    print(f"  [pulse] fired at it={it}: eps={eps:.3e} (c={pulse_c:.3g}), floor "
+                          f"{floor_now:.3e}, |F| {pulse_pending['F_before']:.3e} -> "
+                          f"{float(state.F_norm):.3e}, moved {float(rel):.2e}, helicity loss so far "
+                          f"{loss:.2e}", flush=True)
         if force_floor_reached(tr["resid"], cli.floor_steps, cli.floor_tol):
             stop = "floor"
             print(f"  [floor] force residual averaged over the last {cli.floor_steps} "
