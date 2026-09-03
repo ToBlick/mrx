@@ -4,6 +4,8 @@
 #
 #   bash scripts/li383_pub.sh reader     # reread arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
+#   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
+#   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -77,6 +79,20 @@ deep() {
     arm s61_e3e-3_g1_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 7200" 240
 }
 
+hsweep_p2() {
+    # 2026-09-02: gamma = 1 under h-refinement at fixed p = 2 on the ns = 49
+    # reference, mesh (n, 2n, 2n), mu = 0.064 / n^2, floor 1e-5 so the 5000-step
+    # cap (or the wall cap) ends the run and the floor versus h is what is measured.
+    # Wall caps sum to 18.5 GPU-h; the n = 32 rung takes about 10 h of it.
+    # These follow COMMON on the command line, so they override its floor and step cap.
+    local common="--p 2 --floor-tol 1e-5 --steps 5000 --velocity-smoothing-order 1"
+    arm h8_p2_g1  "$GEOM_HI" "--ns 8,16,16  $common --velocity-smoothing-scale 1.0e-3 --seconds 1800"    90
+    arm h12_p2_g1 "$GEOM_HI" "--ns 12,24,24 $common --velocity-smoothing-scale 4.44e-4 --seconds 3600"   150
+    arm h16_p2_g1 "$GEOM_HI" "--ns 16,32,32 $common --velocity-smoothing-scale 2.5e-4 --seconds 7200"    300
+    arm h24_p2_g1 "$GEOM_HI" "--ns 24,48,48 $common --velocity-smoothing-scale 1.11e-4 --seconds 18000"  660
+    arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --velocity-smoothing-scale 6.25e-5 --seconds 36000" 1260
+}
+
 sections() {  # sections NAME [TIMEOUT_MIN]
     submit sec "$1" scripts/poincare_relax.py \
         "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
@@ -91,7 +107,8 @@ case ${1:-} in
     reader) reader ;;
     seeded) seeded ;;
     deep) deep ;;
+    hsweep_p2) hsweep_p2 ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac
