@@ -361,13 +361,30 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
     return [ticks[i] for i in order], [labels[i] for i in order]
 
 
+def _ray_line(lr, lth, R, Z, pressure, th0):
+    """Per-line logical r, physical (R, Z) and p at the crossing nearest the
+    poloidal ray ``theta = th0`` (circular nearest, one crossing per line).
+
+    Used to draw the logical-r profile along a ray and to mark that ray on the
+    section panels: the crossing nearest th0 is a real point ON the ray, so the
+    marked line is F(r, th0) traced through the actual data, not an assumed
+    straight radius (logical theta is not the physical poloidal angle).
+    """
+    dth = np.abs(((lth - th0 + 0.5) % 1.0) - 0.5)      # (nL, nC) circular distance
+    k = np.argmin(dth, axis=1)                          # nearest crossing per line
+    rows = np.arange(lr.shape[0])
+    p_at = None if pressure is None else pressure[rows, k]
+    return lr[rows, k], (R[rows, k], Z[rows, k]), p_at
+
+
 @house_style()
 def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                    axis_RZ=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
-                   cmap=SECTION_CMAP, iota_lim=None, limits=None, iota_scatter=None):
+                   cmap=SECTION_CMAP, iota_lim=None, limits=None, iota_scatter=None,
+                   profile_coord="logical", profile_rays=3):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -580,83 +597,119 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         lx.set_xlabel(r"$r$")
         lx.set_ylabel(r"$\theta$")
 
-    x = seed_r if profile_x is None else profile_x
-    # The abscissa may carry several crossings per line (both midplane
-    # crossings, see midplane_crossings): per-line quantities are tiled to
-    # match, and a NaN crossing drops that entry -- an island chain whose
-    # lobes the ray passes between is in the section but has no honest place
-    # in the profile on that side. Sorted by abscissa, the curve runs
-    # inboard -> axis -> outboard as a slice of the section panel.
-    X = jnp.asarray(x)
-    X = X[:, None] if X.ndim == 1 else X
-    xs = X.ravel()
-
-    def per_line(a):
-        return jnp.broadcast_to(jnp.asarray(a)[:, None], X.shape).ravel()
-
-    prof = per_line(shown) & jnp.isfinite(xs)
-    order = jnp.argsort(xs[prof])
-    # The ribbon is the iota scatter over K windows when given (the along-line
-    # spread, the analog of the pressure band), else the whole-line fit RMS/N.
+    # ---- profile panel: iota (and p) against the surface label -------------
+    golden = 0.5 * (5.0 ** 0.5 - 1.0)
+    logical_prof = profile_coord == "logical" and logical is not None
     band = iota_err if iota_scatter is None else iota_scatter
     ribbon_label = (r"$\iota \pm$ fit RMS / $N$" if iota_scatter is None
                     else r"$\iota \pm$ window std")
-    xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(band)[prof][order]
-    # The ribbon is iota +- iota_err, the uncertainty of the fitted slope:
-    # the RMS deviation of the unwrapped angle from the fitted line over the
-    # length of the fit (trace_and_classify). ~1/N on a flux surface, the
-    # island width over N on a chain, and not falling with N on a chaotic
-    # line. NOT the bare angle-fit residual, which is in poloidal turns and
-    # says nothing about iota by itself.
-    left = dict(color="black", marker="s", linestyle="-", markersize=3)
-    right = dict(color="teal", marker="d", linestyle="--", markersize=3)
-    if has_p:
-        # p against the same surface label the iota profile uses, on the
-        # right axis of the same panel, so the two read against one
-        # abscissa. One number per line, the mean over its crossings, with
-        # the spread as a band: a flux surface has a constant p and no band,
-        # an island chain or a chaotic line does not, and the band width is
-        # how far that line is from B . grad p = 0.
-        p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
-        p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
-        mo, so = p_mean[prof][order], p_std[prof][order]
-        _, (bx, px) = plot_twin_axis(
-            io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
-            right_label=p_label, left_log=False, right_log=False,
-            x_label=profile_xlabel, grid=False, ax=bx,
-            left_plot_kwargs=dict(left, lw=0.8),
-            right_plot_kwargs=dict(right, lw=0.8))
-        px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
-                        label=r"$p \pm 1$ std over the line")
-        if lim.p is not None:
-            px.set_ylim(*lim.p)
-    else:
-        px = None
-        bx.plot(xo, io, lw=0.8, **left)
-        bx.set_xlabel(profile_xlabel)
+
+    if logical_prof:
+        # iota and p against LOGICAL r, sampled along ``profile_rays`` poloidal
+        # rays whose thetas are golden-angle spaced (theta_j = j * 0.618...) so
+        # no low-order island chain is resonant with all of them. Each ray is
+        # one colour and is marked by a dotted line on BOTH section panels --
+        # the physical curve F(r, theta0), and theta = theta0 in the chart -- so
+        # the reader can place it. Where the rays agree logical r is a faithful
+        # surface label; where they fan (edge, islands) it is not, and the fan
+        # is the signal. iota solid on the left axis, p dashed on the right.
+        lr_all, lth_all = np.asarray(logical[0]), np.asarray(logical[1])
+        Rn, Zn, sn = np.asarray(R), np.asarray(Z), np.asarray(shown)
+        iota_n, band_n = np.asarray(iota), np.asarray(band)
+        pn = None if pressure is None else np.asarray(pressure)
+        pstd = None if pn is None else pressure_scale * np.nanstd(pn, axis=1)
+        px = bx.twinx() if has_p else None
+        thetas = [(j * golden) % 1.0 for j in range(max(int(profile_rays), 1))]
+        ray_cols = plt.get_cmap("tab10")(np.arange(len(thetas)) % 10)
+        for th0, col in zip(thetas, ray_cols):
+            r_line, (Rr, Zr), p_at = _ray_line(lr_all, lth_all, Rn, Zn, pn, th0)
+            m = sn & np.isfinite(r_line)
+            if not m.any():
+                continue
+            o = np.argsort(r_line[m])
+            rr = r_line[m][o]
+            bx.plot(rr, iota_n[m][o], "-", color=col, lw=1.1,
+                    label=rf"$\theta = {th0:.2f}$")
+            bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
+                            color=col, alpha=0.12, lw=0)
+            if has_p:
+                pm = pressure_scale * p_at
+                px.plot(rr, pm[m][o], "--", color=col, lw=1.1)
+                px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
+                                color=col, alpha=0.10, lw=0)
+            ax.plot(Rr[m][o], Zr[m][o], ":", color=col, lw=1.0, alpha=0.9, zorder=6)
+            if lx is not None:
+                lx.axhline(th0, ls=":", color=col, lw=1.0, alpha=0.9, zorder=6)
+        bx.set_xlabel(r"logical $r$")
         bx.set_ylabel(r"$\iota$")
-    bx.fill_between(xo, io - eo, io + eo, color=left["color"], alpha=0.15, lw=0,
-                    label=ribbon_label)
-    for value, lab in zip(res_ticks, res_labels):
-        bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
-        bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
-                    ha="right", va="bottom", fontsize=FS.annot, color="0.4")
-    if lim.iota is not None:
-        # Same reason as the colour scale: two profiles drawn on separately
-        # fitted y-axes look alike however far the transform actually moved.
-        bx.set_ylim(lo, hi)
-    bx.grid(alpha=0.3)
-    if lim.x is not None:
-        bx.set_xlim(*lim.x)
-    # The curves need no legend entry: the y labels carry their colours
-    # (the twin-axis style). Only the ribbons are explained. iota rises at both
-    # ends and p peaks in the middle, so the centre of the panel is the free
-    # space -- 'best' searches one axes only (twinx) and lands on a curve.
-    handles, labels_ = bx.get_legend_handles_labels()
-    if px is not None:
-        h2, l2 = px.get_legend_handles_labels()
-        handles, labels_ = handles + h2, labels_ + l2
-    bx.legend(handles, labels_, loc="center")
+        if px is not None:
+            px.set_ylabel(p_label)
+            if lim.p is not None:
+                px.set_ylim(*lim.p)
+        for value, lab in zip(res_ticks, res_labels):
+            bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
+            bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
+                        ha="right", va="bottom", fontsize=FS.annot, color="0.4")
+        if lim.iota is not None:
+            bx.set_ylim(lo, hi)
+        if lim.x is not None:
+            bx.set_xlim(*lim.x)
+        bx.grid(alpha=0.3)
+        bx.legend(loc="best", fontsize=FS.annot,
+                  title=r"ray ($-\,\iota$, $--\,p$)")
+    else:
+        x = seed_r if profile_x is None else profile_x
+        # The abscissa carries both midplane crossings (see midplane_crossings):
+        # per-line quantities are tiled to match, a NaN crossing drops that
+        # entry, and sorted by abscissa the curve runs inboard -> axis ->
+        # outboard as a slice of the section panel.
+        X = jnp.asarray(x)
+        X = X[:, None] if X.ndim == 1 else X
+        xs = X.ravel()
+
+        def per_line(a):
+            return jnp.broadcast_to(jnp.asarray(a)[:, None], X.shape).ravel()
+
+        prof = per_line(shown) & jnp.isfinite(xs)
+        order = jnp.argsort(xs[prof])
+        xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(band)[prof][order]
+        left = dict(color="black", marker="none", linestyle="-")
+        right = dict(color="teal", marker="none", linestyle="--")
+        if has_p:
+            p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
+            p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
+            mo, so = p_mean[prof][order], p_std[prof][order]
+            _, (bx, px) = plot_twin_axis(
+                io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
+                right_label=p_label, left_log=False, right_log=False,
+                x_label=profile_xlabel, grid=False, ax=bx,
+                left_plot_kwargs=dict(left, lw=0.8),
+                right_plot_kwargs=dict(right, lw=0.8))
+            px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
+                            label=r"$p \pm 1$ std over the line")
+            if lim.p is not None:
+                px.set_ylim(*lim.p)
+        else:
+            px = None
+            bx.plot(xo, io, lw=0.8, **left)
+            bx.set_xlabel(profile_xlabel)
+            bx.set_ylabel(r"$\iota$")
+        bx.fill_between(xo, io - eo, io + eo, color=left["color"], alpha=0.15, lw=0,
+                        label=ribbon_label)
+        for value, lab in zip(res_ticks, res_labels):
+            bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
+            bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),
+                        ha="right", va="bottom", fontsize=FS.annot, color="0.4")
+        if lim.iota is not None:
+            bx.set_ylim(lo, hi)
+        bx.grid(alpha=0.3)
+        if lim.x is not None:
+            bx.set_xlim(*lim.x)
+        handles, labels_ = bx.get_legend_handles_labels()
+        if px is not None:
+            h2, l2 = px.get_legend_handles_labels()
+            handles, labels_ = handles + h2, labels_ + l2
+        bx.legend(handles, labels_, loc="center")
 
     # One descriptive title for the whole figure, not a title per panel.
     sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"

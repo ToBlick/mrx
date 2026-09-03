@@ -148,6 +148,12 @@ def main():
     ap.add_argument("--no-pgf", dest="pgf", action="store_false",
                     help="skip the presentation .pgf written next to each PNG "
                          "(needs xelatex on PATH)")
+    ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"),
+                    help="profile abscissa: logical r on golden-spaced rays [default], "
+                         "or physical R on the midplane through the axis")
+    ap.add_argument("--profile-rays", type=int, default=3,
+                    help="number of golden-angle-spaced poloidal rays for the logical "
+                         "profile, marked on both section panels [3]")
     cli = ap.parse_args()
     os.environ["MRX_DTYPE"] = cli.precision
 
@@ -246,7 +252,8 @@ def main():
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
                     pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi),
                     limits=None if p_lim is None else {"p": p_lim},
-                    iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None)
+                    iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None,
+                    profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 save_section(fig, path, want_pgf=cli.pgf)
                 plt.close(fig)
@@ -350,7 +357,8 @@ def main():
                 axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
                 iota_lim=(lo, hi), limits=limits.get(plane),
-                iota_scatter=res["iota_scatter"])
+                iota_scatter=res["iota_scatter"],
+                profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie
                                       else f"poincare_{name}_zeta{plane:g}.png"))
             # A movie's frames are for ffmpeg, not slides: no .pgf per frame.
