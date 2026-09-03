@@ -7,6 +7,7 @@
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
 #   bash scripts/li383_pub.sh eta        # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
+#   bash scripts/li383_pub.sh bonly [smoke]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -113,6 +114,22 @@ eta() {
     done
 }
 
+bonly() {  # bonly [smoke]
+    # 2026-09-03: the B-only step (J x B, u x B, no auxiliary H) of
+    # mrx/experimental/bonly_relaxation.py, twin of h16_p2_g1, helicity sampled
+    # every 50 steps. The code comes from THIS checkout (worktree): SCRIPT is
+    # absolute and PYTHONPATH is overridden; data and outputs stay under $ROOT.
+    local wt
+    wt=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    export EXTRA_ENV="PYTHONPATH=$wt"
+    local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --save-every 100 --qoi-every 50 --stepper bonly"
+    if [ "${1:-}" = smoke ]; then
+        submit relax bonly_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --qoi-every 20 --stepper bonly --out $PUB/bonly_smoke" 30
+    else
+        submit relax bonly_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/bonly_h16_p2_g1" 300
+    fi
+}
+
 sections() {  # sections NAME [TIMEOUT_MIN]
     submit sec "$1" scripts/poincare_relax.py \
         "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
@@ -129,7 +146,8 @@ case ${1:-} in
     deep) deep ;;
     hsweep_p2) hsweep_p2 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; eta ;;
+    bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | eta | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | eta | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac

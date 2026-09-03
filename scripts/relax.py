@@ -224,6 +224,9 @@ def parse_args(argv=None):
                     help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
                          "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--stepper", default="h", choices=("h", "bonly"),
+                    help="h: production step (J x H, u x H); bonly: the experimental "
+                         "B-only cross products (mrx.experimental.bonly_relaxation)")
     cli = ap.parse_args(argv)
     if cli.ic == "clebsch" and not os.path.isfile(cli.geometry):
         ap.error(f"--ic clebsch reads the Clebsch data from a GVEC export, and "
@@ -277,6 +280,10 @@ def main(cli):
     from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
                                 compute_force, compute_helicity, initial_state, resistive_step,
                                 pressure_diagnostics, weak_pressure)
+    if cli.stepper == "bonly":  # experimental hook (2026-09-03): J x B and u x B, no H
+        from mrx.experimental.bonly_relaxation import (BOnlyTimeStepper as TimeStepper,
+                                                       compute_force_bonly as compute_force,
+                                                       initial_state_bonly as initial_state)
     import jax.numpy as jnp
 
     if cli.precision != str(mrx.DTYPE):
