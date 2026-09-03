@@ -480,13 +480,15 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                     s=size, vmin=lo, vmax=hi, cmap=cmap, linewidths=0,
                     rasterized=True)
     psc = None
+    sel_p = None
+    p_range = {}
     if split_iota_p:
         # Chaotic lines keep their grey in BOTH halves: colouring one half of
         # a line and greying the other reads as two different objects.
         sel_p = shown2 & ~upper
+        p_range = ({"vmin": lim.p[0], "vmax": lim.p[1]}
+                   if lim.p is not None else {})                # pinned in a movie
         if sel_p.any():
-            p_range = ({"vmin": lim.p[0], "vmax": lim.p[1]}
-                       if lim.p is not None else {})            # pinned in a movie
             psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
     res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
@@ -517,7 +519,10 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
     if psc is not None:
-        pbar = fig.colorbar(psc, ax=ax, label=p_label, fraction=0.046, pad=0.02)
+        pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02)
+        # Label BELOW the bar, matching iota: a side label is squeezed against
+        # the next panel and the wide tick labels leave no room for it.
+        pbar.ax.set_xlabel(p_label, fontsize=FS.title)
         pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
@@ -553,8 +558,15 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         # because the magnetic axis is not at r=0 -- shows up immediately,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
-        lx.scatter(lr[shown], lth[shown], c=colour[shown], s=size, vmin=lo,
+        # Split the same way the physical panel does: iota above the magnetic
+        # axis, p below it, per CROSSING (the same ``upper`` / ``sel_p`` masks).
+        # The divider is Z = z_axis in physical space, which is not a straight
+        # line in the (r, theta) chart, so none is drawn here.
+        lx.scatter(lr[sel_iota], lth[sel_iota], c=colour[sel_iota], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
+        if split_iota_p and sel_p.any():
+            lx.scatter(lr[sel_p], lth[sel_p], c=pressure_scale * pressure[sel_p], s=size,
+                       cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
         if (~keep).any():
             lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
                        rasterized=True)
