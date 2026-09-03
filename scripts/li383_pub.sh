@@ -122,7 +122,10 @@ eta() {
     local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000 $G1_16 --eta-schedule tanh --seconds 7200"
     local s61="--seed 6,1,0.544,0.1 --seed-eps 3e-3"
     local e K
-    for e in 1e-7:100 1e-6:10 1e-5:1 1e-4:1; do
+    # 2026-09-03 second launch: 1e-8, 3e-8, 3e-7 fill the decade where the
+    # islands open (1e-7) before the current is gone (1e-6); K keeps
+    # eta K dt = 2e-5 per solve.
+    for e in 1e-8:1000 3e-8:300 1e-7:100 3e-7:30 1e-6:10 1e-5:1 1e-4:1; do
         K=${e#*:}; e=${e%:*}
         # `eta 1e-5` reruns both arms of that rung, `eta s61_eta1e-5` one arm.
         if [ $# -eq 0 ] || [[ " $* " == *" $e "* ]] || [[ " $* " == *" eta$e "* ]]; then
