@@ -20,40 +20,38 @@ Reproduce with `tpu_bench_mrx.py` and `matvec_bench.py`.
 
 ## The headline
 
-| Measurement | v5e before | v5e after | Same VM's CPU | One H200 |
-|---|---|---|---|---|
-| `build_sequence` (warm cache) | 203 s | **35.5 s** | 40.6 s | - |
-| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **17.5 s** | 55.1 s | - |
-| `mass_core_apply` k=1 | 6.60 ms | **0.505 ms** | 3.79 ms | - |
-| `mass_core_apply` k=2 | 5.00 ms | **0.459 ms** | 4.86 ms | - |
-| `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
-| `apply_derivative_matrix` k=1 | 7.15 ms | **2.74 ms** | 6.28 ms | - |
-| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | **11.72 s** | 45.7 s | 12.61 s |
-| relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
+| Measurement | v5e before | v5e after | Same VM's CPU |
+|---|---|---|---|
+| `build_sequence` (warm cache) | 203 s | **38.8 s** | 42.9 s |
+| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **7.53 s** | 11.5 s |
+| `mass_core_apply` k=1 | 6.60 ms | **0.420 ms** | 3.79 ms |
+| `mass_core_apply` k=2 | 5.00 ms | **0.402 ms** | 3.38 ms |
+| `E` apply k=1 | 1.999 ms | **0.182 ms** | 0.100 ms |
+| `apply_derivative_matrix` k=1 | 7.15 ms | **3.02 ms** | 4.77 ms |
+| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **85.7 ms** | 102 ms |
+| relaxation, per step | 100.3 s | **3.40 s** | 12.74 s |
 
-The last row of the "after" column predates the folded factorization below;
-the mass-preconditioner row includes it. Folding took the step from 13.04 s to
-**11.72 s** on the v5e and 17.92 s to **12.61 s** on the H200 (24.16 to 15.23
-in float64), with the trajectory unchanged on both.
+Both "after" columns are one session on one node, 3 September in
+`us-south1-a`, against the merge of this branch and the development branch,
+so the two differ only in `JAX_PLATFORMS`. The v5e runs a step **3.7x faster
+than the CPU it is bolted to**, and setup went from about 7 minutes to 46
+seconds.
 
-**These step times are a floor, not a current reading.** They were measured
-before the development branch replaced the smoothing solve's saddle MINRES
-with the split identity and the shifted-stiffness atom, which cut its
-iteration count roughly 15x (2134 to 145 at `(8,16,8)`; see
-`docs/research/OPEN.md` section 3.9). Every per-step number here is therefore
-stale on the high side, and by a large factor. What survives unchanged is the
-comparison, which is what this document is for: an apply-count change moves
-the v5e, the H200 and the CPU by the same factor, so the ratios between the
-columns hold. The per-apply costs in the matvec tables below are likewise
-unaffected -- they time operators, not solves.
+The per-step figure is 3.4 s rather than the 11.72 s this table carried
+before, because the development branch replaced the smoothing solve's saddle
+MINRES with the split identity and the shifted-stiffness atom
+(`docs/research/OPEN.md` section 3.9) and cut its iteration count about 15x.
+That change is upstream's, not this branch's, and it moved the v5e and the
+CPU together: the ratio between the columns is where this branch's work
+shows up. The per-apply costs in the matvec tables below were re-measured in
+the same session and are unchanged to the last digit shown, which is the
+expected result -- they time operators, and nothing here changed an operator.
 
-The v5e went from 1.7x slower than the VM's own CPU to **3.5x faster**, and
-setup from about 7 minutes to under a minute. Four things did that, in order
-of size: the persistent compilation cache, the gather, the assembly, and
-compiling the extraction operator's two ops together. The first is
-configuration; the rest are in `mrx/mass.py` and `mrx/extraction_operators.py`,
-and they are the next four sections.
+The v5e went from 1.7x slower than the VM's own CPU to **3.7x faster**. Four
+things did that, in order of size: the persistent compilation cache, the
+gather, the assembly, and compiling the extraction operator's two ops
+together. The first is configuration; the rest are in `mrx/mass.py` and
+`mrx/extraction_operators.py`, and they are the next four sections.
 
 **The v5e is also not behind a datacentre GPU on this workload; it is ahead of
 one.** Earlier versions of this file claimed the v5e was "32x behind one
@@ -168,8 +166,8 @@ Two traps, both of which cost time here:
   `etils[epath,epath-gcs]` installed it writes nothing, reads nothing and says
   nothing; the only symptom is that the run is slow. The first measurement
   above was taken this way and looked like a working cache with no benefit.
-  `startup.sh` now installs it, and `gcs_cache_smoke.py` proves a path in
-  about ten seconds before a real run depends on it.
+  `startup.sh` now installs it. Check a new bucket is non-empty after the
+  first run; there is no other symptom.
 - **Put the bucket in the node's region.** Every miss is a round trip.
 
 ## Precision
@@ -278,8 +276,8 @@ benchmark's scan fuses one operator at a time.
 The H200 column does not agree, by 6.1x in the other direction, and that
 disagreement is the subject of the next section.
 
-Reproduce the table and the composition with
-`python tpu/summarize_matvec.py LABEL=PATH ...`.
+Reproduce the table with `matvec_bench.py` on each backend; the composition is
+the per-iteration call counts above priced with its scan column.
 
 ## Why the GPU loses, and what it means
 
@@ -360,8 +358,8 @@ The preconditioner atoms and the extraction operator do not move at all, which
 is the expected signature: they are data movement, not matmul.
 
 The question the setting was introduced to answer is whether the geometry
-survives. Measured directly on the v5e with `map_precision.py`, li383
-`(12,24,12)` p=3 float32, against the same process at `highest`:
+survives. Measured directly on the v5e, li383 `(12,24,12)` p=3 float32,
+against the same process at `highest`:
 
 | setting | det DF range | folds | max rel err on DF | on det DF |
 |---|---|---|---|---|
@@ -683,10 +681,11 @@ satisfies `g[e, l] == (e + l) % S`, because for `ne = n - p` elements and
 wraps. `gather_cost.py` was timing the fallback path, and has been deleted
 rather than fixed: its premise was a v5e-versus-H200 deficit that no longer
 exists, and the path it measured is unreachable on this geometry.
-`roofline.py` prints the plan per component so this cannot be assumed again.
+`mrx.mass._shift_plan`'s docstring now records that it holds on every
+component here, so this cannot be assumed the other way again.
 
 What the kernel actually asks for, counted rather than estimated
-(`roofline.py`, `mass_core_apply` k=2 at `(12,24,12)` p=3):
+(`mass_core_apply` k=2 at `(12,24,12)` p=3):
 
 - 2 592 elements x 64 quadrature points = 165 888 points, 9 792 DoFs
 - **19.08 MFLOP** against **4.06 MB** of essential HBM traffic, so 4.70
@@ -714,8 +713,8 @@ passes bought 1.55x on `mass_core`; if `f` is the matmul fraction then
 `1 / ((1 - f) + f/2) = 1.55` gives **f = 0.71**. So about 71% of the kernel is
 MXU work, achieving 0.13% of the MXU's peak.
 
-The reason is the contraction dimension. `roofline.py` reports every
-contraction in the kernel, and they are all the same size:
+The reason is the contraction dimension. Every contraction in the kernel is
+the same size:
 
 ```282:284:/Users/aak572/mrx/mrx/mass.py
     t1 = jnp.einsum('xqb,xyzbdf->xyzqdf', Bx, x_local)
@@ -817,7 +816,7 @@ and it is the one item in this file whose priority the fold changed.
   problems in the time one chip does one. Each reproduced its own sequential
   answer to 5.0e-05 in float32 against a 3.5e-02 bar, and the members differ
   from one another by the 1-3% they were built to, which is what distinguishes
-  four problems from four copies of one. `pmap_sweep.py`.
+  four problems from four copies of one.
 
   The scaling is only visible if compilation is timed separately. Both forms
   compile once, but the serial loop amortises that over four calls while the

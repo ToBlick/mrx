@@ -22,27 +22,64 @@ set -uo pipefail
 sudo mkdir -p /mnt/data
 PERSISTENT=0
 
-if [ -e /dev/disk/by-id/google-data-disk ]; then
+# Finding the disk is not as simple as one device name, because the two
+# creation paths name it differently and only one of them lets us choose.
+# `gcloud compute instances create --disk=device-name=data-disk` gives
+# /dev/disk/by-id/google-data-disk; the Cloud TPU API takes no device name at
+# all and numbers what it attaches, so the same disk arrives as
+# google-persistent-disk-1. Looking only for the first name is why every v5e
+# session built cold while reporting that it was using the boot disk: the
+# tpuapi path is the only route to a v5e here, and it never matched.
+#
+# So: the chosen name if it is there, otherwise the lowest-numbered
+# persistent disk that is not the one carrying /. That last condition is the
+# safety interlock -- this branch formats what it finds when the disk has no
+# filesystem, and the boot disk always has one, but an unmounted root would
+# be a catastrophe rather than a failed run.
+find_data_disk() {
+    if [ -e /dev/disk/by-id/google-data-disk ]; then
+        echo /dev/disk/by-id/google-data-disk
+        return
+    fi
+    local root_dev link
+    root_dev="$(lsblk -no PKNAME "$(findmnt -no SOURCE /)" 2>/dev/null)"
+    for link in /dev/disk/by-id/google-persistent-disk-[0-9]*; do
+        case "${link}" in *-part[0-9]*) continue ;; esac
+        [ -e "${link}" ] || continue
+        [ "$(basename "$(readlink -f "${link}")")" = "${root_dev}" ] && continue
+        echo "${link}"
+        return
+    done
+}
+
+DATA_DEV="$(find_data_disk)"
+
+if [ -n "${DATA_DEV}" ]; then
+    echo "data disk: ${DATA_DEV} -> $(readlink -f "${DATA_DEV}")"
     # Format only if there is no filesystem yet, so we never wipe a disk that
     # already carries the environment.
-    if [ -z "$(sudo blkid /dev/disk/by-id/google-data-disk)" ]; then
-        sudo mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard /dev/disk/by-id/google-data-disk
+    if [ -z "$(sudo blkid "${DATA_DEV}")" ]; then
+        sudo mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard "${DATA_DEV}"
     fi
-    sudo mount -o discard,defaults /dev/disk/by-id/google-data-disk /mnt/data
+    sudo mount -o discard,defaults "${DATA_DEV}" /mnt/data
 
     if mountpoint -q /mnt/data; then
         PERSISTENT=1
         # Survive a reboot. The startup script re-mounts anyway, but an fstab
         # entry means a manual reboot does not silently drop the environment.
-        if ! grep -q "google-data-disk" /etc/fstab 2>/dev/null; then
-            echo "/dev/disk/by-id/google-data-disk /mnt/data ext4 discard,defaults,nofail 0 2" \
+        # By UUID rather than by the device path we just used: the TPU API's
+        # numbering is an attachment order, not an identity, so a node that
+        # comes back with its disks in another order would mount the wrong one.
+        uuid="$(sudo blkid -s UUID -o value "${DATA_DEV}")"
+        if [ -n "${uuid}" ] && ! grep -q "${uuid}" /etc/fstab 2>/dev/null; then
+            echo "UUID=${uuid} /mnt/data ext4 discard,defaults,nofail 0 2" \
                 | sudo tee -a /etc/fstab >/dev/null
         fi
     else
         # The device exists but would not mount. Building on top of a failed
         # mount would put the environment and the sentinel on the boot disk
         # while everything reported success, so say so loudly in the log.
-        echo "WARNING: google-data-disk present but failed to mount; using boot disk" \
+        echo "WARNING: ${DATA_DEV} present but failed to mount; using boot disk" \
             | sudo tee /var/log/mrx-setup-warning.log >&2
     fi
 fi
@@ -118,17 +155,39 @@ install_idle_reaper() {
     # needs? Ask before we need it: a reaper that cannot delete fails silently
     # at the one moment nobody is watching, which is the whole failure mode.
     # roles/editor carries both of these.
-    local token held
+    #
+    # Three outcomes, not two. An earlier version had two and printed the alarm
+    # whenever the query did not come back with a permission, which meant it
+    # cried wolf on a node whose service account held roles/editor all along:
+    # the query needs cloudresourcemanager.googleapis.com, that API is not on
+    # by default, and a disabled API returns an error rather than an empty
+    # list. A watchdog that reports failure when it cannot see is worse than
+    # one that says it cannot see, because the false alarm is indistinguishable
+    # from the real one and teaches you to ignore both. There is no cheaper
+    # place to ask: the TPU API has no nodes.testIamPermissions (404), and the
+    # only alternative check is to attempt the delete itself.
+    local token proj resp held
     token="$(curl -sf -H "${hdr}" "${md}/instance/service-accounts/default/token" |
              python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' 2>/dev/null)"
-    held="$(curl -sf -X POST -H "Authorization: Bearer ${token}" \
+    proj="$(curl -sf -H "${hdr}" "${md}/project/project-id")"
+    resp="$(curl -s -X POST -H "Authorization: Bearer ${token}" \
               -H "Content-Type: application/json" \
               -d '{"permissions":["tpu.nodes.delete","compute.instances.delete"]}' \
-              "https://cloudresourcemanager.googleapis.com/v1/projects/$(curl -sf -H "${hdr}" "${md}/project/project-id"):testIamPermissions" \
-            | python3 -c 'import sys,json; print(",".join(json.load(sys.stdin).get("permissions",[])))' 2>/dev/null)"
+              "https://cloudresourcemanager.googleapis.com/v1/projects/${proj}:testIamPermissions")"
+    held="$(printf '%s' "${resp}" \
+            | python3 -c 'import sys,json
+d = json.load(sys.stdin)
+print("ERROR" if "error" in d else ",".join(d.get("permissions", [])))' 2>/dev/null)"
+
     case "${held}" in
         *delete*)
             echo "--- idle reaper: service account holds ${held} ---" ;;
+        ERROR|"")
+            echo "--- idle reaper: could not verify delete permission ---"
+            echo "    The check needs cloudresourcemanager.googleapis.com, which"
+            echo "    is off by default. This says nothing either way about the"
+            echo "    reaper; to be able to tell, run once per project:"
+            echo "      gcloud services enable cloudresourcemanager.googleapis.com" ;;
         *)
             echo "=================================================================="
             echo "WARNING: this node's service account holds NEITHER"

@@ -104,6 +104,46 @@ attach_disk_after_create() {
         -- -o StrictHostKeyChecking=no >/dev/null 2>&1 &
 }
 
+# The same job on the Cloud TPU API, which needs its own function because that
+# surface differs twice over. `tpu-vm create --data-disk` can only reference a
+# disk that already exists, so a zone that has never held one gets nothing;
+# and `tpu-vm update --attach-disk` takes no device name, so the disk lands as
+# google-persistent-disk-N rather than google-data-disk (startup.sh looks for
+# both).
+#
+# Deferred to here rather than folded into create_tpuapi because the ladder is
+# fail-fast across a dozen zones: creating a 100 GB disk per attempt would cost
+# half a minute each and leave copies in zones that never produced a node. By
+# this point exactly one zone has, so the disk is created where it will be used.
+attach_disk_after_create_tpuapi() {
+    local zone="$1"
+    (( NO_DISK )) && return 0
+
+    if ! data_disk_exists "${zone}"; then
+        echo "  no ${DATA_DISK} in ${zone}; creating it from ${DATA_SNAPSHOT}..."
+        if ! ensure_data_disk "${zone}"; then
+            echo "  WARNING: could not create ${DATA_DISK}; the environment will" >&2
+            echo "           be rebuilt from scratch and will not persist" >&2
+            return 1
+        fi
+    fi
+
+    echo "  attaching ${DATA_DISK} to the node..."
+    gcloud compute tpus tpu-vm update "${VM_NAME}" --zone="${zone}" \
+        --attach-disk "source=projects/${PROJECT}/zones/${zone}/disks/${DATA_DISK},mode=read-write" \
+        --quiet >/dev/null 2>&1 || {
+        echo "  WARNING: attach-disk failed; the environment will not persist" >&2
+        return 1; }
+
+    # The startup script has already run against the boot disk by now. Re-run it
+    # so it mounts what we just attached: if the disk came from the snapshot the
+    # sentinel is on it and the build is skipped entirely.
+    echo "  attached; re-running the startup script against the persistent disk"
+    gcloud compute tpus tpu-vm ssh "${VM_NAME}" --zone="${zone}" \
+        --command="sudo google_metadata_script_runner startup" \
+        --quiet >/dev/null 2>&1 &
+}
+
 # The Cloud TPU API is a separate surface from `compute instances create`, and
 # on this project it is the only way to reach v5e: the GCE machine type
 # ct5lp-hightpu-4t returns 403 "user agent is not allowed to use the machine
@@ -235,7 +275,11 @@ for entry in "${CANDIDATES[@]}"; do
 
     if try_create "${mt}" "${zone}" "${model}" "${api}" "${log}"; then
         echo "SUCCESS"
-        [[ "${api}" == "gce" ]] && attach_disk_after_create "${zone}"
+        if [[ "${api}" == "gce" ]]; then
+            attach_disk_after_create "${zone}"
+        else
+            attach_disk_after_create_tpuapi "${zone}"
+        fi
         announce_success "${gen}" "${mt}" "${zone}" "${model}" "${api}"
         exit 0
     fi
@@ -257,8 +301,11 @@ for entry in "${CANDIDATES[@]}"; do
             # more of it: a DISK_INCOMPATIBLE retry deliberately created without
             # the disk, so without this the node comes up with no persistent
             # environment and nothing says so.
-            [[ "${api}" == "gce" ]] && \
+            if [[ "${api}" == "gce" ]]; then
                 attach_disk_after_create "${zone}" "${NO_DISK}"
+            else
+                attach_disk_after_create_tpuapi "${zone}"
+            fi
             announce_success "${gen}" "${mt}" "${zone}" "${model}" "${api}"
             exit 0
         fi

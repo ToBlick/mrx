@@ -131,20 +131,10 @@ each should look like, which is what you actually need to check yours against.
 | `mrx_tpu_report.py` | Poisson driver that checks TPU vs CPU reference |
 | `tpu_bench_mrx.py` | Phase/primitive benchmark; splits compile from execute |
 | `matvec_bench.py` | Times each operator apply eagerly, jitted and inside a `lax.scan` |
-| `summarize_matvec.py` | Joins per-backend `matvec_bench.py` runs and composes a step |
-| `roofline.py` | Counts a kernel's FLOPs, bytes and contraction widths; needs no device |
-| `map_precision.py` | Checks what `jax_default_matmul_precision` does to the geometry map |
-| `profile_top_ops.py` | Reduces a `jax.profiler` trace to a top-N op table |
-| `pmap_sweep.py` | Runs one equilibrium per chip, and checks it really is one per chip |
-| `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |
 | `make_kit.sh` | Builds `tpu_access_kit.zip`, the standalone copy of this directory |
 
-Everything above ships in `tpu_access_kit.zip`. One file stays in the repo
-only, because it needs a SLURM cluster rather than a TPU:
-
-| File | The question it answered |
-|---|---|
-| `gpu_baseline.slurm` | The H200 control column, on NYU Torch |
+Everything above ships in `tpu_access_kit.zip`; the directory and the kit are
+now the same list.
 
 Several one-off investigations that produced numbers in
 `results/benchmark_v5e_vs_cpu.md` are no longer here. Each settled one

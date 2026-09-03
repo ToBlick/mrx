@@ -26,8 +26,8 @@ Two things to take away before anything else:
    it.** Nothing will stop it for you. See [Cost discipline](#7-cost-discipline).
 2. **Always run with the compilation cache on, which `run_on_tpu.sh` now does.**
    Without it the relaxation solver could not finish its setup phase in 40
-   minutes on a v5e; with it, setup takes under a minute and a step costs 13 s
-   against the same VM's CPU at 46 s. The cause was XLA recompiling the same
+   minutes on a v5e; with it, setup takes about 46 s and a step costs 3.4 s
+   against the same VM's CPU at 12.7 s. The cause was XLA recompiling the same
    inner solve on every call, not the device being slow. Read
    [section 6.1](#61-what-actually-runs-well-and-what-does-not) before you plan
    a campaign: it also shows why replacing indexed gathers and scatters with
@@ -44,7 +44,7 @@ Two things to take away before anything else:
    `results/benchmark_v5e_vs_cpu.md` has the numbers.
 4. **A `v5litepod-4` is four chips and one equilibrium uses one of them.** A
    parameter sweep can have all four for the cost of a `jax.pmap`: measured
-   **3.99x on real chips**, `pmap_sweep.py`.
+   **3.99x on real chips**.
 
 ---
 
@@ -210,8 +210,7 @@ roughly 1.2x on a relaxation step, at the cost of the adaptive stepper taking a
 different trajectory, so it is opt-in for someone who knows what they are
 trading. `default` is not an option at all -- it folds the geometry map, driving
 `det DF` negative, and the run fails rather than quietly degrading. The
-measurements behind all three are in `results/benchmark_v5e_vs_cpu.md`, and
-`map_precision.py` re-checks the folding claim on a geometry of your own.
+measurements behind all three are in `results/benchmark_v5e_vs_cpu.md`.
 
 Where float64 still
 matters, run that stage on the host CPU instead:
@@ -323,9 +322,9 @@ times distinguishes those two.
 The measurements are in `results/benchmark_v5e_vs_cpu.md` and are not repeated
 here; that document is where they are kept current, and this one tells you what
 to do. The short version: five changes took the v5e from **1.7x slower than the
-VM's own CPU to 3.9x faster**, an 8.6x end-to-end gain, with setup down from
-seven minutes to under one. Roughly 2.4x of that was configuration -- the
-compilation cache below -- and 3.5x was changes inside `mrx/` itself.
+VM's own CPU to 3.7x faster**, with setup down from seven minutes to about 46
+seconds. Roughly 2.4x of that was configuration -- the compilation cache below
+-- and the rest was changes inside `mrx/` itself.
 
 An H200 is about 4x faster per matvec and slightly *slower* per step, because a
 step is a chain of ~250 000 sequentially dependent kernels and a TPU executes
@@ -371,13 +370,13 @@ Two traps if you use a bucket. Put it in the node's own region, or every miss
 is a cross-region round trip. And note that **JAX does not fail on a `gs://`
 path it cannot use**: without `etils[epath,epath-gcs]` installed it writes
 nothing, reads nothing and reports nothing, so the run is simply slow. That
-cost an hour here. `startup.sh` now installs it, and
+cost an hour here. `startup.sh` now installs it.
 
-```bash
-python gcs_cache_smoke.py --cache gs://<bucket>/mrx --platform tpu
-```
-
-proves the path in about ten seconds before a real run depends on it.
+There is no longer a smoke test for this, so check it by hand the first time a
+bucket is used: run anything twice and watch whether the second run is faster,
+and confirm the bucket is non-empty with `gcloud storage ls gs://<bucket>/mrx`.
+An empty bucket after a run means the cache is not being written, and the only
+symptom you will otherwise get is a run that stays slow.
 
 **Fixes 2 and 3: the mass kernel holds no index tensors at all.** The
 sum-factorised kernel began with a gather, `x[gather_idx]`, and ended with a
@@ -424,9 +423,9 @@ machines, but it is where the remaining wins are.
 **Four chips instead of one, measured at 3.99x.** A `v5litepod-4` is four chips
 and MRX uses one. For a parameter sweep that needs no library change: the scan
 is a pure function of an equinox `State`, so `jax.pmap` over a stacked batch of
-initial states runs one equilibrium per chip. `pmap_sweep.py` does exactly
-that, and on a real `v5litepod-4` four equilibria 1% apart at `(8,16,8)` p=3
-float32 took **5.8 s on four chips against 23.1 s one at a time**. Each
+initial states runs one equilibrium per chip. Measured that way on a real
+`v5litepod-4`, four equilibria 1% apart at `(8,16,8)` p=3 float32 took **5.8 s
+on four chips against 23.1 s one at a time**. Each
 reproduced its own sequential answer to 5.0e-05 in float32, well inside the
 3.5e-02 bar, and the members differ from each other by the 1-3% they were built
 to differ by, which is the check that this is four problems and not four copies
@@ -436,14 +435,8 @@ Time the compilation separately or you will measure the compiler. Both forms
 compile once; the serial loop then amortises it over four calls and the `pmap`
 pays it on its only call, so a single-shot comparison of the two reads 2.77x,
 and a first attempt that also ran with a cold XLA cache read 1.56x. Neither is
-a property of the hardware. The script runs each form twice and reports the
-second, which is what a real sweep of any length gets.
-
-```bash
-PUSH_FILES=pmap_sweep.py SCRIPT=pmap_sweep.py OUTDIR=outputs/pmap \
-  VM_NAME=mrx-tpu ./run_on_tpu.sh --ns 8,16,8 --p 3 --steps 4 \
-  --out outputs/pmap/pmap_sweep.json
-```
+a property of the hardware. Time the second call of each form, which is what a
+real sweep of any length gets.
 
 One flag-sized item also remains: wrapping `apply_laplacian` in `jax.jit`
 measured 4.5 ms against 75 ms eager, a 17x. It is not in the relaxation's hot
@@ -475,22 +468,19 @@ python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 ```
 
 When the benchmark says a phase is slow but not which operation inside it is,
-`--profile` writes a `jax.profiler` trace and `profile_top_ops.py` reduces that
-trace to the only table worth reading, XLA ops ranked by self time. That names
-the bottleneck instead of inferring it from wall-clock phase times.
+`--profile` writes a `jax.profiler` trace. Reduced to XLA ops ranked by self
+time it is the only table worth reading here, and it names the bottleneck
+instead of inferring it from wall-clock phase times.
 
 ```bash
 PUSH_FILES=tpu_bench_mrx.py SCRIPT=tpu_bench_mrx.py OUTDIR=outputs/bench \
   VM_NAME=my-tpu-vm ZONE=<zone> RUN_PLATFORM=tpu \
   ./run_on_tpu.sh --skip-relax --profile outputs/bench/trace
-
-python profile_top_ops.py script_outputs/bench/trace --top 20
 ```
 
-The trace converter is in `tensorboard-plugin-profile`, not in JAX, and its
-module path moves between releases; the script tries several and exits 2 with a
-`pip install` line rather than failing obscurely. A missing plugin costs you
-this table, not the benchmark.
+Read the trace with TensorBoard, or with `tensorboard-plugin-profile`'s own
+converter. That plugin is not part of JAX and its module path moves between
+releases, which is worth knowing before you conclude the trace is unreadable.
 
 ### Finite-beta stellarator equilibria
 
@@ -754,15 +744,14 @@ what the solve achieves.
 - `acquire_tpu.sh` - daemon that retries until hardware lands
 - `run_on_tpu.sh` - drives one session: wait, run, pull results
 - `startup.sh` - VM startup script that builds the environment
+- `idle_reaper.sh` - deletes the node after `IDLE_TIMEOUT_MIN` idle minutes;
+  the only self-termination a Cloud TPU API node has
 - `watch_request.sh` - non-blocking status of a queued request
 - `mrx_tpu_report.py` - Poisson driver with the CPU-reference check
 - `tpu_bench_mrx.py` - phase and primitive benchmark; separates compile time
   from execute time, and has a `--compare` mode for the TPU/CPU table
-- `profile_top_ops.py` - reduces a `jax.profiler` trace to a top-N op table
-- `pmap_sweep.py` - runs one equilibrium per chip and checks that they are
-  four problems rather than four copies of one
-- `gcs_cache_smoke.py` - proves a `gs://` compilation cache path in ~10 s,
-  because JAX does not fail on one it cannot reach
+- `matvec_bench.py` - times each operator apply eagerly, jitted, and inside a
+  `lax.scan`, which is the form the relaxation actually runs
 - `make_kit.sh` - builds `tpu_access_kit.zip`, the standalone copy of this
   directory
 

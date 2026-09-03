@@ -170,7 +170,18 @@ def _shift_plan_axis(g, S):
 
 
 def _shift_plan(gx, gy, gz, shape):
-    """The three-axis shift plan of a component, or ``None`` if any axis fails."""
+    """The three-axis shift plan of a component, or ``None`` if any axis fails.
+
+    On the geometries MRX actually runs this succeeds: every component of
+    every k-form of li383 at (12,24,12) p=3 has a plan, so the indexed branch
+    in :func:`_to_quadrature` is not reached and the gather it performs is
+    dead code rather than a live cost. That is worth stating here because it
+    was assumed the other way round for a while, and an indexed read that is
+    never executed was accordingly blamed for a cost it could not be causing.
+    The branch stays because the plan is checked rather than assumed, and a
+    basis built differently would otherwise be silently wrong; but if you are
+    looking for something to make faster, it is not this.
+    """
     axes = tuple(_shift_plan_axis(g, s)
                  for g, s in zip((gx, gy, gz), shape))
     return None if any(a is None for a in axes) else axes

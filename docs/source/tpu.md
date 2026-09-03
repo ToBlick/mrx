@@ -3,8 +3,8 @@
 `tpu/` is the TPU counterpart to `slurm/`. It differs in one structural
 way: on a cluster the machine already exists and you queue for it, while a
 TPU does not exist until you create it. So these scripts provision the
-hardware from your laptop as well as run on it, and nothing deletes it for
-you afterwards.
+hardware from your laptop as well as run on it, and a node bills until
+something deletes it -- which is why `tpu/idle_reaper.sh` runs on every node.
 
 Read `tpu/TPU_GUIDE.md` before a first session. This page is the summary.
 
@@ -36,7 +36,8 @@ SCRIPT=scripts/tutorials/li383_relaxation.py \
   VM_NAME=mrx-tpu ZONE=<zone> RUN_TIMEOUT=7200 \
   ./run_on_tpu.sh --ns 12,24,12 --p 3
 
-# Nothing else will. v5e is a TPU API node, v5p/v6e are GCE instances.
+# The reaper will do this after 20 idle minutes; this is how to do it now.
+# v5e is a TPU API node, v5p/v6e are GCE instances.
 gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>
 gcloud compute instances delete mrx-tpu --zone=<zone>
 ```
@@ -101,10 +102,10 @@ workload compiles.
 A node in a zone with no data disk has nowhere local to keep the cache.
 `JAX_CACHE_DIR` also takes a `gs://` path, which works but is second best:
 setup costs 143 s with no cache, 98 s from a warm bucket and 53 s from a
-warm local disk. Put the bucket in the node's region, and prove the path
-with `tpu/gcs_cache_smoke.py` first -- without `etils[epath,epath-gcs]`
-installed JAX writes nothing, reads nothing and reports nothing, so a
-misconfigured bucket looks like nothing more than a slow run.
+warm local disk. Put the bucket in the node's region, and check it is
+non-empty after the first run -- without `etils[epath,epath-gcs]` installed
+JAX writes nothing, reads nothing and reports nothing, so a misconfigured
+bucket looks like nothing more than a slow run.
 
 MRX's inner solves are eager `lax.while_loop`s, not wrapped in `jax.jit`,
 so without a cache XLA recompiles them on every call. One `apply_laplacian`
@@ -167,9 +168,7 @@ python tpu_bench_mrx.py --compare script_outputs/bench/{tpu,cpu}.json
 
 `tpu/results/benchmark_v5e_vs_cpu.md` is where the per-backend tables, the
 step composition and the per-operator costs are maintained, along with several
-hypotheses that sounded right and that measurement refuted. Read the staleness
-note at its headline before quoting a per-step number: they predate the
-development branch's reformulation of the smoothing solve.
+hypotheses that sounded right and that measurement refuted.
 
 ## Cost
 

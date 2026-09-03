@@ -60,10 +60,10 @@ PUSH_FILES="${PUSH_FILES:-}"
 # A gs:// path also works and is the only way to carry compiled kernels to a
 # node that has no data disk, which is every node in a zone where the disk cap
 # has been reached. Two warnings. Put the bucket in the node's own region or
-# every miss pays a cross-region round trip, and prove the path with
-# gcs_cache_smoke.py first: JAX retries an unreachable cache rather than
-# raising, so a wrong path or a missing scope looks like a hang inside
-# compilation. Measured here, a warm gs:// cache in the same region was not
+# every miss pays a cross-region round trip, and check the bucket is non-empty
+# after the first run: JAX retries an unreachable cache rather than raising, so
+# a wrong path or a missing scope looks like a hang inside compilation rather
+# than like an error. Measured here, a warm gs:// cache in the same region was not
 # meaningfully slower than the local disk, because the entries are small and
 # the reads happen once per program.
 JAX_CACHE_DIR="${JAX_CACHE_DIR:-/mnt/data/jax_cache}"
