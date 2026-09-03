@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs, p-sweep at (16,32,32) complete (52 GPU-h); resistive pulses in section 5g; the reconnect series (stall -> checkpoint -> reconnect, the controller as decided) in section 5h, full arm running. Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
+Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs, p-sweep at (16,32,32) complete (52 GPU-h); resistive pulses in section 5g; the reconnect series (stall -> checkpoint -> reconnect, the controller as decided) in section 5h, full arm done (three stalls, widths in the table). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -244,7 +244,18 @@ Smoke `reconnect_smoke_prechunk` (the per-step driver, stall window 300 steps), 
 | 3 | 2739 | 2.9e-4 | 2.9e-4 -> 1.5e-3 | 4.776e-3 -> 4.671e-3 (-2.2%) | 0.530 -> 0.475 | 0.0329 -> 0.0287 |
 
 - Each reconnection lowers the next floor (5.8e-4 -> 3.3e-4 -> 2.9e-4) with diminishing returns (x1.7, then x1.2) at a flat helicity price (2.2 .. 2.4% of H_0 per solve at this coarse mesh, where eps = c h^2 is 4x the n = 16 value); between stalls the descent recovers ||J||/||B|| and beta partly (0.554 -> 0.580, 0.0353 -> 0.0368) and then stalls lower. The reconnected equilibria carry less current and less pressure, which is the physics of the dose (5e), now as a discrete series. A solve takes 44 MINRES iterations and moves the field by 0.2%.
-- Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps, default detector and dose (eps = 3.9e-5, the pulse1.5e-7 dose per stall): job 17419921, running. Sections of every stall via `li383_pub.sh stalls NAME`; the stall table lands in `li383_pulse/tables.md`, the traces with the stalls marked in `figures/reconnect_traces.png`.
+Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 0.57 s/step), the per-step driver's detector (5% over 1000 steps), eps = 3.9e-5 (c = 0.01 at h = 1/16: the pulse1.5e-7 dose, per stall). Widths from the sections of each stalled field (`stalls/<k>/poincare/`, `li383_pub.sh stalls NAME`):
+
+| stall | step | floor | |F| before -> after | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 3948 | 5.55e-4 | 5.4e-4 -> 8.1e-4 | 5.0111e-3 -> 4.9794e-3 (-0.63%) | 0.646 -> 0.609 | 0.0432 -> 0.0402 | 0.021 | 0 | 4 |
+| 2 | 5691 | 4.61e-4 | 4.4e-4 -> 7.5e-4 | 4.9793e-3 -> 4.9482e-3 (-0.62%) | 0.618 -> 0.590 | 0.0407 -> 0.0384 | 0.044 | 0 | 1 |
+| 3 | 7423 | 4.24e-4 | 4.1e-4 -> 6.9e-4 | 4.9482e-3 -> 4.9177e-3 (-0.62%) | 0.599 -> 0.574 | 0.0389 -> 0.0369 | 0.059 | 0.008 | 5 |
+
+- The first stall IS the ideal floor of the rung (5.55e-4 against the 5.4e-4 window mean of `h16_p2_g1`), reached at step 3948; the series then reads 5.55e-4 -> 4.61e-4 -> 4.24e-4 (-17%, -8%) at a flat price of 0.62% of H_0 per solve. The exchange rate is the dose sweep's: 0.6% of H_0 for a 17% floor drop was the tanh 1e-8 rung's (0.7% for 17%). The residual kick is 1.5x here (2.5x at n = 8: the dose per cell is 4x smaller), the field moves by 0.08% per solve, MINRES takes 64 iterations.
+- Island widths follow the cumulative dose: 3/5 at 0.021 (the ideal state; `h16_p2_g1` has 0.027 at 5000), 0.044 after one solve (dose 3.9e-5; pulse1.5e-7 at 3.4e-5 gave 0.041), 0.059 after two (7.8e-5; between the pulse arms at 3.4e-5 and 1.1e-4), 0.067 at step 8000 after three (1.2e-4; pulse5e-7 at 1.1e-4 gave 0.066), the 1/2 chain still closed. Each stalled equilibrium is an ideal fixed point at its own helicity, which the sections show as nested surfaces with one growing chain: the paper's "pick your equilibrium" series.
+- Between stalls the descent recovers a third of the current the solve removed (0.609 -> 0.618, 0.590 -> 0.599) and about a third of beta, then stalls lower. Cost 1.3 GPU-h.
+- The driver has since moved to the chunked loop (`docs/research/handoff_2026-09-03_chunked_relaxation_loop.md`, b54a0ff): `--chunk 500` is the single cadence, the stall test compares the last two chunk means (`--stall-tol 0.02`), verified against this arm's driver on the same node (0.56 s/step both, chunk means within 1%); the arm itself ran on the per-step driver.
 
 ## 6. Figures for the paper
 

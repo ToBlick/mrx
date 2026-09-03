@@ -117,6 +117,38 @@ Full arm `reconnect_h16_p2_g1` running on the pre-chunk driver (job 17419921).
    `h16_p2_g1`'s first 1000 steps: chunk means of ||F|| within the
    round-off scatter (identical arithmetic per step; only the cadence moved).
 
-## Status
+## Status (2026-09-03, evening)
 
-Written before the implementation; the section below is filled in as it lands.
+Landed in b54a0ff on li383-followups (branch pushed). Verification, all on
+GPU:
+
+1. ruff, import, `--help`, the traced schedules (pulse windows, tanh, linear
+   checked on CPU), the multiple-of-chunk check: pass.
+2. Checkpoint chain, float32 (8,16,16) `--chunk 20`, 200 against 120 + 80
+   with a pulse on steps 150 .. 169: restart at 120, identical schedule and
+   accounting, "SMOKE OK".
+3. `reconnect_smoke` ((8,16,16) p = 2, `--chunk 100`, 3000 steps): four
+   stalls at 900, 1500, 2100, 2700 with their `stalls/<k>/` files, the qoi
+   from step 0, a snapshot per chunk, the stall table rendered by the figure
+   script. Stalls 1 and 4 were declared on chunks where the residual ROSE
+   (5.1e-4 -> 1.0e-3, 2.84e-4 -> 2.98e-4): the rate test counts a rise as
+   "not descending", which is right, and at N = 100 on a gamma = 0 coarse
+   mesh such excursions are visible. The calibration holds for N = 500,
+   gamma = 1.
+4. Lean suite: 51 passed in 325 s on the worktree.
+5. `chunk_h16` (1000 steps, `--chunk 500`) against `h16_p2_g1`'s first 1000
+   steps: chunk means of ||F|| within 0.2% and 0.9%, energy within 1e-9,
+   line-search identity 2e-9 -- identical arithmetic, only the cadence moved.
+6. Same-node A/B (old driver / new / old, 1000 steps each, second 500
+   timed): 0.557 / 0.563 / 0.558 s per step. No cost; the 0.66 s/step of a
+   first run was node variation.
+
+The full reconnect arm `reconnect_h16_p2_g1` (8000 steps, still the per-step
+driver, job 17419921) stalled at 3948 / 5691 / 7423 with floors 5.55e-4 /
+4.61e-4 / 4.24e-4 at 0.63 / 0.62 / 0.62% of H_0 per solve; section 5h of
+`li383_sweep_results_2026-09-02.md` has the table and the sections.
+
+Open: nothing in the loop itself. The reconnect arms of the paper should be
+rerun on the chunked driver if their per-step trace matters for a figure
+(the stall test differs: two 500-step chunks instead of 200-step blocks over
+1000 steps), otherwise the existing arm stands.
