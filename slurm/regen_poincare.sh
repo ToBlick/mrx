@@ -17,12 +17,18 @@
 # ============================================================================
 set -euo pipefail
 
-# The repo this driver lives in (main checkout or a worktree); the job cds here
-# and PYTHONPATH points at it so a worktree imports its own mrx, not main's.
-# Override REPO= to run the plotter from one checkout against another's outputs.
+# REPO holds the outputs (and the .venv); CODE holds the plotter that runs
+# (mrx + scripts/poincare_relax.py). They are the same after the branch is
+# merged; before then, point CODE at the poincare-plotter worktree and REPO at
+# the main checkout (its outputs), e.g.
+#   REPO=/scratch/tblickhan/mrx CODE=/scratch/tblickhan/mrx/.claude/worktrees/poincare \
+#     bash slurm/regen_poincare.sh
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+CODE=${CODE:-$REPO}                    # checkout the plotter imports/runs from
+VENV=${VENV:-$REPO/.venv}              # main checkout's venv
 
 ROOTS=${ROOTS:-"outputs/li383_eta outputs/li383_sweep"}
+NAME_GLOB=${NAME_GLOB:-}              # if set, only state dirs matching it, e.g. "*_g1"
 PLANES=${PLANES:-0,0.25,0.5}          # the standard three planes
 PERIODS=${PERIODS:-400}
 FIELDS=${FIELDS:-ic,final}
@@ -40,17 +46,19 @@ DRYRUN=${DRYRUN:-0}
 n=0
 for root in $ROOTS; do
   [ -d "$REPO/$root" ] || { echo "skip (no dir): $root"; continue; }
-  while IFS= read -r bh5; do
-    n=$((n + 1))
+  while IFS= read -r bh5; do          # bh5 is absolute
     dir=$(dirname "$bh5")
-    name="poinc_$(echo "$dir" | sed 's#outputs/##; s#/#_#g')"
-    log="$dir/poincare_regen.log"
-    CMD="set -euo pipefail; cd $REPO; source .venv/bin/activate; \
-export PYTHONPATH=$REPO; export PATH=$TEXBIN:\$PATH; export PYTHONUNBUFFERED=1; \
-python -u scripts/poincare_relax.py $bh5 --precision float32 \
+    if [ -n "$NAME_GLOB" ]; then       # filter by state-dir basename
+      case "$(basename "$dir")" in $NAME_GLOB) ;; *) continue ;; esac
+    fi
+    n=$((n + 1))
+    name="poinc_$(echo "${dir#"$REPO"/}" | sed 's#outputs/##; s#/#_#g')"
+    CMD="set -euo pipefail; source $VENV/bin/activate; \
+export PYTHONPATH=$CODE; export PATH=$TEXBIN:\$PATH; export PYTHONUNBUFFERED=1; \
+python -u $CODE/scripts/poincare_relax.py $bh5 --precision float32 \
 --fields $FIELDS --planes $PLANES --periods $PERIODS --out $dir/poincare"
     if [ "$DRYRUN" = "1" ]; then
-      echo "[dryrun] $name  <-  $bh5  ->  $dir/poincare  (planes $PLANES, f32, pgf)"
+      echo "[dryrun] $name  <-  ${bh5#"$REPO"/}  ->  ${dir#"$REPO"/}/poincare  (planes $PLANES, f32, pgf)"
       continue
     fi
     sbatch \
@@ -58,9 +66,9 @@ python -u scripts/poincare_relax.py $bh5 --precision float32 \
       --partition="${PARTITION}" --account="${ACCOUNT}" \
       --gpus-per-node=1 --cpus-per-task="${CPUS_PER_TASK}" \
       --time="${TIMEOUT_MIN}" --mem="${MEM_GB}G" \
-      --job-name="${name}" --output="$REPO/${log}" \
+      --job-name="${name}" --output="$dir/poincare_regen.log" \
       --wrap="${CMD}"
-  done < <(find "$REPO/$root" -name B.h5 | sed "s#^$REPO/##" | sort)
+  done < <(find "$REPO/$root" -name B.h5 | sort)
 done
 echo
 echo "$([ "$DRYRUN" = "1" ] && echo would submit || echo submitted) $n job(s)."
