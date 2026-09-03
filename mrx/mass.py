@@ -129,62 +129,44 @@ def _bases_for_form(seq, form, comp_bases_fn, n_comp):
     return comp
 
 
-def _flat_dof_plan(gx, gy, gz, shape):
-    """Static flat index plan into a component's flattened DOF grid.
+def _shift_plan_axis(g, S, axis="?"):
+    """Return ``(ne, nloc, S)`` for the shift map ``g[e, l] == (e + l) % S``.
 
-    ``gx (ne_x, nloc_x)``, ``gy``, ``gz`` are the per-axis global DOF ids of
-    each element's local DOFs. Returns a single ``int32`` array of shape
-    ``(ne_x, ne_y, ne_z, nloc_x, nloc_y, nloc_z)`` whose entries are the flat
-    indices into a ``shape``-grid reshaped to 1D. Built once on the host so the
-    matvec needs no index arithmetic -- just one gather / one ``segment_sum``.
-    """
-    Sx, Sy, Sz = (int(s) for s in shape)
-    gx = np.asarray(gx)
-    gy = np.asarray(gy)
-    gz = np.asarray(gz)
-    idx = (gx[:, None, None, :, None, None] * (Sy * Sz)
-           + gy[None, :, None, None, :, None] * Sz
-           + gz[None, None, :, None, None, :])
-    return jnp.asarray(idx.astype(np.int32))
+    On a tensor-product B-spline axis element ``e``'s local DoF ``l`` is global
+    DoF ``e + l`` wrapped, so the element-to-DoF map is a pure shift. That is
+    what lets the element gather and the element assembly run without indices
+    at all (see :func:`_structured_gather` and :func:`_structured_accumulate`).
 
-
-def _shift_plan_axis(g, S):
-    """Return ``(ne, nloc, S)`` if ``g[e, l] == (e + l) % S``, else ``None``.
-
-    On a periodic B-spline axis element ``e``'s local DoF ``l`` is global DoF
-    ``e + l`` wrapped, so the element-to-DoF map is a pure shift. When that
-    holds the element assembly needs no indices at all (see
-    :func:`_structured_accumulate`); when it does not, the caller keeps the
-    general ``segment_sum``. Checked rather than assumed, because a basis that
-    is not built this way would otherwise assemble silently wrong.
+    Raises:
+        ValueError: if ``g`` is not that map. The kernel has no other way to
+            read or assemble, so this is fatal rather than a fallback: a basis
+            numbered differently would otherwise be silently wrong.
     """
     g = np.asarray(g)
     if g.ndim != 2:
-        return None
+        raise ValueError(
+            f"axis {axis}: element-to-DoF map must be a 2-D (ne, nloc) array, "
+            f"got shape {g.shape}")
     ne, nloc = g.shape
     e = np.arange(ne)[:, None]
     lo = np.arange(nloc)[None, :]
-    if np.array_equal(g, (e + lo) % int(S)):
-        return (int(ne), int(nloc), int(S))
-    return None
+    if not np.array_equal(g, (e + lo) % int(S)):
+        raise ValueError(
+            f"axis {axis}: element-to-DoF map is not the shift (e + l) % {S} "
+            f"for ne={ne}, nloc={nloc}. The sum-factorised mass kernel "
+            f"assembles by shifted dense adds and cannot express this basis.")
+    return (int(ne), int(nloc), int(S))
 
 
 def _shift_plan(gx, gy, gz, shape):
-    """The three-axis shift plan of a component, or ``None`` if any axis fails.
+    """The three-axis shift plan of a component.
 
-    On the geometries MRX actually runs this succeeds: every component of
-    every k-form of li383 at (12,24,12) p=3 has a plan, so the indexed branch
-    in :func:`_to_quadrature` is not reached and the gather it performs is
-    dead code rather than a live cost. That is worth stating here because it
-    was assumed the other way round for a while, and an indexed read that is
-    never executed was accordingly blamed for a cost it could not be causing.
-    The branch stays because the plan is checked rather than assumed, and a
-    basis built differently would otherwise be silently wrong; but if you are
-    looking for something to make faster, it is not this.
+    Raises:
+        ValueError: if any axis is not a pure shift, via
+            :func:`_shift_plan_axis`.
     """
-    axes = tuple(_shift_plan_axis(g, s)
-                 for g, s in zip((gx, gy, gz), shape))
-    return None if any(a is None for a in axes) else axes
+    return tuple(_shift_plan_axis(g, s, axis)
+                 for g, s, axis in zip((gx, gy, gz), shape, "xyz"))
 
 
 def _structured_accumulate(y, plan):
@@ -195,9 +177,9 @@ def _structured_accumulate(y, plan):
 
         out[i, j, k] = sum over (lx, ly, lz) of y[i-lx, j-ly, k-lz, lx, ly, lz]
 
-    the wrap being modulo the axis size. This is the same sum the
-    ``segment_sum`` performs, but every destination is known at compile time,
-    so it lowers to dense shifts and adds with no indexed writes.
+    the wrap being modulo the axis size. This is the same sum an indexed
+    scatter performs, but every destination is known at compile time, so it
+    lowers to dense shifts and adds with no indexed writes.
 
     That matters because indexed writes are the one thing a TPU has no fast
     path for. Measured on a v5e at (12,24,12) p=3, 221k contributions into
@@ -290,7 +272,7 @@ def _fuse_yz(By, Bz):
     per contraction far more than per FLOP at these widths: measured over both
     halves of a k=2 component, folding costs 1.5x the FLOPs and returns
     1.48-1.70x on a v5e, 1.23-1.49x on an H200 and 1.62x on a CPU
-    (``tpu/results/benchmark_v5e_vs_cpu.md``). Folding all three axes was also measured and
+    (``docs/research/tpu_v5e_benchmark.md``). Folding all three axes was also measured and
     loses -- 4.8x the FLOPs is too much to buy back, and it needs a per-element
     basis tensor two orders of magnitude larger.
 
@@ -308,22 +290,23 @@ def _fuse_yz(By, Bz):
         ne_y, ne_z, qy * qz, nly * nlz)
 
 
-def _to_quadrature(Bvals, x_flat, gather_idx, gather_plan=None):
+def _to_quadrature(Bvals, x_flat, gather_plan):
     """Column half of :func:`_elem_block_mixed` folded against a vector.
 
-    Reads the element-local input -- by rolled slices when the shift plan
-    holds, otherwise with the precomputed flat index plan -- and evaluates the
-    component's field at the element quadrature points,
+    Reads the element-local input by rolled slices over the shift plan and
+    evaluates the component's field at the element quadrature points,
     ``(ne_x, ne_y, ne_z, qx, qy, qz)``.
+
+    ``gather_plan`` may instead be ``None``, in which case ``x_flat`` is taken
+    to be element-local already; that is how the fused factorization is tested
+    against the three-stage chain without also exercising the read.
 
     Two stages, not three: see :func:`_fuse_yz` for why the y and z
     contractions are fused.
     """
     Bx, By, Bz, Byz = Bvals
-    if gather_plan is None:
-        x_local = x_flat[gather_idx]  # (ne_x,ne_y,ne_z,nxc,nyc,nzc)
-    else:
-        x_local = _structured_gather(x_flat, gather_plan)
+    x_local = (x_flat if gather_plan is None
+               else _structured_gather(x_flat, gather_plan))
     ne_x, qx, _ = Bx.shape
     ne_y, qy, nly = By.shape
     ne_z, qz, nlz = Bz.shape
@@ -451,14 +434,7 @@ def build_mass_diagonal(seq, k, geometry=None):
         t2 = jnp.einsum('yrb,xyzars->xyzabs', By * By, t1)
         d_local = jnp.einsum('zse,xyzabs->xyzabe', Bz * Bz, t2)
         plan = _shift_plan(comp[c][1], comp[c][3], comp[c][5], shapes[c])
-        if plan is None:
-            seg = _flat_dof_plan(comp[c][1], comp[c][3], comp[c][5],
-                                 shapes[c]).reshape(-1)
-            parts.append(jax.ops.segment_sum(
-                d_local.reshape(-1), seg,
-                num_segments=int(np.prod(shapes[c]))))
-        else:
-            parts.append(_structured_accumulate(d_local, plan).reshape(-1))
+        parts.append(_structured_accumulate(d_local, plan).reshape(-1))
     return jnp.concatenate(parts)
 
 
@@ -470,12 +446,11 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     are skipped and pairs that share one array (a symmetric weight) are formed
     once.
 
-    The element plan (basis values, gather indices, scatter segment ids) and
-    the weight -- the unique entries, moved to the element layout with the
-    Gauss weights folded in -- are built once here and passed to the jitted
-    kernel as runtime arguments (not captured as constants) to avoid XLA
-    constant-folding of the large integer index tensors.  Memoising the
-    weight is a measured choice: forming it inside the kernel from the stored
+    The element plan (basis values and the per-axis shift plans) and the
+    weight -- the unique entries, moved to the element layout with the Gauss
+    weights folded in -- are built once here and passed to the jitted kernel,
+    the weight as a runtime argument and the plans as static ones.  Memoising
+    the weight is a measured choice: forming it inside the kernel from the stored
     metric, even as bare elementwise products with one stacked transpose,
     costs +18% on the k=1/2 apply at (16,32,16) (0.353 vs 0.297 ms) -- the
     cost is the per-apply pass over the geometry, not the algebra.  The price
@@ -485,22 +460,18 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
     :func:`_sumfact_kernel`).
 
     The matvec is the sum factorization split at the quadrature points: each
-    column component is gathered and pushed to the quadrature points ONCE, the
+    column component is read and pushed to the quadrature points ONCE, the
     weight mixes the components pointwise, and each row component is tested
-    ONCE, followed by a single ``segment_sum`` into the concatenated output.
+    ONCE and assembled by shifted adds into the concatenated output.
     """
     split, gauss = _element_layout(seq)
     form_r, comp_r, n_r = _form_bases(seq, k_row)
     form_c, comp_c, n_c = _form_bases(seq, k_col)
 
-    def starts(form, n_comp):
-        out = [0]
-        for c in range(n_comp):
-            out.append(out[-1] + int(np.prod(form.shape[c])))
-        return tuple(out)
-
-    starts_r = starts(form_r, n_r)
-    starts_c = starts(form_c, n_c)
+    starts_c = [0]
+    for c in range(n_c):
+        starts_c.append(starts_c[-1] + int(np.prod(form_c.shape[c])))
+    starts_c = tuple(starts_c)
     # The weight: which pairs exist, which share an array, and the unique
     # arrays themselves in the element layout with the Gauss weights folded in.
     weight_of = weight_fn(geometry.metric_jkl, geometry.metric_inv_jkl,
@@ -516,64 +487,37 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
         Ws[column[pair]] = split(w) * gauss
     Ws = tuple(Ws)
 
-    # Basis VALUES (for the einsums) are separated from the gather/scatter
-    # index plans, which depend only on the mesh topology: flat gather indices
-    # per column component and one flat scatter (segment-id) array for the
-    # whole output, offset by the component starts.
+    # Basis VALUES (for the einsums) are separated from the shift plans, which
+    # depend only on the mesh topology and are static: one per column component
+    # for the read, one per row component for the assembly.
     # The fused y-z table is built once here, not inside the kernel: it is a
     # function of the kernel's arguments, so building it there would leave it
     # to XLA to hoist out of a solver's scan body.
     Bvals_r = tuple((c[0], c[2], c[4], _fuse_yz(c[2], c[4])) for c in comp_r)
     Bvals_c = tuple((c[0], c[2], c[4], _fuse_yz(c[2], c[4])) for c in comp_c)
-    col_plans = tuple(_shift_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5],
-                                  form_c.shape[c]) for c in range(n_c))
-    gather_plans = None if any(p is None for p in col_plans) else col_plans
-    # Same reason as seg_idx below: when the plan holds the index tensor is
-    # removed from the signature rather than left unused.
-    gather_idx = None if gather_plans is not None else tuple(
-        _flat_dof_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5], form_c.shape[c])
-        for c in range(n_c))
-    n_out = starts_r[-1]
+    gather_plans = tuple(_shift_plan(comp_c[c][1], comp_c[c][3], comp_c[c][5],
+                                     form_c.shape[c]) for c in range(n_c))
+    shift_plans = tuple(_shift_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
+                                    form_r.shape[c]) for c in range(n_r))
     cols = tuple(column[pair] for pair in pairs)
 
-    # Prefer the index-free assembly when every row component's element-to-DoF
-    # map is a pure periodic shift, which is what a tensor-product B-spline
-    # basis gives. The scatter path stays for anything else.
-    plans = tuple(_shift_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
-                              form_r.shape[c]) for c in range(n_r))
-    shift_plans = None if any(p is None for p in plans) else plans
-
-    if shift_plans is None:
-        seg_idx = jnp.concatenate([
-            _flat_dof_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
-                           form_r.shape[c]).reshape(-1) + starts_r[c]
-            for c in range(n_r)])
-    else:
-        # Not merely unused: leaving the index tensor in the signature is how
-        # it ends up as a jit-time constant when this kernel is inlined into
-        # an outer jit, which is what made XLA spend seconds constant-folding
-        # a scatter-add at compile time.
-        seg_idx = None
-
     def apply(x):
-        return _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx,
+        return _sumfact_kernel(x, Bvals_r, Bvals_c, Ws,
                                pairs=pairs, cols=cols, starts_c=starts_c,
-                               n_out=n_out, shift_plans=shift_plans,
+                               shift_plans=shift_plans,
                                gather_plans=gather_plans)
 
     return apply
 
 
 @functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c",
-                                             "n_out", "shift_plans",
-                                             "gather_plans"))
-def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
-                    pairs, cols, starts_c, n_out, shift_plans=None,
-                    gather_plans=None):
+                                             "shift_plans", "gather_plans"))
+def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, *,
+                    pairs, cols, starts_c, shift_plans, gather_plans):
     """The sum-factorised matvec, ONE executable per operator shape.
 
     Module-level and keyed on the static plan (which component pairs exist,
-    which weight array each uses, the component offsets, the output size),
+    which weight array each uses, the component offsets, the shift plans),
     so a new geometry -- new ``Ws`` of the same shapes -- reuses the compiled
     kernel; a kernel defined inside the builder was a new function object per
     build and recompiled on every ``set_geometry``.
@@ -581,21 +525,14 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
     W = {pair: Ws[c] for pair, c in zip(pairs, cols)}
     n_c, n_r = len(Bvals_c), len(Bvals_r)
     u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
-                        None if gather_idx is None else gather_idx[c],
-                        None if gather_plans is None else gather_plans[c])
+                        gather_plans[c])
          for c in range(n_c)]
     y_parts = []
     for cr in range(n_r):
         v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
         y_local = _from_quadrature(Bvals_r[cr], v)
-        if shift_plans is None:
-            y_parts.append(y_local.reshape(-1))
-        else:
-            y_parts.append(
-                _structured_accumulate(y_local, shift_plans[cr]).reshape(-1))
-    if shift_plans is None:
-        return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
-                                   num_segments=n_out)
+        y_parts.append(
+            _structured_accumulate(y_local, shift_plans[cr]).reshape(-1))
     # Already assembled per component and in component order, so the
     # concatenation is the whole output.
     return jnp.concatenate(y_parts)

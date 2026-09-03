@@ -9,12 +9,12 @@ Neither a TPU nor a GPU does, at these widths. Measured on a k=2 component of
 li383 at (12,24,12) p=3, folding the y and z stages into one contraction of
 width ``nly * nlz`` costs 1.5x the arithmetic and returns 1.48-1.70x on a v5e,
 1.23-1.49x on an H200 and 1.62x on a VM CPU
-(``tpu/results/benchmark_v5e_vs_cpu.md``).
+(``docs/research/tpu_v5e_benchmark.md``).
 Folding all three loses on every backend.
 
 The fold is an einsum reassociation, so it is exact up to summation order and
 there is no basis it cannot handle -- unlike the shift plan of
-``test_structured_assembly.py``, it needs no fallback. What it does need is a
+``test_structured_assembly.py``, which rejects one. What it does need is a
 guard against the reshapes silently transposing something: an axis order that
 is wrong but self-consistent would produce a plausible wrong answer rather
 than an error, and the mass apply is symmetric enough to hide it. So the fold
@@ -87,13 +87,11 @@ def test_fused_column_half_matches_the_three_stage_chain(seq, k):
             dtype=mrx.DTYPE)
 
         want = np.asarray(_chain3_to_quadrature(Bx, By, Bz, x_local))
-        # gather_plan=None with gather_idx as an identity would re-read the
-        # vector, so the element-local input is fed in directly instead: the
-        # gather is tested in test_structured_assembly.py and is not what is
-        # under test here.
+        # gather_plan=None feeds the element-local input in directly: the read
+        # is tested in test_structured_assembly.py and is not what is under
+        # test here.
         got = np.asarray(_to_quadrature(
-            (Bx, By, Bz, _fuse_yz(By, Bz)), x_local,
-            gather_idx=Ellipsis, gather_plan=None))
+            (Bx, By, Bz, _fuse_yz(By, Bz)), x_local, None))
         npt.assert_allclose(got, want, atol=ATOL, rtol=0,
                             err_msg=f"k={k} component {c}")
 
@@ -139,8 +137,7 @@ def test_the_two_halves_stay_transposes_of_each_other(seq):
                           (ne_x, ne_y, ne_z, qx, qy, qz), dtype=mrx.DTYPE)
 
     lhs = float(np.sum(np.asarray(_to_quadrature(
-        (Bx, By, Bz, Byz), x, gather_idx=Ellipsis, gather_plan=None)) *
-        np.asarray(u)))
+        (Bx, By, Bz, Byz), x, None)) * np.asarray(u)))
     rhs = float(np.sum(np.asarray(x) * np.asarray(
         _from_quadrature((Bx, By, Bz, Byz), u))))
     npt.assert_allclose(lhs, rhs, rtol=mrx.eps(1e4), atol=0)
