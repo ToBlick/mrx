@@ -40,27 +40,21 @@ def sections(j):
     return np.load(f, allow_pickle=True) if os.path.exists(f) else None
 
 
-def island_width(z, m, n, tol=2e-3):
-    """Two widths (in rho) of the chain at |iota| = nfp n / m from the final
-    sections: the extent of the seed radii whose fitted iota sits on the
-    rational, and the largest radial excursion (peak to peak of logical r
-    over one plane's crossings) of those lines -- a line inside the island
-    near its separatrix spans the full island width."""
+def island_width(z, m, n, tol=2e-3, tag="final"):
+    """Width (in logical rho) of the chain at |iota| = nfp n / m in the ``tag``
+    sections: the largest max(r) - min(r) over all crossings on all planes of
+    any non-chaotic line whose fitted iota sits on the rational to within
+    ``tol``. A line inside the island near its separatrix spans the full island
+    width; a nested surface spans nothing. 0 when no line is on the rational."""
     target = NFP * n / m
-    iota = np.abs(z["final_iota"])
-    r = z["final_seed_r"]
-    keep = z["final_keep"] & ~z["final_chaotic"]
+    iota = np.abs(z[f"{tag}_iota"])
+    keep = z[f"{tag}_keep"] & ~z[f"{tag}_chaotic"]
     on = keep & (np.abs(iota - target) < tol)
     if not on.any():
-        return 0.0, 0.0
-    dr = np.diff(np.sort(r))[0] if len(r) > 1 else 0.0
-    plateau = r[on].max() - r[on].min() + dr
-    spans = []
-    for key in z.files:
-        if key.startswith("final_zeta") and key.endswith("_logr"):
-            lr = z[key][on]
-            spans.append(np.nanmax(lr, axis=1) - np.nanmin(lr, axis=1))
-    return float(plateau), float(np.max(spans)) if spans else 0.0
+        return 0.0
+    keys = [k for k in z.files if k.startswith(f"{tag}_zeta") and k.endswith("_logr")]
+    lr = np.concatenate([z[k][on] for k in keys], axis=1)
+    return float(np.max(np.nanmax(lr, axis=1) - np.nanmin(lr, axis=1)))
 
 
 def helicity_drift(j):
@@ -145,8 +139,7 @@ def seeded_rows(arms):
         z = sections(j)
         if seed:
             m, n = (int(float(v)) for v in seed.split(",")[:2])
-            w = island_width(z, m, n) if z is not None else (None, None)
-            wtxt = "--" if w[0] is None else f"{w[0]:.3f} / {w[1]:.3f}"
+            wtxt = "--" if z is None else f"{island_width(z, m, n):.3f}"
             seedtxt, epstxt = f"({m}, {n})", f"{j['params']['seed_eps']:.0e}"
         else:
             wtxt, seedtxt, epstxt = "--", "--", "0"
@@ -362,8 +355,7 @@ def eta_rows(arms):
         if seed:
             m, n = (int(float(v)) for v in seed.split(",")[:2])
             z = sections(j)
-            w = island_width(z, m, n) if z is not None else (None, None)
-            wtxt = "--" if w[0] is None else f"{w[0]:.3f} / {w[1]:.3f}"
+            wtxt = "--" if z is None else f"{island_width(z, m, n):.3f}"
         else:
             wtxt = "--"
         h = np.asarray(q["helicity"])
@@ -450,19 +442,14 @@ def eta_figure(plain, seeded, ideal, figdir):
     if seeded:
         e = np.array([j["params"]["eta_max"] for j in seeded])
         ws = [
-            island_width(sections(j), 6, 1)
-            if sections(j) is not None
-            else (np.nan, np.nan)
+            island_width(sections(j), 6, 1) if sections(j) is not None else np.nan
             for j in seeded
         ]
-        ax[1, 1].semilogx(e, [w[0] for w in ws], "o-", label="plateau")
-        ax[1, 1].semilogx(e, [w[1] for w in ws], "s-", label="excursion")
+        ax[1, 1].semilogx(e, ws, "s-", label="final width")
         z0 = next((sections(j) for j in seeded if sections(j) is not None), None)
         if z0 is not None:
-            w0 = island_width_ic(z0, 6, 1)
-            ax[1, 1].axhline(w0[0], color="C0", lw=0.6, ls=":")
             ax[1, 1].axhline(
-                w0[1], color="C1", lw=0.6, ls=":", label="seeded IC (dotted)"
+                island_width_ic(z0, 6, 1), color="k", lw=0.6, ls=":", label="seeded IC"
             )
         ax[1, 1].set_xlabel(r"$\eta_{max}$")
         ax[1, 1].set_ylabel(r"final island width in $\rho$")
@@ -569,28 +556,25 @@ def eta_islands(plain, seeded, figdir):
                 keep = z["final_keep"] & ~z["final_chaotic"]
                 io = np.abs(z["final_iota"][keep])
                 present = io.min() <= target <= io.max()
-                w = island_width(z, m, n) if present else (0.0, 0.0)
-                pts.append((xpos(j), w[0], w[1], present))
+                w = island_width(z, m, n) if present else 0.0
+                pts.append((xpos(j), w, present))
             if not pts:
                 continue
             pts.sort()
             x = [q[0] for q in pts]
-            (l1,) = a.plot(x, [q[1] for q in pts], "o" + ls, label=f"{lab}: plateau")
-            (l2,) = a.plot(x, [q[2] for q in pts], "s" + ls, label=f"{lab}: excursion")
+            (l1,) = a.plot(x, [q[1] for q in pts], "s" + ls, label=lab)
             for q in pts:
-                if not q[3]:
+                if not q[2]:
                     a.plot([q[0]], [0.0], "o", mfc="none", color=l1.get_color(), ms=10)
         if seeded and m == 6:
             z0 = next((sections(j) for j in seeded if sections(j) is not None), None)
             if z0 is not None:
-                w0 = island_width_ic(z0, 6, 1)
-                a.axhline(w0[0], color="k", lw=0.6, ls=":")
                 a.axhline(
-                    w0[1],
+                    island_width_ic(z0, 6, 1),
                     color="k",
                     lw=0.6,
-                    ls="-.",
-                    label="seeded IC (plateau dotted, excursion dash-dot)",
+                    ls=":",
+                    label="seeded IC",
                 )
         a.set_xscale("log")
         ticks = sorted(set([x0] + etas))
@@ -839,20 +823,19 @@ def main():
         ],
     )
     ax[0].set_title("seeded arms: force residual")
-    eps, w_pl, w_sp = [], [], []
+    eps, w_fin, w_ic = [], [], []
     for a in ["s61_e1e-3_g0", "s61_e3e-3_g0", "s61_e1e-2_g0"]:
         j = pub[a]
         z = sections(j) if j is not None else None
         if z is None:
             continue
-        pl, sp = island_width(z, 6, 1)
         eps.append(j["params"]["seed_eps"])
-        w_pl.append(pl)
-        w_sp.append(sp)
+        w_fin.append(island_width(z, 6, 1))
+        w_ic.append(island_width_ic(z, 6, 1))
     if eps:
         e = np.asarray(eps)
-        ax[1].loglog(e, w_pl, "o-", label="iota plateau extent")
-        ax[1].loglog(e, w_sp, "s-", label="max radial excursion")
+        ax[1].loglog(e, w_fin, "s-", label="final")
+        ax[1].loglog(e, w_ic, "o--", label="initial condition")
         iota_p = 0.36
         ax[1].loglog(
             e,
@@ -919,8 +902,8 @@ def main():
         m, n = (int(float(v)) for v in j["params"]["seed"].split(",")[:2])
         zi = sections(j)
         lines.append(
-            f"{j['arm']}: final width (plateau / excursion) {island_width(zi, m, n)}; "
-            f"ic width {island_width_ic(zi, m, n)}; chaotic final {int(z['final_chaotic'].sum())}, "
+            f"{j['arm']}: final width {island_width(zi, m, n):.4f}; "
+            f"ic width {island_width_ic(zi, m, n):.4f}; chaotic final {int(z['final_chaotic'].sum())}, "
             f"ic {int(z['ic_chaotic'].sum())}"
         )
     open(os.path.join(root, "li383_pub", "tables.md"), "w").write(
@@ -930,15 +913,7 @@ def main():
 
 
 def island_width_ic(z, m, n, tol=2e-3):
-    zz = {k.replace("ic_", "final_", 1): z[k] for k in z.files if k.startswith("ic_")}
-
-    class _Z:
-        files = list(zz)
-
-        def __getitem__(self, k):
-            return zz[k]
-
-    return island_width(_Z(), m, n, tol)
+    return island_width(z, m, n, tol, tag="ic")
 
 
 if __name__ == "__main__":
