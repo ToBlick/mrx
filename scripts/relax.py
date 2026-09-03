@@ -132,6 +132,16 @@ Output (``--out``):
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
+``--checkpoint PATH`` (default ``<out>/state.eqx``) serialises the full
+descent state -- B, the pressure and warm-start guesses, the L-BFGS pair,
+the resistive clock -- together with the step number at every save and at
+the end (``equinox.tree_serialise_leaves``); ``--restart PATH`` continues
+from such a file: the step counter, and with it the eta schedule and the
+snapshot steps, carries on from the saved step, ``--steps`` counts the
+steps of THIS run, and the trace and QoI samples are this run's. The IC
+diagnostics and ``B_ic`` still refer to the initial condition built from
+``--geometry``, which must be the same.
+
 The trace records the linesearch identity ``dE_pred = -dt (F,u)_M / 2``
 against the measured decrease: it is an operator identity (curl adjointness,
 the cross-product sign, Leray M-orthogonality) and holds to round-off when
@@ -243,6 +253,12 @@ def parse_args(argv=None):
                     help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
                          "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--checkpoint", default=None,
+                    help="write the descent state (equinox pytree + step) here at every "
+                         "save and at the end; default <out>/state.eqx")
+    ap.add_argument("--restart", default=None,
+                    help="continue from a --checkpoint file of the same geometry, mesh, "
+                         "degree and precision")
     ap.add_argument("--stepper", default="h", choices=("h", "bonly"),
                     help="h: production step (J x H, u x H); bonly: the experimental "
                          "B-only cross products (mrx.experimental.bonly_relaxation)")
@@ -466,6 +482,13 @@ def main(cli):
                 state.F_norm / normaliser(state.B_n))
 
     state = initial_state(B0, ts, dt=cli.dt0)
+    it0 = 0
+    ckpt = cli.checkpoint or os.path.join(out, "state.eqx")
+    if cli.restart:
+        state, it_saved = eqx.tree_deserialise_leaves(cli.restart, like=(state, jnp.int32(0)))
+        it0 = int(it_saved)
+        print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
+    params["start_step"] = it0
     p_ic = np.asarray(state.p)
     pw_ic = np.asarray(pw0)
     snaps = [(0, np.asarray(B0), np.asarray(pw0))]
@@ -500,6 +523,7 @@ def main(cli):
             **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
+        eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
         # The field goes out with every save, not only the last one: a run
         # that hits its wall-time limit leaves the state it reached.
         with h5py.File(os.path.join(out, "B.h5"), "w") as fh:
@@ -516,9 +540,9 @@ def main(cli):
             for k, v in params.items():
                 fh.attrs[k] = "" if v is None else v
 
-    for it in range(1, cli.steps + 1):
+    for it in range(it0 + 1, it0 + cli.steps + 1):
         if cli.eta_max > 0.0:
-            eta_now = eta_schedule(cli.eta_schedule, cli.eta_max, it, cli.steps, cli.eta_pulse)
+            eta_now = eta_schedule(cli.eta_schedule, cli.eta_max, it, it0 + cli.steps, cli.eta_pulse)
             state = eqx.tree_at(lambda t: t.eta, state, eta_now)
             if eta_now == 0.0:
                 # The stepper accumulates the resistive clock until a solve is
@@ -544,8 +568,8 @@ def main(cli):
         tr["dE_meas"].append(E - E_prev)
         tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
         E_prev = E
-        n_done = it
-        if cli.save_every and (it % cli.save_every == 0 or it == cli.steps):
+        n_done = it - it0
+        if cli.save_every and (it % cli.save_every == 0 or it == it0 + cli.steps):
             # A frame for a movie: the field and its weak pressure now.
             _, p_s, J_s, H_s, _ = force_probe(state.B_n, state.p, state.H, state.JxH)
             pw_s, _, _ = pressure_probe(state.B_n, p_s, J_s, H_s, pw_guess)
@@ -595,7 +619,7 @@ def main(cli):
             break
 
     wall = time.perf_counter() - t_arm - t_qoi
-    if qoi["it"][-1] != n_done:
+    if qoi["it"][-1] != it0 + n_done:
         # The pressures stored next to B_final are evaluated AT B_final.
         _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
         p_w, _, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
