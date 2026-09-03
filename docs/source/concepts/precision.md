@@ -33,8 +33,8 @@ controller, a shift) stay ordinary parameters.
 relative residual a solve can reach when the matvec itself is rounded.
 `scripts/poisson_study.py --tol` defaults to `1e-9` because the archived
 convergence numbers were measured there. `scripts/relax.py` takes
-`--precision` (default float32) and stops when the mean over `--floor-steps`
-steps of the relative force residual drops below `--floor-tol` (default
+`--precision` (default float32) and stops when the mean over the last chunk
+(`--chunk` steps) of the relative force residual drops below `--floor-tol` (default
 `1e-3`).
 
 The scripts set `MRX_DTYPE` from `--precision` before importing `mrx`.

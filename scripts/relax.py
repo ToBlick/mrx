@@ -73,13 +73,15 @@ Flags, defaults in brackets:
     Budgets and output:
       --steps N [3000]             maximum number of steps
       --seconds S [none]           wall-clock budget of the descent loop
+      --chunk N [500]              steps per compiled chunk (one lax.scan):
+                                   the trace comes back, the quantities of
+                                   interest are sampled (helicity, the two
+                                   pressures, beta; see "Two pressures"), a
+                                   snapshot, the checkpoint and the outputs
+                                   are written, and the floor, stall and
+                                   wall-time tests run, once per chunk;
+                                   --steps is a multiple of it
       --floor-tol TOL [1e-3]       see "Stopping criterion"
-      --floor-steps W [100]        number of steps over which the force
-                                   residual is averaged before it is compared
-                                   with --floor-tol
-      --qoi-every N [250]          steps between the quantity-of-interest
-                                   samples (helicity, the two pressures,
-                                   beta; see "Two pressures")
       --out DIR [outputs/relax/<date>/<time>]
 
 Two pressures:
@@ -107,8 +109,8 @@ Two pressures:
 
 Stopping criterion:
     The relative force residual ``|F|_M / ||grad(B^2/2)||`` is recorded at
-    every step. The run stops when its mean over the last ``--floor-steps``
-    steps drops below ``--floor-tol``. The relaxation guarantees ``dE/dt <= 0``
+    every step. The run stops when its mean over the last chunk (``--chunk``
+    steps) drops below ``--floor-tol``. The relaxation guarantees ``dE/dt <= 0``
     only, so the residual is not monotone; the window mean is the quantity,
     never the last value. Calibration: on the W7-X Clebsch run at (8,16,8)
     p=3 in float64 the residual reaches ~1.7e-3 at step 500 and floors around
@@ -124,7 +126,7 @@ Output (``--out``):
                  gradp_cmp, p_cmp, weak_resid, dpdn_wall, JxBn_wall,
                  beta_vol, beta_axis); the initial-condition summary ``ic`` and the
                  ``summary`` with the stopping reason, both carrying the
-                 same pressure diagnostics. Rewritten at every qoi sample.
+                 same pressure diagnostics. Rewritten at every chunk.
     B.h5         B_ic, B_final, the strong pressures p_ic, p_final (3-form
                  DoFs) and the weak pressures pw_ic, pw_final (Dirichlet
                  0-form DoFs), all evaluated at the field stored next to
@@ -135,10 +137,11 @@ Output (``--out``):
 ``--reconnect`` runs the ideal descent and, whenever it stalls, checkpoints
 the stalled equilibrium and reconnects it with one backward-Euler solve of
 ``(M + eps L) delta = -eps L B``, then restarts the optimiser on the diffused
-field and carries on. Stalled means the block mean of the residual (blocks of
-a fifth of ``--stall-steps``) has dropped by less than ``--stall-tol`` over
-the last ``--stall-steps`` steps; the detector only sees the history since the
-last reconnection. The dose is ``eps = c h^2`` with ``h = 1 / n_r`` and
+field and carries on. Stalled means the residual's mean over the last chunk
+is above ``(1 - --stall-tol)`` times the previous chunk's, both chunks after
+the last reconnection (the descent is a slow power law, so this is a rate
+test: 2% per 500 steps against a chunk-to-chunk scatter of a few tenths of a
+percent at (16,32,32) gamma = 1). The dose is ``eps = c h^2`` with ``h = 1 / n_r`` and
 ``c = --reconnect-eps`` (a diffusion length of ``sqrt(c)`` cells), the same
 for every reconnection. Stall ``k`` leaves ``<out>/stalls/<k>/B.h5`` (the
 stalled field with its pressures, in the layout of ``B.h5``, so
@@ -174,38 +177,32 @@ import time
 import numpy as np
 
 
-def force_floor_reached(resid, steps, tol):
-    """Return True when the mean of the last ``steps`` residuals is below ``tol``.
+def eta_schedule(kind, eta_max, steps, pulse=(2000, 100, 0)):
+    """The resistivity as a function of the (traced) step count, for
+    ``chunk_runner``; None when ``eta_max`` is 0. tanh drops eta to ~0 over
+    the middle third of ``steps``, linear reaches 0 there; ``pulse`` =
+    (start, width, period) is ``eta_max`` on ``start <= it < start + width``
+    and, with a period, on every later window ``start + k period``, 0
+    elsewhere."""
+    import jax.numpy as jnp
 
-    ``resid`` is the relative force residual after each step so far. Needs at
-    least ``steps`` samples. Pure numpy, so it can be replayed on a trace
-    without a GPU.
-    """
-    if len(resid) < steps:
-        return False
-    return bool(np.mean(resid[-steps:]) < tol)
-
-
-def eta_schedule(kind, eta_max, it, steps, pulse=(2000, 100, 0)):
-    """Resistivity at step ``it`` of ``steps``. ``pulse`` = (start, width,
-    period): ``eta_max`` on ``start <= it < start + width`` and, with a period,
-    on every later window ``start + k period``; 0 elsewhere."""
     if eta_max == 0.0:
-        return 0.0
+        return None
     if kind == "pulse":
         start, width, period = pulse
-        since = it - start
-        if since < 0:
-            return 0.0
-        if period > 0:
-            since %= period
-        return eta_max if since < width else 0.0
-    frac = it / max(steps, 1)
+
+        def pulsed(it):
+            since = it - start
+            if period > 0:
+                since = since % period
+            return jnp.where((it >= start) & (since < width), eta_max, 0.0)
+
+        return pulsed
     if kind == "tanh":
-        return eta_max * 0.5 * (1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
+        return lambda it: eta_max * 0.5 * (1.0 - jnp.tanh(4.0 * jnp.pi * (it / max(steps, 1) - 0.5)))
     if kind == "linear":
-        return eta_max * (1.0 - frac)
-    return eta_max
+        return lambda it: eta_max * (1.0 - it / max(steps, 1))
+    return lambda it: jnp.full((), eta_max)
 
 
 def parse_args(argv=None):
@@ -257,26 +254,18 @@ def parse_args(argv=None):
     ap.add_argument("--eta-every", type=int, default=1)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
+    ap.add_argument("--chunk", type=int, default=500,
+                    help="steps per compiled chunk; trace, qoi sample, snapshot, checkpoint, "
+                         "outputs and the floor / stall / wall-time tests once per chunk")
     ap.add_argument("--floor-tol", type=float, default=1e-3,
-                    help="stop when the windowed mean of the relative force residual is below this")
-    ap.add_argument("--floor-steps", type=int, default=100,
-                    help="number of steps over which the force residual is averaged "
-                         "before it is compared with --floor-tol")
-    ap.add_argument("--save-every", type=int, default=0,
-                    help="store B and the weak pressure every K steps in B.h5 "
-                         "(B_snapshots, pw_snapshots, snapshot_steps); 0 is off")
-    ap.add_argument("--qoi-every", type=int, default=250,
-                    help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
-                         "the two pressures and beta (a force evaluation and a k=0 solve)")
+                    help="stop when the last chunk's mean relative force residual is below this")
     ap.add_argument("--out", default=None)
     ap.add_argument("--reconnect", action="store_true",
                     help="checkpoint the stalled equilibrium and reconnect it with one "
                          "resistive solve whenever the descent stalls (see the docstring)")
-    ap.add_argument("--stall-tol", type=float, default=0.05,
-                    help="stalled when the residual dropped by less than this fraction "
-                         "over --stall-steps steps")
-    ap.add_argument("--stall-steps", type=int, default=1000,
-                    help="steps over which the stall is judged (block means of a fifth of it)")
+    ap.add_argument("--stall-tol", type=float, default=0.02,
+                    help="stalled when the last chunk's mean residual dropped by less than "
+                         "this fraction against the previous chunk's")
     ap.add_argument("--reconnect-eps", type=float, default=0.01,
                     help="dose eps = c h^2 of every reconnection, h = 1 / n_r, with this c")
     ap.add_argument("--checkpoint", default=None,
@@ -293,6 +282,8 @@ def parse_args(argv=None):
     if len(pulse) not in (2, 3):
         ap.error("--eta-pulse wants START,WIDTH or START,WIDTH,PERIOD")
     cli.eta_pulse = pulse + (0,) * (3 - len(pulse))
+    if cli.chunk < 1 or cli.steps % cli.chunk:
+        ap.error("--steps must be a positive multiple of --chunk")
     if cli.ic == "clebsch" and not os.path.isfile(cli.geometry):
         ap.error(f"--ic clebsch reads the Clebsch data from a GVEC export, and "
                  f"--geometry {cli.geometry!r} is not a file; use --ic analytic")
@@ -342,7 +333,7 @@ def main(cli):
                                         make_profiles, parse_lambda,
                                         project_reference_two_form)
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
+    from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper, chunk_runner,
                                 compute_force, compute_helicity, initial_state, resistive_step,
                                 pressure_diagnostics, weak_pressure)
     if cli.stepper == "bonly":  # experimental hook (2026-09-03): J x B and u x B, no H
@@ -487,25 +478,7 @@ def main(cli):
         history_size=cli.history,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale)
-    apply_M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
-
-    @jax.jit
-    def step(state):
-        state = ts.relaxation_step(state)
-        return eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
-
-    @jax.jit
-    def probe(state):
-        """Trace quantities from the post-step state. F_prev and v are the F
-        and u the step used, so the linesearch identity is reconstructible."""
-        Fu = state.F_prev @ apply_M2(state.v)
-        return (0.5 * seq.l2_norm_sq(state.B_n, 2),
-                seq.l2_norm(seq.apply_incidence_matrix(
-                    state.B_n, 2, dirichlet_in=True, dirichlet_out=True), 3),
-                Fu, Fu / (state.F_norm * state.v_norm),
-                (Fu / state.dt) ** 0.5 / state.v_norm,
-                state.F_norm / normaliser(state.B_n))
 
     state = initial_state(B0, ts, dt=cli.dt0)
     it0 = 0
@@ -515,6 +488,14 @@ def main(cli):
         it0 = int(it_saved)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
     params["start_step"] = it0
+    # One compiled chunk: --chunk steps, the per-step scalars stacked, the
+    # eta schedule (a function of the total step count) applied per step.
+    run = chunk_runner(ts, cli.chunk,
+                       eta_schedule(cli.eta_schedule, cli.eta_max, it0 + cli.steps, cli.eta_pulse),
+                       extra=dict(resid=lambda st: st.F_norm / normaliser(st.B_n)))
+    reconnect_eps = cli.reconnect_eps * (1.0 / ns[0]) ** 2
+    reconnect_fn = jax.jit(lambda B: resistive_step(B, seq, reconnect_eps))
+
     p_ic = np.asarray(state.p)
     pw_ic = np.asarray(pw0)
     snaps = [(0, np.asarray(B0), np.asarray(pw0))]
@@ -525,35 +506,18 @@ def main(cli):
                           "gain", "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
     qoi = {k: [] for k in ("it", "helicity", "JoverB", "wall", "gradp_cmp", "p_cmp",
                            "weak_resid", "dpdn_wall", "JxBn_wall", "beta_vol", "beta_axis")}
+    results["stalls"] = []
     E_prev = E0
     stop = "steps"
     t_arm = time.perf_counter()
-    t_qoi = 0.0     # time inside the qoi samples; the recorded wall excludes it
+    t_qoi = 0.0     # time in the qoi samples, saves and reconnections; the recorded wall excludes it
     n_done = 0
+    chunks_since_stall = 0
     print(f"\n=== {cli.method}  m={cli.history} "
           f"smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
           f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max} eta-every={cli.eta_every}  "
-          f"steps<={cli.steps} floor-tol={cli.floor_tol:.1e} over {cli.floor_steps} steps ===",
+          f"steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} ===",
           flush=True)
-
-    def save(final=False):
-        results["trace"] = tr
-        results["qoi"] = qoi
-        window = tr["resid"][-cli.floor_steps:]
-        results["summary"] = dict(
-            steps=n_done, stop=stop, wall=time.perf_counter() - t_arm - t_qoi,
-            E_final=tr["E"][-1] if tr["E"] else E0,
-            F_final=tr["F"][-1] if tr["F"] else F0n,
-            resid_final=tr["resid"][-1] if tr["resid"] else resid0,
-            resid_window_mean=float(np.mean(window)) if window else resid0,
-            **latest["diag"])
-        with open(os.path.join(out, "relax.json"), "w") as fh:
-            json.dump(results, fh, indent=1)
-        eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
-        # The field goes out with every save, not only the last one: a run
-        # that hits its wall-time limit leaves the state it reached.
-        write_field(os.path.join(out, "B.h5"), state.B_n, latest["p"], latest["pw"],
-                    snapshots=bool(cli.save_every))
 
     def write_field(path, B_now, p_now, pw_now, snapshots=False, **extra):
         """The field and its pressures next to the IC's, as poincare_relax.py reads them."""
@@ -571,135 +535,113 @@ def main(cli):
             for k, v in {**params, **extra}.items():
                 fh.attrs[k] = "" if v is None else v
 
-    results["stalls"] = []
-    reconnect_eps = cli.reconnect_eps * (1.0 / ns[0]) ** 2
-    stall_block = max(cli.stall_steps // 5, 1)
-    stall_last = it0
-    reconnect_fn = jax.jit(lambda B: resistive_step(B, seq, reconnect_eps))
+    def save():
+        results["trace"] = tr
+        results["qoi"] = qoi
+        window = tr["resid"][-cli.chunk:]
+        results["summary"] = dict(
+            steps=n_done, stop=stop, wall=time.perf_counter() - t_arm - t_qoi,
+            E_final=tr["E"][-1] if tr["E"] else E0,
+            F_final=tr["F"][-1] if tr["F"] else F0n,
+            resid_final=tr["resid"][-1] if tr["resid"] else resid0,
+            resid_window_mean=float(np.mean(window)) if window else resid0,
+            **latest["diag"])
+        with open(os.path.join(out, "relax.json"), "w") as fh:
+            json.dump(results, fh, indent=1)
+        eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
+        # The field goes out with every save, not only the last one: a run
+        # that hits its wall-time limit leaves the state it reached.
+        write_field(os.path.join(out, "B.h5"), state.B_n, latest["p"], latest["pw"], snapshots=True)
 
-    def stalled(resid):
-        """The block mean dropped by less than --stall-tol over --stall-steps steps."""
-        if len(resid) < cli.stall_steps + stall_block:
-            return False, None
-        now = float(np.mean(resid[-stall_block:]))
-        before = float(np.mean(resid[-cli.stall_steps - stall_block:-cli.stall_steps]))
-        return now > (1.0 - cli.stall_tol) * before, now
+    def sample_qoi(state, it):
+        """Helicity, ||J||/||B||, the weak pressure and its diagnostics at the
+        state's field (the force at the CURRENT field; state.p, H, JxH are
+        the step's values at the previous one, they warm-start it and are
+        refreshed from it). Appends to ``qoi``; returns the refreshed state."""
+        nonlocal pw_guess, latest
+        _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
+        pw_guess, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
+        h, A_new = get_helicity(state.B_n, seq, state.A)
+        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A_new))
+        diag = {k: float(v) for k, v in diag.items()}
+        latest = {"p": np.asarray(p), "pw": np.asarray(pw_guess), "diag": diag}
+        qoi["it"].append(it)
+        qoi["wall"].append(time.perf_counter() - t_arm - t_qoi)
+        qoi["JoverB"].append(float(JoverB))
+        qoi["helicity"].append(float(h))
+        for k, v in diag.items():
+            qoi[k].append(v)
+        return state, float(h), float(JoverB), diag
 
-    for it in range(it0 + 1, it0 + cli.steps + 1):
-        if cli.eta_max > 0.0:
-            eta_now = eta_schedule(cli.eta_schedule, cli.eta_max, it, it0 + cli.steps, cli.eta_pulse)
-            state = eqx.tree_at(lambda t: t.eta, state, eta_now)
-            if eta_now == 0.0:
-                # The stepper accumulates the resistive clock until a solve is
-                # due; with eta off that clock must not carry into the next
-                # window (a pulse after 2000 ideal steps would otherwise
-                # diffuse over all of them at once).
-                state = eqx.tree_at(lambda t: (t.resistive_time, t.resistive_count), state,
-                                    (jnp.zeros(()), jnp.int32(0)))
-        state = step(state)
-        E, div, Fu, cos, gain, resid = (float(v) for v in probe(state))
-        tr["E"].append(E)
-        tr["F"].append(float(state.F_norm))
-        tr["resid"].append(resid)
-        tr["dt"].append(float(state.dt))
-        tr["dt_star"].append(float(state.dt_star))
-        tr["cfl"].append(float(state.cfl_max))
-        tr["div"].append(div)
-        tr["cos"].append(cos)
-        tr["gain"].append(gain)
-        tr["eta"].append(float(state.eta))
-        tr["res_it"].append(int(state.resistive_info))
-        tr["res_delta"].append(float(state.resistive_delta))
-        tr["dE_meas"].append(E - E_prev)
-        tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
-        E_prev = E
-        n_done = it - it0
-        if cli.save_every and (it % cli.save_every == 0 or it == it0 + cli.steps):
-            # A frame for a movie: the field and its weak pressure now.
-            _, p_s, J_s, H_s, _ = force_probe(state.B_n, state.p, state.H, state.JxH)
-            pw_s, _, _ = pressure_probe(state.B_n, p_s, J_s, H_s, pw_guess)
-            snaps.append((it, np.asarray(state.B_n), np.asarray(pw_s)))
-        if it % cli.qoi_every == 0 or it == 1:
-            tq = time.perf_counter()
-            qoi["it"].append(it)
-            qoi["wall"].append(tq - t_arm - t_qoi)
-            # The force at the CURRENT field (state.p, H, JxH are the step's
-            # values at the previous one; they warm-start it and are
-            # refreshed from it). J serves ||J||/||B|| and the weak pressure.
-            _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
-            pw_guess, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
-            state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH), state, (p, H, JxH))
-            diag = {k: float(v) for k, v in diag.items()}
-            latest = {"p": np.asarray(p), "pw": np.asarray(pw_guess), "diag": diag}
-            qoi["JoverB"].append(float(JoverB))
-            for k, v in diag.items():
-                qoi[k].append(v)
-            h, A_new = get_helicity(state.B_n, seq, state.A)
-            state = eqx.tree_at(lambda s: s.A, state, A_new)
-            qoi["helicity"].append(float(h))
-            h0 = qoi["helicity"][0]
-            print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}  "
-                  f"resid={resid:.3e}  H={float(h):+.6e}  "
-                  f"dH={float(h) - h0:+.3e}  [{tq - t_arm - t_qoi:.0f}s solve "
-                  f"+{t_qoi:.0f}s qoi]\n           {pressure_line(diag)}", flush=True)
-            save()
-            t_qoi += time.perf_counter() - tq
-        elif it <= 5 or it % 20 == 0:
-            print(f"  it {it:>5d}  E={E:.8e}  |F|={float(state.F_norm):.4e}  "
-                  f"resid={resid:.3e}  "
-                  f"dt={float(state.dt):+.3e}  dt*={float(state.dt_star):+.3e}  "
-                  f"cfl={float(state.cfl_max) * float(state.dt):.2f}  cos={cos:+.4f}  gain={gain:.2e}  "
-                  f"divB={div:.2e}  dE_meas={tr['dE_meas'][-1]:+.3e}  "
-                  f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
-                  f"res_delta={tr['res_delta'][-1]:.2e}",
-                  flush=True)
-        if cli.reconnect:
-            # Only the history since the last reconnection counts.
-            is_stalled, floor_now = stalled(tr["resid"][stall_last - it0:])
-            if is_stalled:
-                tq = time.perf_counter()
+    tq = time.perf_counter()
+    state, h0, _, _ = sample_qoi(state, it0)   # qoi[...][0] is the start of THIS run
+    t_qoi += time.perf_counter() - tq
+    for _ in range(cli.steps // cli.chunk):
+        state, chunk = run(state, it0 + n_done)
+        chunk = {k: np.asarray(v) for k, v in chunk.items()}
+        n_done += cli.chunk
+        it = it0 + n_done
+        with np.errstate(invalid="ignore"):   # a backward line-search step has no gain
+            tr["cos"].extend((chunk["Fu"] / (chunk["F"] * chunk["v"])).tolist())
+            tr["gain"].extend(((chunk["Fu"] / chunk["dt"]) ** 0.5 / chunk["v"]).tolist())
+        tr["dE_meas"].extend(np.diff(chunk["E"], prepend=E_prev).tolist())
+        tr["dE_pred"].extend((-0.5 * chunk["dt"] * chunk["Fu"]).tolist())
+        for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "eta", "res_it", "res_delta"):
+            tr[k].extend(chunk[k].tolist())
+        E_prev = float(chunk["E"][-1])
+        resid_now = float(chunk["resid"].mean())
+        tq = time.perf_counter()
+        state, h, JoverB, diag = sample_qoi(state, it)
+        snaps.append((it, np.asarray(state.B_n), latest["pw"]))
+        print(f"  it {it:>5d}  E={E_prev:.8e}  |F|={chunk['F'][-1]:.4e}  "
+              f"resid={resid_now:.3e} (chunk mean)  H={h:+.6e}  dH={h - h0:+.3e}  "
+              f"dt={chunk['dt'].mean():+.3e}  cos min={np.nanmin(chunk['Fu'] / (chunk['F'] * chunk['v'])):+.4f}  "
+              f"divB={chunk['div'].max():.2e}  res_it max={int(np.abs(chunk['res_it']).max())}  "
+              f"[{tq - t_arm - t_qoi:.0f}s solve +{t_qoi:.0f}s qoi]\n           {pressure_line(diag)}",
+              flush=True)
+        chunks_since_stall += 1
+        if cli.reconnect and chunks_since_stall >= 2:
+            resid_prev = float(np.mean(tr["resid"][-2 * cli.chunk:-cli.chunk]))
+            if resid_now > (1.0 - cli.stall_tol) * resid_prev:
                 k = len(results["stalls"]) + 1
                 sdir = os.path.join(out, "stalls", str(k))
                 os.makedirs(sdir, exist_ok=True)
-                # The stalled equilibrium: field, pressures, helicity, restart file.
-                _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
-                pw, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
-                H_now, A_new = get_helicity(state.B_n, seq, state.A)
-                state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A_new))
-                write_field(os.path.join(sdir, "B.h5"), state.B_n, np.asarray(p), np.asarray(pw),
+                # The stalled equilibrium: field, pressures (just sampled), restart file.
+                write_field(os.path.join(sdir, "B.h5"), state.B_n, latest["p"], latest["pw"],
                             stall=k, stall_step=it)
                 eqx.tree_serialise_leaves(os.path.join(sdir, "state.eqx"), (state, jnp.int32(it)))
-                ev = dict(stall=k, it=it, floor=floor_now, eps=float(reconnect_eps),
-                          F_before=float(state.F_norm), helicity_before=float(H_now),
-                          JoverB_before=float(JoverB),
-                          **{f"{kk}_before": float(v) for kk, v in diag.items()})
-                # Reconnect and restart the optimiser on the diffused field.
+                ev = dict(stall=k, it=it, floor=resid_now, floor_prev=resid_prev,
+                          eps=float(reconnect_eps), F_before=float(state.F_norm),
+                          helicity_before=h, JoverB_before=JoverB,
+                          **{f"{kk}_before": v for kk, v in diag.items()})
+                # Reconnect and restart the optimiser on the diffused field; the
+                # qoi gets a second sample at this step, the reconnected field's.
                 B_new, info, rel = reconnect_fn(state.B_n)
                 state = initial_state(B_new, ts, dt=float(state.dt))
-                _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
-                pw_guess, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw)
-                H_new, A_new = get_helicity(state.B_n, seq, state.A)
-                state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A_new))
+                state, h, JoverB, diag = sample_qoi(state, it)
                 ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
-                          helicity_after=float(H_new), JoverB_after=float(JoverB),
-                          **{f"{kk}_after": float(v) for kk, v in diag.items()})
+                          helicity_after=h, JoverB_after=JoverB,
+                          **{f"{kk}_after": v for kk, v in diag.items()})
                 results["stalls"].append(ev)
-                stall_last = it
-                t_qoi += time.perf_counter() - tq
-                print(f"  [stall {k}] at it={it}: floor {floor_now:.3e}; reconnect eps="
-                      f"{reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
+                chunks_since_stall = 0
+                print(f"  [stall {k}] at it={it}: chunk mean {resid_prev:.3e} -> {resid_now:.3e}; "
+                      f"reconnect eps={reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
                       f"|F| {ev['F_before']:.3e} -> {ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} "
                       f"-> {ev['helicity_after']:+.6e}, J/B {ev['JoverB_before']:.3f} -> "
                       f"{ev['JoverB_after']:.3f}; wrote {sdir}", flush=True)
-        if force_floor_reached(tr["resid"], cli.floor_steps, cli.floor_tol):
+        if resid_now < cli.floor_tol:
             stop = "floor"
-            print(f"  [floor] force residual averaged over the last {cli.floor_steps} "
-                  f"steps below {cli.floor_tol:.1e} at it={it}", flush=True)
+            print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below "
+                  f"{cli.floor_tol:.1e} at it={it}", flush=True)
+            t_qoi += time.perf_counter() - tq
             break
         if cli.seconds is not None and time.perf_counter() - t_arm > cli.seconds:
             stop = "seconds"
             print(f"  [budget] {cli.seconds:.0f} s spent at it={it}", flush=True)
+            t_qoi += time.perf_counter() - tq
             break
+        save()
+        t_qoi += time.perf_counter() - tq
 
     wall = time.perf_counter() - t_arm - t_qoi
     if qoi["it"][-1] != it0 + n_done:
@@ -717,7 +659,7 @@ def main(cli):
           f"({(E0 - tr['E'][-1]) / E0:.4%} of the initial energy removed)")
     print(f"    |F| {F0n:.4e} -> {tr['F'][-1]:.4e}   residual "
           f"{resid0:.4e} -> {resid_tr[-1]:.4e}  (mean over the last "
-          f"{min(cli.floor_steps, n_done)} steps {resid_tr[-cli.floor_steps:].mean():.4e}, "
+          f"{min(cli.chunk, n_done)} steps {resid_tr[-cli.chunk:].mean():.4e}, "
           f"min {resid_tr.min():.4e})")
     print(f"    linesearch identity |dE_meas - dE_pred| / E0: median "
           f"{np.median(ident):.3e}  max {ident.max():.3e}"
@@ -745,7 +687,7 @@ def main(cli):
               f"mean {np.abs(res_it[solved]).mean():.1f}  max {np.abs(res_it).max()}  "
               f"unconverged on {int((res_it > 0).sum())};  ||delta||/||B|| "
               f"mean {rd.mean():.2e}  max {rd.max():.2e}", flush=True)
-    save(final=True)
+    save()
     print(f"wrote {out}/relax.json and {out}/B.h5", flush=True)
 
 

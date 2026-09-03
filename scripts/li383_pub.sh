@@ -33,7 +33,7 @@ GEOM=$ROOT/data/wout_li383_low_res_reference.nc
 GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 # floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
 # there): let --steps / --seconds end the run and show whether it bottoms out.
-COMMON="--ic clebsch --floor-tol 1e-4 --save-every 100 --steps 6000"
+COMMON="--ic clebsch --floor-tol 1e-4 --steps 6000"
 G1_12="--velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4"   # mu = 0.064 / n_r^2
 G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
 
@@ -151,15 +151,15 @@ bonly() {  # bonly [smoke]
     # absolute and PYTHONPATH is overridden; data and outputs stay under $ROOT.
     local wt=$WT
     export EXTRA_ENV="PYTHONPATH=$wt"
-    local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --save-every 100 --qoi-every 50 --stepper bonly"
+    local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --stepper bonly"
     if [ "${1:-}" = smoke ]; then
-        submit relax bonly_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --qoi-every 20 --stepper bonly --out $PUB/bonly_smoke" 30
+        submit relax bonly_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --chunk 100 --stepper bonly --out $PUB/bonly_smoke" 30
     elif [ "${1:-}" = pairs ]; then
         # 2026-09-03: the (16,32,32) f32 twins showed the same drift (roundoff,
         # -8e-8): the B-only rate is a product of two projection errors. Two
         # pairs make it visible: float64 at (12,24,24) p = 2 and float32 at
         # (8,16,16) p = 1, each with the production and the B-only stepper.
-        local base="--ic clebsch --floor-tol 1e-5 --save-every 100 --qoi-every 50 --steps 5000 --seconds 7200"
+        local base="--ic clebsch --floor-tol 1e-5 --steps 5000 --seconds 7200"
         local st
         for st in h bonly; do
             submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 --stepper $st --out $PUB/h12_p2_f64_$st" 300
@@ -177,7 +177,7 @@ pulse() {
     # eta tau = 3e-5 / 1e-4 / 3e-4 at dt ~ 2, matching the 1e-8 / 3e-8 / 1e-7
     # tanh rungs), then ideal to 5000; plus the middle dose every 1000 steps.
     export EXTRA_ENV="PYTHONPATH=$WT"
-    local common="--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 5000 --save-every 100 --seconds 7200 --eta-schedule pulse --eta-every 100"
+    local common="--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 5000 --seconds 7200 --eta-schedule pulse --eta-every 100"
     local e
     for e in 1.5e-7 5e-7 1.5e-6; do
         submit relax pulse$e "$WT/scripts/relax.py" "$common --eta-max $e --eta-pulse 2000,100 --out $PUB/pulse$e" 300
@@ -192,9 +192,9 @@ reconnect() {  # reconnect [smoke]
     # (16,32,32) p = 2 gamma = 1, 8000 steps so several stalls fit.
     export EXTRA_ENV="PYTHONPATH=$WT"
     if [ "${1:-}" = smoke ]; then
-        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --qoi-every 100 --reconnect --stall-steps 300 --out $PUB/reconnect_smoke" 40
+        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect --out $PUB/reconnect_smoke" 40
     else
-        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --save-every 100 --qoi-every 100 --reconnect --out $PUB/reconnect_h16_p2_g1" 400
+        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect --out $PUB/reconnect_h16_p2_g1" 400
     fi
 }
 

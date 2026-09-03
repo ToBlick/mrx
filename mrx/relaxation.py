@@ -739,6 +739,60 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     )
 
 
+def chunk_runner(ts: TimeStepper, n_chunk: int,
+                 eta_of_step: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None,
+                 extra: Optional[dict[str, Callable[[State], jnp.ndarray]]] = None,
+                 ) -> Callable[[State, int], tuple[State, dict]]:
+    """``run(state, it0) -> (state, trace)``, jit-compiled: ``n_chunk``
+    relaxation steps as one ``lax.scan``.
+
+    The state (B, the L-BFGS pair, the warm-start guesses) is the carry and
+    comes out once; the per-step scalars are the scan's stacked output,
+    ``trace[name]`` an array of length ``n_chunk`` over the steps
+    ``it0 + 1 .. it0 + n_chunk``: ``E`` (``||B||_M^2 / 2``), ``F``
+    (``||F||_M``), ``v`` (``||u||_M``), ``dt``, ``dt_star``, ``cfl`` (the
+    velocity's largest logical CFL number), ``div`` (``||div B||``), ``Fu``
+    (``<F_prev, u>_M``: the line search predicts ``dE = -dt Fu / 2``),
+    ``eta``, ``res_it`` and ``res_delta`` (the resistive solve's signed
+    iteration count and relative update), plus ``extra[name](state)`` for
+    every extra probe.
+
+    ``eta_of_step(it)`` is the resistivity at the traced step count; while it
+    is 0 the resistive clock (``resistive_time``, ``resistive_count``) is held
+    at 0, so a schedule that switches eta on diffuses over its own window
+    only. Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
+    count); the chunk is the cadence at which the host sees the trace and may
+    act on the state.
+    """
+    seq = ts.seq
+    extra = extra or {}
+
+    def body(state, it):
+        if eta_of_step is not None:
+            eta = eta_of_step(it)
+            off = eta == 0.0
+            state = eqx.tree_at(
+                lambda s: (s.eta, s.resistive_time, s.resistive_count), state,
+                (eta, jnp.where(off, 0.0, state.resistive_time),
+                 jnp.where(off, 0, state.resistive_count)))
+        state = ts.relaxation_step(state)
+        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
+        trace = dict(
+            E=0.5 * seq.l2_norm_sq(state.B_n, 2), F=state.F_norm, v=state.v_norm,
+            dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
+            div=compute_divergence_norm(state.B_n, seq),
+            Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
+            eta=state.eta, res_it=state.resistive_info, res_delta=state.resistive_delta,
+            **{k: f(state) for k, f in extra.items()})
+        return state, trace
+
+    @jax.jit
+    def run(state, it0):
+        return jax.lax.scan(body, state, it0 + jnp.arange(1, n_chunk + 1))
+
+    return run
+
+
 def relaxation_loop(B_dof: jnp.ndarray,
                     ts: TimeStepper,
                     num_iters_outer: int,
@@ -752,27 +806,19 @@ def relaxation_loop(B_dof: jnp.ndarray,
     """
     Perform multiple relaxation steps for the MRX relaxation.
 
-    The outer loop is a Python for-loop (for diagnostics / callbacks),
-    the inner loop is compiled via jax.lax.scan.
+    The outer loop is a Python for-loop (for diagnostics / callbacks), the
+    inner loop is ``chunk_runner``'s scan of ``num_iters_inner`` steps.
 
     Returns
     -------
     state : State
     traces : dict  with keys: force_norm, helicity, timestep, energy,
              resistive_info, velocity_norm, divergence_B, eta, iteration
+             (one entry per outer iteration, the values at its last step)
     """
     seq = ts.seq
     state = initial_state(B_dof, ts, dt0)
-
-    def body_fn(state, _):
-        state = ts.relaxation_step(state)
-        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
-        return state, None
-
-    @jax.jit
-    def _run_scan(state):
-        return jax.lax.scan(body_fn, state, None, length=num_iters_inner)
-
+    run = chunk_runner(ts, num_iters_inner)
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
     get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
     get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
@@ -804,7 +850,7 @@ def relaxation_loop(B_dof: jnp.ndarray,
             state = eqx.tree_at(lambda s: s.eta, state,
                                 resistivity_schedule(i))
 
-        state, _ = _run_scan(state)
+        state, _ = run(state, (i - 1) * num_iters_inner)
 
         state = record(state, i * num_iters_inner)
         if callback is not None:

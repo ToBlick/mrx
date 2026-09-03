@@ -77,7 +77,7 @@ SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
   ARGS="--geometry data/GVEC_State_final.dat" bash slurm/run.sh
 
 SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
-  ARGS="--geometry toroid --ic analytic --ns 6,12,6 --steps 50 --qoi-every 25" \
+  ARGS="--geometry toroid --ic analytic --ns 6,12,6 --steps 50 --chunk 25" \
   bash slurm/run.sh
 ```
 
@@ -98,8 +98,8 @@ Flags, defaults in brackets:
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | exact energy-minimising step or a fixed one, and the CFL cap |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
-| `--floor-tol TOL [1e-3]`, `--floor-steps W [100]` | stopping criterion |
-| `--qoi-every N [250]` | steps between the qoi samples: helicity, the two pressures and beta (below) |
+| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, stall and wall-time tests run once per chunk; `--steps` is a multiple of it |
+| `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
 `python scripts/relax.py --help` prints the same list.
@@ -218,8 +218,7 @@ python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs
 
 Its module docstring lists the flags.
 
-A relaxation run with `--save-every K` stores a field snapshot every `K`
-steps; `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
+A relaxation run stores a field snapshot at every chunk boundary (`--chunk`); `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
 section per snapshot with every axis held fixed, ready for `ffmpeg`.
 
 ## Figures

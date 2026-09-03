@@ -235,7 +235,7 @@ Decided 2026-09-03 (Tobias): no accept/reject. The descent runs until it stalls,
 
 Inner/outer loop: the ideal descent is the inner loop (helicity conserved, terminates on the stall test), the reconnection is the outer loop (changes the topology, restarts the inner loop from a checkpoint). Host-side Python for the outer loop is the right split: the stall test is a scalar over a 1000-step history, the checkpoint is I/O, the restart changes the optimiser state; none of it belongs inside the jit. What the driver does badly is dispatching one jitted step per Python iteration with a host sync per step (needed for its per-step trace); `run_relaxation` in the library already scans N steps per dispatch with a callback, and the driver should become that callback once the arms are done.
 
-Smoke `reconnect_smoke`, (8,16,16) p = 2 gamma = 0, `--stall-steps 300`, 3000 steps, eps = 1.6e-4 (c = 0.01 at h = 1/8), 0.14 s/step:
+Smoke `reconnect_smoke_prechunk` (the per-step driver, stall window 300 steps), (8,16,16) p = 2 gamma = 0, 3000 steps, eps = 1.6e-4 (c = 0.01 at h = 1/8), 0.14 s/step:
 
 | stall | step | floor | |F| before -> after | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after |
 |---|---|---|---|---|---|---|
