@@ -53,9 +53,16 @@ Flags, defaults in brackets:
       --eta-every K [1]            resistive solve every K steps, diffusing
                                    over the accumulated time (float32 needs
                                    K of 10-100 at eta ~ 1e-4)
-      --eta-schedule {tanh,constant,linear} [tanh]
+      --eta-schedule {tanh,constant,linear,pulse} [tanh]
                                    tanh drops eta to ~0 over the middle third
-                                   of --steps so the run ends ideal
+                                   of --steps so the run ends ideal; pulse is
+                                   eta-max on the window(s) of --eta-pulse
+                                   and 0 elsewhere (the resistive clock is
+                                   reset while it is off, so --eta-every
+                                   equal to the width makes one solve of
+                                   eta * window time per pulse)
+      --eta-pulse S,W[,P] [2000,100] pulse start step, width in steps and,
+                                   optionally, the period of repeated pulses
       --presmooth K [0]            up to K backward-Euler steps of
                                    dB/dt = -curl curl B on the IC, force off,
                                    before the descent (regularises a coarsely
@@ -125,6 +132,32 @@ Output (``--out``):
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
+``--pulse-adaptive`` runs the ideal descent and fires a resistive pulse, one
+backward-Euler solve of ``(M + eps L) delta = -eps L B``, whenever the descent
+stalls: the 200-step block mean of the residual has dropped by less than
+``--pulse-stall`` over the last 1000 steps. The dose is ``eps = c h^2`` with
+``h = 1 / n_r`` and ``c`` starting at ``--pulse-eps0`` (a diffusion length of
+``sqrt(c)`` cells); the descent state is snapshotted before the pulse and the
+optimiser restarted on the diffused field. At the next stall the pulse is
+judged: accepted when the new floor is below ``(1 - --pulse-gain)`` times the
+floor before it, and ``c`` grows by ``--pulse-grow``; otherwise the state is
+reverted to the snapshot and ``c`` shrinks by the same factor. Pulses are at
+least ``--pulse-spacing`` steps apart (the detector only sees the history since
+the last event) and stop once the helicity has moved by
+more than ``--pulse-helicity`` of its initial value. ``results["pulses"]``
+records every event; the trace keeps the trial steps of a reverted pulse
+(marked by the event's ``reverted`` range) since their wall time was spent.
+
+``--checkpoint PATH`` (default ``<out>/state.eqx``) serialises the full
+descent state -- B, the pressure and warm-start guesses, the L-BFGS pair,
+the resistive clock -- together with the step number at every save and at
+the end (``equinox.tree_serialise_leaves``); ``--restart PATH`` continues
+from such a file: the step counter, and with it the eta schedule and the
+snapshot steps, carries on from the saved step, ``--steps`` counts the
+steps of THIS run, and the trace and QoI samples are this run's. The IC
+diagnostics and ``B_ic`` still refer to the initial condition built from
+``--geometry``, which must be the same.
+
 The trace records the linesearch identity ``dE_pred = -dt (F,u)_M / 2``
 against the measured decrease: it is an operator identity (curl adjointness,
 the cross-product sign, Leray M-orthogonality) and holds to round-off when
@@ -153,10 +186,20 @@ def force_floor_reached(resid, steps, tol):
     return bool(np.mean(resid[-steps:]) < tol)
 
 
-def eta_schedule(kind, eta_max, it, steps):
-    """Resistivity at step ``it`` of ``steps``."""
+def eta_schedule(kind, eta_max, it, steps, pulse=(2000, 100, 0)):
+    """Resistivity at step ``it`` of ``steps``. ``pulse`` = (start, width,
+    period): ``eta_max`` on ``start <= it < start + width`` and, with a period,
+    on every later window ``start + k period``; 0 elsewhere."""
     if eta_max == 0.0:
         return 0.0
+    if kind == "pulse":
+        start, width, period = pulse
+        since = it - start
+        if since < 0:
+            return 0.0
+        if period > 0:
+            since %= period
+        return eta_max if since < width else 0.0
     frac = it / max(steps, 1)
     if kind == "tanh":
         return eta_max * 0.5 * (1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
@@ -208,7 +251,9 @@ def parse_args(argv=None):
     ap.add_argument("--dt0", type=float, default=1.0)
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--eta-max", type=float, default=0.0)
-    ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear"))
+    ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear", "pulse"))
+    ap.add_argument("--eta-pulse", default="2000,100",
+                    help="pulse schedule: start step, width in steps and optionally the period")
     ap.add_argument("--eta-every", type=int, default=1)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
@@ -224,7 +269,35 @@ def parse_args(argv=None):
                     help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
                          "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--pulse-adaptive", action="store_true",
+                    help="resistive pulses fired by the stall detector (see the docstring)")
+    ap.add_argument("--pulse-stall", type=float, default=0.05,
+                    help="stalled when the residual dropped by less than this over 1000 steps")
+    ap.add_argument("--pulse-eps0", type=float, default=0.01,
+                    help="first dose eps = c h^2 with this c")
+    ap.add_argument("--pulse-grow", type=float, default=2.0,
+                    help="factor on c after an accepted (x) or rejected (/) pulse")
+    ap.add_argument("--pulse-gain", type=float, default=0.10,
+                    help="accept a pulse when the next floor is below (1 - gain) x the previous")
+    ap.add_argument("--pulse-helicity", type=float, default=0.01,
+                    help="stop pulsing once |H - H_0| / |H_0| exceeds this")
+    ap.add_argument("--pulse-spacing", type=int, default=1200,
+                    help="minimum steps between pulse events (fire or judge); the stall "
+                         "detector needs 1200 steps of history since the last event")
+    ap.add_argument("--checkpoint", default=None,
+                    help="write the descent state (equinox pytree + step) here at every "
+                         "save and at the end; default <out>/state.eqx")
+    ap.add_argument("--restart", default=None,
+                    help="continue from a --checkpoint file of the same geometry, mesh, "
+                         "degree and precision")
+    ap.add_argument("--stepper", default="h", choices=("h", "bonly"),
+                    help="h: production step (J x H, u x H); bonly: the experimental "
+                         "B-only cross products (mrx.experimental.bonly_relaxation)")
     cli = ap.parse_args(argv)
+    pulse = tuple(int(v) for v in cli.eta_pulse.split(","))
+    if len(pulse) not in (2, 3):
+        ap.error("--eta-pulse wants START,WIDTH or START,WIDTH,PERIOD")
+    cli.eta_pulse = pulse + (0,) * (3 - len(pulse))
     if cli.ic == "clebsch" and not os.path.isfile(cli.geometry):
         ap.error(f"--ic clebsch reads the Clebsch data from a GVEC export, and "
                  f"--geometry {cli.geometry!r} is not a file; use --ic analytic")
@@ -277,6 +350,10 @@ def main(cli):
     from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
                                 compute_force, compute_helicity, initial_state, resistive_step,
                                 pressure_diagnostics, weak_pressure)
+    if cli.stepper == "bonly":  # experimental hook (2026-09-03): J x B and u x B, no H
+        from mrx.experimental.bonly_relaxation import (BOnlyTimeStepper as TimeStepper,
+                                                       compute_force_bonly as compute_force,
+                                                       initial_state_bonly as initial_state)
     import jax.numpy as jnp
 
     if cli.precision != str(mrx.DTYPE):
@@ -436,6 +513,13 @@ def main(cli):
                 state.F_norm / normaliser(state.B_n))
 
     state = initial_state(B0, ts, dt=cli.dt0)
+    it0 = 0
+    ckpt = cli.checkpoint or os.path.join(out, "state.eqx")
+    if cli.restart:
+        state, it_saved = eqx.tree_deserialise_leaves(cli.restart, like=(state, jnp.int32(0)))
+        it0 = int(it_saved)
+        print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
+    params["start_step"] = it0
     p_ic = np.asarray(state.p)
     pw_ic = np.asarray(pw0)
     snaps = [(0, np.asarray(B0), np.asarray(pw0))]
@@ -469,7 +553,10 @@ def main(cli):
             resid_window_mean=float(np.mean(window)) if window else resid0,
             **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
-            json.dump(results, fh, indent=1)
+            # the pulse events carry their snapshot pytree until judged
+            json.dump(dict(results, pulses=[{k: v for k, v in ev.items() if k != "snapshot"}
+                                            for ev in results["pulses"]]), fh, indent=1)
+        eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
         # The field goes out with every save, not only the last one: a run
         # that hits its wall-time limit leaves the state it reached.
         with h5py.File(os.path.join(out, "B.h5"), "w") as fh:
@@ -486,10 +573,32 @@ def main(cli):
             for k, v in params.items():
                 fh.attrs[k] = "" if v is None else v
 
-    for it in range(1, cli.steps + 1):
+    results["pulses"] = []
+    pulse_c = cli.pulse_eps0
+    pulse_h2 = (1.0 / ns[0]) ** 2
+    pulse_pending = None
+    pulse_last = it0
+    pulses_off = False
+    pulse_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
+
+    def stalled(resid):
+        """The 200-step block mean dropped by less than --pulse-stall over 1000 steps."""
+        if len(resid) < 1200:
+            return False, None
+        now, before = float(np.mean(resid[-200:])), float(np.mean(resid[-1200:-1000]))
+        return now > (1.0 - cli.pulse_stall) * before, now
+
+    for it in range(it0 + 1, it0 + cli.steps + 1):
         if cli.eta_max > 0.0:
-            state = eqx.tree_at(lambda t: t.eta, state,
-                                eta_schedule(cli.eta_schedule, cli.eta_max, it, cli.steps))
+            eta_now = eta_schedule(cli.eta_schedule, cli.eta_max, it, it0 + cli.steps, cli.eta_pulse)
+            state = eqx.tree_at(lambda t: t.eta, state, eta_now)
+            if eta_now == 0.0:
+                # The stepper accumulates the resistive clock until a solve is
+                # due; with eta off that clock must not carry into the next
+                # window (a pulse after 2000 ideal steps would otherwise
+                # diffuse over all of them at once).
+                state = eqx.tree_at(lambda t: (t.resistive_time, t.resistive_count), state,
+                                    (jnp.zeros(()), jnp.int32(0)))
         state = step(state)
         E, div, Fu, cos, gain, resid = (float(v) for v in probe(state))
         tr["E"].append(E)
@@ -507,8 +616,8 @@ def main(cli):
         tr["dE_meas"].append(E - E_prev)
         tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
         E_prev = E
-        n_done = it
-        if cli.save_every and (it % cli.save_every == 0 or it == cli.steps):
+        n_done = it - it0
+        if cli.save_every and (it % cli.save_every == 0 or it == it0 + cli.steps):
             # A frame for a movie: the field and its weak pressure now.
             _, p_s, J_s, H_s, _ = force_probe(state.B_n, state.p, state.H, state.JxH)
             pw_s, _, _ = pressure_probe(state.B_n, p_s, J_s, H_s, pw_guess)
@@ -547,6 +656,50 @@ def main(cli):
                   f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
                   f"res_delta={tr['res_delta'][-1]:.2e}",
                   flush=True)
+        if cli.pulse_adaptive and it - pulse_last >= cli.pulse_spacing:
+            # Only the history since the last event counts: after a revert the
+            # older trace entries are the rejected trial's, not this trajectory's.
+            is_stalled, floor_now = stalled(tr["resid"][pulse_last - it0:])
+            if is_stalled and pulse_pending is not None:
+                ev = pulse_pending
+                ev["judged_at"], ev["floor_after"] = it, floor_now
+                if floor_now < (1.0 - cli.pulse_gain) * ev["floor_before"]:
+                    ev["outcome"] = "accepted"
+                    pulse_c *= cli.pulse_grow
+                else:
+                    ev["outcome"] = "rejected"
+                    ev["reverted"] = [ev["it"] + 1, it]
+                    state = ev.pop("snapshot")
+                    pulse_c /= cli.pulse_grow
+                ev.pop("snapshot", None)
+                print(f"  [pulse] {ev['outcome']} at it={it}: floor {ev['floor_before']:.3e} -> "
+                      f"{floor_now:.3e}; next c = {pulse_c:.3g}", flush=True)
+                pulse_pending = None
+                pulse_last = it
+            elif is_stalled and not pulses_off:
+                tq = time.perf_counter()
+                H_now, A_new = get_helicity(state.B_n, seq, state.A)
+                state = eqx.tree_at(lambda t: t.A, state, A_new)
+                t_qoi += time.perf_counter() - tq
+                loss = abs(float(H_now) - float(H0)) / abs(float(H0))
+                if loss > cli.pulse_helicity:
+                    pulses_off = True
+                    print(f"  [pulse] helicity budget spent ({loss:.2e} > {cli.pulse_helicity:g}); "
+                          f"no more pulses", flush=True)
+                else:
+                    eps = pulse_c * pulse_h2
+                    B_new, info, rel = pulse_fn(state.B_n, eps)
+                    pulse_pending = dict(it=it, eps=float(eps), c=pulse_c, floor_before=floor_now,
+                                         F_before=float(state.F_norm), H_before=float(H_now),
+                                         helicity_loss_before=loss, solve_it=int(info),
+                                         moved=float(rel), outcome="pending", snapshot=state)
+                    state = initial_state(B_new, ts, dt=float(state.dt))
+                    results["pulses"].append(pulse_pending)
+                    pulse_last = it
+                    print(f"  [pulse] fired at it={it}: eps={eps:.3e} (c={pulse_c:.3g}), floor "
+                          f"{floor_now:.3e}, |F| {pulse_pending['F_before']:.3e} -> "
+                          f"{float(state.F_norm):.3e}, moved {float(rel):.2e}, helicity loss so far "
+                          f"{loss:.2e}", flush=True)
         if force_floor_reached(tr["resid"], cli.floor_steps, cli.floor_tol):
             stop = "floor"
             print(f"  [floor] force residual averaged over the last {cli.floor_steps} "
@@ -558,7 +711,7 @@ def main(cli):
             break
 
     wall = time.perf_counter() - t_arm - t_qoi
-    if qoi["it"][-1] != n_done:
+    if qoi["it"][-1] != it0 + n_done:
         # The pressures stored next to B_final are evaluated AT B_final.
         _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
         p_w, _, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
@@ -592,8 +745,10 @@ def main(cli):
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
     res_it = np.array(tr["res_it"])
-    if cli.eta_max > 0:
-        solved = res_it != 0
+    solved = res_it != 0
+    if cli.eta_max > 0 and not solved.any():
+        print("    resistive solve never due in this run (eta off, or the window not reached)")
+    elif cli.eta_max > 0:
         rd = np.array(tr["res_delta"])[solved]
         print(f"    resistive solve on {int(solved.sum())}/{n_done} steps: MINRES iterations "
               f"mean {np.abs(res_it[solved]).mean():.1f}  max {np.abs(res_it).max()}  "

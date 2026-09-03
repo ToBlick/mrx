@@ -21,6 +21,7 @@ Canonical:
 - `result_2026-08-25_schur_probe_ab.md` — the irreproducible probe measurement cited from `mrx/preconditioners.py`.
 - `audit_2026-08-25_production.md` — the open shelf of preconditioner and infrastructure experiments.
 - `precond_h_scaling_2026-09-02.md` — the atom's iteration count vs resolution, all `(k, BC)`, toroid vs QA: not h-independent anywhere, k>=1 on QA loses equivalence with n; `bc_scale` n-dependence and Lanczos localisation (open). Also the k=1 free harmonic-form fix (0c3aa4d) that exposed it.
+- `li383_sweep_results_2026-09-02.md` — every li383 relaxation number (2026-08 sweep, current-reader reruns, the seeded (6,1)/(5,1) island arms), which arm backs which paper figure; the reference sets the residual floor.
 
 Superseded chain, oldest first (each replaced by the next; kept for the reasoning):
 
