@@ -435,12 +435,24 @@ def eta_figure(plain, seeded, ideal, figdir):
     fig.savefig(os.path.join(figdir, "eta_sweep.png"), dpi=150)
 
 
-def eta_traces(arms, ideal, figdir):
-    """1-D traces of every resistivity arm against the ideal twin: residual,
-    ||J||/||B||, beta, helicity and energy released vs step, log x."""
+def eta_traces(arms, ideal, ideal_seeded, figdir):
+    """1-D traces of every resistivity arm against the ideal twins: residual,
+    ||J||/||B||, beta, helicity and energy released vs step, log x. A floored
+    arm (``*_floor1e-5``) is shown only when its floor-0 rerun is missing."""
     fig, ax = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
     ax = ax.ravel()
-    entries = [(ideal, r"$\eta = 0$", "k", "-")]
+    names = {j["arm"] for j in arms}
+    arms = [
+        j
+        for j in arms
+        if not (
+            j["arm"].endswith("_floor1e-5") and j["arm"][: -len("_floor1e-5")] in names
+        )
+    ]
+    entries = [
+        (ideal, r"$\eta = 0$", "k", "-"),
+        (ideal_seeded, r"$\eta = 0$ seeded (p=3)", "k", "--"),
+    ]
     colors = {}
     for j in arms:
         e = j["params"]["eta_max"]
@@ -449,14 +461,7 @@ def eta_traces(arms, ideal, figdir):
         lab = rf"$\eta_{{max}}$ = {e:.0e}" + (" seeded" if seeded else "")
         if j["arm"].endswith("_floor1e-5"):
             lab += " (floor 1e-5)"
-        entries.append(
-            (
-                j,
-                lab,
-                colors[e],
-                ":" if j["arm"].endswith("_floor1e-5") else ("--" if seeded else "-"),
-            )
-        )
+        entries.append((j, lab, colors[e], "--" if seeded else "-"))
     for j, lab, c, ls in entries:
         if j is None:
             continue
@@ -470,7 +475,7 @@ def eta_traces(arms, ideal, figdir):
         )
         ax[3].plot(q["it"], h, ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
         ax[4].plot(it(j), E[0] - E, color=c, ls=ls, lw=0.9, label=lab)
-        if j is not ideal:
+        if j["params"]["eta_max"] > 0:
             ax[5].plot(
                 it(j), np.asarray(j["trace"]["eta"]), color=c, ls=ls, lw=0.9, label=lab
             )
@@ -550,7 +555,12 @@ def main():
             )
             if j is not None and len(j["trace"]["F"]) > 1
         ]
-        eta_traces(eta_all, load(root, "li383_pub", "h16_p2_g1"), etadir)
+        eta_traces(
+            eta_all,
+            load(root, "li383_pub", "h16_p2_g1"),
+            load(root, "li383_pub", "r16_s61_e3e-3_g1"),
+            etadir,
+        )
         open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
             "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"
         )
