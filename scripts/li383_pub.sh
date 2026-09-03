@@ -7,7 +7,7 @@
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
-#   bash scripts/li383_pub.sh bonly [smoke]  # B-only step (no H), outputs/li383_bonly
+#   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -121,6 +121,10 @@ eta() {
             arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
         fi
     done
+    # eta = 0 seeded control at the same mesh and degree (added 2026-09-03).
+    if [ $# -eq 0 ] || [[ " $* " == *" s61_eta0 "* ]]; then
+        arm s61_eta0 "$GEOM_HI" "$common $s61" 300
+    fi
 }
 
 bonly() {  # bonly [smoke]
@@ -133,6 +137,17 @@ bonly() {  # bonly [smoke]
     local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --save-every 100 --qoi-every 50 --stepper bonly"
     if [ "${1:-}" = smoke ]; then
         submit relax bonly_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --qoi-every 20 --stepper bonly --out $PUB/bonly_smoke" 30
+    elif [ "${1:-}" = pairs ]; then
+        # 2026-09-03: the (16,32,32) f32 twins showed the same drift (roundoff,
+        # -8e-8): the B-only rate is a product of two projection errors. Two
+        # pairs make it visible: float64 at (12,24,24) p = 2 and float32 at
+        # (8,16,16) p = 1, each with the production and the B-only stepper.
+        local base="--ic clebsch --floor-tol 1e-5 --save-every 100 --qoi-every 50 --steps 5000 --seconds 7200"
+        local st
+        for st in h bonly; do
+            submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 --stepper $st --out $PUB/h12_p2_f64_$st" 300
+            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 --velocity-smoothing-scale 1.0e-3 --stepper $st --out $PUB/h8_p1_$st" 120
+        done
     else
         submit relax bonly_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/bonly_h16_p2_g1" 300
     fi
