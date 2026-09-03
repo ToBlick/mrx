@@ -6,6 +6,7 @@
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
+#   bash scripts/li383_pub.sh psweep_p16 # gamma = 1 p-sweep at (16,32,32) (about 7 GPU-h)
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
@@ -99,6 +100,16 @@ hsweep_p2() {
     arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --velocity-smoothing-scale 6.25e-5 --seconds 36000" 1260
 }
 
+psweep_p16() {
+    # 2026-09-03: the p-sweep complementary to hsweep_p2, at its (16,32,32) rung
+    # (also the resistivity sweep's mesh): p = 1, 3, 4 with the same recipe;
+    # p = 2 is h16_p2_g1.
+    local common="--ns 16,32,32 --floor-tol 1e-5 --steps 5000 $G1_16"
+    arm h16_p1_g1 "$GEOM_HI" "$common --p 1 --seconds 1800"   60
+    arm h16_p3_g1 "$GEOM_HI" "$common --p 3 --seconds 10800" 360
+    arm h16_p4_g1 "$GEOM_HI" "$common --p 4 --seconds 18000" 600
+}
+
 eta() {
     # 2026-09-03: resistivity sweep mirroring the h-sweep's (16,32,32) rung:
     # p = 2, gamma = 1, tanh schedule (eta_max for the first third of the 5000
@@ -168,9 +179,10 @@ case ${1:-} in
     seeded) seeded ;;
     deep) deep ;;
     hsweep_p2) hsweep_p2 ;;
+    psweep_p16) psweep_p16 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | eta | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac
