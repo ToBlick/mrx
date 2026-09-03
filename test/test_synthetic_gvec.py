@@ -187,7 +187,8 @@ def test_state_file_reproduces_the_formulas(synthetic):
     for blk, want in (("X1", torus.R(RHO, TH)), ("X2", torus.Z(RHO, TH)),
                       ("LA", torus.LA(RHO, TH, ZE))):
         got = evaluate(st[blk], st["sp"], rho, TWO_PI * th, TWO_PI * ze / NFP)
-        assert np.abs(got - np.asarray(want)).max() <= 1e-13, blk
+        # Measured max error is 1.0 eps in float64 and 0.5 eps in float32.
+        assert np.abs(got - np.asarray(want)).max() <= mrx.eps(3e1), blk
     r = np.linspace(0.0, 1.0, 37)
     for name, want in (("phi", torus.Phi(r)), ("chi", torus.chi(r)),
                        ("iota", torus.iota(r)), ("pressure", torus.pressure(r))):

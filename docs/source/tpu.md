@@ -68,6 +68,17 @@ A TPU has no float64. Set `MRX_DTYPE=float32`, which `run_on_tpu.sh` does;
 does not silently drop to bfloat16. On the toroidal Poisson problem the
 float32 TPU result matches the float32 CPU reference exactly.
 
+That setting is the one precision knob that costs a TPU and not a GPU: the MXU
+multiplies bfloat16 natively, so float32 at `highest` is six passes, `high` is
+three and `default` is one, while in float64 the setting does nothing at all.
+It is worth up to 1.55x on the mass kernel, and it is kept anyway. Measured on
+li383 `(12,24,12)` p=3 in float32, `high` costs a 1.9e-04 relative error on
+`DF` and `default` **folds the map** -- `det DF` reaches -1.3e-01 and
+`set_geometry` refuses it. `high` also changed the relaxation's trajectory,
+which spends much of the 1.22x it saves per step. Both `matvec_bench.py` and
+`tpu_bench_mrx.py` accept `--matmul-precision` if you want to measure it
+yourself.
+
 Where double precision is required -- field-line tracing for a Poincare
 section is the case in practice -- run that stage on the host CPU of the
 same node with `RUN_PLATFORM=cpu RUN_DTYPE=float64`.
@@ -107,14 +118,20 @@ Measured on one `v5litepod-4` in `us-west4-a`, li383 at `--ns 12,24,12
 --p 3` in float32, against the host CPU of the same VM so that only the
 backend differs:
 
-| | v5e before | v5e after | same VM's CPU | H100 |
+| | v5e before | v5e after | same VM's CPU | one H200 |
 |---|---|---|---|---|
 | `build_sequence` | 203 s | 35.5 s | 40.6 s | - |
 | `compute_nullspaces` | 222 s | 17.5 s | 55.1 s | - |
-| `mass_core_apply` k=1 | 6.60 ms | 0.505 ms | 3.79 ms | - |
+| `mass_core_apply` k=1 | 6.60 ms | 0.505 ms | 3.79 ms | 0.135 ms |
 | `apply_laplacian` k=1 | 10 020 ms | 76.4 ms | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | 13.03 s | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | 13.04 s | 45.7 s | 17.92 s |
 | relaxation, per step (laplacian precond) | - | 8.05 s | - | - |
+
+The GPU column is one H200 running the same script at the same resolution, in
+float32. Per matvec it is 5.9x faster than the v5e; end to end it is 1.37x
+slower, because a step is a chain of about 250 000 sequentially dependent
+kernels and the v5e executes the whole `lax.scan` body as one on-device
+program. This workload suits a TPU.
 
 Two things account for that. The compilation cache above, and removing every
 index tensor from the mass kernel: the gather and the scatter at its two
@@ -135,10 +152,10 @@ What was left was not compilation either. `relaxation_loop` is already
 `@jax.jit` around a `lax.scan`, so the 13 s per step was pure device
 execution. From the primitives above it ought to have been 350 ms. The
 per-apply arithmetic was right and the apply *count* was not: **one step is
-37 478 operator applies**, which at 0.35 ms each is exactly the 13 s. Three
-MINRES solves are 99.5% of them, and the velocity smoothing solve alone took
-3 497 iterations and was 75% of the step; the inverse-mass CG solves usually
-blamed for the cost take 20-27 iterations and are 0.5%.
+about 28 700 operator applies**, at roughly half a millisecond each. Three
+MINRES solves are 99.3% of them, and the velocity smoothing solve alone took
+3 497 iterations and was 85% of the step; the inverse-mass CG solves usually
+blamed for the cost take 20-27 iterations and are 0.7%.
 
 That solve was preconditioned by the mass atom, on the strength of a claim
 that `eps * lambda_max(M^-1 L) ~ 0.26` at `(8,16,8)`. Power iteration says
@@ -149,8 +166,8 @@ atom instead, as `(1/eps) P_L`, takes the step from **13.02 s to 8.05 s** on
 the same node, a 1.62x, with the trajectory unchanged to 4.3e-09 against a
 solver tolerance of 1.49e-08.
 
-None of that is a TPU property -- the same counts hold on CPU and GPU, where
-each apply is ~30x cheaper -- but a TPU makes it visible. A `v5litepod-4` is
+None of that is a TPU property -- apply count is backend-independent, so the
+same counts hold on CPU and GPU -- but a TPU made it visible. A `v5litepod-4` is
 also four chips and MRX uses one; a parameter sweep takes all four with
 `jax.pmap` over a stacked batch of initial states and no library change,
 measured at 3.99x on real chips once compilation is timed separately from

@@ -32,16 +32,16 @@ Two things to take away before anything else:
    [section 6.1](#61-what-actually-runs-well-and-what-does-not) before you plan
    a campaign: it also shows why replacing indexed gathers and scatters with
    dense shifted reads and adds turned this hardware from 5-23x slower than the
-   VM's own CPU into 3-5x faster on the same operation. A v5e is still about
-   32x behind one H100 on a single li383 equilibrium.
-3. **The 13 s per step was 37 478 operator applies, not slow hardware.**
-   Three MINRES solves were 99.5% of them and one was 75% on its own. That
+   VM's own CPU into 3-5x faster on the same operation. A v5e is **not**
+   behind a datacentre GPU on this workload: the same benchmark on one H200 is
+   17.92 s/step in float32 against the v5e's 13.04 s.
+3. **The 13 s per step was ~28 700 operator applies, not slow hardware.**
+   Three MINRES solves were 99.3% of them and one was 85% on its own. That
    turned out to be a preconditioner chosen for the wrong term -- the operator
    is Laplacian-dominated where a comment claimed it was mass-dominated -- and
    fixing it takes the step to **8.05 s, a 1.62x**, measured here against the
    old preconditioner on the same node. It is identical on a CPU and a GPU, so
-   this is not a TPU fix. Section 6.1 has the numbers; mrx PR #19 has the
-   change.
+   this is not a TPU fix. Section 6.1 has the numbers.
 4. **A `v5litepod-4` is four chips and one equilibrium uses one of them.** A
    parameter sweep can have all four for the cost of a `jax.pmap`: measured
    **3.99x on real chips**, `pmap_sweep.py`.
@@ -319,19 +319,27 @@ Everything below was measured with `tpu_bench_mrx.py` at `--ns 12,24,12 --p 3`,
 float32, on one v5e node, with the host CPU of the *same VM* as the control, so
 only the backend differs. Both columns run the same fixed code.
 
-| Measurement | v5e before | v5e after | Same VM's CPU | H100 (docs) |
+| Measurement | v5e before | v5e after | Same VM's CPU | One H200 |
 |---|---|---|---|---|
 | `build_sequence` (warm cache) | 203 s | **35.5 s** | 40.6 s | - |
 | `compute_nullspaces`, `gap_sweeps=0` | 222 s | **17.5 s** | 55.1 s | - |
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
 | `mass_core_apply` k=1 | 6.60 ms | **0.505 ms** | 3.79 ms | - |
 | `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | **13.04 s** | 45.7 s | 17.92 s |
 | relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
 
 So the TPU went from 1.7x *slower* than the VM's own CPU to **3.5x faster**, a
-7.7x end-to-end gain, and setup dropped from 7 minutes to under one. It is now
-about 32x behind a single H100, down from 105x.
+7.7x end-to-end gain, and setup dropped from 7 minutes to under one.
+
+Earlier versions of this guide put the v5e "32x behind a single H100". That
+came from a `0.41 s/step` figure which was a warm-start A/B on W7-X, not this
+measurement. Running the same script on one H200 at the same li383
+`(12,24,12)` p=3 gives 17.92 s/step in float32 and 24.16 s/step in float64, so
+**the v5e is 1.37x ahead of the GPU, not 32x behind it**. See
+`results/benchmark_v5e_vs_cpu.md` for the per-matvec table that explains why:
+the v5e runs the relaxation at its own matvec rate and the GPU pays about 8x
+over its, on a chain of ~250 000 sequentially dependent kernels.
 
 **Fix 1, and it is almost all of the win: turn on the persistent compilation
 cache.** MRX's inner solves run as eager `jax.lax.while_loop`s. Nothing wraps
@@ -429,31 +437,63 @@ rather than argued about, which is the only reason we know:
   fusing 20 scatters into a single `jit` gave 0.531 ms per scatter against
   0.533 ms unfused. The time is real device work, not launch overhead.
 
-**What is still 32x off an H100, and why.** `relaxation_loop` is already
-`@jax.jit` around a `lax.scan`, so the 13 s per step is genuine compiled device
-execution with no compilation left in it. The tempting explanation is that a
-li383 step is a chain of kernels too small to fill the chip. That is wrong, and
-it is worth knowing why, because it changes what you would fix.
+**The per-matvec comparison, which is the only one that can explain a backend
+gap.** About 99% of the compute is matrix-vector applies, so `matvec_bench.py`
+times each one on all three backends, both eagerly and **inside a jitted
+`lax.scan`**, which is the form the relaxation actually runs. The scan form is
+the honest one: eager microbenchmarks overstate it by 1.0-1.6x on CPU,
+1.3-6.8x on the v5e and 5.9-66x on the H200, so any table mixing the two is
+measuring dispatch. Per apply, in ms, li383 `(12,24,12)` p=3:
+
+| operator | v5e f32 | H200 f32 | VM CPU f32 |
+|---|---|---|---|
+| `apply_mass_matrix` k=2 | 0.749 | 0.121 | 1.369 |
+| `apply_stiffness` k=2 | 0.433 | 0.064 | 0.561 |
+| `apply_derivative` `D^T D` k=1 | 1.537 | 0.234 | 2.832 |
+| mass atom k=2 (precond) | 0.065 | 0.039 | 0.030 |
+
+Two operators in older tables were miscategorised and are fixed here.
+`apply_stiffness` was never timed at all despite appearing in every saddle
+iteration, and `apply_laplacian` is **not an apply**: at k>=1 it contains a
+nested inverse-mass CG, so the 76.4 ms above is 20-27 iterations, and
+`tpu_bench_mrx.py` now prints it as `SOLVE apply_laplacian`.
+
+The H200 is 5.9x faster per matvec and 1.37x slower per step. The v5e runs the
+relaxation at its own matvec rate; the H200 runs it 6.1x slower than its
+matvecs predict, most likely because a step is ~200 000 sequentially dependent
+kernels and a TPU executes the whole scan body as one on-device program. That
+is the whole of the backend difference, and it is why this workload suits a
+TPU. `results/benchmark_v5e_vs_cpu.md` has the full table and the arithmetic.
+
+**Where the 13 s goes.** `relaxation_loop` is already `@jax.jit` around a
+`lax.scan`, so the 13 s per step is genuine compiled device execution with no
+compilation left in it. The tempting explanation is that a li383 step is a
+chain of kernels too small to fill the chip. That is wrong, and it is worth
+knowing why, because it changes what you would fix.
 
 From the numbers above a step ought to cost about 350 ms: ~350 mass-core
-applies at 0.5 ms plus ~700 extraction applies at 0.18 ms. It costs 13.03 s.
+applies at 0.5 ms plus ~700 extraction applies at 0.18 ms. It costs 13.04 s.
 The per-apply arithmetic is right; the apply *count* is wrong by two orders of
-magnitude. **One step is 37 478 operator applies**, which at 0.35 ms each is
-exactly the 13 s. Nobody had counted, because the step is a jitted scan and
-every solver's `info` is discarded inside it.
+magnitude. **One step is about 28 700 operator applies.** Nobody had counted,
+because the step is a jitted scan and every solver's `info` is discarded
+inside it. Pricing that count against per-apply costs measured *inside a
+jitted scan* recovers the step time to within 1.33x; the arithmetic is in
+`results/benchmark_v5e_vs_cpu.md`.
 
 Run one step eagerly, where `info` is concrete, and three MINRES solves turn
-out to be 99.5% of the work. The velocity smoothing solve alone,
-`(M_2 + eps L_2) x = M_2 u` at k=2, takes **3 497 iterations** and is 75% of
+out to be 99.3% of the work. The velocity smoothing solve alone,
+`(M_2 + eps L_2) x = M_2 u` at k=2, takes **3 497 iterations** and is 85% of
 the step. The six inverse-mass CG solves everyone assumes are the cost take
-20-27 iterations and are 0.5%. The count scales linearly with the DoFs (951
+20-27 iterations and are 0.7%. The count scales linearly with the DoFs (951
 iterations at `(8,16,8)`, 3 497 at `(12,24,12)`) even though `eps ~ 1/n_r^2`
 makes the system more mass-dominated as you refine, which points at the
 preconditioner rather than at float32 or at stagnation -- every solve converges.
 
-None of that is a TPU property. The same counts hold on a CPU and have always
-held on the GPU, where each apply is ~30x cheaper and so nobody noticed. See
-`results/benchmark_v5e_vs_cpu.md` for the full per-solve table.
+None of that is a TPU property. **Apply count is backend-independent** -- the
+same counts hold on a CPU and on the H200 -- so it moves every machine by the
+same factor and cannot open or close a gap between two of them. Per-apply cost
+is the backend-dependent half. See `results/benchmark_v5e_vs_cpu.md` for the
+full per-solve table and the measured per-matvec costs on all three backends.
 
 **That solve has since been fixed, and it was a preconditioner.** The mass
 preconditioner was chosen on the strength of a comment asserting
@@ -478,7 +518,7 @@ float32, 5 steps steady-state:
 `auto` figure reproduces the 13.03 s measured in the earlier session to three
 significant figures, which is what makes the comparison trustworthy. The
 trajectory is unchanged: six steps agree to 4.3e-09 relative against a solver
-tolerance of 1.49e-08. See mrx PR #19; the underlying condition number is
+tolerance of 1.49e-08. The underlying condition number is
 still resolution-dependent, so this is a large constant rather than a cure.
 
 **Four chips instead of one, measured at 3.99x.** A `v5litepod-4` is four chips
@@ -740,9 +780,9 @@ section 6.1 fixes:
 - Cost of that run: 1.9 min setup, then 41.3 s/step; 72 minutes end to end
 
 That run predates fixes 2-4. Re-timed afterwards on the same geometry the step
-is **13.03 s**, so the same 100 steps is about 22 minutes. For scale, this VM's
-host CPU running the identical fixed code is 45.7 s/step, and one H100 is
-documented at 0.36-0.41 s/step.
+is **13.04 s**, so the same 100 steps is about 22 minutes. For scale, this VM's
+host CPU running the identical fixed code is 45.7 s/step, and one H200 running
+the same script is 17.92 s/step in float32.
 
 **Poincare sections** (`poincare_relax.py`, `--planes 0,0.25,0.5`, float64 on the
 host CPU, 160 field lines x 400 periods), 2 minutes end to end:

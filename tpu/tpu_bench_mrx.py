@@ -50,6 +50,12 @@ def parse_args():
     ap.add_argument("--ns", default="12,24,12")
     ap.add_argument("--p", type=int, default=3)
     ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
+    ap.add_argument("--matmul-precision", default=None,
+                    help="override jax_default_matmul_precision AFTER mrx sets "
+                         "it to 'highest'. On a TPU MXU 'highest' means float32 "
+                         "emulated in 6 bf16 passes, 'high' 3 and 'default' 1, "
+                         "so this is the knob that is a TPU-only tax. 'default' "
+                         "folds the li383 map and must not be used")
     ap.add_argument("--out", default=None, help="write results as JSON here")
     ap.add_argument("--compare", nargs="+", default=None,
                     help="read result JSONs and print the comparison table")
@@ -63,6 +69,12 @@ def parse_args():
                          "A/B the guide's section 6.1 reports")
     ap.add_argument("--skip-relax", action="store_true",
                     help="skip the relaxation phase (the slowest item)")
+    ap.add_argument("--map-batch-size", type=int, default=None,
+                    help="mrx.MAP_BATCH_SIZE_INNER; 0 (the mrx default) is a "
+                         "full vmap and is rejected by jax < 0.9, so the "
+                         "singularity overlay on NYU Torch needs a positive "
+                         "value. It batches the quadrature loop, so it changes "
+                         "setup memory and not the primitives below")
     ap.add_argument("--profile", default=None,
                     help="write a jax.profiler trace to this directory")
     ap.add_argument("--cache-dir", default=None,
@@ -294,10 +306,18 @@ def bench_mass_attribution(bench, seq, dtype):
     """Split ``mass_core_apply`` into gather, einsums and assembly.
 
     The whole kernel is one number; deciding what to fix next needs to know
-    which third of it is which. Each piece is timed as its own jitted program
-    on the real per-component shapes, so the parts do not have to add exactly
-    to the whole -- fused into one kernel XLA overlaps them -- but the ranking
-    is what the decision turns on.
+    which third of it is which.
+
+    These are UPPER BOUNDS on each piece's share, not an attribution, for two
+    reasons, and a part can and does come out larger than the whole. Each row
+    is one component of the ``n_comp`` the kernel applies, so it is a fraction
+    of the work; and isolating a piece forces XLA to materialise an
+    intermediate that the fused kernel never writes. ``v[gather_idx]`` expands
+    its input 39x at k=1 on li383 ``(12,24,12)`` p=3 -- 3168 values in, 124 416
+    out -- and standing alone that expansion has to be written to memory,
+    while inside ``mass_core_apply`` it is consumed by the einsum in place.
+    The ranking is what the decision turns on; the levels are not shares of
+    the kernel and must not be quoted as such.
     """
     import jax
     import jax.numpy as jnp
@@ -320,18 +340,19 @@ def bench_mass_attribution(bench, seq, dtype):
             Bvals = (Bx, By, Bz)
 
             f_gather = jax.jit(lambda v, g=gidx: v[g])
-            bench.measure(f"  k={k} c=0 gather only",
+            bench.measure(f"  k={k} c=0 gather only (upper bound)",
                           lambda f=f_gather, v=x: f(v),
-                          inner=MICRO_INNER, note=f"n_raw={n_raw}")
+                          inner=MICRO_INNER,
+                          note=f"n_raw={n_raw} -> {gidx.size}, materialised")
 
             f_toq = jax.jit(lambda v, B=Bvals, g=gidx: _to_quadrature(B, v, g))
-            bench.measure(f"  k={k} c=0 gather + 3 einsums",
+            bench.measure(f"  k={k} c=0 gather + 3 einsums (upper bound)",
                           lambda f=f_toq, v=x: f(v),
                           inner=MICRO_INNER, note="_to_quadrature")
 
             u = f_toq(x)
             f_fromq = jax.jit(lambda w, B=Bvals: _from_quadrature(B, w))
-            bench.measure(f"  k={k} c=0 3 einsums back",
+            bench.measure(f"  k={k} c=0 3 einsums back (upper bound)",
                           lambda f=f_fromq, w=u: f(w),
                           inner=MICRO_INNER, note="_from_quadrature")
 
@@ -339,7 +360,7 @@ def bench_mass_attribution(bench, seq, dtype):
             plan = _shift_plan(gx, gy, gz, shape)
             if plan is not None:
                 f_asm = jax.jit(lambda w, p=plan: _structured_accumulate(w, p))
-                bench.measure(f"  k={k} c=0 assembly (structured)",
+                bench.measure(f"  k={k} c=0 assembly, structured (upper bound)",
                               lambda f=f_asm, w=y_local: f(w),
                               inner=MICRO_INNER, note="shifted adds")
             else:
@@ -489,19 +510,26 @@ def bench_operators(bench, seq, ops, dtype):
                   f"({type(exc).__name__}: {exc})", flush=True)
 
     # k=0 is a plain stiffness apply; k=1 additionally runs a nested CG mass
-    # solve as a lax.while_loop, which is where the nullspace time goes.
+    # solve as a lax.while_loop, which is where the nullspace time goes. That
+    # makes the k>=1 row a SOLVE, not an apply: it is 20-27 CG iterations, so
+    # it belongs beside apply_inverse_mass_matrix above and not beside the
+    # matvecs, where it overstates the cost of an apply by about 150x. The
+    # names say so, because the earlier results table put it in the matvec
+    # column and the figure was read as a per-apply cost.
     for k, dbc in ((0, False), (1, False)):
         try:
             n_in = int(seq.n(k, dbc))
         except Exception:                                 # noqa: BLE001
             continue
         vec = jnp.asarray(rng.standard_normal(n_in).astype(dtype))
+        label = (f"apply_laplacian k={k} free" if k == 0
+                 else f"SOLVE apply_laplacian k={k} free")
         bench.measure(
-            f"apply_laplacian k={k} free",
+            label,
             lambda k=k, dbc=dbc, v=vec: apply_laplacian(
                 seq, ops, v, k, dirichlet=dbc),
             repeats=2,
-            note=f"n={n_in}" + (" (nested CG)" if k >= 1 else ""))
+            note=f"n={n_in}" + (" NOT an apply: nested CG" if k >= 1 else ""))
 
 
 # --------------------------------------------------------------- phases ---
@@ -697,6 +725,12 @@ def main():
         print(f"ERROR: --precision {args.precision} but mrx is in {mrx.DTYPE}; "
               "MRX_DTYPE was already set elsewhere.", file=sys.stderr)
         return 1
+
+    if args.map_batch_size is not None:
+        mrx.MAP_BATCH_SIZE_INNER = args.map_batch_size
+
+    if args.matmul_precision:
+        jax.config.update("jax_default_matmul_precision", args.matmul_precision)
 
     info = backend_info()
     print("=" * 72)

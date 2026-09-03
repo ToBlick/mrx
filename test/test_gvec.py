@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from scipy.interpolate import BSpline
 
+import mrx
 from mrx.gvec import StateField, evaluate, knots_at_data, radial_design
 
 
@@ -33,11 +34,13 @@ def test_state_field_matches_the_numpy_series():
     grid = evaluate(block, sp, s_, 2 * np.pi * th, 2 * np.pi * ze / 5)
     pts = jnp.array([[a, b, c] for a in s_ for b in th for c in ze])
     mine = np.asarray(jax.vmap(field)(pts)).reshape(grid.shape)
-    assert np.abs(mine - grid).max() < 1e-12
+    # The state's values are O(1), so this is a relative bound. Measured max
+    # error is 4.0 eps in float64 and 12.0 eps in float32.
+    assert np.abs(mine - grid).max() < mrx.eps(3e2)
     block["sin_cos"] = 1
     grid = evaluate(block, sp, s_, 2 * np.pi * th, 2 * np.pi * ze / 5)
     mine = np.asarray(jax.vmap(StateField(block, sp, 5))(pts)).reshape(grid.shape)
-    assert np.abs(mine - grid).max() < 1e-12
+    assert np.abs(mine - grid).max() < mrx.eps(3e2)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +101,9 @@ def test_series_tensor_coefficients_are_the_l2_projection(request, which, sin_co
     wf = np.einsum("q,r,s,qrs->qrs", rules[0][1], rules[1][1], rules[2][1], f)
     b = np.einsum("qi,rj,sk,qrs->ijk", B[0], B[1], B[2], wf)
     MC = np.einsum("ai,bj,ck,ijk->abc", M[0], M[1], M[2], C)
-    assert np.abs(MC - b).max() < 1e-11 * np.abs(b).max()
+    # Measured max relative error is 83 eps in float64 and 2.9 eps in
+    # float32: the float64 side is the binding one here.
+    assert np.abs(MC - b).max() < mrx.eps(1e3) * np.abs(b).max()
 
 
 def test_radial_coefficients_are_exact_on_the_states_knots(odd_p_seq):
@@ -138,7 +143,9 @@ def test_angular_l2_symbol_solves_the_normal_equations(request, which):
     for m, g in zip(freqs, gamma):
         b = B.T @ (w * np.cos(2 * np.pi * m * pts))
         c = g * np.cos(2 * np.pi * m * x)
-        assert np.abs(M @ c - b).max() < 1e-13
+        # Measured max error is 0.4 eps in float64 and 74 eps in float32:
+        # the quadrature sum cancels, and float32 feels that.
+        assert np.abs(M @ c - b).max() < mrx.eps(3e2)
 
 
 def test_state_field_wall_derivative_is_the_left_limit():

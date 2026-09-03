@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from scipy.interpolate import BSpline
 
+import mrx
 from mrx.vmec import (
     TWO_PI,
     _state_from_raw,
@@ -80,7 +81,8 @@ def test_fit_interpolates_the_surface_data():
         f = StateField(st[name], None, nfp)
         pts = jnp.array([[r, th, ze] for r in rho])
         got = np.asarray(jax.vmap(f)(pts))
-        assert np.abs(got - want).max() < 1e-11
+        # Measured max error is 4.0 eps in float64 and 3.2 eps in float32.
+        assert np.abs(got - want).max() < mrx.eps(1e2)
 
 
 def test_axis_value_is_theta_independent():

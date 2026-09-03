@@ -1,18 +1,26 @@
 # MRX on a v5e: what was slow, and why
 
-Measured on `mrx-scaling-on-tpus`, 1-2 September 2026, one `v5litepod-4` node
-in `us-west4-a`, JAX 0.11.1, li383 at `--ns 12,24,12 --p 3`, float32,
-`jax_default_matmul_precision=highest`.
+Measured on `mrx-scaling-on-tpus`, 1-2 September 2026 in `us-west4-a` and
+2-3 September in `us-south1-a`, one `v5litepod-4` node, JAX 0.11.1, li383 at
+`--ns 12,24,12 --p 3`, float32, `jax_default_matmul_precision=highest` unless
+a row says otherwise.
 
-The control column is **the host CPU of the same VM**, run through the same
-driver with `RUN_PLATFORM=cpu`, so the software stack, geometry and precision
-are identical and only the backend differs. Both columns run the same fixed
-code, so the comparison is not confounded by the fixes below. Reproduce with
-`tpu_bench_mrx.py`.
+Two control columns, both running the same tree as the v5e:
+
+- **The host CPU of the same VM**, through the same driver with
+  `RUN_PLATFORM=cpu`, so the software stack, geometry and precision are
+  identical and only the backend differs.
+- **One NVIDIA H200** on NYU Torch (`gpu_baseline.slurm`), the same scripts at
+  the same resolution in both float32 and float64. It is an H200 rather than
+  an H100 because `h100` is not open to this account; for this comparison that
+  is conservative, since an H200 is the same GH100 compute with 4.8 TB/s of
+  HBM3e against 3.35, and these matvecs are bandwidth-bound.
+
+Reproduce with `tpu_bench_mrx.py` and `matvec_bench.py`.
 
 ## The headline
 
-| Measurement | v5e before | v5e after | Same VM's CPU | H100 (docs) |
+| Measurement | v5e before | v5e after | Same VM's CPU | One H200 |
 |---|---|---|---|---|
 | `build_sequence` (warm cache) | 203 s | **35.5 s** | 40.6 s | - |
 | `compute_nullspaces`, `gap_sweeps=0` | 222 s | **17.5 s** | 55.1 s | - |
@@ -21,17 +29,26 @@ code, so the comparison is not confounded by the fixes below. Reproduce with
 | `E` apply k=1 | 1.999 ms | **0.181 ms** | 0.102 ms | - |
 | `apply_derivative_matrix` k=1 | 7.15 ms | **2.74 ms** | 6.28 ms | - |
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **76.4 ms** | 108 ms | - |
-| relaxation, per step (mass precond) | 100.3 s | **13.03 s** | 45.7 s | 0.41 s |
+| relaxation, per step (mass precond) | 100.3 s | **13.04 s** | 45.7 s | 17.92 s |
 | relaxation, per step (laplacian precond) | -- | **8.05 s** | -- | -- |
 
 The v5e went from 1.7x slower than the VM's own CPU to **3.5x faster**, and
-setup from about 7 minutes to under a minute. It is now about 32x behind one
-H100 on a single equilibrium, down from 105x.
+setup from about 7 minutes to under a minute. Four things did that, in order
+of size: the persistent compilation cache, the gather, the assembly, and
+compiling the extraction operator's two ops together. The first is
+configuration; the rest are in `mrx/mass.py` and `mrx/extraction_operators.py`,
+and they are the next four sections.
 
-Four things did that, in order of size: the persistent compilation cache, the
-gather, the assembly, and compiling the extraction operator's two ops
-together. The first is configuration; the rest are in `mrx/mass.py` and
-`mrx/extraction_operators.py`.
+**The v5e is also not behind a datacentre GPU on this workload; it is ahead of
+one.** Earlier versions of this file claimed the v5e was "32x behind one
+H100", from a `0.41 s/step` figure that was never the same measurement --
+[a warm-start A/B on W7-X](../../docs/research/release_review_sweep_2026-08-27.md),
+not li383. The H200 column above is the like-for-like measurement, and the
+v5e is **1.37x ahead** of it. The comparison, not the hardware, was the
+problem. "The matvec baseline", "The step, composed from measured parts" and
+"Why the GPU loses" measure where that goes, and the short version is that the
+v5e runs the relaxation at its own matvec rate while the GPU pays 8x over
+its.
 
 ## Fix 1: XLA was recompiling, not the device computing
 
@@ -89,6 +106,14 @@ the gather was 0.854 ms per component against 0.100 ms for the forward
 einsums, 0.076 ms for the reverse and 0.050 ms for the assembly: roughly 80%
 of the kernel spent reading 3456 numbers.
 
+Those attribution rows are **upper bounds on the pre-fix kernel, not shares of
+the post-fix one**, and reading them the other way is what made it look as
+though a 0.854 ms gather sat inside a 0.506 ms `mass_core_apply`. Isolating one
+component forces XLA to materialise an intermediate the fused kernel never
+writes -- at k=1 the gather expands 3 456 values to 124 416 -- so an isolated
+row can exceed its own share and the rows do not sum to the whole.
+`tpu_bench_mrx.py` now labels them `(upper bound)`.
+
 `mrx/mass.py` checks the shift structure per axis and falls back to the index
 tensors if any axis fails, so a differently built basis still assembles
 correctly. When the plan holds the index tensors are removed from the kernel
@@ -140,6 +165,217 @@ tolerance took **the same iteration count** on both backends:
 | inverse mass CG k=1 | 20 iterations | 20 iterations |
 | inverse mass CG k=2 | 24 iterations | 24 iterations |
 
+## The matvec baseline
+
+About 99% of the compute is matrix-vector applies, so this is the table that
+any backend claim has to rest on. Everything above it in this file was
+measured *eagerly*, one operator at a time, and that turns out to overstate
+what the relaxation pays by a large and backend-dependent factor. Each
+operator here is therefore also timed **inside a jitted `lax.scan`** of length
+50, which is the form the relaxation actually runs. `matvec_bench.py`, li383
+`(12,24,12)` p=3, all five columns the same script and the same tree.
+
+Per-apply cost in **ms**, scan form:
+
+| operator | v5e `highest` | v5e `high` | H200 f32 | H200 f64 | VM CPU f32 |
+|---|---|---|---|---|---|
+| `apply_mass_matrix` k=1 | 0.836 | 0.657 | 0.128 | 0.163 | 1.417 |
+| `apply_mass_matrix` k=2 | 0.749 | 0.586 | 0.121 | 0.156 | 1.369 |
+| &nbsp;&nbsp;`mass_core` k=1 | 0.504 | 0.324 | 0.135 | 0.155 | 1.406 |
+| &nbsp;&nbsp;`mass_core` k=2 | 0.458 | 0.295 | 0.127 | 0.163 | 1.356 |
+| &nbsp;&nbsp;`E` k=1 | 0.299 | 0.293 | 0.632 | 0.300 | 0.043 |
+| &nbsp;&nbsp;`E^T` k=1 | 0.311 | 0.293 | 0.400 | 0.441 | 0.027 |
+| `apply_stiffness` k=1 | 0.790 | 0.627 | 0.134 | 0.168 | 1.472 |
+| `apply_stiffness` k=2 | 0.433 | 0.383 | 0.064 | 0.079 | 0.561 |
+| `apply_derivative` `D^T D` k=1 | 1.537 | 1.208 | 0.234 | 0.304 | 2.832 |
+| mass atom k=2 (precond) | 0.065 | 0.065 | 0.039 | 0.038 | 0.030 |
+| laplacian atom k=2 (precond) | 0.072 | 0.070 | 0.084 | 0.074 | 0.044 |
+
+Three things this settles.
+
+**`apply_stiffness` was never timed before** and it is not cheap: `K_k = G_k^T
+M_{k+1} G_k` contains a mass apply, and at k=2 it costs 58% of a mass apply on
+its own. Likewise `apply_derivative_matrix` is not an incidence operation --
+it is `D_k = M_{k+1} G_k`, so most of its cost is the mass kernel plus two
+extractions.
+
+**`apply_laplacian` is not an apply and has been relabelled.** At k>=1 it
+calls `apply_inverse_mass_matrix`, so the 76.4 ms in the headline table is
+20-27 CG iterations, not a matvec. `tpu_bench_mrx.py` now prints it as
+`SOLVE apply_laplacian`.
+
+**Eager microbenchmarks overstate the scan form, and by wildly different
+amounts per backend**: 1.0-1.6x on CPU, 1.3-6.8x on the v5e, and 5.9-66x on
+the H200. Any table that mixes the two, or that compares an eager number on
+one machine with a fused number on another, is measuring dispatch. That is
+what the old primitive rows were doing.
+
+Where the extraction operator is concerned the ordering inverts: `E` and `E^T`
+are 7-11x *cheaper* on the CPU than on either accelerator, because they are
+pure data movement with no arithmetic to hide behind. They are 700 of a
+step's ~28 700 applies, so this does not matter, but it is why the "structured
+extraction operator" idea below stays rejected.
+
+## The step, composed from measured parts
+
+The old claim that a step is "37 478 applies at 0.35 ms each" was circular:
+the 0.35 ms was obtained by dividing 13.03 s by 37 478, not measured. And
+summing the *eager* primitives gave >= 7.84 ms per smoothing iteration, i.e.
+27.4 s for one solve against 13.03 s measured for all nine -- a 2.8x
+contradiction with itself.
+
+Counting calls through `mrx.operators` (backend-independent), one MINRES
+iteration of the velocity smoothing solve is:
+
+| term | per iteration |
+|---|---|
+| `apply_stiffness` k=2 | 1 |
+| `apply_mass_matrix` k=2 | 1 |
+| `apply_mass_matrix` k=1 | 1 |
+| `apply_derivative_matrix` k=1, forward and transpose | 2 |
+| mass-atom preconditioner, k=2 and k=1 | 2 |
+
+Priced with the scan-form costs above, at the solve's 3 497 iterations:
+
+| | v5e `highest` | v5e `high` | H200 f32 | H200 f64 | VM CPU f32 |
+|---|---|---|---|---|---|
+| per iteration | 3.69 ms | 2.97 ms | 0.629 ms | 0.783 ms | 6.24 ms |
+| smoothing solve | **12.90 s** | 10.37 s | 2.20 s | 2.74 s | 21.83 s |
+| whole step, measured | 13.04 s | - | 17.92 s | 24.16 s | 45.7 s |
+
+On the v5e the two accounts now agree. The smoothing solve is 74.6% of the
+step's applies, so 13.04 s attributes about 9.73 s to it, against 12.90 s
+composed: **1.33x**, down from 2.8x, and in the direction a residual should
+go. The scan form still slightly overstates, because the real MINRES body
+fuses all seven applies and the vector updates into one XLA program while the
+benchmark's scan fuses one operator at a time.
+
+The H200 column does not agree, by 6.1x in the other direction, and that
+disagreement is the subject of the next section.
+
+Reproduce the table and the composition with
+`python tpu/summarize_matvec.py LABEL=PATH ...`.
+
+## Why the GPU loses, and what it means
+
+The same arithmetic says the H200 should be **5.9x faster per matvec** than
+the v5e. Measured end to end it is **1.37x slower**. The whole discrepancy is
+how much each machine pays over its own matvec budget.
+
+Comparing like with like on the velocity smoothing solve, whose composed cost
+is in the table above and whose share of a step's applies (74.6%) is the same
+on every backend:
+
+| | composed from matvecs | attributed from the step | measured / composed |
+|---|---|---|---|
+| v5e float32 | 12.90 s | 13.04 x 0.746 = 9.73 s | **0.75x** |
+| H200 float32 | 2.20 s | 17.92 x 0.746 = 13.37 s | **6.1x** |
+
+The v5e runs the relaxation slightly *faster* than its own isolated matvecs
+predict, which is what fusing the whole MINRES body into one program should
+do. The H200 runs it 6.1x slower than its matvecs predict. Those two together
+are the 8.1x that turns a 5.9x per-matvec advantage into a 1.37x end-to-end
+deficit.
+
+The likely cause is the shape of the workload rather than anything about MRX:
+a step is roughly 200 000 *sequentially dependent* kernels -- ~28 700 applies,
+several kernels each, in Krylov recurrences where every iteration needs the
+last one's answer. A TPU executes the whole `lax.scan` body as one on-device
+program; a GPU issues each kernel, and the H200's ~15 s per step of
+non-arithmetic time over 250 000 launches is about 60 us apiece, the right
+order for launch and synchronisation on a chain this long. This has not been
+confirmed with a GPU profile, so treat the mechanism as the best available
+explanation and the timings as the measurement.
+
+It holds at the other resolution too, and more strongly, which is what the
+launch-bound explanation predicts: a smaller problem has the same number of
+sequential kernels doing less work each.
+
+| li383 p=3, per step | v5e f32 | H200 f32 | H200 f64 |
+|---|---|---|---|
+| `(12,24,12)` | **13.04 s** | 17.92 s | 24.16 s |
+| `(8,16,8)` | **2.29 s** | 10.52 s | 11.43 s |
+
+At `(8,16,8)` the v5e is **4.6x faster** than the H200 in the same dtype.
+
+One figure this does *not* contradict: `docs/source/concepts/relaxation.md`
+reports 0.7-0.9 s/step on an H100 at `(8,16,8)` p=3 float64, and that is
+**W7-X FMM002, not li383**. Different geometry, different conditioning,
+different iteration counts, so it is not comparable to the 11.43 s above and
+neither number impugns the other. The figure that was genuinely misused is the
+`0.41 s/step`, which was quoted as an H100 li383 step and is a warm-start A/B
+on W7-X.
+
+The consequence is the useful part: **this workload is a good fit for a TPU
+and a poor one for a GPU**, and the reason is the sequential Krylov chain, not
+precision or bandwidth. It also means the leverage on both machines is the
+same one -- fewer iterations -- which is an apply-count question, addressed
+below and backend-independent.
+
+## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
+
+[`mrx/precision.py`](../../mrx/precision.py) pins `jax_default_matmul_precision`
+to `"highest"`. The reason recorded there is entirely about GPUs: Ampere and
+later run float32 matmuls in TF32, which made the W7-X map's `dR/dtheta` 19%
+wrong. float64 is unaffected, so the setting is **free on the GPU and not free
+on the TPU**, where the MXU multiplies bf16 natively and float32 is emulated in
+six passes at `highest`, three at `high`, one at `default`.
+
+It is worth 1.2-1.55x on the kernels that dominate, from the table above:
+
+| | `highest` -> `high` |
+|---|---|
+| `mass_core` k=1 | 0.504 -> 0.324 ms, **1.55x** |
+| `mass_core` k=2 | 0.458 -> 0.295 ms, 1.55x |
+| `apply_mass_matrix` k=2 | 0.749 -> 0.586 ms, 1.28x |
+| `apply_stiffness` k=2 | 0.433 -> 0.383 ms, 1.13x |
+| composed smoothing iteration | 3.69 -> 2.97 ms, **1.24x** |
+
+The preconditioner atoms and the extraction operator do not move at all, which
+is the expected signature: they are data movement, not matmul.
+
+The question the setting was introduced to answer is whether the geometry
+survives. Measured directly on the v5e with `map_precision.py`, li383
+`(12,24,12)` p=3 float32, against the same process at `highest`:
+
+| setting | det DF range | folds | max rel err on DF | on det DF |
+|---|---|---|---|---|
+| `highest` | [1.504e-02, 2.616e+00] | no | - | - |
+| `high` | [1.484e-02, 2.620e+00] | no | 1.9e-04 | 2.7e-03 |
+| `default` | [**-1.319e-01**, 3.014e+00] | **yes** | 3.2e-02 | 4.8e-01 |
+
+So the requirement is real and it is the geometry that imposes it: at
+`default` the map folds outright -- `det DF` goes negative and `set_geometry`
+refuses the map -- with a 48% error on the determinant. `high` is the floor,
+and at 1.9e-04 on `DF` it is comfortably inside it.
+
+End to end the prediction holds and the trajectory does not. Same node, same
+session, li383 `(12,24,12)` p=3 float32, five steps:
+
+| | per step | residual after 5 steps | `dt` | `dH/H` |
+|---|---|---|---|---|
+| `highest` | 13.04 s | 3.09e-02 | 3.10 | -9.4e-06 |
+| `high` | **10.71 s**, 1.22x | 3.74e-02 | 1.70 | -2.9e-06 |
+
+The 1.22x measured matches the 1.24x composed from the matvec table, which is
+a good check on the step model. But `high` **took a different trajectory**:
+the adaptive controller chose `dt = 1.70` against `3.10` and the run is
+*behind* after the same five steps, 3.74e-02 against 3.09e-02. That is not
+round-off in the reported digits, it is a different sequence of steps. So the
+1.22x is a per-step figure that is at least partly, and possibly wholly, spent
+on making less progress per step; a wall-clock-to-target comparison would need
+a much longer run.
+
+**No library change was made**, for three reasons that compound. `high` on a
+GPU *is* TF32, the exact setting that produced the documented 19% error, so
+the default cannot simply move and any change would have to be
+platform-conditional. The measured cost is a 2.7e-03 error on `det DF`, and
+`default` -- one step further -- folds the map outright, so there is one
+notch of headroom and no margin beyond it. And the trajectory result above
+means the speedup is not established as a real one. It is available per-run
+instead: both `matvec_bench.py` and `tpu_bench_mrx.py` take
+`--matmul-precision high`, with these numbers as the price.
+
 ## Fixes that sounded right and were not
 
 Measured, not argued about:
@@ -153,13 +389,20 @@ Measured, not argued about:
 The sorted-indices hint is genuinely useful on GPUs, where a scatter lowers to
 hardware atomics. It does nothing on this hardware.
 
-## What is left: the step is 37 478 operator applies
+The third row is specifically about the **v5e**, and it is worth keeping
+straight against the GPU section above: dispatch is not what makes a v5e
+kernel slow, and dispatch appears to be exactly what makes the H200's step
+slow. The two are consistent -- a TPU runs the fused scan body as one program
+and has almost no per-kernel cost to pay, which is the same fact from both
+ends.
+
+## What is left: the step is tens of thousands of operator applies
 
 `relaxation_loop` is already `@jax.jit` around a `lax.scan`, so the 13 s per
 step contains no compilation. It is worth asking what the arithmetic *should*
 cost. From the primitives above, a step ought to be roughly 350 ms: about 350
 mass-core applies at 0.5 ms and 700 extraction applies at 0.18 ms. That is 37x
-off the measured 13.03 s, and for a while the assumed explanation was that a
+off the measured 13.04 s, and for a while the assumed explanation was that a
 li383 step is a chain of kernels too small to fill the chip.
 
 That was wrong. The per-apply arithmetic was right; the apply *count* was
@@ -169,26 +412,35 @@ counts had never been looked at. Running one step eagerly on a host, where
 `info` is concrete, gives this (li383, `(12,24,12)` p=3, float32,
 `tol = sqrt_eps = 3.45e-04`, `maxiter = 10000`):
 
-| # | solver | n | iterations | converged | applies |
-|---|---|---|---|---|---|
-| 0 | CG, inverse mass | 8700 | 0 | yes | 0 |
-| 1 | CG, inverse mass k=1 | 8124 | 25 | yes | 50 |
-| 2 | CG, inverse mass | 8376 | 0 | yes | 0 |
-| 3 | MINRES, Leray k=3 | 2880 | 221 | yes | 3 536 |
-| 4 | CG, inverse mass k=2 | 8376 | 27 | yes | 54 |
-| 5 | **MINRES, velocity smoothing k=2** | 8376 | **3 497** | yes | **27 976** |
-| 6 | MINRES, Leray k=3 | 2880 | 361 | yes | 5 776 |
-| 7 | CG, inverse mass k=2 | 8376 | 22 | yes | 44 |
-| 8 | CG, inverse mass k=1 | 8124 | 21 | yes | 42 |
+| # | solver | n | iterations | converged | applies/iter | applies |
+|---|---|---|---|---|---|---|
+| 0 | CG, inverse mass | 8700 | 0 | yes | 2 | 0 |
+| 1 | CG, inverse mass k=1 | 8124 | 25 | yes | 2 | 50 |
+| 2 | CG, inverse mass | 8376 | 0 | yes | 2 | 0 |
+| 3 | MINRES, Leray k=3 | 2880 | 221 | yes | 7 | 1 547 |
+| 4 | CG, inverse mass k=2 | 8376 | 27 | yes | 2 | 54 |
+| 5 | **MINRES, velocity smoothing k=2** | 8376 | **3 497** | yes | 7 | **24 479** |
+| 6 | MINRES, Leray k=3 | 2880 | 361 | yes | 7 | 2 527 |
+| 7 | CG, inverse mass k=2 | 8376 | 22 | yes | 2 | 44 |
+| 8 | CG, inverse mass k=1 | 8124 | 21 | yes | 2 | 42 |
 
-**37 478 operator applies in one step.** At 13.03 s that is 0.35 ms each,
-which is exactly the measured cost of a mass-core apply. The chip was never the
-problem and the kernels are not too small: the step really does ask for 37 478
-of them.
+**About 28 700 operator applies in one step.** The chip was never the problem
+and the kernels are not too small: the step really does ask for tens of
+thousands of them, and section "The step, composed from measured parts" above
+prices that count against measured per-apply costs and gets the step time back
+to within 1.33x.
 
-Three MINRES solves are 99.5% of the work, and one of them, the velocity
-smoothing solve `(M_2 + eps L_2) x = M_2 u`, is 75% on its own. The six CG
-solves everybody assumes are the cost are 190 applies, 0.5%.
+The `applies/iter` column is measured, by wrapping the five entry points in
+`mrx.operators` and counting calls through one iteration. Earlier versions of
+this table did not have it and used **8 for the smoothing solve and 16 for the
+Leray solves**, which put the total at 37 478 and, worse, was inconsistent
+between two solves of the same shape. The 16 was one solve's whole trace,
+setup included, divided by its iterations; the steady-state cost of both is
+the same 7. Every share below is recomputed on the measured column.
+
+Three MINRES solves are 99.3% of the work, and one of them, the velocity
+smoothing solve `(M_2 + eps L_2) x = M_2 u`, is 85% on its own. The six CG
+solves everybody assumes are the cost are 190 applies, 0.7%.
 
 The iteration count scales with the problem. At `(8,16,8)`, `n(2) = 2192`, the
 same solve took 951 iterations; at `(12,24,12)`, `n(2) = 8376`, it takes 3 497.
@@ -198,10 +450,13 @@ stagnation and not a float32 artefact: every solve converges, and `eps` shrinks
 as `0.064 / n_r^2`, so the system becomes *more* mass-dominated with resolution
 while the iteration count rises anyway.
 
-None of this is a TPU property. The same counts appear on a CPU, and the same
-counts have always been there on the GPU, where each apply is simply ~30x
-cheaper. It is recorded here because a TPU makes it visible: when a single
-apply costs a third of a millisecond, 37 478 of them is the whole run.
+None of this is a TPU property. **Apply count is backend-independent**: the
+same counts appear on the CPU and on the H200, so a preconditioner that halves
+them halves every column and cannot open or close a gap between two of them.
+Per-apply *cost* is the backend-dependent half, and that is what the matvec
+table measures. Conflating the two is what produced the earlier claim that the
+GPU was 30x ahead. It is recorded here because a TPU made it visible: when a
+single apply costs half a millisecond, 28 700 of them is the whole run.
 
 **This was the highest-value remaining item, and it was not a TPU change.**
 
@@ -249,10 +504,11 @@ step's `dt * eta` lives.
 | `laplacian` | 40.25 s | **8.05 s** |
 
 **1.62x on the whole relaxation.** The `auto` figure reproduces the 13.03 s of
-the earlier session to three significant figures, which is what makes this an
-apples-to-apples comparison rather than two measurements of different machines.
+the earlier session to three significant figures, and a third session on the
+patched tree measured 13.04 s, which is what makes this an apples-to-apples
+comparison rather than two measurements of different machines.
 The trajectory is unchanged: six li383 steps agree to 4.3e-09 relative against
-a solver tolerance of 1.49e-08. mrx PR #19.
+a solver tolerance of 1.49e-08.
 
 Three alternatives were measured and rejected. `'jacobi'`, the shifted diagonal
 that *does* know about `eps L`, is far worse (14372 iterations at `(8,16,8)`,
@@ -266,6 +522,75 @@ flexible CG is not the obstacle; the inner solve simply is not cheap.
 The condition number is still resolution-dependent, so this is a large constant
 rather than a cure. The principled object is a separable `(M + eps L)` atom,
 right at every eps, which `docs/research/OPEN.md` section 3.9 already proposes.
+
+### The Leray projections, now about 28% of a step
+
+The Laplacian preconditioner cuts the smoothing solve's iterations by about
+2.3x, from 24 479 applies to roughly 10 500, while the two Leray projections
+are untouched at 1 547 and 2 527. So they go from **14% of a step to about
+28%**, which is what made them worth measuring for the first time. This is an
+**apply-count** item: it moves every backend by the same factor and closes no
+TPU-versus-GPU gap. `leray_measure.py`, li383 `(8,16,8)` p=3 float64, 419
+MINRES iterations.
+
+Per iteration the k=3 saddle solve costs **7 applies**: one `apply_stiffness`,
+two `apply_mass_matrix`, two `apply_derivative_matrix`, and the two block
+preconditioners. This is the measurement that corrects the 16 in the table
+above: tracing the whole solve gives 32 primitive calls, but most of those are
+setup, and dividing them by the iteration count inflates the steady state by
+2.3x.
+
+The reason it takes 419 iterations is that neither block preconditioner is
+close to an exact inverse. Relative miss, `||P A x - x|| / ||x||`:
+
+| block | relative miss |
+|---|---|
+| lower, k=2 mass | 2.43 |
+| upper, k=3 Schur | 1.88 |
+
+A miss of 1.88 on the upper block is the answer to "the metric-lumped
+Laplacian atom at k=3 *is* a fast-diagonalisation solve, so why 361
+iterations": it is an exact inverse of the *lumped* operator, and the lumped
+operator is not close to `S_3`. `lambda_max(P M_2)` is 2.66, so the lower
+block is off by a similar factor.
+
+Every alternative available today is worse, so nothing was changed:
+
+| variant | iterations | seconds |
+|---|---|---|
+| `auto`, metric-lumped outer, uncoupled | **419** | **1.78** |
+| `schur.outer='jacobi'` | 647 | 2.42 |
+| `coupled=True` | 616 | 2.67 |
+| `schur.outer='none'` | 5 878 | 17.25 |
+
+Warm-starting the second projection does help and is already on: **419 cold
+against 386 warm**, a 1.08x, which also disposes of the worry that the warm
+second Leray costs more than the first. Getting past this needs a
+preconditioner that is actually near `S_3`, not a different assembly of the
+ones that exist -- the same conclusion the smoothing solve reached, and the
+same object would serve both.
+
+### The one indexed read that is left
+
+Fixes 2 and 3 removed the index tensors from `_sumfact_kernel`. One indexed
+read survives, in `_to_quadrature`, and it is still the expensive half of what
+it feeds. `gather_cost.py` times the einsum round trip with and without it,
+inside a scan, keeping the carry shape identical so only the access pattern
+differs:
+
+| v5e, li383 (12,24,12) p=3 f32 | gather + einsums | einsums only | ratio |
+|---|---|---|---|
+| k=1, 3 168 -> 124 416 (39x expansion) | 1.053 ms | 0.250 ms | **4.2x** |
+| k=2, 3 456 -> 93 312 (27x expansion) | 0.827 ms | 0.191 ms | **4.3x** |
+
+The **ratio** is the result, not the level: isolating the read materialises an
+intermediate the fused kernel never writes, which is why 1.053 ms exceeds the
+0.504 ms of the whole `mass_core_apply` it sits inside. Read that way it says
+the same thing the gather and scatter tables said before the fix -- on this
+hardware an indexed read costs several times the arithmetic it serves -- and
+it makes a structured `_to_quadrature` the natural next TPU-side item. It was
+not done here: it is a larger change than the two that preceded it, and the
+apply count is the bigger lever.
 
 ### The rest, in order of what they would buy
 
@@ -295,7 +620,7 @@ right at every eps, which `docs/research/OPEN.md` section 3.9 already proposes.
   actually mix for k=0/1/2, k=3 is pure selection, and over 99% of rows are
   single value-1.0 pass-throughs. It is the natural mirror of what fixes 2 and
   3 did to the mass kernel. **It was not done, and should not be**: at 700
-  extraction applies of 37 478, making `E` free saves under 1% of a step.
+  extraction applies of ~28 700, making `E` free saves under 1% of a step.
   Recorded so the idea is not re-derived; it becomes worth doing only once the
   MINRES iteration counts come down.
 
@@ -317,6 +642,32 @@ Drop `--skip-relax` to include the relaxation timing, which adds about 4
 minutes on a TPU and 9 on the CPU. The `lambda_1` diagnostic is no longer
 run: it is not part of the construction and cost 6.8 of the 9 setup minutes
 when it was on by default.
+
+The matvec table, the GPU column and the step composition:
+
+```bash
+# v5e, and again with --matmul-precision high
+PUSH_FILES=matvec_bench.py SCRIPT=matvec_bench.py OUTDIR=outputs/matvec \
+  VM_NAME=my-tpu-vm ZONE=<zone> SYNC_LOCAL_MRX=1 LOCAL_MRX=/path/to/mrx \
+  ./run_on_tpu.sh --ns 12,24,12 --p 3 --out outputs/matvec/v5e.json
+
+# one H200 on NYU Torch, both dtypes, matvecs and relaxation
+sbatch tpu/gpu_baseline.slurm
+
+# join them and compose the smoothing solve
+python tpu/summarize_matvec.py v5e=...json H200-f32=...json cpu=...json
+```
+
+`SYNC_LOCAL_MRX=1` matters more than it looks. A fresh node clones the branch
+from the remote, so a session started before a fix is pushed will silently
+benchmark the unfixed tree: that is what produced a `mass_core_apply k=1` of
+6.87 ms against 0.505 ms for the same operator, and it took an A/B across four
+dispatch protocols to establish that the discrepancy was not a measurement
+artefact before anyone thought to check `git log` on the node.
+
+The map-precision probe and the isolated gather are separate scripts:
+`map_precision.py --matmul-precision {highest,high,default}` and
+`gather_cost.py`.
 
 The 100-step li383 run of the previous session (41.3 s/step, before fixes 2-4)
 had `||F||` falling 5.540e-02 -> 1.004e-02 with helicity conserved to 5.6e-07
