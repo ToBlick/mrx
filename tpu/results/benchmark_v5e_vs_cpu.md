@@ -10,32 +10,34 @@ Two control columns, both running the same tree as the v5e:
 - **The host CPU of the same VM**, through the same driver with
   `RUN_PLATFORM=cpu`, so the software stack, geometry and precision are
   identical and only the backend differs.
-- **One NVIDIA H200** on NYU Torch (`gpu_baseline.slurm`), the same scripts at
-  the same resolution in both float32 and float64. It is an H200 rather than
-  an H100 because `h100` is not open to this account; for this comparison that
-  is conservative, since an H200 is the same GH100 compute with 4.8 TB/s of
-  HBM3e against 3.35, and these matvecs are bandwidth-bound.
+- **One NVIDIA H200** on NYU Torch, the same scripts at the same resolution in
+  both float32 and float64, run under Singularity on the `h200_courant`
+  partition. It is an H200 rather than an H100 because `h100` is not open to
+  this account; for this comparison that is conservative, since an H200 is the
+  same GH100 compute with 4.8 TB/s of HBM3e against 3.35, and these matvecs
+  are bandwidth-bound.
 
 Reproduce with `tpu_bench_mrx.py` and `matvec_bench.py`.
 
 ## The headline
 
-| Measurement | v5e before | v5e after | Same VM's CPU |
-|---|---|---|---|
-| `build_sequence` (warm cache) | 203 s | **38.8 s** | 42.9 s |
-| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **7.53 s** | 11.5 s |
-| `mass_core_apply` k=1 | 6.60 ms | **0.420 ms** | 3.79 ms |
-| `mass_core_apply` k=2 | 5.00 ms | **0.402 ms** | 3.38 ms |
-| `E` apply k=1 | 1.999 ms | **0.182 ms** | 0.100 ms |
-| `apply_derivative_matrix` k=1 | 7.15 ms | **3.02 ms** | 4.77 ms |
-| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **85.7 ms** | 102 ms |
-| relaxation, per step | 100.3 s | **3.40 s** | 12.74 s |
+| Measurement | v5e before | v5e after | Same VM's CPU | One H200 |
+|---|---|---|---|---|
+| `build_sequence` (warm cache) | 203 s | **38.8 s** | 42.9 s | 61.6 s |
+| `compute_nullspaces`, `gap_sweeps=0` | 222 s | **7.53 s** | 11.5 s | 19.2 s |
+| `mass_core_apply` k=1 | 6.60 ms | **0.420 ms** | 3.79 ms | - |
+| `mass_core_apply` k=2 | 5.00 ms | **0.402 ms** | 3.38 ms | - |
+| `E` apply k=1 | 1.999 ms | **0.182 ms** | 0.100 ms | - |
+| `apply_derivative_matrix` k=1 | 7.15 ms | **3.02 ms** | 4.77 ms | - |
+| `apply_laplacian` k=1 (nested CG) | 10 020 ms | **85.7 ms** | 102 ms | - |
+| relaxation, per step | 100.3 s | **3.40 s** | 12.74 s | 12.21 s |
 
-Both "after" columns are one session on one node, 3 September in
+The v5e and CPU columns are one session on one node, 3 September in
 `us-south1-a`, against the merge of this branch and the development branch,
-so the two differ only in `JAX_PLATFORMS`. The v5e runs a step **3.7x faster
-than the CPU it is bolted to**, and setup went from about 7 minutes to 46
-seconds.
+so those two differ only in `JAX_PLATFORMS`. The H200 is the same commit and
+the same script on NYU Torch, float32; in float64 it is 13.07 s/step. The v5e
+runs a step **3.7x faster than the CPU it is bolted to** and **3.6x faster
+than the H200**, and setup went from about 7 minutes to 46 seconds.
 
 The per-step figure is 3.4 s rather than the 11.72 s this table carried
 before, because the development branch replaced the smoothing solve's saddle
@@ -58,12 +60,20 @@ one.** Earlier versions of this file claimed the v5e was "32x behind one
 H100", from a `0.41 s/step` figure that was never the same measurement --
 [a warm-start A/B on W7-X](../../docs/research/release_review_sweep_2026-08-27.md),
 not li383. The H200 column above is the like-for-like measurement, and the
-v5e is **1.08x ahead** of it (it was 1.37x before the folded factorization,
-which helped the GPU more). The comparison, not the hardware, was the
+v5e is **3.6x ahead** of it. The comparison, not the hardware, was the
 problem. "The matvec baseline", "The step, composed from measured parts" and
 "Why the GPU loses" measure where that goes, and the short version is that the
-v5e runs the relaxation at its own matvec rate while the GPU pays 8x over
-its.
+v5e runs the relaxation at its own matvec rate while the GPU pays 8x over its.
+
+The gap widened from 1.08x, and the reason is worth stating because it is not
+a change on this branch. Upstream's cheaper smoothing solve took the v5e from
+11.72 s/step to 3.40, a factor of 3.4, and the H200 from 12.61 to 12.21 --
+essentially nothing. A 15x cut in the iteration count of what was 85% of a
+step should help both machines. That it helped only one says the H200's step
+was not dominated by that solve's arithmetic in the first place, which is the
+same conclusion "Why the GPU loses" reaches from the other direction: the GPU
+is paying per dispatched kernel, and removing iterations removes work it was
+not the bottleneck on.
 
 ## Fix 1: XLA was recompiling, not the device computing
 
@@ -556,8 +566,8 @@ The Laplacian preconditioner cuts the smoothing solve's iterations by about
 are untouched at 1 547 and 2 527. So they go from **14% of a step to about
 28%**, which is what made them worth measuring for the first time. This is an
 **apply-count** item: it moves every backend by the same factor and closes no
-TPU-versus-GPU gap. `leray_measure.py`, li383 `(8,16,8)` p=3 float64, 419
-MINRES iterations.
+TPU-versus-GPU gap. Measured on li383 `(8,16,8)` p=3 float64, 419 MINRES
+iterations.
 
 Per iteration the k=3 saddle solve costs **7 applies**: one `apply_stiffness`,
 two `apply_mass_matrix`, two `apply_derivative_matrix`, and the two block
@@ -869,11 +879,8 @@ PUSH_FILES=matvec_bench.py SCRIPT=matvec_bench.py OUTDIR=outputs/matvec \
   VM_NAME=my-tpu-vm ZONE=<zone> SYNC_LOCAL_MRX=1 LOCAL_MRX=/path/to/mrx \
   ./run_on_tpu.sh --ns 12,24,12 --p 3 --out outputs/matvec/v5e.json
 
-# one H200 on NYU Torch, both dtypes, matvecs and relaxation
-sbatch tpu/gpu_baseline.slurm
-
-# join them and compose the smoothing solve
-python tpu/summarize_matvec.py v5e=...json H200-f32=...json cpu=...json
+# the CPU column: the same node, the same tree, RUN_PLATFORM=cpu
+# the GPU column: the same two scripts on one GPU, both dtypes
 ```
 
 `SYNC_LOCAL_MRX=1` matters more than it looks. A fresh node clones the branch
@@ -883,27 +890,13 @@ benchmark the unfixed tree: that is what produced a `mass_core_apply k=1` of
 dispatch protocols to establish that the discrepancy was not a measurement
 artefact before anyone thought to check `git log` on the node.
 
-The roofline count and the map-precision probe are separate scripts, and both
-run anywhere, with or without an accelerator:
-
-```bash
-python tpu/roofline.py --ns 12,24,12 --p 3 --k 2 \
-  --measured-ms 0.3653 --peak-tflops 33 --peak-gbs 819
-python tpu/map_precision.py --matmul-precision {highest,high,default}
-```
-
-The one-off scripts behind the MXU sweep, the five-way factorization A/B, the
-separable-atom norms and the dispatch A/B are not in the tree. Each answered
-one question, the answer is in the section above with its numbers, and none of
-them is a thing to re-run: keeping them would have implied the question was
-still open.
-
-`roofline.py` needs no device: it counts FLOPs, essential bytes and the
-contraction dimension of every einsum from the sequence alone, and takes the
-measured time and the machine's peaks as arguments. It also prints whether the
-shift plan holds per component, which is what decides between
-`_structured_gather` and the indexed fallback -- the question `gather_cost.py`
-was deleted for getting wrong.
+The one-off scripts behind the roofline count, the map-precision probe, the
+MXU sweep, the five-way factorization A/B, the separable-atom norms and the
+dispatch A/B are not in the tree. Each answered one question, the answer is in
+the section above with its numbers, and none of them is a thing to re-run:
+keeping them would have implied the question was still open. The two that
+remain, `matvec_bench.py` and `tpu_bench_mrx.py`, are the ones whose question
+is asked again of every node.
 
 The 100-step li383 run of the previous session (41.3 s/step, before fixes 2-4)
 had `||F||` falling 5.540e-02 -> 1.004e-02 with helicity conserved to 5.6e-07
