@@ -482,13 +482,14 @@ def eta_traces(arms, ideal, ideal_seeded, figdir):
     ]
     colors = {}
     for j in arms:
-        e = j["params"]["eta_max"]
-        colors.setdefault(e, f"C{len(colors)}")
+        colors.setdefault(j["arm"].replace("s61_", ""), f"C{len(colors)}")
         seeded = bool(j["params"]["seed"])
-        lab = rf"$\eta_{{max}}$ = {e:.0e}" + (" seeded" if seeded else "")
+        lab = eta_label(j) + (" seeded" if seeded else "")
         if j["arm"].endswith("_floor1e-5"):
             lab += " (floor 1e-5)"
-        entries.append((j, lab, colors[e], "--" if seeded else "-"))
+        entries.append(
+            (j, lab, colors[j["arm"].replace("s61_", "")], "--" if seeded else "-")
+        )
     for j, lab, c, ls in entries:
         if j is None:
             continue
@@ -654,6 +655,18 @@ def psweep_figure(arms, figdir):
     fig.savefig(os.path.join(figdir, "psweep_p16.png"), dpi=150)
 
 
+def eta_label(j):
+    """Legend text of a resistive arm: the tanh rung by eta_max, a pulse arm by
+    eta_max, window and repeat."""
+    prm = j["params"]
+    e = prm["eta_max"]
+    if prm.get("eta_schedule") == "pulse":
+        start, width, period = prm["eta_pulse"]
+        txt = rf"pulse {e:.1e} $\times$ {width} steps @ {start}"
+        return txt + (f" every {period}" if period else "")
+    return rf"$\eta_{{max}}$ = {e:.0e}"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -724,6 +737,31 @@ def main():
             load(root, "li383_pub", "h16_p2_g1"),
             load(root, "li383_pub", "r16_s61_e3e-3_g1"),
             etadir,
+        )
+    pulse = [
+        j
+        for j in (
+            load(root, "li383_pulse", os.path.basename(d))
+            for d in sorted(glob.glob(os.path.join(root, "li383_pulse", "pulse*")))
+        )
+        if j is not None and len(j["trace"]["F"]) > 1
+    ]
+    if pulse:
+        pdir = os.path.join(root, "li383_pulse", "figures")
+        os.makedirs(pdir, exist_ok=True)
+        same_dose = [
+            j
+            for j in (
+                load(root, "li383_eta", f"eta{e}") for e in ("1e-8", "3e-8", "1e-7")
+            )
+            if j is not None
+        ]
+        eta_traces(same_dose + pulse, load(root, "li383_pub", "h16_p2_g1"), None, pdir)
+        os.replace(
+            os.path.join(pdir, "eta_traces.png"), os.path.join(pdir, "pulse_traces.png")
+        )
+        open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
+            "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
         )
         open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
             "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"
