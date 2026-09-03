@@ -525,7 +525,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02)
         # Label BELOW the bar, matching iota: a side label is squeezed against
         # the next panel and the wide tick labels leave no room for it.
-        pbar.ax.set_xlabel(p_label, fontsize=FS.title)
+        pbar.ax.set_xlabel(pressure_label, fontsize=FS.title)
         pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
@@ -551,8 +551,6 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     ax.set_ylim(*ylim)
     ax.set_xlabel("R")
     ax.set_ylabel("Z")
-    ax.set_title(title + ("" if to_scale else "\nAXES NOT TO SCALE"),
-                 fontsize=FS.title)
 
     if lx is not None:
         # The SAME crossings in the logical chart: r against theta, both in
@@ -574,10 +572,13 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
                        rasterized=True)
         lx.set_xlim(0.0, 1.0)
-        lx.set_ylim(0.0, 1.0)
-        lx.set_xlabel(r"logical $r$")
-        lx.set_ylabel(r"logical $\theta$")
-        lx.set_title("logical chart", fontsize=FS.title)
+        # theta increases DOWNWARD so the pressure half (below the magnetic
+        # axis) sits at the bottom, aligned with the physical panel where p is
+        # also below the axis -- without the flip p is at the top here and the
+        # bottom there.
+        lx.set_ylim(1.0, 0.0)
+        lx.set_xlabel(r"$r$")
+        lx.set_ylabel(r"$\theta$")
 
     x = seed_r if profile_x is None else profile_x
     # The abscissa may carry several crossings per line (both midplane
@@ -648,15 +649,22 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     if lim.x is not None:
         bx.set_xlim(*lim.x)
     # The curves need no legend entry: the y labels carry their colours
-    # (the twin-axis style). Only the ribbons are explained, and there is
-    # no free corner -- iota rises at both ends, p peaks in the middle -- so
-    # the legend goes wherever it covers least.
+    # (the twin-axis style). Only the ribbons are explained. iota rises at both
+    # ends and p peaks in the middle, so the centre of the panel is the free
+    # space -- 'best' searches one axes only (twinx) and lands on a curve.
     handles, labels_ = bx.get_legend_handles_labels()
     if px is not None:
         h2, l2 = px.get_legend_handles_labels()
         handles, labels_ = handles + h2, labels_ + l2
-    bx.legend(handles, labels_, loc="best")
-    bx.set_title(subtitle)
+    bx.legend(handles, labels_, loc="center")
+
+    # One descriptive title for the whole figure, not a title per panel.
+    sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"
+    if subtitle:
+        sup = f"{sup}   |   {subtitle}"
+    if has_p:
+        sup = f"{sup}   |   {p_label}"     # states the p scaling once, here
+    fig.suptitle(sup, fontsize=FS.title)
 
     # Saving is the caller's: render_section is pure, so a run re-renders from
     # its archive and the caller owns the path (and the movie's frame naming).
