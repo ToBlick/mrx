@@ -6,7 +6,7 @@
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
-#   bash scripts/li383_pub.sh eta [ETA...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
+#   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
@@ -113,9 +113,13 @@ eta() {
     local e K
     for e in 1e-7:100 1e-6:10 1e-5:1 1e-4:1; do
         K=${e#*:}; e=${e%:*}
-        if [ $# -gt 0 ] && [[ " $* " != *" $e "* ]]; then continue; fi
-        arm eta$e     "$GEOM_HI" "$common --eta-max $e --eta-every $K"      300
-        arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
+        # `eta 1e-5` reruns both arms of that rung, `eta s61_eta1e-5` one arm.
+        if [ $# -eq 0 ] || [[ " $* " == *" $e "* ]] || [[ " $* " == *" eta$e "* ]]; then
+            arm eta$e     "$GEOM_HI" "$common --eta-max $e --eta-every $K"      300
+        fi
+        if [ $# -eq 0 ] || [[ " $* " == *" $e "* ]] || [[ " $* " == *" s61_eta$e "* ]]; then
+            arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
+        fi
     done
 }
 
