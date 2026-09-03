@@ -46,22 +46,14 @@ result as a test of the worktree. Read that line before reading the result.
 
 ## Run the suite on a GPU node
 
-`pytest` (no arguments) runs the whole suite: one tier, CPU-sized, in
-float64 and float32 on the GitHub runners (`.github/workflows/ci.yml`).
-On the cluster it is one GPU job:
+`pytest` (no arguments) runs the whole suite: one lean tier, 51 tests on two
+session sequences at `(8, 12, 12)` p=2 (li383 and the analytic toroid,
+`test/conftest.py`), in float64 and float32 on the GitHub runners
+(`.github/workflows/ci.yml`). Everything it reads is tracked, so a worktree
+runs it as it is. On the cluster it is one GPU job:
 
 ```
-SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=45 bash slurm/run.sh
-```
-
-Tests that read files outside the repository (the W7-X Clebsch initial
-condition from `data/GVEC_State_final.dat`, the `data/wout_*.nc`
-references, the archived relaxation traces from `MRX_RELAX_ARCHIVE`) carry
-the `needs_data` marker and skip when the file is absent; `data/` is
-resolved relative to the checkout, so a worktree needs the symlink.
-
-```
-SCRIPT="-m pytest -q test -m needs_data" JOB_NAME=tests_data TIMEOUT_MIN=30 bash slurm/run.sh
+SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=30 bash slurm/run.sh
 ```
 
 To measure the suite as a runner sees it, run it inside a GPU job with the
@@ -72,23 +64,19 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 ```
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
-Measured 2026-08-26 (H100, tree at the single-tier commit): 248 items,
-247 pass and the W7-X test skips without its data file; 6:09 on four
-CPU cores in float64, 9:15 on the GPU in float64 and 9:01 in float32 (the
-suite is compile-bound; the session torus fixture is 51 s of it, the
-relaxation run 28 s, the projector tests 90 s). The `needs_data` tests
-pass in 2:50 on the GPU (the W7-X fixture is 144 s of it).
-With the synthetic GVEC export (`test/test_synthetic_gvec.py`, which
-carries the relaxation run): 250 items, 7:40 on four CPU cores in
-float64; its module fixture -- `build_sequence` on the file plus the
-harmonic forms -- is 70 s of that, the relaxation run 23 s, and the file
-alone runs in 2:05 (float64) / 2:07 (float32).
+Measured 2026-09-02 (H100): 51 pass in 3:54 (float64) and 4:35 (float32)
+on the GPU, 3:55 on four CPU cores in float64. The suite is compile-bound:
+the li383 fixture (`build_sequence` plus the harmonic forms) is ~75 s of it
+on either backend, the toroid fixture ~25 s, the 50-step relaxation ~70 s,
+the eight manufactured solves 1-6 s each.
 
-Do not add `XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` to the CPU
-recipe: XLA's CPU compiler aborted once and segfaulted once, both while
-compiling the relaxation step (2026-08-26). The GitHub workflow does not
-set it, and four cores without it run the suite as fast as 32 (the compile
-is single-threaded either way).
+The previous 263-test suite ran ~13 min on the GPU and crashed XLA's CPU
+backend deterministically after ~230 tests: tens of thousands of separate
+compilations in one process (every eager solve traces its own loop body),
+neither memory nor stack; `jax.clear_caches()` between modules cured it.
+The lean suite does not get near that count. Do not add
+`XLA_FLAGS=--xla_cpu_multi_thread_eigen=false` to the CPU recipe either:
+the compile is single-threaded, and four cores run the suite as fast as 32.
 
 ## Wait for a job
 

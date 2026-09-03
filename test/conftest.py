@@ -1,113 +1,87 @@
-"""Shared pytest fixtures for the MRX test suite.
+"""The lean suite: two sequences, few tests.
 
-One tier: ``pytest`` runs everything on the CPU in under ten minutes on
-four cores, in float64 and float32, with no data files. Every property is
-checked on ``tiny_seq``, a (4, 6, 4) p=2 spline torus built once per
-session with the production setup (spline map interpolated at the
-Greville points, ``build_preconditioners``, harmonic forms by the direct
-Hodge construction). Tests that need low-level objects with other
-parameters (quadrature, spline bases, the evaluator, projector identities)
-build their own tiny sequences. Tests that read files outside the
-repository carry the ``needs_data`` marker and skip when the file is
-absent; ``slurm/README.md`` shows how to run them on a GPU node.
+Two session fixtures, both at ``(8, 12, 12)`` p=2, built once with their
+preconditioners and harmonic forms:
+
+* ``seq``: the li383 equilibrium (``data/wout_li383_low_res_reference.nc``,
+  the project's fruit-fly stellarator). The assembly and exactness checks
+  probe its operators in place and the relaxation runs on its own field
+  (``b0``).
+* ``toroid``: the spline-interpolated analytic donut torus, where the eight
+  Hodge Laplacians have closed-form manufactured solutions
+  (``test/manufactured.py``, all ``(k, dirichlet)`` pairs).
+
+Tests that need no sequence (spline bases, quadrature, precision, the
+kind-dispatch audit, the file readers) are the milliseconds around them.
+
+The suite is XLA-compile-bound: every eager solve traces and compiles its own
+loop body, so the cost of a test is the number of distinct solves it makes,
+not the mesh. Keep it that way -- a new test is the production configuration
+plus at most one contrasting case.
 """
+import time
 
-import jax
-import jax.numpy as jnp
 import pytest
 
-import mrx  # selects the working precision from MRX_DTYPE
-from mrx.derham_sequence import DeRhamSequence
-from mrx.geometry import greville_interpolate_map
-from mrx.mappings import toroid_map
-
-# Betti numbers for a solid torus.
-BETTI = (1, 1, 0, 0)
-
-# Resolution (r, chi, zeta) of the session fixture.
-NS_TINY = (4, 6, 4)
-P = 2   # the matvec is O(N p^4)
+#: The wout geometry, tracked in the repository.
+GEOMETRY = "data/wout_li383_low_res_reference.nc"
+#: Resolution (r, theta, zeta) and degree of both session sequences.
+NS, P = (8, 12, 12), 2
 TYPES = ("clamped", "periodic", "periodic")
-
-# Donut-torus parameters.
+#: Betti numbers of a solid torus (free boundary conditions).
+BETTI = (1, 1, 0, 0)
+#: Donut-torus parameters of ``toroid_map``.
 TORUS_EPSILON = 1 / 3
 TORUS_R0 = 1.0
 
 
 @pytest.fixture(scope="session")
+def seq():
+    """li383 ``(8, 12, 12)`` p=2 with its metric-lumping atoms and harmonic forms."""
+    from mrx.geometry import build_sequence
+    from mrx.nullspace import compute_nullspaces
+
+    t0 = time.perf_counter()
+    s, ops = build_sequence(GEOMETRY, NS, P)
+    t1 = time.perf_counter()
+    s.set_operators(compute_nullspaces(s, ops))
+    t2 = time.perf_counter()
+    print(f"\n  li383 {NS} p={P}: build_sequence {t1 - t0:.0f} s, "
+          f"nullspaces {t2 - t1:.0f} s", flush=True)
+    return s
+
+
+@pytest.fixture(scope="session")
+def b0(seq):
+    """The equilibrium's own field, ``B = dA'`` from the histopolated Clebsch
+    potential: exactly divergence-free, tangential to the wall."""
+    from mrx.gvec import load_clebsch
+    from mrx.initial_conditions import clebsch_potential_form, potential_two_form
+
+    B, _, _ = potential_two_form(seq, clebsch_potential_form(load_clebsch(GEOMETRY)))
+    return B
+
+
+@pytest.fixture(scope="session")
 def torus_map():
     """Analytical map of the reference cube onto a donut-shaped solid torus."""
+    from mrx.mappings import toroid_map
+
     return toroid_map(epsilon=TORUS_EPSILON, R0=TORUS_R0)
 
 
-def build_torus_sequence(ns, torus_map):
-    """The production setup on a spline-interpolated donut torus.
+@pytest.fixture(scope="session")
+def toroid(torus_map):
+    """The donut torus ``(8, 12, 12)`` p=2, spline-interpolated at the Greville
+    points, with its atoms and harmonic forms: the production setup on the
+    one geometry whose Hodge Laplacians have closed-form solutions."""
+    from mrx.derham_sequence import DeRhamSequence
+    from mrx.geometry import greville_interpolate_map
 
-    1. the analytical ``toroid_map`` is interpolated to spline coefficients
-       at the Greville points via :func:`greville_interpolate_map` and
-       installed with ``set_spline_map``;
-    2. ``build_preconditioners`` builds the metric-lumping mass and
-       Laplacian atoms for every ``(k, dirichlet)`` pair;
-    3. harmonic forms are computed by the direct Hodge-decomposition
-       construction (``betti_numbers = (1, 1, 0, 0)``): a fixed pair of
-       production saddle solves per form through ``'auto'``, i.e. the
-       metric-lumping atoms just built. The shift-and-invert route costs
-       an outer iteration per form on top.
-
-    The solver tolerance is the sequence default, ``mrx.sqrt_eps()``, so the
-    same fixture is meaningful in both precisions.
-    """
-    import time
     t0 = time.perf_counter()
-    seq = DeRhamSequence(
-        ns, (P, P, P), P + 1, TYPES, polar=True,
-        maxiter=1000, betti_numbers=BETTI,
-    )
-    seq.set_spline_map(greville_interpolate_map(torus_map, seq))
-    t1 = time.perf_counter()
-    seq.build_preconditioners()
-    t2 = time.perf_counter()
-    seq.compute_nullspaces(BETTI)
-    t3 = time.perf_counter()
-    print(f"\n  torus {ns}: geometry {t1 - t0:.0f} s, preconditioners {t2 - t1:.0f} s, "
-          f"nullspaces {t3 - t2:.0f} s")
-    return seq
-
-
-@pytest.fixture(scope="session")
-def tiny_seq(torus_map):
-    """The (4, 6, 4) p=2 spline torus every solve-based test runs on."""
-    return build_torus_sequence(NS_TINY, torus_map)
-
-
-# ---------------------------------------------------------------------------
-# Small helpers usable from any test
-# ---------------------------------------------------------------------------
-
-def n_dofs(seq, k, dirichlet):
-    """Return the DOF count for k-forms with the given boundary condition."""
-    return int(seq.n(k, dirichlet))
-
-
-@pytest.fixture(scope="session")
-def precond_jit(tiny_seq):
-    """JIT-compiled and warmed-up mass preconditioner applies on ``tiny_seq``.
-
-    Keyed by ``(label, k, dbc)``; the metric-lumping applies for every
-    ``(k, dirichlet)`` pair are compiled once per session so the probe tests
-    do not re-JIT.
-    """
-    from mrx.operators import apply_mass_matrix_preconditioner
-    ops = tiny_seq.operators
-    jit_dict = {}
-    for k in range(4):
-        for dbc in (False, True):
-            jit_dict[("metric_lumping", k, dbc)] = jax.jit(
-                lambda v, k=k, dbc=dbc: apply_mass_matrix_preconditioner(
-                    tiny_seq, ops, v, k, dirichlet=dbc, kind="metric_lumping",
-                )
-            )
-    for (_, k, dbc), fn in jit_dict.items():
-        dummy = jnp.zeros(n_dofs(tiny_seq, k, dbc), dtype=mrx.DTYPE)
-        jax.block_until_ready(fn(dummy))
-    return jit_dict
+    s = DeRhamSequence(NS, (P, P, P), P + 1, TYPES, polar=True, betti_numbers=BETTI)
+    s.set_spline_map(greville_interpolate_map(torus_map, s))
+    s.build_preconditioners()
+    s.compute_nullspaces(BETTI)
+    print(f"\n  toroid {NS} p={P}: build {time.perf_counter() - t0:.0f} s", flush=True)
+    return s
