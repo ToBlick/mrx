@@ -225,9 +225,13 @@ if [ -f "${SENTINEL}" ]; then
     # refresh it even when the build itself is skipped.
     if [ -d "${REPO_DIR}/.git" ]; then
         echo "--- refreshing ${REPO_DIR} (${MRX_BRANCH}) ---"
-        git -C "${REPO_DIR}" fetch --quiet origin "${MRX_BRANCH}" || true
-        git -C "${REPO_DIR}" checkout --quiet "${MRX_BRANCH}" || true
-        git -C "${REPO_DIR}" pull --quiet --ff-only origin "${MRX_BRANCH}" || true
+        # From FETCH_HEAD, because the clone below is shallow and
+        # single-branch: remote.origin.fetch names only the branch it cloned,
+        # so a warm disk asked for a different branch has no origin/* ref to
+        # check out and would silently stay on the one the snapshot carried.
+        git -C "${REPO_DIR}" fetch --quiet origin "${MRX_BRANCH}" \
+            && git -C "${REPO_DIR}" checkout --quiet -B "${MRX_BRANCH}" FETCH_HEAD \
+            || echo "    WARNING: could not move to ${MRX_BRANCH}"
         if [ -f "${REPO_DIR}/${GEOM}" ]; then
             echo "    ${GEOM} present"
         else

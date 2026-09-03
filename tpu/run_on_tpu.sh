@@ -335,6 +335,33 @@ done
 # its data/ files. The local git SHA and dirty-file count go into the log,
 # because a measurement taken against an unrecorded working tree is not a
 # measurement of anything.
+# The branch is baked into instance metadata at create time and read by
+# startup.sh, so a node acquired with the default and then driven with
+# MRX_BRANCH=<feature> would run the default checkout and report the numbers as
+# if they were the feature branch's. That is the failure startup.sh warns about,
+# and it is silent, so honour MRX_BRANCH here as well.
+if [[ -n "${MRX_BRANCH:-}" ]]; then
+    echo ""
+    echo "Checking out ${MRX_BRANCH} in ${MRX_DIR}..."
+    # startup.sh clones as root, so the login user hits git's "dubious
+    # ownership" refusal on every command. The exception is per-user and
+    # idempotent, and a node is single-tenant, so it costs nothing to assert it.
+    # Checked out from FETCH_HEAD rather than origin/<branch>, because
+    # startup.sh clones shallow and single-branch: remote.origin.fetch names
+    # only the branch it cloned, so no other origin/* ref can ever exist and
+    # `checkout --track` fails with "not a branch".
+    VM_SHA="$(ssh_vm "git config --global --add safe.directory ${MRX_DIR} 2>/dev/null; \
+            git -C ${MRX_DIR} fetch --quiet origin ${MRX_BRANCH} && \
+            git -C ${MRX_DIR} checkout --quiet -B ${MRX_BRANCH} FETCH_HEAD && \
+            git -C ${MRX_DIR} rev-parse --short HEAD" \
+        | tr -d '\r' | rg -o '^[0-9a-f]{7,40}$' | tail -n 1)"
+    if [[ -z "${VM_SHA}" ]]; then
+        echo "ERROR: could not check out ${MRX_BRANCH} on the VM." >&2
+        exit 1
+    fi
+    echo "  at ${VM_SHA}"
+fi
+
 if [[ "${SYNC_LOCAL_MRX}" == "1" ]]; then
     echo ""
     echo "Syncing ${LOCAL_MRX} -> ${MRX_DIR} (tracked files only)..."
@@ -369,7 +396,7 @@ if [[ "${SYNC_LOCAL_MRX}" == "1" ]]; then
     echo "  synced (pycache cleared)"
     SYNC_TAG="local ${sync_sha}+${sync_dirty}"
 else
-    SYNC_TAG="VM checkout"
+    SYNC_TAG="VM checkout${VM_SHA:+ ${VM_SHA}}"
 fi
 
 # --------------------------------------------------- push extra scripts ---

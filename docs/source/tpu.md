@@ -75,7 +75,7 @@ gcloud compute instances delete mrx-tpu --zone=<zone>
 | `RUN_TIMEOUT` | seconds | 7200 |
 | `PUSH_FILES` | local files to copy into the checkout on the VM | |
 | `SYNC_LOCAL_MRX` | rsync a local working tree over the VM's checkout | |
-| `MRX_BRANCH` | branch the node clones | `static-dynamic-refactor` |
+| `MRX_BRANCH` | branch to measure; checked out before the run | `static-dynamic-refactor` |
 
 Everything after `run_on_tpu.sh` is passed to the script. Jobs are launched
 detached under `setsid` into a log that is streamed back, because a dropped
@@ -96,7 +96,10 @@ the data disk at `/mnt/data` when one is attached and otherwise falls back to
 the boot disk, installs Miniforge and `jax[tpu]`, clones `MRX_BRANCH`, and
 writes `/mnt/data/.mrx_env_ready` once a JAX and MRX smoke test passes. A cold
 build is 4-12 minutes; a warm data disk skips to the sentinel and computes
-within a minute. It also `chmod 1777 /tmp/tpu_logs`, which is not cosmetic:
+within a minute. Both `startup.sh` and `run_on_tpu.sh` move the checkout to
+`MRX_BRANCH`, the latter because the branch is otherwise fixed at create time
+in instance metadata and a node acquired with the default would quietly measure
+the wrong tree. It also `chmod 1777 /tmp/tpu_logs`, which is not cosmetic:
 root creates that directory, so an ordinary user cannot write to it and libtpu
 emits `Could not open the log file ... Permission denied` several times a
 second, burying real tracebacks.
