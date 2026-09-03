@@ -361,6 +361,29 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
     return [ticks[i] for i in order], [labels[i] for i in order]
 
 
+#: Profile-line colours: one per QUANTITY (iota on the left axis, p on the
+#: right twin). Rays are told apart by line style, not colour.
+IOTA_COLOR = "black"
+P_COLOR = "#6a3d9a"
+
+#: Poloidal rays for the logical profile, in order. theta = 0 is the symmetry
+#: line where odd island chains have their X-points; theta = 0.5 is where those
+#: same chains are fattest (their O-points), so the pair brackets an odd chain;
+#: 1/3 catches three-fold structure off both. Further rays fill in.
+PROFILE_RAY_THETAS = (0.0, 0.5, 1.0 / 3.0, 1.0 / 6.0, 0.25, 0.75)
+
+
+def _profile_ray_thetas(n):
+    """The first ``n`` profile-ray thetas (see :data:`PROFILE_RAY_THETAS`);
+    golden-angle extras beyond the fixed list so a large ``n`` stays spread."""
+    n = max(int(n), 1)
+    base = list(PROFILE_RAY_THETAS)
+    if n <= len(base):
+        return base[:n]
+    golden = 0.5 * (5.0 ** 0.5 - 1.0)
+    return base + [((k + 1) * golden) % 1.0 for k in range(n - len(base))]
+
+
 def _ray_line(lr, lth, R, Z, pressure, th0):
     """Per-line logical r, physical (R, Z) and p at the crossing nearest the
     poloidal ray ``theta = th0`` (circular nearest, one crossing per line).
@@ -598,52 +621,58 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         lx.set_ylabel(r"$\theta$")
 
     # ---- profile panel: iota (and p) against the surface label -------------
-    golden = 0.5 * (5.0 ** 0.5 - 1.0)
     logical_prof = profile_coord == "logical" and logical is not None
     band = iota_err if iota_scatter is None else iota_scatter
     ribbon_label = (r"$\iota \pm$ fit RMS / $N$" if iota_scatter is None
                     else r"$\iota \pm$ window std")
 
     if logical_prof:
-        # iota and p against LOGICAL r, sampled along ``profile_rays`` poloidal
-        # rays whose thetas are golden-angle spaced (theta_j = j * 0.618...) so
-        # no low-order island chain is resonant with all of them. Each ray is
-        # one colour and is marked by a dotted line on BOTH section panels --
-        # the physical curve F(r, theta0), and theta = theta0 in the chart -- so
-        # the reader can place it. Where the rays agree logical r is a faithful
-        # surface label; where they fan (edge, islands) it is not, and the fan
-        # is the signal. iota solid on the left axis, p dashed on the right.
+        # iota (black, left axis) and p (purple, right axis) against LOGICAL r,
+        # sampled along ``profile_rays`` poloidal rays (:data:`PROFILE_RAY_THETAS`):
+        # theta = 0 is the symmetry line where odd island chains have their
+        # X-points, theta = 0.5 is where the same chains are fattest (their
+        # O-points), so the pair brackets an odd chain; 1/3 catches three-fold
+        # structure off both. Each ray is one LINE STYLE, and is marked in that
+        # style on BOTH section panels -- the physical curve F(r, theta0), and
+        # theta = theta0 in the chart -- so the reader can place it. Where the
+        # rays agree logical r is a faithful surface label; where they fan
+        # (edge, islands) it is not, and the fan is the signal.
+        styles = ["-", "--", ":", "-."]
         lr_all, lth_all = np.asarray(logical[0]), np.asarray(logical[1])
         Rn, Zn, sn = np.asarray(R), np.asarray(Z), np.asarray(shown)
         iota_n, band_n = np.asarray(iota), np.asarray(band)
         pn = None if pressure is None else np.asarray(pressure)
         pstd = None if pn is None else pressure_scale * np.nanstd(pn, axis=1)
         px = bx.twinx() if has_p else None
-        thetas = [(j * golden) % 1.0 for j in range(max(int(profile_rays), 1))]
-        ray_cols = plt.get_cmap("tab10")(np.arange(len(thetas)) % 10)
-        for th0, col in zip(thetas, ray_cols):
+        thetas = _profile_ray_thetas(profile_rays)
+        for i, th0 in enumerate(thetas):
+            ls = styles[i % len(styles)]
             r_line, (Rr, Zr), p_at = _ray_line(lr_all, lth_all, Rn, Zn, pn, th0)
             m = sn & np.isfinite(r_line)
             if not m.any():
                 continue
             o = np.argsort(r_line[m])
             rr = r_line[m][o]
-            bx.plot(rr, iota_n[m][o], "-", color=col, lw=1.1,
+            bx.plot(rr, iota_n[m][o], color=IOTA_COLOR, linestyle=ls, lw=1.2,
                     label=rf"$\theta = {th0:.2f}$")
             bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
-                            color=col, alpha=0.12, lw=0)
+                            color=IOTA_COLOR, alpha=0.10, lw=0)
             if has_p:
                 pm = pressure_scale * p_at
-                px.plot(rr, pm[m][o], "--", color=col, lw=1.1)
+                px.plot(rr, pm[m][o], color=P_COLOR, linestyle=ls, lw=1.2)
                 px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
-                                color=col, alpha=0.10, lw=0)
-            ax.plot(Rr[m][o], Zr[m][o], ":", color=col, lw=1.0, alpha=0.9, zorder=6)
+                                color=P_COLOR, alpha=0.10, lw=0)
+            ax.plot(Rr[m][o], Zr[m][o], color="black", linestyle=ls, lw=1.0,
+                    alpha=0.85, zorder=6)
             if lx is not None:
-                lx.axhline(th0, ls=":", color=col, lw=1.0, alpha=0.9, zorder=6)
+                lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
+                           alpha=0.85, zorder=6)
         bx.set_xlabel(r"logical $r$")
-        bx.set_ylabel(r"$\iota$")
+        bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
+        bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
-            px.set_ylabel(p_label)
+            px.set_ylabel(p_label, color=P_COLOR)
+            px.tick_params(axis="y", labelcolor=P_COLOR)
             if lim.p is not None:
                 px.set_ylim(*lim.p)
         for value, lab in zip(res_ticks, res_labels):
@@ -655,8 +684,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         if lim.x is not None:
             bx.set_xlim(*lim.x)
         bx.grid(alpha=0.3)
-        bx.legend(loc="best", fontsize=FS.annot,
-                  title=r"ray ($-\,\iota$, $--\,p$)")
+        bx.legend(loc="upper center", ncol=len(thetas), fontsize=FS.annot,
+                  columnspacing=1.0, handlelength=2.4)
     else:
         x = seed_r if profile_x is None else profile_x
         # The abscissa carries both midplane crossings (see midplane_crossings):
@@ -673,8 +702,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         prof = per_line(shown) & jnp.isfinite(xs)
         order = jnp.argsort(xs[prof])
         xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(band)[prof][order]
-        left = dict(color="black", marker="none", linestyle="-")
-        right = dict(color="teal", marker="none", linestyle="--")
+        left = dict(color=IOTA_COLOR, marker="none", linestyle="-")
+        right = dict(color=P_COLOR, marker="none", linestyle="--")
         if has_p:
             p_mean = per_line(jnp.mean(pressure_scale * pressure, axis=1))
             p_std = per_line(jnp.std(pressure_scale * pressure, axis=1))
