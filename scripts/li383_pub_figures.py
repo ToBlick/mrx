@@ -677,25 +677,24 @@ def dose(j):
     return float(np.sum(np.asarray(t["eta"]) * np.asarray(t["dt"])))
 
 
-def stall_sections(j, k):
-    f = os.path.join(j["dir"], "stalls", str(k), "poincare", "sections.npz")
-    return np.load(f, allow_pickle=True) if os.path.exists(f) else None
-
-
 def stall_rows(j):
     """One row per stalled equilibrium of a --reconnect arm: the descent's
     floor at the stall, the dose, and what the solve did to |F|, helicity,
-    current and beta; widths and chaotic lines from the stall's own sections."""
+    current and beta; widths and chaotic lines from the arm's sections, where
+    the stalled fields are the ``stall<k>`` tags (poincare_relax.py --fields
+    stalls, traced in one call with ic and final)."""
+    z = sections(j)
     rows = [
         "| stall | step | floor | eps | `||F||` before -> after | H before -> after | dH | "
         "J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for ev in j["stalls"]:
-        z = stall_sections(j, ev["stall"])
-        w5 = fmt(island_width(z, 5, 1), "f3") if z is not None else "-"
-        w6 = fmt(island_width(z, 6, 1), "f3") if z is not None else "-"
-        ch = int(z["final_chaotic"].sum()) if z is not None else "-"
+        tag = f"stall{ev['stall']}"
+        traced = z is not None and f"{tag}_iota" in z.files
+        w5 = fmt(island_width(z, 5, 1, tag=tag), "f3") if traced else "-"
+        w6 = fmt(island_width(z, 6, 1, tag=tag), "f3") if traced else "-"
+        ch = int(z[f"{tag}_chaotic"].sum()) if traced else "-"
         rows.append(
             f"| {ev['stall']} | {ev['it']} | {ev['floor']:.2e} | {ev['eps']:.2e} | "
             f"{ev['F_before']:.2e} -> {ev['F_after']:.2e} | "

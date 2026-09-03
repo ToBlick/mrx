@@ -244,7 +244,7 @@ Smoke `reconnect_smoke_prechunk` (the per-step driver, stall window 300 steps), 
 | 3 | 2739 | 2.9e-4 | 2.9e-4 -> 1.5e-3 | 4.776e-3 -> 4.671e-3 (-2.2%) | 0.530 -> 0.475 | 0.0329 -> 0.0287 |
 
 - Each reconnection lowers the next floor (5.8e-4 -> 3.3e-4 -> 2.9e-4) with diminishing returns (x1.7, then x1.2) at a flat helicity price (2.2 .. 2.4% of H_0 per solve at this coarse mesh, where eps = c h^2 is 4x the n = 16 value); between stalls the descent recovers ||J||/||B|| and beta partly (0.554 -> 0.580, 0.0353 -> 0.0368) and then stalls lower. The reconnected equilibria carry less current and less pressure, which is the physics of the dose (5e), now as a discrete series. A solve takes 44 MINRES iterations and moves the field by 0.2%.
-Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 0.57 s/step), the per-step driver's detector (5% over 1000 steps), eps = 3.9e-5 (c = 0.01 at h = 1/16: the pulse1.5e-7 dose, per stall). Widths from the sections of each stalled field (`stalls/<k>/poincare/`, `li383_pub.sh stalls NAME`):
+Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 0.57 s/step), the per-step driver's detector (5% over 1000 steps), eps = 3.9e-5 (c = 0.01 at h = 1/16: the pulse1.5e-7 dose, per stall). Widths from the sections of the stalled fields (`poincare/poincare_stall<k>_*`: `poincare_relax.py --fields ic,final,stalls` traces them in one call with the IC and the final field, so all share one iota and one p colour scale; `li383_pub.sh sections NAME`):
 
 | stall | step | floor | |F| before -> after | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |
 |---|---|---|---|---|---|---|---|---|---|

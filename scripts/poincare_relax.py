@@ -12,9 +12,13 @@ Usage:
 
 Flags (defaults in brackets):
     state                  path to B.h5 (positional)
-    --fields F             comma-separated subset of ic,final [ic,final]
+    --fields F             comma-separated subset of ic,final [ic,final];
+                           `stalls` expands to one field stall<k> per
+                           <state dir>/stalls/<k>/B.h5 (relax.py --reconnect),
+                           traced in the same call as ic and final so all of
+                           them share one iota and one p colour scale;
                            or `snapshots`: one frame per stored step (relax.py
-                           --save-every) with every axis held fixed, written as
+                           --chunk) with every axis held fixed, written as
                            frame_zeta<plane>_<i>.png for ffmpeg
     --snapshot-steps S     subset of the stored steps to render, ranges
                            start:stop:stride separated by commas [all]
@@ -65,6 +69,7 @@ Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
 import argparse
+import glob
 import os
 import sys
 import numpy as np
@@ -174,6 +179,23 @@ def main():
     with h5py.File(cli.state, "r") as fh:
         attrs = dict(fh.attrs)
         dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
+    fields = [w.strip() for w in cli.fields.split(",")]
+    stall_steps = {}
+    if "stalls" in fields:
+        # The stalled equilibria of a --reconnect run, in the layout of B.h5.
+        state_dir = os.path.dirname(os.path.abspath(cli.state))
+        stall_files = sorted(glob.glob(os.path.join(state_dir, "stalls", "*", "B.h5")),
+                             key=lambda f: int(os.path.basename(os.path.dirname(f))))
+        names = []
+        for f in stall_files:
+            k = int(os.path.basename(os.path.dirname(f)))
+            with h5py.File(f, "r") as fh:
+                for key in ("B", "p", "pw"):
+                    dofs[f"{key}_stall{k}"] = np.asarray(fh[f"{key}_final"], dtype=np.float64)
+                stall_steps[k] = int(fh.attrs["stall_step"])
+            names.append(f"stall{k}")
+        fields = [n for w in fields for n in (names if w == "stalls" else [w])]
+        cli.fields = ",".join(fields)
     movie = cli.fields.strip() == "snapshots"
     if movie:
         # One frame per stored snapshot (relax.py --save-every), named by step.
@@ -207,6 +229,7 @@ def main():
 
     labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})",
               **{n: f"step {int(n[4:])}" for n in cli.fields.split(",") if n.startswith("step")},
+              **{f"stall{k}": f"stalled equilibrium {k} (step {step})" for k, step in stall_steps.items()},
               "final": "relaxed field"}
     if cli.from_npz:
         z = np.load(os.path.join(out, "sections.npz"))
@@ -314,16 +337,16 @@ def main():
                                                       all_cuts[name][plane][7], plane)
                              for plane in planes}
         all_pmin[name] = pressure_gauge(cli.pressure, all_presses[name], keep)
-    # The pressure ordinate is pinned across every rendered field and plane,
-    # for the same reason iota_lim is: ic and final (or a plane scan) are then
-    # comparable at a glance and the p axis does not move from frame to frame.
+    # ONE pressure scale across every rendered field and every plane, for the
+    # same reason iota_lim is one: ic, final, the stalled equilibria and the
+    # planes are then comparable at a glance.
     limits = {}
-    for plane in planes:
-        ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]] for n in traced
-              if all_presses[n][plane] is not None]
-        if ps:
-            lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
-            limits[plane] = {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
+    ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]]
+          for n in traced for plane in planes if all_presses[n][plane] is not None]
+    if ps:
+        lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
+        limits = {plane: {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
+                  for plane in planes}
     # A movie holds EVERY other axis fixed across frames too: the section
     # window, the split line (the FIRST frame's axis) and the profile abscissa,
     # all from the union over frames; iota_lim already is.

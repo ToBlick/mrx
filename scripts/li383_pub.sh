@@ -11,7 +11,6 @@
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
 #   bash scripts/li383_pub.sh reconnect [smoke]  # stall -> checkpoint -> reconnect series, outputs/li383_pulse
-#   bash scripts/li383_pub.sh stalls NAME [TMIN]  # sections of every stalled equilibrium of arm NAME
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -198,24 +197,14 @@ reconnect() {  # reconnect [smoke]
     fi
 }
 
-stalls() {  # stalls NAME [TIMEOUT_MIN]: sections of every stalled equilibrium of arm NAME
-    export EXTRA_ENV="$PLOTTER_ENV"
-    local d k
-    for d in "$PUB/$1"/stalls/*/; do
-        k=$(basename "$d")
-        submit sec "${1}_s$k" "$WT/scripts/poincare_relax.py" \
-            "${d}B.h5 --fields final --planes 0,0.25,0.5 --precision float32 --out ${d}poincare" "${2:-30}"
-    done
-}
-
 # Sections and movies run THIS checkout's plotter (branch poincare-plotter merged
 # 2026-09-03: .pgf output, logical-r profile) in float32, as slurm/regen_poincare.sh
 # does; TeX for the .pgf comes from the same place as there.
 PLOTTER_ENV="PYTHONPATH=$WT PATH=$HOME/texlive/2026/bin/x86_64-linux:$PATH"
 
-sections() {  # sections NAME [TIMEOUT_MIN]
+sections() {  # sections NAME [TIMEOUT_MIN]: ic, final and the stalled equilibria of a --reconnect arm, one call, one colour scale
     export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_relax.py" \
-        "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
+        "$PUB/$1/B.h5 --fields ic,final,stalls --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
 }
 
 movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
@@ -231,10 +220,9 @@ case ${1:-} in
     psweep_p16) psweep_p16 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
     reconnect) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; reconnect "${2:-}" ;;
-    stalls) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; stalls "$2" "${3:-}" ;;
     pulse) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; pulse ;;
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | reconnect [smoke] | stalls NAME [TMIN] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | reconnect [smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac

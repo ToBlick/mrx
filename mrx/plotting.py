@@ -603,14 +603,17 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         # because the magnetic axis is not at r=0 -- shows up immediately,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
-        # Split the same way the physical panel does: iota above the magnetic
-        # axis, p below it, per CROSSING (the same ``upper`` / ``sel_p`` masks).
-        # The divider is Z = z_axis in physical space, which is not a straight
-        # line in the (r, theta) chart, so none is drawn here.
-        lx.scatter(lr[sel_iota], lth[sel_iota], c=colour[sel_iota], s=size, vmin=lo,
+        # The chart splits by ITS coordinate, per crossing: iota on theta < 1/2
+        # (the top half, theta increases downward), p on theta >= 1/2. The
+        # physical panel's divider Z = z_axis maps to a theta interval that
+        # wraps around on planes away from zeta = 0, so it is not reused here.
+        top = jnp.asarray(lth) < 0.5 if split_iota_p else jnp.ones_like(R, dtype=bool)
+        csel_iota = shown2 & top
+        lx.scatter(lr[csel_iota], lth[csel_iota], c=colour[csel_iota], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
-        if split_iota_p and sel_p.any():
-            lx.scatter(lr[sel_p], lth[sel_p], c=pressure_scale * pressure[sel_p], s=size,
+        csel_p = shown2 & ~top
+        if split_iota_p and csel_p.any():
+            lx.scatter(lr[csel_p], lth[csel_p], c=pressure_scale * pressure[csel_p], s=size,
                        cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
         if (~keep).any():
             lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
