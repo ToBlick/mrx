@@ -9,6 +9,7 @@
 #   bash scripts/li383_pub.sh psweep_p16 # gamma = 1 p-sweep at (16,32,32) (about 7 GPU-h)
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
+#   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -167,6 +168,21 @@ bonly() {  # bonly [smoke]
     fi
 }
 
+pulse() {
+    # 2026-09-03: resistive PULSE after an ideal phase, driver of THIS checkout
+    # (--eta-schedule pulse). (16,32,32) p = 2 gamma = 1, 2000 ideal steps, one
+    # 100-step pulse (one backward-Euler solve of eta x window time, dose
+    # eta tau = 3e-5 / 1e-4 / 3e-4 at dt ~ 2, matching the 1e-8 / 3e-8 / 1e-7
+    # tanh rungs), then ideal to 5000; plus the middle dose every 1000 steps.
+    export EXTRA_ENV="PYTHONPATH=$WT"
+    local common="--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 5000 --save-every 100 --seconds 7200 --eta-schedule pulse --eta-every 100"
+    local e
+    for e in 1.5e-7 5e-7 1.5e-6; do
+        submit relax pulse$e "$WT/scripts/relax.py" "$common --eta-max $e --eta-pulse 2000,100 --out $PUB/pulse$e" 300
+    done
+    submit relax pulse5e-7_cyc "$WT/scripts/relax.py" "$common --eta-max 5e-7 --eta-pulse 2000,100,1000 --out $PUB/pulse5e-7_cyc" 300
+}
+
 sections() {  # sections NAME [TIMEOUT_MIN]
     submit sec "$1" scripts/poincare_relax.py \
         "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
@@ -184,8 +200,9 @@ case ${1:-} in
     hsweep_p2) hsweep_p2 ;;
     psweep_p16) psweep_p16 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
+    pulse) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; pulse ;;
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac

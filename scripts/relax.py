@@ -53,9 +53,16 @@ Flags, defaults in brackets:
       --eta-every K [1]            resistive solve every K steps, diffusing
                                    over the accumulated time (float32 needs
                                    K of 10-100 at eta ~ 1e-4)
-      --eta-schedule {tanh,constant,linear} [tanh]
+      --eta-schedule {tanh,constant,linear,pulse} [tanh]
                                    tanh drops eta to ~0 over the middle third
-                                   of --steps so the run ends ideal
+                                   of --steps so the run ends ideal; pulse is
+                                   eta-max on the window(s) of --eta-pulse
+                                   and 0 elsewhere (the resistive clock is
+                                   reset while it is off, so --eta-every
+                                   equal to the width makes one solve of
+                                   eta * window time per pulse)
+      --eta-pulse S,W[,P] [2000,100] pulse start step, width in steps and,
+                                   optionally, the period of repeated pulses
       --presmooth K [0]            up to K backward-Euler steps of
                                    dB/dt = -curl curl B on the IC, force off,
                                    before the descent (regularises a coarsely
@@ -153,10 +160,20 @@ def force_floor_reached(resid, steps, tol):
     return bool(np.mean(resid[-steps:]) < tol)
 
 
-def eta_schedule(kind, eta_max, it, steps):
-    """Resistivity at step ``it`` of ``steps``."""
+def eta_schedule(kind, eta_max, it, steps, pulse=(2000, 100, 0)):
+    """Resistivity at step ``it`` of ``steps``. ``pulse`` = (start, width,
+    period): ``eta_max`` on ``start <= it < start + width`` and, with a period,
+    on every later window ``start + k period``; 0 elsewhere."""
     if eta_max == 0.0:
         return 0.0
+    if kind == "pulse":
+        start, width, period = pulse
+        since = it - start
+        if since < 0:
+            return 0.0
+        if period > 0:
+            since %= period
+        return eta_max if since < width else 0.0
     frac = it / max(steps, 1)
     if kind == "tanh":
         return eta_max * 0.5 * (1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
@@ -208,7 +225,9 @@ def parse_args(argv=None):
     ap.add_argument("--dt0", type=float, default=1.0)
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--eta-max", type=float, default=0.0)
-    ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear"))
+    ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear", "pulse"))
+    ap.add_argument("--eta-pulse", default="2000,100",
+                    help="pulse schedule: start step, width in steps and optionally the period")
     ap.add_argument("--eta-every", type=int, default=1)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
@@ -228,6 +247,10 @@ def parse_args(argv=None):
                     help="h: production step (J x H, u x H); bonly: the experimental "
                          "B-only cross products (mrx.experimental.bonly_relaxation)")
     cli = ap.parse_args(argv)
+    pulse = tuple(int(v) for v in cli.eta_pulse.split(","))
+    if len(pulse) not in (2, 3):
+        ap.error("--eta-pulse wants START,WIDTH or START,WIDTH,PERIOD")
+    cli.eta_pulse = pulse + (0,) * (3 - len(pulse))
     if cli.ic == "clebsch" and not os.path.isfile(cli.geometry):
         ap.error(f"--ic clebsch reads the Clebsch data from a GVEC export, and "
                  f"--geometry {cli.geometry!r} is not a file; use --ic analytic")
@@ -495,8 +518,15 @@ def main(cli):
 
     for it in range(1, cli.steps + 1):
         if cli.eta_max > 0.0:
-            state = eqx.tree_at(lambda t: t.eta, state,
-                                eta_schedule(cli.eta_schedule, cli.eta_max, it, cli.steps))
+            eta_now = eta_schedule(cli.eta_schedule, cli.eta_max, it, cli.steps, cli.eta_pulse)
+            state = eqx.tree_at(lambda t: t.eta, state, eta_now)
+            if eta_now == 0.0:
+                # The stepper accumulates the resistive clock until a solve is
+                # due; with eta off that clock must not carry into the next
+                # window (a pulse after 2000 ideal steps would otherwise
+                # diffuse over all of them at once).
+                state = eqx.tree_at(lambda t: (t.resistive_time, t.resistive_count), state,
+                                    (jnp.zeros(()), jnp.int32(0)))
         state = step(state)
         E, div, Fu, cos, gain, resid = (float(v) for v in probe(state))
         tr["E"].append(E)
