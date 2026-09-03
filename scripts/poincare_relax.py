@@ -1,4 +1,4 @@
-"""Poincare sections of a ``scripts/relax.py`` run.
+r"""Poincare sections of a ``scripts/relax.py`` run.
 
 Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
 run parameters as root attributes), rebuilds the sequence with
@@ -45,12 +45,22 @@ over the crossings of the kept lines of that field on every requested plane:
 the profile is >= 0 and its lowest surface reads zero. See "Two pressures" in
 docs/source/concepts/relaxation.md.
 
-Output: ``poincare_<field>_zeta<plane>.png`` per field and plane, and
-``sections.npz`` under ``--out`` with, per field, the crossing coordinates of
-every plane plus ``iota``, ``iota_err`` (the fit uncertainty drawn as the
-profile's ribbon, see ``trace_and_classify``), ``seed_r``, ``keep``,
-``chaotic``, the step drift and ``pressure_kind``, so a section can be re-rendered
-(``--from-npz``) without the 5-minute sequence build and trace.
+Output: ``poincare_<field>_zeta<plane>.png`` per field and plane -- and, unless
+``--no-pgf``, a presentation-ready ``poincare_<field>_zeta<plane>.pgf`` beside
+each: the same figure through matplotlib's ``pgf`` backend, so every line, axis
+and label is vector LaTeX (the labels are editable in the ``.pgf`` without
+re-tracing) while the scatter layers are embedded as a high-dpi
+``poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
+PATH (``module load texlive`` is NOT enough on this cluster -- its binaries are
+in the ``bin/x86_64-linux`` subdir the module does not add); without it the PNG
+is still written and the PGF is skipped with a message. The document that
+``\input``s the ``.pgf`` must ``\usepackage[strings]{underscore}`` -- matplotlib
+writes plain-text underscores (e.g. a geometry name) raw, not escaped. Plus ``sections.npz``
+under ``--out`` with, per field, the crossing coordinates of every plane plus
+``iota``, ``iota_err`` (the fit uncertainty drawn as the profile's ribbon, see
+``trace_and_classify``), ``seed_r``, ``keep``, ``chaotic``, the step drift and
+``pressure_kind``, so a section can be re-rendered (``--from-npz``) without the
+5-minute sequence build and trace.
 Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
@@ -61,7 +71,48 @@ import numpy as np
 
 #: Panel labels. The strong (Leray) multiplier is gauged so that its lowest
 #: kept line reads zero; the weak pressure is zero on the wall by construction.
-PRESSURE_LABELS = {"strong": r"$p - \min p$", "weak": r"$p_w$"}
+PRESSURE_LABELS = {"strong": r"$p - \min p$", "weak": r"$p$"}
+
+#: Resolution of the raster layers embedded in the presentation ``.pgf`` (the
+#: scatter of ~10^4 crossings). Higher than the PNG's screen dpi: the .pgf goes
+#: into slides where the section is enlarged.
+PGF_DPI = 300
+
+
+def save_section(fig, png_path, *, want_pgf):
+    """Save the section as a PNG and, when ``want_pgf``, a presentation PGF.
+
+    The PGF is the same figure through matplotlib's ``pgf`` backend: every
+    line, axis and label stays vector LaTeX -- so the labels are editable in
+    the ``.pgf`` (or its preamble) without re-tracing -- while the rasterized
+    layers (the scatter of ~10^4 crossings, ``rasterized=True`` in
+    :func:`mrx.plotting.render_section`) are written as a high-dpi PNG beside
+    it and pulled in with ``\\includegraphics``. It needs ``xelatex`` on PATH;
+    without one the PNG is still written and the PGF is skipped with a message
+    rather than aborting the run (the trace is the expensive half).
+
+    The including document must load ``underscore``: matplotlib's pgf backend
+    writes plain-text ``_`` (as in a geometry name like ``wout_li383_1.4m.nc``)
+    raw, not escaped, so without it the ``.pgf`` fails to compile with a
+    "Missing $ inserted". We inject ``\\usepackage[strings]{underscore}`` into
+    the pgf preamble so it is listed in the file's own "required packages"
+    header; a document that \\input's the ``.pgf`` still needs that line.
+    """
+    fig.savefig(png_path, dpi=200)
+    print(f"  -> {png_path}", flush=True)
+    if not want_pgf:
+        return
+    import matplotlib as mpl
+    pgf_path = os.path.splitext(png_path)[0] + ".pgf"
+    try:
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+            fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
+        print(f"  -> {pgf_path}", flush=True)
+    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
+        if os.path.exists(pgf_path):
+            os.remove(pgf_path)   # a half-written .pgf is not a usable file
+        print(f"  (pgf skipped -- needs xelatex on PATH: "
+              f"{type(exc).__name__}: {exc})", flush=True)
 
 
 def pressure_gauge(kind, presses, keep):
@@ -94,6 +145,15 @@ def main():
     ap.add_argument("--pressure", default="weak", choices=("weak", "strong"))
     ap.add_argument("--out", default=None)
     ap.add_argument("--from-npz", action="store_true")
+    ap.add_argument("--no-pgf", dest="pgf", action="store_false",
+                    help="skip the presentation .pgf written next to each PNG "
+                         "(needs xelatex on PATH)")
+    ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"),
+                    help="profile abscissa: logical r on golden-spaced rays [default], "
+                         "or physical R on the midplane through the axis")
+    ap.add_argument("--profile-rays", type=int, default=3,
+                    help="number of golden-angle-spaced poloidal rays for the logical "
+                         "profile, marked on both section panels [3]")
     cli = ap.parse_args()
     os.environ["MRX_DTYPE"] = cli.precision
 
@@ -152,10 +212,27 @@ def main():
         z = np.load(os.path.join(out, "sections.npz"))
         lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
         hi = max(float(z[f"{n}_iota"][z[f"{n}_shown"]].max()) for n in which)
+        # Per-field pressure gauge, then the global p range: pin the pressure
+        # ordinate across fields and planes exactly like iota_lim above, so a
+        # re-render is comparable frame to frame.
+        presses_by, pmin_by, all_p = {}, {}, []
         for name in which:
-            presses = {plane: z[f"{name}_zeta{plane:g}_pressure"]
-                       if f"{name}_zeta{plane:g}_pressure" in z else None for plane in planes}
-            p_min = pressure_gauge(str(z["pressure_kind"]), presses, z[f"{name}_keep"])
+            presses_by[name] = {plane: z[f"{name}_zeta{plane:g}_pressure"]
+                                if f"{name}_zeta{plane:g}_pressure" in z else None
+                                for plane in planes}
+            pmin_by[name] = pressure_gauge(str(z["pressure_kind"]), presses_by[name],
+                                           z[f"{name}_keep"])
+            for plane in planes:
+                pv = presses_by[name][plane]
+                if pv is not None:
+                    all_p.append(100.0 * (pv - pmin_by[name])[z[f"{name}_keep"]])
+        p_lim = None
+        if all_p:
+            lo_p, hi_p = min(float(np.nanmin(v)) for v in all_p), max(float(np.nanmax(v)) for v in all_p)
+            p_lim = (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))
+        for name in which:
+            presses = presses_by[name]
+            p_min = pmin_by[name]
             for plane in planes:
                 tag = f"{name}_zeta{plane:g}"
                 # The label is a rendering choice, not a trace result: recompute
@@ -173,11 +250,13 @@ def main():
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
-                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi))
+                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi),
+                    limits=None if p_lim is None else {"p": p_lim},
+                    iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None,
+                    profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
-                fig.savefig(path, dpi=200)
+                save_section(fig, path, want_pgf=cli.pgf)
                 plt.close(fig)
-                print(f"  -> {path}", flush=True)
         return
 
     seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override)
@@ -235,10 +314,19 @@ def main():
                                                       all_cuts[name][plane][7], plane)
                              for plane in planes}
         all_pmin[name] = pressure_gauge(cli.pressure, all_presses[name], keep)
-    # A movie holds every axis fixed across frames: the section window, the
-    # split line (the FIRST frame's axis), the profile abscissa and the
-    # pressure ordinate, all from the union over frames; iota_lim already is.
+    # The pressure ordinate is pinned across every rendered field and plane,
+    # for the same reason iota_lim is: ic and final (or a plane scan) are then
+    # comparable at a glance and the p axis does not move from frame to frame.
     limits = {}
+    for plane in planes:
+        ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]] for n in traced
+              if all_presses[n][plane] is not None]
+        if ps:
+            lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
+            limits[plane] = {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
+    # A movie holds EVERY other axis fixed across frames too: the section
+    # window, the split line (the FIRST frame's axis) and the profile abscissa,
+    # all from the union over frames; iota_lim already is.
     if movie:
         first = cli.fields.split(",")[0]
         for plane in planes:
@@ -246,17 +334,12 @@ def main():
             Zs = np.concatenate([np.asarray(all_cuts[n][plane][1])[traced[n][1]].ravel() for n in traced])
             xs = np.concatenate([np.asarray(surface_label(*all_cuts[n][plane][:4])[0])[traced[n][1]].ravel()
                                  for n in traced])
-            ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]] for n in traced
-                  if all_presses[n][plane] is not None]
             span = np.ptp(Rs)
-            lim = {"RZ": ((Rs.min() - 0.06 * span, Rs.max() + 0.06 * span),
-                          (Zs.min() - 0.06 * span, Zs.max() + 0.06 * span)),
-                   "z_split": float(np.mean(all_cuts[first][plane][3])),
-                   "x": (np.nanmin(xs), np.nanmax(xs))}
-            if ps:
-                lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
-                lim["p"] = (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))
-            limits[plane] = lim
+            limits.setdefault(plane, {}).update({
+                "RZ": ((Rs.min() - 0.06 * span, Rs.max() + 0.06 * span),
+                       (Zs.min() - 0.06 * span, Zs.max() + 0.06 * span)),
+                "z_split": float(np.mean(all_cuts[first][plane][3])),
+                "x": (np.nanmin(xs), np.nanmax(xs))})
     for frame, (name, (res, keep, shown)) in enumerate(traced.items()):
         cuts, presses, p_min = all_cuts[name], all_presses[name], all_pmin[name]
         for plane in planes:
@@ -273,12 +356,14 @@ def main():
                          f"traced in {cli.precision}",
                 axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                iota_lim=(lo, hi), limits=limits.get(plane))
+                iota_lim=(lo, hi), limits=limits.get(plane),
+                iota_scatter=res["iota_scatter"],
+                profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie
                                       else f"poincare_{name}_zeta{plane:g}.png"))
-            fig.savefig(path, dpi=200)
+            # A movie's frames are for ffmpeg, not slides: no .pgf per frame.
+            save_section(fig, path, want_pgf=cli.pgf and not movie)
             plt.close(fig)
-            print(f"  -> {path}", flush=True)
             tag = f"{name}_zeta{plane:g}"
             for key, arr in zip(("R", "Z", "axisR", "axisZ", "logr", "logth", "a_eff"),
                                 (R, Z, aR, aZ, lr, lth, a_eff)):
@@ -286,7 +371,8 @@ def main():
             if press is not None:
                 sections[f"{tag}_pressure"] = press
             sections[f"{tag}_xlabel"] = np.array(xlabel)
-        for key, arr in (("iota", res["iota"]), ("iota_err", res["iota_err"]), ("seed_r", res["seeds"][:, 0]),
+        for key, arr in (("iota", res["iota"]), ("iota_err", res["iota_err"]),
+                         ("iota_scatter", res["iota_scatter"]), ("seed_r", res["seeds"][:, 0]),
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)

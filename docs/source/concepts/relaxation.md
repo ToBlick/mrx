@@ -285,8 +285,6 @@ Calibration: on the W7-X Clebsch run at `(8,16,8)`, `p = 3`, float64, the
 residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
 1000-3000. In float32 the residual floors at the solve-tolerance level
 (`~2e-3` at tol `1e-5`), so a `--floor-tol` below that never fires.
-`test/test_relax_floor.py` exercises the criterion on a synthetic
-non-monotone trace without a GPU.
 
 Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
 `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,

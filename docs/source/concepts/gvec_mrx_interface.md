@@ -145,9 +145,8 @@ should be put through them before it is used for anything.
 5. Helicity — unchanged when lambda is switched off, since lambda is a
    pure gauge transformation.
 
-`test/test_w7x_clebsch.py` runs 1, 2 and 4 on `data/GVEC_State_final.dat`;
-`test/test_synthetic_gvec.py` runs all of them on the synthetic state below,
-where the answers are known.
+`scripts/relax.py --ic clebsch` runs 1, 2 and 4 on a state file; the
+synthetic state below is where the answers are known in closed form.
 
 ## 6. Traps, all of them already paid for
 
@@ -171,8 +170,8 @@ where the answers are known.
 `test/synthetic_gvec.py` (`write_synthetic_state`) writes a state file in
 this layout from closed formulas, so the whole route -- `read_state`,
 `build_gvec_map`, `load_clebsch`, `clebsch_form`, the projection -- is
-checked against known answers with no data file
-(`test/test_synthetic_gvec.py`):
+checked against known answers with no data file (the parser by
+`test/test_readers.py`; `test/synthetic_gvec.py` writes the state):
 
 | item | synthetic state |
 | --- | --- |
