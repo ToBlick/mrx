@@ -151,18 +151,20 @@ Same mesh, degree and smoothing as the h-sweep's (16,32,32) rung: p = 2, gamma =
 | s61_eta1e-5 | 1e-05 | 1 | (6, 1) 3e-03 | 5000 | steps | 0.64 | 1.52e-02 -> 4.27e-06 | 3.35e-06 | 3.83e-06 | 0.659 -> 0.004 | 0.0442 -> 0.0000 | -4.9e-03 | 0.000 | 1 | 0.89 |
 | s61_eta1e-4 | 1e-04 | 1 | (6, 1) 3e-03 | 5000 | steps | 0.70 | 1.52e-02 -> 3.92e-06 | 3.07e-06 | 3.59e-06 | 0.656 -> 0.000 | 0.0440 -> 0.0000 | -5.0e-03 | 0.000 | 1 | 0.97 |
 
-| eta_max | sqrt(eta T) (T about 3000) | final iota range | (6,1) width unseeded / seeded | (5,1) width |
-|---|---|---|---|---|
-| 0 | 0 | 0.393 .. 0.660 | 0 / 0.093 | 0.027 |
-| 1e-8 | 0.0055 | 0.397 .. 0.655 | 0 / 0.091 | 0.041 |
-| 3e-8 | 0.0095 | 0.403 .. 0.646 | 0.008 / 0.078 | 0.081 |
-| 1e-7 | 0.017 | 0.421 .. 0.620 | 0.029 / 0.075 | 0.180 |
-| 3e-7 | 0.030 | 0.459 .. 0.581 | 0.072 / 0.076 | gone (3/5 outside the profile) |
-| 1e-6 | 0.055 | 0.529 .. 0.540 | gone | gone |
-| 1e-5 | 0.17 | 0.440 .. 0.489 | vacuum | vacuum |
+| eta_max | dose int eta dt (trace) | sqrt(dose) in cells (h = 1/16) | final iota range | (6,1) width unseeded / seeded | (5,1) width |
+|---|---|---|---|---|---|
+| 0 | 0 | 0 | 0.393 .. 0.660 | 0 / 0.093 | 0.027 |
+| 1e-8 | 5.5e-5 | 0.12 | 0.397 .. 0.655 | 0 / 0.091 | 0.041 |
+| 3e-8 | 1.7e-4 | 0.21 | 0.403 .. 0.646 | 0.008 / 0.078 | 0.081 |
+| 1e-7 | 6.0e-4 | 0.39 | 0.421 .. 0.620 | 0.029 / 0.075 | 0.180 |
+| 3e-7 | 1.8e-3 | 0.68 | 0.459 .. 0.581 | 0.072 / 0.076 | gone (3/5 outside the profile) |
+| 1e-6 | 5.4e-3 | 1.2 | 0.529 .. 0.540 | gone | gone |
+| 1e-5 | 4.2e-2 | 3.3 | 0.440 .. 0.489 | vacuum | vacuum |
+
+The dose is what matters (section 5g): the tanh schedule's effective duration is int eta dt / eta_max = 5500 .. 6000 time units (dt about 2 per step over the first 3000 steps), not the 3000 of the first estimate.
 
 - The floor drops with eta from the first rung: 5.2e-4 (ideal) -> 4.3e-4 (1e-8) -> 3.6e-4 -> 3.0e-4 -> 1.8e-4 -> 6.5e-5 -> 1.3e-5 -> 3.6e-6, while the current fraction J/B goes 0.645 -> 0.615 -> 0.563 -> 0.451 -> 0.311 -> 0.167 -> 0.005 -> 0. Nothing plateaus while eta is on: J/B, beta and helicity decay exponentially in time at every rung until the schedule cuts eta (`figures/eta_traces.png`). There is no eta at which a resistive equilibrium with the current intact is reached; the lower floors are the residuals of lower-current fields.
-- What the small rungs do is open the rational surfaces the ideal descent held closed (`figures/eta_islands.png`). The (5, 1) chain at 3/5 grows from nothing to 0.04 / 0.08 / 0.18 in rho at 1e-8 / 3e-8 / 1e-7 (five O-points at logical r 0.8, iota locked on 0.6, p_w flat across them: `eta1e-7/poincare/poincare_final_zeta0.5.png`) and is gone at 3e-7 because the flattened profile no longer reaches 3/5. The (6, 1) chain at 1/2 opens later, 0.008 / 0.029 / 0.072 at 3e-8 / 1e-7 / 3e-7. The current sheets of the ideal descent reconnect at a diffusion length of a tenth of a cell (1e-8): the h-independent floor of section 5c is an ideal-constraint floor.
+- What the small rungs do is open the rational surfaces the ideal descent held closed (`figures/eta_islands.png`). The (5, 1) chain at 3/5 grows from nothing to 0.04 / 0.08 / 0.18 in rho at 1e-8 / 3e-8 / 1e-7 (five O-points at logical r 0.8, iota locked on 0.6, p_w flat across them: `eta1e-7/poincare/poincare_final_zeta0.5.png`) and is gone at 3e-7 because the flattened profile no longer reaches 3/5. The (6, 1) chain at 1/2 opens later, 0.008 / 0.029 / 0.072 at 3e-8 / 1e-7 / 3e-7. The current sheets of the ideal descent reconnect at a diffusion length of an eighth of a cell (1e-8): the h-independent floor of section 5c is an ideal-constraint floor.
 - Seeded and unseeded arms agree to 2% in residual, J/B, beta and helicity at every rung. The seeded (6, 1) island shrinks from 0.093 to 0.075 by 1e-7 while the unseeded one grows to 0.072 at 3e-7: both settle on the same resistive width, about 0.075 in rho, independent of the seed. That is the width the surface wants once it may reconnect; the ideal runs of section 5 froze whichever width they were given.
 - From 1e-6 up the equilibrium is gone: iota flattens to 0.53 .. 0.54 at 1e-6 and to the wall's vacuum profile 0.44 .. 0.49 at 1e-5, beta and helicity to zero. The bulk-mode estimate of the useful range (10 eta T ~ 1 at 1e-5) was off by two decades: the current lives at wavenumbers around 20, not at the bulk scale.
 - Cost: 14 arms x 0.8 GPU-h plus 1.7 for the floored first attempts and 0.1 per sections job; 14 GPU-h in all.
