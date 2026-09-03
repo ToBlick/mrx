@@ -8,7 +8,8 @@ the right objective on a machine that charges per FLOP.
 Neither a TPU nor a GPU does, at these widths. Measured on a k=2 component of
 li383 at (12,24,12) p=3, folding the y and z stages into one contraction of
 width ``nly * nlz`` costs 1.5x the arithmetic and returns 1.48-1.70x on a v5e,
-1.23-1.49x on an H200 and 1.62x on a VM CPU (``tpu/factorization_ab.py``).
+1.23-1.49x on an H200 and 1.62x on a VM CPU
+(``tpu/results/benchmark_v5e_vs_cpu.md``).
 Folding all three loses on every backend.
 
 The fold is an einsum reassociation, so it is exact up to summation order and

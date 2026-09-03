@@ -568,17 +568,17 @@ iterations": it is an exact inverse of the *lumped* operator, and the lumped
 operator is not close to `S_3`. `lambda_max(P M_2)` is 2.66, so the lower
 block is off by a similar factor.
 
-### A separable `(M + eps L)` atom: built, measured, not adopted
+### A separable `(M + eps L)` atom: built, measured, reverted
 
 The obvious response to those misses is a preconditioner that models the
 operator the solves actually invert. `docs/research/OPEN.md` section 3.9
-proposed one and gave two reasons it looked hard. **Both are wrong**, and
-`mrx/preconditioners.py` now has the atom, with tests.
+proposed one and gave two reasons it looked hard. **Both are wrong**: the atom
+was built and measured, and then removed again for the reason below.
 
 *"The atoms share no generalised eigenbasis."* They already do. The mass atom
 and the Laplacian atom build their 1-D axis masses through different code for
 different purposes, and both come out **bit-identical** -- verified for k=0..3
-and every component, and now asserted in `test_shifted_atom.py`. Both leave
+and every component. Both leave
 the axis mass unweighted and carry the metric outside as a diagonal. Only
 *which* diagonal differs, and that is a choice.
 
@@ -628,10 +628,13 @@ into, measured as `||L_3 x|| = 0` exactly. A shifted atom at k=3 **is** the
 mass atom. The 1.88 miss needs a Schur model, which is a different object and
 is not this.
 
-Kept rather than deleted: it is the measured answer to an open proposal, and
-anyone revisiting it should start with a core block and expect ~1.16x.
-`shifted_atom_measure.py` reproduces all of the above and needs no
-accelerator.
+The code is **not** kept. An atom that is wired into no solve and loses on the
+one comparison that decides adoption is a maintenance cost with no caller, so
+`build_shifted_mass_laplace_atom`, its test and its measurement script were
+reverted once the numbers above were recorded. They are the deliverable. The
+construction is a page of `_simultaneous_diagonalize_pair` on the existing 1-D
+factors and is quick to rebuild; anyone revisiting it should start with the
+polar-core block and expect ~1.16x, not the four decades of norm advantage.
 
 Every alternative available today is worse, so nothing was changed:
 
@@ -710,7 +713,7 @@ free at 0.13% of peak.
 ### The width is not the problem, and the sweep that says so
 
 If the MXU were padding K = 4 up to 128, a matmul at fixed output size would
-cost the same at every K up to 128. `mxu_occupancy.py` sweeps exactly that, at
+cost the same at every K up to 128. A sweep measured exactly that, at
 the kernel's own batch of 165 888 and its own output width of 4, inside a
 jitted scan:
 
@@ -736,7 +739,7 @@ too small to amortise what surrounds it.
 
 ### Folding two stages into one: 1.5x the FLOPs, 1.2-1.7x faster
 
-`factorization_ab.py` prices five ways of doing the same element transform,
+Five ways of doing the same element transform were priced against each other,
 all timed inside a jitted scan at the real shapes, on one k=2 component:
 
 | formulation | v5e | H200 f32 | VM CPU |
@@ -862,20 +865,19 @@ dispatch protocols to establish that the discrepancy was not a measurement
 artefact before anyone thought to check `git log` on the node.
 
 The roofline count and the map-precision probe are separate scripts, and both
-run anywhere:
+run anywhere, with or without an accelerator:
 
 ```bash
 python tpu/roofline.py --ns 12,24,12 --p 3 --k 2 \
   --measured-ms 0.3653 --peak-tflops 33 --peak-gbs 819
-python tpu/mxu_occupancy.py --batch 165888 --n-out 4 --ks 4,8,16,32,64,128
-python tpu/factorization_ab.py --ns 12,24,12 --p 3 --k 2 --component 0
-python tpu/shifted_atom_measure.py --ns 8,16,8 --p 3 --k 2 --iterations
 python tpu/map_precision.py --matmul-precision {highest,high,default}
 ```
 
-Of these only `factorization_ab.py` and `mxu_occupancy.py` want an
-accelerator. `roofline.py` and `shifted_atom_measure.py` are counts and
-norms, and run anywhere.
+The one-off scripts behind the MXU sweep, the five-way factorization A/B, the
+separable-atom norms and the dispatch A/B are not in the tree. Each answered
+one question, the answer is in the section above with its numbers, and none of
+them is a thing to re-run: keeping them would have implied the question was
+still open.
 
 `roofline.py` needs no device: it counts FLOPs, essential bytes and the
 contraction dimension of every einsum from the sequence alone, and takes the

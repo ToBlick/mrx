@@ -138,16 +138,17 @@ each should look like, which is what you actually need to check yours against.
 | `gcs_cache_smoke.py` | Proves a `gs://` compilation cache path before you rely on it |
 | `make_kit.sh` | Builds `tpu_access_kit.zip`, the standalone copy of this directory |
 
-Everything above ships in `tpu_access_kit.zip`. The following stay in the repo
-only: they each answered one question, are cited from
-`results/benchmark_v5e_vs_cpu.md`, and are kept so the numbers there can be
-re-derived rather than because you would run them.
+Everything above ships in `tpu_access_kit.zip`. One file stays in the repo
+only, because it needs a SLURM cluster rather than a TPU:
 
 | File | The question it answered |
 |---|---|
-| `mxu_occupancy.py` | Does the MXU pad a width-4 contraction up to 128? (No.) |
-| `factorization_ab.py` | Which of five ways of folding the element transform is fastest? (Two stages.) |
-| `shifted_atom_measure.py` | Is a separable `(M + eps L)` atom closer than the mass atom? (In norm yes, in iterations no.) |
-| `dispatch_ab.py` | Was a 13x discrepancy in one kernel a measurement artefact? (No, a stale checkout.) |
 | `gpu_baseline.slurm` | The H200 control column, on NYU Torch |
-| `gpu_factorization.slurm` | The H200 column of the factorization A/B |
+
+Several one-off investigations that produced numbers in
+`results/benchmark_v5e_vs_cpu.md` are no longer here. Each settled one
+question -- whether the MXU pads a width-4 contraction, which of five element
+transforms is fastest, whether a separable `(M + eps L)` atom beats the mass
+atom, whether a 13x kernel discrepancy was a measurement artefact -- and once
+the answer was written down the script was a rerun path for a question nobody
+needs to ask twice. The answers, with the numbers, are in the write-up.

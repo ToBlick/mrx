@@ -279,7 +279,7 @@ def _fuse_yz(By, Bz):
     per contraction far more than per FLOP at these widths: measured over both
     halves of a k=2 component, folding costs 1.5x the FLOPs and returns
     1.48-1.70x on a v5e, 1.23-1.49x on an H200 and 1.62x on a CPU
-    (``tpu/factorization_ab.py``). Folding all three axes was also measured and
+    (``tpu/results/benchmark_v5e_vs_cpu.md``). Folding all three axes was also measured and
     loses -- 4.8x the FLOPs is too much to buy back, and it needs a per-element
     basis tensor two orders of magnitude larger.
 
