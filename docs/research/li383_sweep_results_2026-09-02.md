@@ -121,12 +121,13 @@ Does the relaxed residual go down with the mesh? Five rungs on the ns = 49 refer
 | h12_p2_g1 | 12,24,24 | 4.4e-04 | 5000 | steps | 0.30 | 1.55e-02 -> 5.42e-04 | 5.22e-04 | 5.77e-04 | -2.7e-05 | 0.0434 | 1 | 0.42 |
 | h16_p2_g1 | 16,32,32 | 2.5e-04 | 5000 | steps | 0.58 | 1.52e-02 -> 5.19e-04 | 4.95e-04 | 5.40e-04 | -1.7e-05 | 0.0431 | 1 | 0.80 |
 | h24_p2_g1 | 24,48,48 | 1.1e-04 | 5000 | steps | 1.77 | 1.51e-02 -> 5.31e-04 | 4.66e-04 | 5.26e-04 | -1.1e-05 | 0.0428 | 0 | 2.46 |
-| h32_p2_g1 | 32,64,64 | 6.3e-05 | 5000 | steps | 4.61 | 1.50e-02 -> 5.60e-04 | 4.93e-04 | 5.94e-04 | -1.0e-05 | 0.0426 | -- | 6.40 |
+| h32_p2_g1 | 32,64,64 | 6.3e-05 | 5000 | steps | 4.61 | 1.50e-02 -> 5.60e-04 | 4.93e-04 | 5.94e-04 | -1.0e-05 | 0.0426 | 0 | 6.40 |
 
 - The bottom does not move with h: after 5000 steps the residual sits at (5.0 .. 5.8)e-4 on every rung from (8,16,16) to (32,64,64) (`figures/hsweep_p2.png`, top right, against n^-1 and n^-2 guides). The IC residual is set by the file, 1.5e-2 from n = 12 on (2.8e-2 at n = 8, where the mesh under-resolves the reference), so the descent takes out a factor 30 that is the same at every resolution.
 - The traces are not at a fixed point: over the second half of each run `||F||` still falls as step^(-0.1 .. -0.3) at a line-search step of about 2 that is h-independent under gamma = 1. Whatever remains at 5e-4 is the case's residual under ideal descent (rational surfaces, the file's own imbalance), not a discretisation error; more steps buy a little on every mesh, more cells buy nothing.
 - Energy released converges with h: E_0 - E = 1.5e-5, 2.1e-6, 8.9e-7, 6.6e-7, 6.9e-7 for n = 8 .. 32, i.e. the ns = 49 state is within 1.4e-6 of the relaxed energy on the fine meshes (the ns = 16 file released 1e-4, section 4). The absolute helicity change shrinks with h too, -1.5e-7, -1.4e-7, -8.7e-8, -5.4e-8, -5.0e-8 (H_0 = 5.0e-3).
-- Rotational transform (`figures/hsweep_p2.png`, bottom left): the final profiles of n = 12, 16, 24 lie on the reference (axis 0.395 / 0.394 / 0.392 against 0.396 / 0.395 / 0.394 at the IC, edge 0.659 .. 0.660); n = 8 sits 0.004 high at the axis. The gamma = 1 axis dip is at most 0.002 on li383 at n >= 12 (the W7-X arms of 2026-08-27 dipped 0.005 on every mesh).
+- Rotational transform (`figures/hsweep_p2.png`, bottom left): the final profiles of n = 12 .. 32 lie on the reference (axis 0.395 / 0.394 / 0.392 / 0.392 against 0.396 / 0.395 / 0.394 / 0.394 at the IC, edge 0.659 .. 0.661); n = 8 sits 0.004 high at the axis. The gamma = 1 axis dip is at most 0.002 on li383 at n >= 12 (the W7-X arms of 2026-08-27 dipped 0.005 on every mesh).
+- Topology (`h24_p2_g1/poincare/poincare_final_zeta0.5.png`, same at n = 32): nested surfaces throughout, 0 chaotic lines at n >= 24 (5 at n = 8), a smooth iota profile with no resolved plateau at 1/2 or 3/5, p_w a flux function. The ns = 49 reference relaxes without forming the chains the ns = 16 file forms (section 4).
 - Cost: 0.15 / 0.30 / 0.58 / 1.77 / 4.61 s/step, i.e. about h^-3 from n = 16 up; the five rungs took 10.3 GPU-h of the 20 budgeted (plus about 0.5 for the sections).
 
 ## 6. Figures for the paper
