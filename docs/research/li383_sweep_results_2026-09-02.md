@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs complete (43 GPU-h); p-sweep at (16,32,32) running. Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
+Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs, p-sweep at (16,32,32) complete (52 GPU-h); resistive pulses and the pulse controller in section 5g. Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -130,6 +130,23 @@ Does the relaxed residual go down with the mesh? Five rungs on the ns = 49 refer
 - Topology (`h24_p2_g1/poincare/poincare_final_zeta0.5.png`, same at n = 32): nested surfaces throughout, 0 chaotic lines at n >= 24 (5 at n = 8), a smooth iota profile with no resolved plateau at 1/2 or 3/5, p_w a flux function. The ns = 49 reference relaxes without forming the chains the ns = 16 file forms (section 4).
 - Cost: 0.15 / 0.30 / 0.58 / 1.77 / 4.61 s/step, i.e. about h^-3 from n = 16 up; the five rungs took 10.3 GPU-h of the 20 budgeted (plus about 0.5 for the sections).
 
+### 5d. gamma = 1 under p-refinement at fixed (16,32,32) (launched 2026-09-03 09:58)
+
+The p-sweep complementary to 5c, at its (16,32,32) rung (also the resistivity sweep's mesh): p = 1 .. 4, gamma = 1 with mu 2.5e-4, floor 1e-5 (never reached), 5000 steps; `h16_p2_g1` is the 5c arm. Same columns as 5c with the degree in place of the mesh.
+
+| arm | p | mu | steps | stop | s/step | `||F||` 0 -> end | min | window | dH/H_0 | beta_vol | chaotic | GPU-h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| h16_p1_g1 | 1 | 2.5e-04 | 5000 | steps | 0.17 | 1.30e-01 -> 5.30e-03 | 4.98e-03 | 2.28e-03 | 1.1e-04 | 0.0330 | -- | 0.24 |
+| h16_p2_g1 | 2 | 2.5e-04 | 5000 | steps | 0.58 | 1.52e-02 -> 5.19e-04 | 4.95e-04 | 5.40e-04 | -1.7e-05 | 0.0431 | 1 | 0.80 |
+| h16_p3_g1 | 3 | 2.5e-04 | 5000 | steps | 1.22 | 1.51e-02 -> 6.49e-04 | 5.95e-04 | 6.49e-04 | -2.8e-06 | 0.0425 | 1 | 1.69 |
+| h16_p4_g1 | 4 | 2.5e-04 | 5000 | steps | 2.34 | 1.51e-02 -> 1.93e-03 | 8.36e-04 | 1.04e-03 | -3.1e-06 | 0.0423 | -- | 3.25 |
+
+- p = 1 does not resolve the file: the IC residual is 1.3e-1 instead of 1.5e-2, ||J||/||B|| 3.7 instead of 0.66, beta 0.033 instead of 0.043, and the descent releases 7.8e-4 of E_0 (a thousand times the p >= 2 value) to end at 5e-3. It is a different problem, not a rung of the same ladder. Its sections cannot be traced: B^zeta reaches zero near the axis (logical r = 0.03) in both the IC and the final field, so the toroidal-angle tracer refuses (an arclength tracer would be needed).
+- From p = 2 up the floor RISES with the degree at fixed n: window means 5.4e-4, 6.5e-4, 1.0e-3 at p = 2, 3, 4, with the late slope flattening from step^-0.18 to -0.09. Energy released and helicity change converge (8.9e-7 / 6.9e-7 / 6.6e-7 and -8.7e-8 / -1.4e-8 / -1.5e-8), so the field is the same; what degrades is the descent.
+- The cause at p = 4 is the one-pair L-BFGS direction: on 340 of the 5000 steps it is not a descent direction (cos(F, u) < 0) and the exact line search steps backwards (dt < 0; the energy still falls, since the step is the minimiser along the line either way). p = 2 and 3 have one such step each. The mean step at p = 4 is 4.5 against 2 at p = 2, 3: the secant model over-estimates the curvature scale. Per step p = 4 costs 4x p = 2 (2.34 vs 0.58 s) for a worse floor.
+- Verdict: at fixed resolution p = 2 is the working degree for the relaxation, p = 3 costs 2x for the same field, p = 4 is not worth running with history 1. Together with 5c: neither h- nor p-refinement lowers the ideal floor, which is the constraint floor that section 5e opens with resistivity.
+- Cost: 0.24 + 1.69 + 3.25 = 5.2 GPU-h for the three new rungs.
+
 ### 5e. Resistivity sweep (2026-09-03, `outputs/li383_eta/`)
 
 Same mesh, degree and smoothing as the h-sweep's (16,32,32) rung: p = 2, gamma = 1 with mu 2.5e-4, 5000 steps, floor 0 (a first launch at floor 1e-5 stopped the eta >= 1e-5 arms inside the resistive phase; those runs are kept as `*_floor1e-5`). Resistivity is backward Euler in defect form after the ideal step, `--eta-schedule tanh`: eta_max for the first third of the run, dropped to ~0 over the middle third, ideal for the last third. `--eta-every K` batches the solve so each carries eta K dt = 2e-5 (dt about 2 under gamma = 1), the smallest correction float32 resolves; K = 1000 at 1e-8 is why the ladder stops there. Seven rungs, each unseeded and with the (6, 1) seed at eps 3e-3, plus the eta = 0 twins (`li383_pub/h16_p2_g1`, `s61_eta0`). `last 500` is the mean residual over the ideal tail; `dH` the absolute helicity change (H_0 = 5.0e-3); `(6,1) width` the final island width of the seeded arms.
@@ -194,9 +211,10 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 6. Precision: one table row (`r12_p3_g0` vs `r12_p3_g0_f64`).
 7. Seeded islands: final zeta = 0.5 section of `s61_e1e-2_g0` and the island width vs eps (`figures/seeded.png`, right); the gamma = 1 and (16,32,32) widths as a sentence.
 8. gamma = 1 h-sweep at p = 2 (`figures/hsweep_p2.png`): residual vs step for five meshes, floor vs n with the IC residual, final iota profiles, energy released.
-9. Resistivity (`li383_eta/figures/eta_islands.png` and `eta_traces.png`): island width at 1/2 and 3/5 vs eta_max, seeded and unseeded; traces of residual, J/B, beta, helicity, energy vs step per rung; the zeta = 0.5 section of `eta1e-7`.
-10. Helicity without H: one table row per pair (section 5f).
-11. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
+9. p-sweep at (16,32,32) (`figures/psweep_p16.png`): the h-sweep's twin with the degree on the axis; p = 1 without an iota panel.
+10. Resistivity (`li383_eta/figures/eta_islands.png` and `eta_traces.png`): island width at 1/2 and 3/5 vs eta_max, seeded and unseeded; traces of residual, J/B, beta, helicity, energy vs step per rung; the zeta = 0.5 section of `eta1e-7`.
+11. Helicity without H: one table row per pair (section 5f).
+12. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
 
