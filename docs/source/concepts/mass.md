@@ -23,14 +23,13 @@ incidence and extraction operators.
 
 ## 2. The kernel
 
-`_sumfact_kernel(x, Bvals_r, Bvals_c, Ws, ...)` is the jitted body. For
+`_impl(x, Bvals, W_split, gather_idx, seg_idx)` is the jitted body. For
 `n_comp` components (1 for k=0,3; 3 for k=1,2):
 
-1. **Read.** `x_local = _structured_gather(x, plan)` for each column component:
+1. **Gather.** `x_local = x[gather_idx[c]]` for each column component `c`:
    the element-local coefficient cube of shape
-   `(ne_x, ne_y, ne_z, p+1, p+1, p+1)`. On a tensor-product B-spline basis the
-   element-to-DoF map of every axis is the pure shift `(e + l) mod S`, so this
-   is a stack of rolled slices with no index tensor at all.
+   `(ne_x, ne_y, ne_z, p+1, p+1, p+1)`. `gather_idx` is a static integer
+   array from `_flat_dof_plan`, built once on the host.
 2. **Column transforms** (`_to_quadrature`): three einsums, one axis at a
    time, take the cube to values at the element's quadrature points,
    `(ne_x, ne_y, ne_z, qx, qy, qz)`. One transform per column component.
@@ -40,18 +39,17 @@ incidence and extraction operators.
    metric weight reshaped to elements with the Gauss weights folded in.
 4. **Row transforms** (`_from_quadrature`): the adjoint three einsums, one
    per row component.
-5. **Assembly.** `_structured_accumulate` over the same shift plan: shifted
-   dense adds per component, concatenated into the output. Again no indices.
+5. **Scatter.** One `jax.ops.segment_sum` over the concatenated row cubes
+   with `seg_idx`, into the concatenated output.
 
 Steps 2 and 4 are sum factorisation: `O(q(p+1) + q^2(p+1) + q^3)` per element
 instead of `O(q^3 (p+1)^3)`. Mixing at the quadrature points rather than per
 `(cr, cc)` pair does a third of the transform work. Row and column bases are
 the same tables, so the applied operator is symmetric by construction.
 
-The weight is passed as a runtime argument and the shift plans as static ones.
-`_shift_plan` raises if an axis map is not a shift: there is no indexed
-fallback, because the library builds only tensor-product B-spline bases and a
-basis numbered otherwise would read and write silently wrong.
+The plan (basis tables, gather indices, segment ids, weights) is passed to
+`_impl` as arguments, not captured as constants, so XLA does not constant-fold
+the index tensors.
 
 ### The 1D tables
 
@@ -108,7 +106,7 @@ there.
 The same tables give exact diagonals with no operator apply:
 
 - `build_mass_diagonal(seq, k)`: `diag(M_k)` on the raw space; only the
-  `(c, c)` weight blocks contribute; one structured assembly per component.
+  `(c, c)` weight blocks contribute; one `segment_sum` per component.
 - `build_stiffness_diagonal(seq, k)`: `diag(G_k^T M_{k+1} G_k)` from the
   derivative tables lifted by `grad_1d`.
 - `build_codifferential_diagonal(seq, k)`: the weak-term diagonal at k=3.
