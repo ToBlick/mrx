@@ -304,6 +304,136 @@ def hsweep_figure(arms, figdir):
     fig.savefig(os.path.join(figdir, "hsweep_p2.png"), dpi=150)
 
 
+ETAS = ["1e-7", "1e-6", "1e-5", "1e-4"]
+
+
+def ideal_tail(j):
+    """Mean ||F|| over the last 500 steps, where the tanh schedule has eta ~ 0."""
+    return float(F(j)[-500:].mean())
+
+
+def eta_rows(arms):
+    out = []
+    for j in arms:
+        r = row_common(j)
+        q = j["qoi"]
+        seed = j["params"]["seed"]
+        if seed:
+            m, n = (int(float(v)) for v in seed.split(",")[:2])
+            z = sections(j)
+            w = island_width(z, m, n) if z is not None else (None, None)
+            wtxt = "--" if w[0] is None else f"{w[0]:.3f} / {w[1]:.3f}"
+        else:
+            wtxt = "--"
+        h = np.asarray(q["helicity"])
+        out.append(
+            "| "
+            + " | ".join(
+                [
+                    j["arm"],
+                    f"{j['params']['eta_max']:.0e}",
+                    str(j["params"]["eta_every"]),
+                    "(6, 1) 3e-03" if seed else "--",
+                    str(r["steps"]),
+                    r["stop"],
+                    fmt(r["spst"], "f2"),
+                    f"{r['F0']:.2e} -> {r['F1']:.2e}",
+                    fmt(float(F(j).min()), "e"),
+                    fmt(ideal_tail(j), "e"),
+                    f"{q['JoverB'][0]:.3f} -> {q['JoverB'][-1]:.3f}",
+                    f"{q['beta_vol'][0]:.4f} -> {q['beta_vol'][-1]:.4f}",
+                    fmt(float(h[-1] - h[0]), "e1"),
+                    wtxt,
+                    fmt(r["chaotic"], "d"),
+                    fmt(r["gpuh"], "f2"),
+                ]
+            )
+            + " |"
+        )
+    return out
+
+
+def eta_figure(plain, seeded, ideal, figdir):
+    fig, ax = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    plot_lines(
+        ax[0, 0],
+        [(ideal, r"$\eta = 0$", "-")]
+        + [(j, rf"$\eta_{{max}}$ = {j['params']['eta_max']:.0e}", "-") for j in plain],
+    )
+    ax[0, 0].set_title("unseeded: force residual, tanh schedule")
+    tw = ax[0, 0].twinx()
+    if plain:
+        j = plain[-1]
+        e = np.asarray(j["trace"]["eta"]) / j["params"]["eta_max"]
+        tw.plot(it(j), e, "k:", lw=0.8)
+        tw.set_ylabel(r"$\eta / \eta_{max}$ (dotted)")
+        tw.set_ylim(0, 1.05)
+    for arms, ref, lab, mk in (
+        (plain, ideal, "unseeded", "o-"),
+        (seeded, None, "seeded (6,1) 3e-3", "s--"),
+    ):
+        if not arms:
+            continue
+        e = np.array([j["params"]["eta_max"] for j in arms])
+        ax[0, 1].semilogx(
+            e, [ideal_tail(j) for j in arms], mk, label=f"{lab}: last 500 steps"
+        )
+        ax[0, 1].semilogx(
+            e, [float(F(j).min()) for j in arms], mk, mfc="none", label=f"{lab}: min"
+        )
+        if ref is not None:
+            ax[0, 1].axhline(
+                ideal_tail(ref),
+                color="C0" if lab == "unseeded" else "C1",
+                lw=0.6,
+                ls=":",
+            )
+    ax[0, 1].set_yscale("log")
+    ax[0, 1].set_xlabel(r"$\eta_{max}$")
+    ax[0, 1].set_ylabel(r"$\|F\|_M$")
+    ax[0, 1].grid(alpha=0.3, which="both")
+    ax[0, 1].legend(fontsize=8)
+    ax[0, 1].set_title(r"residual after the resistive phase (dotted: $\eta = 0$ runs)")
+    for j, lab in [(ideal, r"$\eta = 0$")] + [
+        (j, rf"$\eta_{{max}}$ = {j['params']['eta_max']:.0e}") for j in plain
+    ]:
+        if j is None:
+            continue
+        q = j["qoi"]
+        ax[1, 0].plot(q["it"], q["JoverB"], ".-", ms=3, lw=0.9, label=lab)
+    ax[1, 0].set_xlabel("step")
+    ax[1, 0].set_ylabel(r"$\|J\| / \|B\|$")
+    ax[1, 0].grid(alpha=0.3)
+    ax[1, 0].legend(fontsize=8)
+    ax[1, 0].set_title("current surviving the resistive phase (unseeded)")
+    if seeded:
+        e = np.array([j["params"]["eta_max"] for j in seeded])
+        ws = [
+            island_width(sections(j), 6, 1)
+            if sections(j) is not None
+            else (np.nan, np.nan)
+            for j in seeded
+        ]
+        ax[1, 1].semilogx(e, [w[0] for w in ws], "o-", label="plateau")
+        ax[1, 1].semilogx(e, [w[1] for w in ws], "s-", label="excursion")
+        z0 = next((sections(j) for j in seeded if sections(j) is not None), None)
+        if z0 is not None:
+            w0 = island_width_ic(z0, 6, 1)
+            ax[1, 1].axhline(w0[0], color="C0", lw=0.6, ls=":")
+            ax[1, 1].axhline(
+                w0[1], color="C1", lw=0.6, ls=":", label="seeded IC (dotted)"
+            )
+        ax[1, 1].set_xlabel(r"$\eta_{max}$")
+        ax[1, 1].set_ylabel(r"final island width in $\rho$")
+        ax[1, 1].grid(alpha=0.3, which="both")
+        ax[1, 1].legend(fontsize=8)
+        ax[1, 1].set_title(r"(6, 1) chain at $\iota = 1/2$, seed $\epsilon$ = 3e-3")
+    fig.suptitle(
+        r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: resistivity, tanh schedule over 5000 steps"
+    )
+    fig.savefig(os.path.join(figdir, "eta_sweep.png"), dpi=150)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -340,6 +470,21 @@ def main():
     hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
     if hsweep:
         hsweep_figure(hsweep, figdir)
+    eta_plain = [
+        j for j in (load(root, "li383_eta", f"eta{e}") for e in ETAS) if j is not None
+    ]
+    eta_seeded = [
+        j
+        for j in (load(root, "li383_eta", f"s61_eta{e}") for e in ETAS)
+        if j is not None
+    ]
+    if eta_plain or eta_seeded:
+        etadir = os.path.join(root, "li383_eta", "figures")
+        os.makedirs(etadir, exist_ok=True)
+        eta_figure(eta_plain, eta_seeded, load(root, "li383_pub", "h16_p2_g1"), etadir)
+        open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
+            "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"
+        )
 
     # force residual, three panels
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
