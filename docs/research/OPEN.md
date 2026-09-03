@@ -101,19 +101,49 @@ linesearch (`dt ~ 1.7`, `eps ~ 0.17`) and `eta = 1` hit `maxiter = 10000` on
 longer monotone (`+3e-7`) and `div B` reaches `6e-6`. The working range of
 the current preconditioner is `eta <= 1e-2` (the production range is
 `<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
-and so keeps `eps` in range for `eta <= 1e-1` too. *Fix (follow-up task, no
-implementation yet):* a dedicated separable `(M + eps L)` atom. NOT a spectral
-shift of either existing atom: the metric-lumping MASS atom lumps the metric
-while the LAPLACIAN atom averages it differently, so their Kronecker
-structures do not share a generalised eigenbasis and a shift of either is
-wrong. The atom has to be built from ONE consistent 1-D factorisation (the
-same metric treatment for both terms) and fast-diagonalised as a whole for
-each `eps` -- or for a small set of `eps` values, since
-`eps = eta * (accumulated dt)` changes every step under the line search.
+and so keeps `eps` in range for `eta <= 1e-1` too.
+
+*Fix: SUPERSEDED by the production atom in the update below.* A separable
+`(M + eps L)` atom was built and measured on 2026-09-03 and then removed
+again: it was wired into no solve, and it lost the comparison that decides
+adoption -- 185 CG iterations against the mass atom's 149 at the smoothing
+shift -- because it carried no polar-core block, even though its relative miss
+was bounded over four decades of `eps` where the mass atom grows linearly. The
+measurements are kept in `docs/research/tpu_v5e_benchmark.md`; the code is
+not.
+
+**Both reasons this entry originally gave for a separable atom being hard were
+wrong**, which is the part that outlived the atom, and the production solution
+below rests on the first of them:
+
+* *"Their Kronecker structures do not share a generalised eigenbasis."* They
+  do. `_kron_mass_model_1d` and `metric_lumping_laplacian.component_factors`
+  both assemble the axis mass as
+  `_assemble_weighted_1d_mass(basis, quad_w[a])` on the same derivative-axis
+  pattern, both deliberately UNWEIGHTED with the metric carried outside as a
+  diagonal. The 1-D factors come out bit-identical for k=0..3 and every
+  component. Only *which* outer diagonal differs, and that is a choice, not a
+  structural obstruction.
+* *"Fast-diagonalised as a whole for each `eps`."* Once, for all `eps`. Where
+  `V.T M V = I` and `V.T L V = diag(mu)`, `M + eps L` is `1 + eps*mu`, so
+  `eps` reaches the apply through a diagonal reciprocal only and can be a
+  tracer. One build serves the whole line search.
+
+The polar core is what decided it. At `eps = 0` both atoms model the same
+operator with the same 1-D factors, and the bulk-only atom still took 82
+iterations against 57: a 1.44x deficit from the untreated core rows alone,
+larger than anything the shift handling won back. Any future separable atom
+should carry a core block from the start.
+
+Note also that a shifted atom cannot help the k=3 Leray/Schur block: `L_3` is
+identically zero (no 4-form for `G_3` to map into, measured as `||L_3 x|| = 0`
+exactly), so at k=3 a shifted atom IS the mass atom.
+
 The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
-*Detail:* `docs/source/concepts/relaxation.md` §2.
+*Detail:* `docs/source/concepts/relaxation.md` §2,
+`docs/research/tpu_v5e_benchmark.md`.
 *Update 2026-09-02:* the saddle MINRES is gone. `D_k D_{k-1} = 0` gives the
 exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
 + eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass
