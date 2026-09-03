@@ -6,16 +6,20 @@
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
+#   bash scripts/li383_pub.sh eta        # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
 # MRX_ROOT selects the checkout the jobs run (default: this one). Outputs go
-# to $MRX_ROOT/outputs/li383_pub/<arm>; job ids to .../jobs.tsv.
+# to $MRX_ROOT/outputs/$SUB/<arm> (SUB defaults to li383_pub; the eta sweep
+# sets li383_eta, and `SUB=li383_eta ... sections NAME` addresses it); job ids
+# to $MRX_ROOT/outputs/$SUB/jobs.tsv.
 set -euo pipefail
 ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 export MRX_ROOT=$ROOT
 cd "$ROOT"
-PUB=$ROOT/outputs/li383_pub
+SUB=${SUB:-li383_pub}
+PUB=$ROOT/outputs/$SUB
 mkdir -p "$PUB"
 LEDGER=$PUB/jobs.tsv
 
@@ -30,7 +34,7 @@ G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
 submit() {  # submit KIND NAME SCRIPT ARGS TIMEOUT_MIN
     local kind=$1 name=$2 script=$3 args=$4 tmin=$5
     local out
-    out=$(SCRIPT="$script" ARGS="$args" JOB_NAME="li383_${kind}_${name}" OUTSUB=li383_pub \
+    out=$(SCRIPT="$script" ARGS="$args" JOB_NAME="li383_${kind}_${name}" OUTSUB=$SUB \
           TIMEOUT_MIN="$tmin" bash slurm/run.sh)
     local jid log
     jid=$(echo "$out" | sed -n 's/Submitted batch job \([0-9]*\)/\1/p')
@@ -93,6 +97,22 @@ hsweep_p2() {
     arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --velocity-smoothing-scale 6.25e-5 --seconds 36000" 1260
 }
 
+eta() {
+    # 2026-09-03: resistivity sweep mirroring the h-sweep's (16,32,32) rung:
+    # p = 2, gamma = 1, tanh schedule (eta_max for the first third of the 5000
+    # steps, dropped to ~0 over the middle third, ideal at the end), unseeded
+    # and with the (6, 1) chain at eps 3e-3. --eta-every keeps eta K dt >= 2e-5
+    # per resistive solve (dt is about 2 under gamma = 1). SUB=li383_eta.
+    local common="--ns 16,32,32 --p 2 --floor-tol 1e-5 --steps 5000 $G1_16 --eta-schedule tanh --seconds 7200"
+    local s61="--seed 6,1,0.544,0.1 --seed-eps 3e-3"
+    local e K
+    for e in 1e-7:100 1e-6:10 1e-5:1 1e-4:1; do
+        K=${e#*:}; e=${e%:*}
+        arm eta$e     "$GEOM_HI" "$common --eta-max $e --eta-every $K"      300
+        arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
+    done
+}
+
 sections() {  # sections NAME [TIMEOUT_MIN]
     submit sec "$1" scripts/poincare_relax.py \
         "$PUB/$1/B.h5 --fields ic,final --planes 0,0.25,0.5 --out $PUB/$1/poincare" "${2:-30}"
@@ -108,7 +128,8 @@ case ${1:-} in
     seeded) seeded ;;
     deep) deep ;;
     hsweep_p2) hsweep_p2 ;;
+    eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; eta ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | eta | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac
