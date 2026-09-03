@@ -196,23 +196,29 @@ def direct_construction_unsupported_reason(betti_numbers):
     route is only self-sufficient when every kernel it needs has already been
     built by an earlier step.
 
-    Walking the construction order (k=3 DBC, k=2 DBC, k=0 NBC, k=1 NBC):
+    Walking the construction order (k=3 DBC, k=2 DBC, k=0 NBC, k=1 NBC);
+    every seed is exactly closed, so there is no coexact part to strip and
+    each form costs one solve:
 
-    ==================  ===========================  =========================
-    construction        stage 1 (Leray)              stage 2
-    ==================  ===========================  =========================
-    k=3 DBC             closed form (no solve)       --
-    k=2 DBC             ``L_3`` DBC, kernel ``b0``   ``L_1`` DBC, kernel ``b2``
-    k=0 NBC             closed form (no solve)       --
-    k=1 NBC             ``L_0`` NBC, kernel ``b0``   ``L_2`` NBC, kernel ``b2``
-    ==================  ===========================  =========================
+    ==================  ==============================
+    construction        the one solve, and its kernel
+    ==================  ==============================
+    k=3 DBC             closed form (no solve)
+    k=2 DBC             ``L_1`` DBC, kernel ``b2``
+    k=0 NBC             closed form (no solve)
+    k=1 NBC             ``L_0`` NBC, kernel ``b0``
+    ==================  ==============================
 
-    The ``b0`` kernels are the constants, produced in closed form by the step
-    immediately before -- which is exactly why that ordering was chosen.  The
-    ``b2`` kernels are not produced at all, so ``b2 > 0`` breaks the route.
-    Worse, it breaks it circularly: building the harmonic 1-form (DBC) needs
-    ``L_2`` DBC, whose kernel is ``b1`` -- the harmonic 2-form we were trying
-    to construct in the first place.  There is no ordering that fixes it.
+    The ``b0`` kernel is the constants, produced in closed form by the step
+    immediately before.  The ``b2`` kernel (harmonic 1-forms of the
+    Dirichlet complex) is not produced at all, so ``b2 > 0`` breaks the
+    route -- circularly: building it would need ``L_2`` DBC, whose kernel is
+    ``b1``, the harmonic 2-form under construction.  No ordering fixes it.
+
+    The k=3 Hodge-split solve (:func:`mrx.operators.apply_inverse_laplacian_hodge`)
+    deflates against the k=2 DBC form, so nothing here may call it before
+    that form is stored -- which is why the k=2 seed is closed by
+    construction rather than Leray-projected (a k=3 solve).
     """
     b0, b1, b2, b3 = (int(b) for b in betti_numbers)
     if b0 != 1:
@@ -223,12 +229,11 @@ def direct_construction_unsupported_reason(betti_numbers):
         return (
             f"b2 = {b2} > 0 (betti = {(b0, b1, b2, b3)}). The direct route "
             "strips the exact part of the k=2 seed by inverting L_1 with "
-            "Dirichlet BCs (and the k=1 seed via L_2 with natural BCs); both "
-            "kernels have dimension b2 and neither is available. Building "
-            "them the same way needs L_2 (DBC) and L_1 (NBC), whose kernels "
-            "are the very forms under construction -- the dependency is "
-            "circular, so those Krylov solves cannot be given the deflation "
-            "vectors they need. Use the iterative route (direct=False): its "
+            "Dirichlet BCs, whose kernel has dimension b2 and is not "
+            "available. Building it the same way needs L_2 (DBC), whose "
+            "kernel is the very form under construction -- the dependency is "
+            "circular, so that Krylov solve cannot be given the deflation "
+            "vectors it needs. Use the iterative route (direct=False): its "
             "shift removes the singularity, so it needs no prior nullspace."
         )
     return None
@@ -263,9 +268,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                        gap_sweeps=5, verbose=True):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
-    Each form is built by removing the exact and coexact parts of a seed, so
-    the cost is a fixed pair of Hodge solves per form -- no shift, no outer
-    loop, and no dependence on a spectral gap.  Requires ``b2 == 0``; see
+    Each form is built from an exactly closed seed (``d zeta`` at k = 1,
+    ``dr^dchi`` at k = 2, both histopolated constants) by removing its exact
+    part with ONE Hodge solve -- no coexact part to remove, no shift, no
+    outer loop, and no dependence on a spectral gap.  Requires ``b2 == 0``;
+    see
     :func:`direct_construction_unsupported_reason`.  For anything else use
     :func:`compute_nullspaces_iterative`.
 
@@ -303,10 +310,9 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
             f"this topology: {reason}"
         )
 
-    # The construction below is a chain of Hodge-Laplacian solves -- L_1 DBC
-    # for the k=2 form, L_2 FREE for the k=1 form, L_3 DBC inside the Leray
-    # projection, and L_0 FREE inside the k=1 Leray -- and every one of them
-    # takes the block-Jacobi atom, which is now REQUIRED rather than consulted.
+    # The construction below is two Hodge-Laplacian solves -- L_1 DBC for the
+    # k=2 form, L_0 FREE for the k=1 form -- and each takes the metric-lumped
+    # atom, which is REQUIRED rather than consulted.
     #
     # This function does NOT build it. It used to, and that was a setup step
     # hidden inside a solve routine: the caller could not tell which
@@ -328,17 +334,35 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
 
     if _n_vectors(betti_numbers, 2, True):
-        # k = 2, Dirichlet: Leray-project the seed (removes the coexact part
-        # via L_3 DBC, deflated by the k=3 form just stored), then subtract
-        # the im(curl) part via L_1 DBC.
-        seed2 = _logical_constant_seed(seq, operators, 2, True, (0.0, 0.0, 1.0))
-        v, _ = seq.apply_leray_projection(seed2, k=2)
-        curl_v_dual = seq.apply_derivative_matrix(
-            v, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
+        # k = 2, Dirichlet: the seed is the flux 2-form dr^dchi -- primal
+        # proxy (0, 0, 1), histopolated (a direct solve), constant
+        # coefficients, so its incidence divergence is zero to round-off.  A
+        # closed seed has no coexact part, so the only work is removing the
+        # im(curl) part with one L_1 DBC solve (k=1 Dirichlet has no harmonic
+        # form: no dependency on anything stored later).  The seed is NOT the
+        # harmonic form -- that is the Hodge star of d zeta, metric-weighted,
+        # never in V^2 -- it only has to be closed; the solve does the metric.
+        #
+        # It used to Leray-project an M_2^{-1}-seed first (a k=3 solve).  The
+        # k=3 Hodge-split solve deflates its L^_2 solves against THIS form,
+        # which at that point is still zero, and returned a form with
+        # |D h_2| / |h_2| ~ 2 on QA (co-closed, not closed).
+        flux = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
+        seed2 = seq.interpolate(lambda x_hat: flux, 2, dirichlet=True, frame='ref')
+        div_seed = seq.apply_incidence_matrix(
+            seed2, 2, dirichlet_in=True, dirichlet_out=True)
+        closed = float(seq.l2_norm(div_seed, 3, dirichlet=True)
+                       / seq.l2_norm(seed2, 2, dirichlet=True))
+        if closed > seq.tol:
+            raise RuntimeError(
+                "compute_nullspaces: the dr^dchi seed is not closed "
+                f"(|D seed| / |seed| = {closed:.2e} > tol {seq.tol:.1e}); the "
+                "k=2 Dirichlet harmonic form would carry that divergence")
+        curl_dual = seq.apply_derivative_matrix(
+            seed2, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
         a = seq.apply_inverse_laplacian(
-            curl_v_dual, 1, dirichlet=True, operators=operators)
-        curl_a = seq.apply_strong_curl(a, True, True)
-        v2 = v - curl_a
+            curl_dual, 1, dirichlet=True, operators=operators)
+        v2 = seed2 - seq.apply_strong_curl(a, True, True)
         v2 = v2 / seq.l2_norm(v2, 2, dirichlet=True)
         operators = _commit(seq, _set_null(operators, 2, True, v2[None, :]))
 
@@ -349,16 +373,33 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
 
     if _n_vectors(betti_numbers, 1, False):
-        # k = 1, no BC: Leray-project (removes grad via L_0 NBC, deflated by
-        # the constants just stored), then subtract the coexact part via L_2.
-        seed1 = _logical_constant_seed(seq, operators, 1, False, (0.0, 0.0, 1.0))
-        v, _ = seq.apply_leray_projection(seed1, k=1)
-        curl_v_dual = seq.apply_derivative_matrix(
-            v, 1, dirichlet_in=False, dirichlet_out=False)
-        a = seq.apply_inverse_laplacian(
-            curl_v_dual, 2, dirichlet=False, operators=operators)
-        curl_a = seq.apply_weak_curl(a, False, False)
-        v1 = v - curl_a
+        # k = 1, no BC: the seed is d zeta itself -- covariant (0, 0, 1), which
+        # V^1 contains exactly; histopolated (a direct collocation solve), so
+        # its incidence curl is zero to round-off.  A closed seed has no
+        # coexact part, so the Leray projection (one L_0 NBC solve, deflated
+        # by the constants just stored) IS the harmonic form: curl-free by
+        # C G = 0, weakly divergence-free by the solve.  No L_2 solve.
+        #
+        # It used to seed with M_1^{-1} of the (0, 0, 1) dual load, i.e. the
+        # form with CONTRAVARIANT (0, 0, 1) -- |curl|/|v| ~ 2 on QA -- and
+        # remove that curl with an L_2 free solve.  At p = 4, n >= 24 that
+        # solve exhausts its budget and the leftover curl (4e-3 -> 4e-2 from
+        # n = 24 to 32) was the whole Route-A convergence stall of
+        # scripts/analytic_vacuum.py.  The k = 2 Dirichlet form above cannot
+        # take this shortcut: it is the Hodge star of d zeta, metric-weighted,
+        # never in V^2, so its L_1 solve is doing real work.
+        dzeta = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
+        seed1 = seq.interpolate(lambda x_hat: dzeta, 1, dirichlet=False, frame='ref')
+        curl_seed = seq.apply_incidence_matrix(
+            seed1, 1, dirichlet_in=False, dirichlet_out=False)
+        closed = float(seq.l2_norm(curl_seed, 2, dirichlet=False)
+                       / seq.l2_norm(seed1, 1, dirichlet=False))
+        if closed > seq.tol:
+            raise RuntimeError(
+                "compute_nullspaces: the d zeta seed is not closed "
+                f"(|C seed| / |seed| = {closed:.2e} > tol {seq.tol:.1e}); the "
+                "k=1 free harmonic form would carry that curl unremoved")
+        v1, _ = seq.apply_leray_projection(seed1, k=1)
         v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
 
@@ -383,15 +424,20 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
 # ---------------------------------------------------------------------------
 
 def _logical_constant_seed(seq, operators, k, dirichlet, components):
-    """L2-project a constant *reference-frame* k-form onto V_k.
+    """``M_k^{-1}`` of the dual load with constant reference *integrand*.
 
-    ``components`` are the coefficients of the form in the reference basis
-    (``dr, dchi, dzeta`` for k=1; ``dchi^dzeta, dr^dzeta, dr^dchi`` for k=2),
-    so the seed is purely topological -- the geometry enters only through the
-    ``M_k^{-1}`` that turns the dual load back into DoFs.  That is what makes
-    these guesses valid on an arbitrary stellarator and not just on a toroid:
-    no ``1/R``, no physical frame, and no sampling of a Cartesian field (so no
-    exposure to the zeta = 0 quasi-periodicity seam).
+    ``components`` go straight into :func:`load` with ``frame='ref'``, i.e.
+    they are the vector the basis is paired against, not the primal
+    coefficients of a form: for k=1 the result is the form with
+    CONTRAVARIANT components ``components`` (covariant ``g . components``),
+    for k=2 the one with primal proxy ``J g^{-1} . components``.  Both are
+    metric-weighted and neither is closed nor co-closed -- on QA the k=1
+    seed has ``|curl| / |v| ~ 2``.  That is fine for what this is: a
+    topologically right *guess* for inverse iteration, built without ``1/R``,
+    a physical frame, or a Cartesian sample (so no zeta = 0 seam exposure).
+    It is NOT an exact representative; :func:`compute_nullspaces` seeds with
+    the histopolated ``d zeta`` / ``dr^dchi`` instead, which are exactly
+    closed.
     """
     comps = jnp.asarray(components, dtype=mrx.DTYPE)
     return seq.apply_inverse_mass_matrix(

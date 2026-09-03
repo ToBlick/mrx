@@ -48,6 +48,11 @@ HX transfers, dense outer-ring probes, the Fourier coarse correction
 - k >= 1 Laplacian: `solve_saddle_point_minres` on `[[K_k, D], [D^T, -M_{k-1}]]`.
 - Shifted problems do not deflate; free k >= 1 adds the `1/eps` harmonic
   coarse correction when the vector exists.
+- `M_k + eps L_k` (velocity smoothing, resistive step): two SPD CG solves
+  through the split identity `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} +
+  eps S_{k-1})^-1 D_{k-1}^T`; no saddle system. Preconditioner: the
+  shifted-stiffness atom, `(M^ + eps S^)^-1` from the Laplacian atom's
+  strong-half terms (`MetricLumpingLaplacian.shifted_stiffness_apply`).
 - No Krylov solve inside a Krylov solve: the weak term uses the mass
   preconditioner as `M^{-1}` (`apply_laplacian_approx`).
 - Harmonic forms: `compute_nullspaces` (direct, `b2 = 0`) or

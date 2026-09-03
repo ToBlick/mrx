@@ -665,7 +665,7 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
     keep = ~(res["escaped"] | ~res["ok"])
     R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], saves_per_period, plane)
     a_eff, xlabel = surface_label(R, Z, aR, aZ)
-    fig = render_section(
+    fig, _ = render_section(
         R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
         title=f"{title}  |  $\\zeta = {plane:g}$ -- {R.shape[1]} crossings/line",
         subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "

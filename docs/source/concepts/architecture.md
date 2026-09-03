@@ -137,8 +137,10 @@ are:
 | 0 | CG on `K_0`, harmonic mode deflated | `solve_singular_cg` |
 | 1, 2, 3 | MINRES on the saddle system `[[K_k, D_{k-1}], [D_{k-1}^T, -M_{k-1}]]` | `solve_saddle_point_minres` |
 
-`apply_inverse_shifted_laplacian` solves `L_k + eps M_k` the same way
-and `apply_inverse_mass_plus_eps_laplace_matrix` solves `M_k + eps L_k`. The
+`apply_inverse_shifted_laplacian` solves `L_k + eps M_k` the same way;
+`apply_inverse_mass_plus_eps_laplace_matrix` solves `M_k + eps L_k` as two
+SPD CG solves, `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1
+D_{k-1}^T`, which is exact because `D_k D_{k-1} = 0`. The
 `DeRhamSequence` methods of the same names forward to these with the
 sequence's own `operators`, `tol`, and `maxiter`. Every solve takes a
 `preconditioner` argument; the default `'auto'` is described in

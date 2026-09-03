@@ -14,8 +14,11 @@ import jax.numpy as jnp
 import pytest
 
 import mrx
+from mrx import operators as op
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
+
+from .dense import dense_from_apply
 
 ALL_K = (0, 1, 2, 3)
 ALL_DBC = (False, True)
@@ -102,3 +105,38 @@ def test_diffusion_solver_default_preconditioners_converge(
     )
 
 
+
+
+@pytest.mark.parametrize(("k", "dirichlet", "eps"), [
+    (2, True, 1e-3),     # the production configuration: velocity smoothing / resistive step
+    (1, False, 1e-1),    # the other boundary family, one level down, stiffness-dominated
+])
+def test_diffusion_solve_matches_dense(tiny_seq, k, dirichlet, eps):
+    """The split solve equals the dense ``(M_k + eps L_k)^-1 rhs`` to solver tolerance.
+
+    The reference assembles ``M_k``, ``S_k``, the weak ``D_{k-1}`` and
+    ``M_{k-1}`` from the matrix-free applies (no Krylov solve anywhere) and
+    forms ``L_k = S_k + D M_{k-1}^-1 D^T`` densely, so it is independent of
+    the split identity the solve uses. Two cases only: the dense probes cost
+    one operator apply per DoF and this is the lean tier.
+    """
+    seq = tiny_seq
+    n = int(_dof(seq, k, dirichlet))
+    m = int(_dof(seq, k - 1, dirichlet))
+    M = dense_from_apply(lambda v: op.apply_mass_matrix(seq, v, k, dirichlet), n)
+    S = dense_from_apply(lambda v: op.apply_stiffness(seq, v, k, dirichlet), n)
+    D = dense_from_apply(
+        lambda v: op.apply_derivative_matrix(seq, v, k - 1, dirichlet, dirichlet), m)
+    M_low = dense_from_apply(lambda v: op.apply_mass_matrix(seq, v, k - 1, dirichlet), m)
+    A = M + eps * (S + D @ jnp.linalg.solve(jnp.asarray(M_low), jnp.asarray(D).T))
+    rhs = jax.random.normal(jax.random.PRNGKey(31 + 7 * k + dirichlet), (n,))
+    x_dense = jnp.linalg.solve(jnp.asarray(A), rhs)
+
+    x, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+        rhs, k=k, eps=eps, dirichlet=dirichlet, return_info=True)
+    assert int(info) <= 0, f"k={k} dirichlet={dirichlet} eps={eps}: {int(info)}"
+    d = x - x_dense
+    err = float(jnp.sqrt(jnp.dot(d, jnp.asarray(M) @ d)
+                         / jnp.dot(x_dense, jnp.asarray(M) @ x_dense)))
+    assert err < 100 * seq.tol, (
+        f"k={k} dirichlet={dirichlet} eps={eps}: ||x - x_dense||_M off by {err:.2e}")

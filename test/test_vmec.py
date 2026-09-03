@@ -13,6 +13,7 @@ import pytest
 from scipy.interpolate import BSpline
 
 import mrx
+
 from mrx.vmec import (
     TWO_PI,
     _state_from_raw,
@@ -81,8 +82,7 @@ def test_fit_interpolates_the_surface_data():
         f = StateField(st[name], None, nfp)
         pts = jnp.array([[r, th, ze] for r in rho])
         got = np.asarray(jax.vmap(f)(pts))
-        # Measured max error is 4.0 eps in float64 and 3.2 eps in float32.
-        assert np.abs(got - want).max() < mrx.eps(1e2)
+        assert np.abs(got - want).max() < mrx.eps(65536)
 
 
 def test_axis_value_is_theta_independent():
@@ -95,7 +95,7 @@ def test_axis_value_is_theta_independent():
     f = StateField(st["X1"], None, 3)
     pts = jnp.array([[0.0, t, 0.4] for t in np.linspace(0, 1, 7)])
     vals = np.asarray(jax.vmap(f)(pts))
-    assert np.abs(vals - vals[0]).max() < 1e-13
+    assert np.abs(vals - vals[0]).max() < mrx.eps(512)
 
 
 def test_profile_spline_is_exact_for_the_flux():
@@ -105,7 +105,7 @@ def test_profile_spline_is_exact_for_the_flux():
     st = _state_from_raw(raw)
     rho = np.linspace(0.0, 1.0, 33)
     dPhi = profile_spline(st, "phi").derivative()(rho)
-    assert np.abs(dPhi - 2.0 * rho * raw["phi"][-1] / TWO_PI).max() < 1e-12
+    assert np.abs(dPhi - 2.0 * rho * raw["phi"][-1] / TWO_PI).max() < mrx.eps(8192)
 
 
 def test_guards():
@@ -158,8 +158,8 @@ def test_li383_clebsch_dict_matches_the_state_route_contract():
     # dPhi is the exact quadratic flux derivative in GVEC units
     st = read_wout(LI383)
     phi_edge = st["profiles"]["phi"][-1]      # already / 2 pi
-    assert np.abs(cb["dPhi"] - 2.0 * cb["rho"] * phi_edge).max() < 1e-10
-    assert abs(cb["dPhi"][0]) < 1e-12
+    assert np.abs(cb["dPhi"] - 2.0 * cb["rho"] * phi_edge).max() < mrx.eps(524288)
+    assert abs(cb["dPhi"][0]) < mrx.eps(8192)
     # dchi / dPhi is iota (checked off-axis where dPhi != 0)
     iota = cb["dchi"][1:] / cb["dPhi"][1:]
     assert 0.3 < np.abs(iota).min() and np.abs(iota).max() < 0.7
@@ -272,4 +272,4 @@ def test_fit_enforces_the_axis_behaviour():
             spl = BSpline(blk["T"], row, blk["deg"])
             for o in _axis_orders(int(mode), blk["deg"]):
                 d = spl.derivative(o)(0.0)
-                assert abs(d) <= 1e-8 * scale, f"{name} m={mode}: d^{o} at the axis {d:.2e}"
+                assert abs(d) <= mrx.sqrt_eps() * scale, f"{name} m={mode}: d^{o} at the axis {d:.2e}"

@@ -103,11 +103,18 @@ the current preconditioner is `eta <= 1e-2` (the production range is
 `<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
 and so keeps `eps` in range for `eta <= 1e-1` too.
 
-*Fix: BUILT AND MEASURED (2026-09-03), NOT ADOPTED.* The atom is
-`mrx.preconditioners.build_shifted_mass_laplace_atom`, with
-`apply_shifted_mass_laplace_atom` and tests in `test/test_shifted_atom.py`.
-**Both reasons this entry gave for it being hard were wrong**, and the
-correction matters more than the atom does:
+*Fix: SUPERSEDED by the production atom in the update below.* A separable
+`(M + eps L)` atom was built and measured on 2026-09-03 and then removed
+again: it was wired into no solve, and it lost the comparison that decides
+adoption -- 185 CG iterations against the mass atom's 149 at the smoothing
+shift -- because it carried no polar-core block, even though its relative miss
+was bounded over four decades of `eps` where the mass atom grows linearly. The
+measurements are kept in `tpu/results/benchmark_v5e_vs_cpu.md`; the code is
+not.
+
+**Both reasons this entry originally gave for a separable atom being hard were
+wrong**, which is the part that outlived the atom, and the production solution
+below rests on the first of them:
 
 * *"Their Kronecker structures do not share a generalised eigenbasis."* They
   do. `_kron_mass_model_1d` and `metric_lumping_laplacian.component_factors`
@@ -116,34 +123,17 @@ correction matters more than the atom does:
   pattern, both deliberately UNWEIGHTED with the metric carried outside as a
   diagonal. The 1-D factors come out bit-identical for k=0..3 and every
   component. Only *which* outer diagonal differs, and that is a choice, not a
-  structural obstruction. `test_shifted_atom.py` now asserts the identity so a
-  change to either builder fails loudly.
+  structural obstruction.
 * *"Fast-diagonalised as a whole for each `eps`."* Once, for all `eps`. Where
   `V.T M V = I` and `V.T L V = diag(mu)`, `M + eps L` is `1 + eps*mu`, so
   `eps` reaches the apply through a diagonal reciprocal only and can be a
   tracer. One build serves the whole line search.
 
-The construction does what it was built to do. Relative miss at k=2, li383
-`(8,16,8)` p=3 f64: 2.20 at `eps = 4.4e-4` against the mass atom's 6.02, and
-3.27 at `eps = 0.1` against 1158. Bounded over four decades.
-
-**It still loses on iteration count**, which is what a solve pays: 185 against
-149 at `eps = 4.4e-4`, and worse at `eps = 0.1`. The cause is isolated: at
-`eps = 0` both atoms model the SAME operator with the SAME 1-D factors, and it
-is 82 iterations against 57. The difference there is only that this atom is a
-BULK atom with no polar-core block. That a 354x better norm still loses on
-iterations is consistent with the untreated core rows contributing outlier
-eigenvalues that a random-probe 2-norm averages away, but that was not
-verified.
-
-*So the open item is narrower than it was, and different:* not "build a
-separable atom" but "give the separable atom a polar-core block, then decide".
-The velocity smoothing solve runs at `eps = 0.064/n_r^2 = 4.4e-4` where
-`M + eps L` is mass-dominated and the projected win is only ~1.16x. The
-RESISTIVE regime this entry is actually about -- `eta = 1e-1`, `eps ~ 0.17` --
-is where the mass atom collapses and the atom's norm advantage is largest, and
-it is exactly where the core deficit was not separated out. That is the
-measurement worth doing.
+The polar core is what decided it. At `eps = 0` both atoms model the same
+operator with the same 1-D factors, and the bulk-only atom still took 82
+iterations against 57: a 1.44x deficit from the untreated core rows alone,
+larger than anything the shift handling won back. Any future separable atom
+should carry a core block from the start.
 
 Note also that a shifted atom cannot help the k=3 Leray/Schur block: `L_3` is
 identically zero (no 4-form for `G_3` to map into, measured as `||L_3 x|| = 0`
@@ -153,7 +143,25 @@ The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
 converts to numpy at trace time, so it cannot be used inside the jitted step
 as is.
 *Detail:* `docs/source/concepts/relaxation.md` §2,
-`tpu/results/benchmark_v5e_vs_cpu.md`, `tpu/shifted_atom_measure.py`.
+`tpu/results/benchmark_v5e_vs_cpu.md`.
+*Update 2026-09-02:* the saddle MINRES is gone. `D_k D_{k-1} = 0` gives the
+exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
++ eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass
+atom, no inner mass solve. li383 p=3 at the smoothing eps: 330 / 772 / 1326
+iterations at (8,16,8) / (12,24,12) / (16,32,16) against 2134 / 8478 /
+20362 for the MINRES (`docs/research/shifted_split_2026-09-02.md`).
+*Same day:* the joint atom exists: the Laplacian atom's strong-half
+(primal-axis) Kronecker terms divided by `1 + eps lambda` in their own
+eigenbasis are `(M^ + eps S^)^-1` for the atom's separable mass
+(`MetricLumpingLaplacian.shifted_stiffness_apply`, the diffusion slot's
+`'auto'`). CG on `M_k + eps S_k`, li383 p=3, smoothing eps: k=2 69 / 117
+and k=1 74 / 128 at (8,16,8) / (12,24,12) against 153 / 371 and 181 / 422
+with the mass atom -- the whole smoothing solve 145 / 249 iterations from
+2134 / 8478 in the morning. Two factorisations with the Jacobian in the
+1-D masses (J profiles; the mass atom's exact-diagonal sandwich) were
+measured and lost (~100 / ~200). The count still grows, ~`n_r^1.3`; the
+dropped cross-component blocks of `S_k` and the uncoupled core are the
+remaining candidates. RESOLVED as a production item.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
 
@@ -193,6 +201,28 @@ converged at these meshes (sign change between (16,32,16) and (16,32,32)),
 so a second vector-potential gauge as a diagnostic check. Theory needs
 gamma = 1 (well-posedness is proved for it only); the numbers are in
 `coarse_gvec_export_2026-08-26.md` §3b, `outputs/trim/traces_all_HF_*.png`.
+
+**3.12 The metric-lumped atom is not h-independent, and on QA the k>=1
+atoms lose spectral equivalence with resolution** (2026-09-02). Toroid:
+every `(k, BC)` grows x1.9-2.6 for h/4 (kappa ~ 1/h, the uncoupled
+bulk/polar-core split). QA: k=0 the same at 3x; k=1 grows ~n, k=2 ~n^1.45,
+k=2 free hits `maxiter = 10000` from n=16 at p=4 and n=24 at p=3. Free costs
+3.5x dbc on QA (1.4x on the toroid) and the ratio drifts up with n. The
+Localised: k=0 is the axis at both ends (r-averaged 1/r), k>=1 Dirichlet
+is exact forms in the bulk, k>=1 free on QA is smooth gradients at the
+wall; `bc_scale` is not the lever (optimum s=1-3 at every n, worth 25%).
+The k=1,2 solves are now the Hodge split (676f315: 2-7x fewer iterations,
+1-4x wall time), which makes the k>=1 mechanisms irrelevant; the k=0 axis
+mechanism and the split-vs-singular gap (2.5-12x) remain open. *Detail:*
+`precond_h_scaling_2026-09-02.md`.
+
+**3.13 Recheck 3.1 (`nbc_k1` at ~3.2) after commit 0c3aa4d.** The k=1 free
+harmonic form used to be built from a non-closed seed through a k=2 FREE
+solve that ran out of budget at fine meshes, leaving a ~1e-3 non-harmonic
+contamination that the analytic vacuum study (`scripts/analytic_vacuum.py`,
+Route A) measured as an order-3.2 stall -- the same symptom. A k=1 free
+solve deflates against that vector. Not verified on `nbc_k1` itself.
+*Detail:* `precond_h_scaling_2026-09-02.md` §1.
 
 ## 4. Where the folding time goes
 
