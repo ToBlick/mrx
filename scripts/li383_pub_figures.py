@@ -677,6 +677,64 @@ def dose(j):
     return float(np.sum(np.asarray(t["eta"]) * np.asarray(t["dt"])))
 
 
+def stall_sections(j, k):
+    f = os.path.join(j["dir"], "stalls", str(k), "poincare", "sections.npz")
+    return np.load(f, allow_pickle=True) if os.path.exists(f) else None
+
+
+def stall_rows(j):
+    """One row per stalled equilibrium of a --reconnect arm: the descent's
+    floor at the stall, the dose, and what the solve did to |F|, helicity,
+    current and beta; widths and chaotic lines from the stall's own sections."""
+    rows = [
+        "| stall | step | floor | eps | `||F||` before -> after | H before -> after | dH | "
+        "J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for ev in j["stalls"]:
+        z = stall_sections(j, ev["stall"])
+        w5 = fmt(island_width(z, 5, 1), "f3") if z is not None else "-"
+        w6 = fmt(island_width(z, 6, 1), "f3") if z is not None else "-"
+        ch = int(z["final_chaotic"].sum()) if z is not None else "-"
+        rows.append(
+            f"| {ev['stall']} | {ev['it']} | {ev['floor']:.2e} | {ev['eps']:.2e} | "
+            f"{ev['F_before']:.2e} -> {ev['F_after']:.2e} | "
+            f"{ev['helicity_before']:+.4e} -> {ev['helicity_after']:+.4e} | "
+            f"{ev['helicity_after'] - ev['helicity_before']:+.2e} | "
+            f"{ev['JoverB_before']:.3f} -> {ev['JoverB_after']:.3f} | "
+            f"{ev['beta_vol_before']:.4f} -> {ev['beta_vol_after']:.4f} | {w5} | {w6} | {ch} |"
+        )
+    return rows
+
+
+def reconnect_figure(arms, ideal, figdir):
+    """Residual, ||J||/||B|| and helicity against the step for the reconnect
+    arms, the stalls marked, the ideal run of the same rung for reference."""
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
+    entries = [(ideal, "ideal", "k")] + [(j, j["arm"], None) for j in arms]
+    for j, label, color in entries:
+        kw = dict(label=label) if color is None else dict(label=label, color=color)
+        line = plot_trace(ax[0], F(j), **kw)
+        q = j["qoi"]
+        ax[1].plot(q["it"], q["JoverB"], "-", color=line.get_color(), label=label)
+        h = np.asarray(q["helicity"])
+        ax[2].plot(q["it"], h - h[0], "-", color=line.get_color(), label=label)
+        for ev in j.get("stalls", []):
+            for a in ax:
+                a.axvline(ev["it"], color=line.get_color(), ls=":", lw=0.8)
+    ax[0].set_yscale("log")
+    ax[0].set_ylabel(r"$\|F\|$ (100-step mean $\pm$ sd)")
+    ax[1].set_ylabel(r"$\|J\| / \|B\|$")
+    ax[2].set_ylabel(r"$H - H_0$")
+    for a in ax:
+        a.set_xlabel("step")
+        a.grid(alpha=0.3)
+    ax[0].legend()
+    fig.suptitle("stall -> checkpoint -> reconnect: dotted lines mark the stalls")
+    fig.savefig(os.path.join(figdir, "reconnect_traces.png"), dpi=140)
+    plt.close(fig)
+
+
 def pulse_islands(tanh_arms, pulse_arms, ideal, figdir):
     """Island width at 3/5 and 1/2 against the dose, tanh rungs vs pulses."""
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
@@ -842,8 +900,23 @@ def main():
             load(root, "li383_pub", "h16_p2_g1"),
             pdir,
         )
+        reconnect = [
+            j
+            for j in (
+                load(root, "li383_pulse", os.path.basename(d))
+                for d in sorted(glob.glob(os.path.join(root, "li383_pulse", "reconnect*")))
+            )
+            if j is not None and j.get("stalls")
+        ]
+        full = [j for j in reconnect if "smoke" not in j["arm"]]
+        if full:
+            reconnect_figure(full, load(root, "li383_pub", "h16_p2_g1"), pdir)
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
+            + "".join(
+                f"\n## stalls of {j['arm']}\n" + "\n".join(stall_rows(j)) + "\n"
+                for j in reconnect
+            )
         )
         open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
             "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"

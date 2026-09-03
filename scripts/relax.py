@@ -132,21 +132,21 @@ Output (``--out``):
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
-``--pulse-adaptive`` runs the ideal descent and fires a resistive pulse, one
-backward-Euler solve of ``(M + eps L) delta = -eps L B``, whenever the descent
-stalls: the 200-step block mean of the residual has dropped by less than
-``--pulse-stall`` over the last 1000 steps. The dose is ``eps = c h^2`` with
-``h = 1 / n_r`` and ``c`` starting at ``--pulse-eps0`` (a diffusion length of
-``sqrt(c)`` cells); the descent state is snapshotted before the pulse and the
-optimiser restarted on the diffused field. At the next stall the pulse is
-judged: accepted when the new floor is below ``(1 - --pulse-gain)`` times the
-floor before it, and ``c`` grows by ``--pulse-grow``; otherwise the state is
-reverted to the snapshot and ``c`` shrinks by the same factor. Pulses are at
-least ``--pulse-spacing`` steps apart (the detector only sees the history since
-the last event) and stop once the helicity has moved by
-more than ``--pulse-helicity`` of its initial value. ``results["pulses"]``
-records every event; the trace keeps the trial steps of a reverted pulse
-(marked by the event's ``reverted`` range) since their wall time was spent.
+``--reconnect`` runs the ideal descent and, whenever it stalls, checkpoints
+the stalled equilibrium and reconnects it with one backward-Euler solve of
+``(M + eps L) delta = -eps L B``, then restarts the optimiser on the diffused
+field and carries on. Stalled means the block mean of the residual (blocks of
+a fifth of ``--stall-steps``) has dropped by less than ``--stall-tol`` over
+the last ``--stall-steps`` steps; the detector only sees the history since the
+last reconnection. The dose is ``eps = c h^2`` with ``h = 1 / n_r`` and
+``c = --reconnect-eps`` (a diffusion length of ``sqrt(c)`` cells), the same
+for every reconnection. Stall ``k`` leaves ``<out>/stalls/<k>/B.h5`` (the
+stalled field with its pressures, in the layout of ``B.h5``, so
+``poincare_relax.py`` reads it) and ``state.eqx`` (a ``--restart`` file);
+``results["stalls"]`` records step, floor, |F|, helicity and ||J||/||B||
+before and after each solve. The run ends on ``--steps`` or ``--seconds``;
+its outcome is the series of stalled equilibria, one per reconnection, to
+choose from.
 
 ``--checkpoint PATH`` (default ``<out>/state.eqx``) serialises the full
 descent state -- B, the pressure and warm-start guesses, the L-BFGS pair,
@@ -269,21 +269,16 @@ def parse_args(argv=None):
                     help="steps between the qoi samples: helicity (a k=1 Hodge solve), "
                          "the two pressures and beta (a force evaluation and a k=0 solve)")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--pulse-adaptive", action="store_true",
-                    help="resistive pulses fired by the stall detector (see the docstring)")
-    ap.add_argument("--pulse-stall", type=float, default=0.05,
-                    help="stalled when the residual dropped by less than this over 1000 steps")
-    ap.add_argument("--pulse-eps0", type=float, default=0.01,
-                    help="first dose eps = c h^2 with this c")
-    ap.add_argument("--pulse-grow", type=float, default=2.0,
-                    help="factor on c after an accepted (x) or rejected (/) pulse")
-    ap.add_argument("--pulse-gain", type=float, default=0.10,
-                    help="accept a pulse when the next floor is below (1 - gain) x the previous")
-    ap.add_argument("--pulse-helicity", type=float, default=0.01,
-                    help="stop pulsing once |H - H_0| / |H_0| exceeds this")
-    ap.add_argument("--pulse-spacing", type=int, default=1200,
-                    help="minimum steps between pulse events (fire or judge); the stall "
-                         "detector needs 1200 steps of history since the last event")
+    ap.add_argument("--reconnect", action="store_true",
+                    help="checkpoint the stalled equilibrium and reconnect it with one "
+                         "resistive solve whenever the descent stalls (see the docstring)")
+    ap.add_argument("--stall-tol", type=float, default=0.05,
+                    help="stalled when the residual dropped by less than this fraction "
+                         "over --stall-steps steps")
+    ap.add_argument("--stall-steps", type=int, default=1000,
+                    help="steps over which the stall is judged (block means of a fifth of it)")
+    ap.add_argument("--reconnect-eps", type=float, default=0.01,
+                    help="dose eps = c h^2 of every reconnection, h = 1 / n_r, with this c")
     ap.add_argument("--checkpoint", default=None,
                     help="write the descent state (equinox pytree + step) here at every "
                          "save and at the end; default <out>/state.eqx")
@@ -553,40 +548,42 @@ def main(cli):
             resid_window_mean=float(np.mean(window)) if window else resid0,
             **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
-            # the pulse events carry their snapshot pytree until judged
-            json.dump(dict(results, pulses=[{k: v for k, v in ev.items() if k != "snapshot"}
-                                            for ev in results["pulses"]]), fh, indent=1)
+            json.dump(results, fh, indent=1)
         eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
         # The field goes out with every save, not only the last one: a run
         # that hits its wall-time limit leaves the state it reached.
-        with h5py.File(os.path.join(out, "B.h5"), "w") as fh:
+        write_field(os.path.join(out, "B.h5"), state.B_n, latest["p"], latest["pw"],
+                    snapshots=bool(cli.save_every))
+
+    def write_field(path, B_now, p_now, pw_now, snapshots=False, **extra):
+        """The field and its pressures next to the IC's, as poincare_relax.py reads them."""
+        with h5py.File(path, "w") as fh:
             fh.create_dataset("B_ic", data=np.asarray(B0))
-            fh.create_dataset("B_final", data=np.asarray(state.B_n))
+            fh.create_dataset("B_final", data=np.asarray(B_now))
             fh.create_dataset("p_ic", data=p_ic)
-            fh.create_dataset("p_final", data=latest["p"])
+            fh.create_dataset("p_final", data=p_now)
             fh.create_dataset("pw_ic", data=pw_ic)
-            fh.create_dataset("pw_final", data=latest["pw"])
-            if cli.save_every:
+            fh.create_dataset("pw_final", data=pw_now)
+            if snapshots:
                 fh.create_dataset("snapshot_steps", data=np.array([k for k, _, _ in snaps]))
                 fh.create_dataset("B_snapshots", data=np.stack([b for _, b, _ in snaps]))
                 fh.create_dataset("pw_snapshots", data=np.stack([w for _, _, w in snaps]))
-            for k, v in params.items():
+            for k, v in {**params, **extra}.items():
                 fh.attrs[k] = "" if v is None else v
 
-    results["pulses"] = []
-    pulse_c = cli.pulse_eps0
-    pulse_h2 = (1.0 / ns[0]) ** 2
-    pulse_pending = None
-    pulse_last = it0
-    pulses_off = False
-    pulse_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
+    results["stalls"] = []
+    reconnect_eps = cli.reconnect_eps * (1.0 / ns[0]) ** 2
+    stall_block = max(cli.stall_steps // 5, 1)
+    stall_last = it0
+    reconnect_fn = jax.jit(lambda B: resistive_step(B, seq, reconnect_eps))
 
     def stalled(resid):
-        """The 200-step block mean dropped by less than --pulse-stall over 1000 steps."""
-        if len(resid) < 1200:
+        """The block mean dropped by less than --stall-tol over --stall-steps steps."""
+        if len(resid) < cli.stall_steps + stall_block:
             return False, None
-        now, before = float(np.mean(resid[-200:])), float(np.mean(resid[-1200:-1000]))
-        return now > (1.0 - cli.pulse_stall) * before, now
+        now = float(np.mean(resid[-stall_block:]))
+        before = float(np.mean(resid[-cli.stall_steps - stall_block:-cli.stall_steps]))
+        return now > (1.0 - cli.stall_tol) * before, now
 
     for it in range(it0 + 1, it0 + cli.steps + 1):
         if cli.eta_max > 0.0:
@@ -656,50 +653,44 @@ def main(cli):
                   f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
                   f"res_delta={tr['res_delta'][-1]:.2e}",
                   flush=True)
-        if cli.pulse_adaptive and it - pulse_last >= cli.pulse_spacing:
-            # Only the history since the last event counts: after a revert the
-            # older trace entries are the rejected trial's, not this trajectory's.
-            is_stalled, floor_now = stalled(tr["resid"][pulse_last - it0:])
-            if is_stalled and pulse_pending is not None:
-                ev = pulse_pending
-                ev["judged_at"], ev["floor_after"] = it, floor_now
-                if floor_now < (1.0 - cli.pulse_gain) * ev["floor_before"]:
-                    ev["outcome"] = "accepted"
-                    pulse_c *= cli.pulse_grow
-                else:
-                    ev["outcome"] = "rejected"
-                    ev["reverted"] = [ev["it"] + 1, it]
-                    state = ev.pop("snapshot")
-                    pulse_c /= cli.pulse_grow
-                ev.pop("snapshot", None)
-                print(f"  [pulse] {ev['outcome']} at it={it}: floor {ev['floor_before']:.3e} -> "
-                      f"{floor_now:.3e}; next c = {pulse_c:.3g}", flush=True)
-                pulse_pending = None
-                pulse_last = it
-            elif is_stalled and not pulses_off:
+        if cli.reconnect:
+            # Only the history since the last reconnection counts.
+            is_stalled, floor_now = stalled(tr["resid"][stall_last - it0:])
+            if is_stalled:
                 tq = time.perf_counter()
+                k = len(results["stalls"]) + 1
+                sdir = os.path.join(out, "stalls", str(k))
+                os.makedirs(sdir, exist_ok=True)
+                # The stalled equilibrium: field, pressures, helicity, restart file.
+                _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
+                pw, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
                 H_now, A_new = get_helicity(state.B_n, seq, state.A)
-                state = eqx.tree_at(lambda t: t.A, state, A_new)
+                state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A_new))
+                write_field(os.path.join(sdir, "B.h5"), state.B_n, np.asarray(p), np.asarray(pw),
+                            stall=k, stall_step=it)
+                eqx.tree_serialise_leaves(os.path.join(sdir, "state.eqx"), (state, jnp.int32(it)))
+                ev = dict(stall=k, it=it, floor=floor_now, eps=float(reconnect_eps),
+                          F_before=float(state.F_norm), helicity_before=float(H_now),
+                          JoverB_before=float(JoverB),
+                          **{f"{kk}_before": float(v) for kk, v in diag.items()})
+                # Reconnect and restart the optimiser on the diffused field.
+                B_new, info, rel = reconnect_fn(state.B_n)
+                state = initial_state(B_new, ts, dt=float(state.dt))
+                _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
+                pw_guess, JoverB, diag = pressure_probe(state.B_n, p, J, H, pw)
+                H_new, A_new = get_helicity(state.B_n, seq, state.A)
+                state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A_new))
+                ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
+                          helicity_after=float(H_new), JoverB_after=float(JoverB),
+                          **{f"{kk}_after": float(v) for kk, v in diag.items()})
+                results["stalls"].append(ev)
+                stall_last = it
                 t_qoi += time.perf_counter() - tq
-                loss = abs(float(H_now) - float(H0)) / abs(float(H0))
-                if loss > cli.pulse_helicity:
-                    pulses_off = True
-                    print(f"  [pulse] helicity budget spent ({loss:.2e} > {cli.pulse_helicity:g}); "
-                          f"no more pulses", flush=True)
-                else:
-                    eps = pulse_c * pulse_h2
-                    B_new, info, rel = pulse_fn(state.B_n, eps)
-                    pulse_pending = dict(it=it, eps=float(eps), c=pulse_c, floor_before=floor_now,
-                                         F_before=float(state.F_norm), H_before=float(H_now),
-                                         helicity_loss_before=loss, solve_it=int(info),
-                                         moved=float(rel), outcome="pending", snapshot=state)
-                    state = initial_state(B_new, ts, dt=float(state.dt))
-                    results["pulses"].append(pulse_pending)
-                    pulse_last = it
-                    print(f"  [pulse] fired at it={it}: eps={eps:.3e} (c={pulse_c:.3g}), floor "
-                          f"{floor_now:.3e}, |F| {pulse_pending['F_before']:.3e} -> "
-                          f"{float(state.F_norm):.3e}, moved {float(rel):.2e}, helicity loss so far "
-                          f"{loss:.2e}", flush=True)
+                print(f"  [stall {k}] at it={it}: floor {floor_now:.3e}; reconnect eps="
+                      f"{reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
+                      f"|F| {ev['F_before']:.3e} -> {ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} "
+                      f"-> {ev['helicity_after']:+.6e}, J/B {ev['JoverB_before']:.3f} -> "
+                      f"{ev['JoverB_after']:.3f}; wrote {sdir}", flush=True)
         if force_floor_reached(tr["resid"], cli.floor_steps, cli.floor_tol):
             stop = "floor"
             print(f"  [floor] force residual averaged over the last {cli.floor_steps} "
