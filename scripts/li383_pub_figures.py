@@ -181,10 +181,45 @@ def it(j):
     return np.arange(1, len(F(j)) + 1)
 
 
+BLOCK = 100  # steps per block in the trace plots
+
+
+def blocked(y, log=True, w=BLOCK):
+    """Block means of a per-step trace and the +-1 sd band across each block,
+    (centre step, mean, lower, upper). ``log`` takes the statistics in log
+    space (geometric mean, multiplicative sd) for a log axis. The last
+    partial block is kept."""
+    y = np.asarray(y, float)
+    n = len(y)
+    edges = list(range(0, n, w)) + [n]
+    x, m, lo, hi = [], [], [], []
+    for a, b in zip(edges[:-1], edges[1:]):
+        blk = y[a:b]
+        if log:
+            blk = np.log(blk[blk > 0])  # E_0 - E is 0 at step 1
+            if len(blk) == 0:
+                continue
+        mu, sd = blk.mean(), blk.std()
+        x.append(0.5 * (a + b + 1))
+        m.append(mu)
+        lo.append(mu - sd)
+        hi.append(mu + sd)
+    f = np.exp if log else np.asarray
+    return np.asarray(x), f(np.asarray(m)), f(np.asarray(lo)), f(np.asarray(hi))
+
+
+def plot_trace(ax, y, log=True, **kw):
+    """One block-averaged trace with its sd ribbon; ``kw`` goes to the line."""
+    x, m, lo, hi = blocked(y, log)
+    (line,) = ax.plot(x, m, **kw)
+    ax.fill_between(x, lo, hi, color=line.get_color(), alpha=0.2, lw=0)
+    return line
+
+
 def plot_lines(ax, entries):
     for j, lab, st in entries:
         if j is not None:
-            ax.plot(it(j), F(j), lw=1.0, ls=st, label=lab)
+            plot_trace(ax, F(j), lw=1.0, ls=st, label=lab)
     ax.set_yscale("log")
     ax.set_xscale("log")
     ax.set_xlabel("step")
@@ -295,7 +330,9 @@ def hsweep_figure(arms, figdir):
     ax[1, 0].set_title("rotational transform after relaxation")
     for j in arms:
         E = np.asarray(j["trace"]["E"])
-        ax[1, 1].loglog(it(j), E[0] - E, lw=1.0, label=f"n={j['params']['ns'][0]}")
+        plot_trace(ax[1, 1], E[0] - E, lw=1.0, label=f"n={j['params']['ns'][0]}")
+    ax[1, 1].set_xscale("log")
+    ax[1, 1].set_yscale("log")
     ax[1, 1].set_xlabel("step")
     ax[1, 1].set_ylabel("$E_0 - E$")
     ax[1, 1].grid(alpha=0.3)
@@ -468,13 +505,13 @@ def eta_traces(arms, ideal, ideal_seeded, figdir):
         q = j["qoi"]
         E = np.asarray(j["trace"]["E"])
         h = np.asarray(q["helicity"])
-        ax[0].plot(it(j), F(j), color=c, ls=ls, lw=0.9, label=lab)
+        plot_trace(ax[0], F(j), color=c, ls=ls, lw=0.9, label=lab)
         ax[1].plot(q["it"], q["JoverB"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
         ax[2].plot(
             q["it"], q["beta_vol"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab
         )
         ax[3].plot(q["it"], h, ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
-        ax[4].plot(it(j), E[0] - E, color=c, ls=ls, lw=0.9, label=lab)
+        plot_trace(ax[4], E[0] - E, color=c, ls=ls, lw=0.9, label=lab)
         if j["params"]["eta_max"] > 0:
             ax[5].plot(
                 it(j), np.asarray(j["trace"]["eta"]), color=c, ls=ls, lw=0.9, label=lab
@@ -604,7 +641,7 @@ def main():
         if j is None:
             continue
         E = np.asarray(j["trace"]["E"])
-        ax[0].plot(it(j), (E[0] - E) / E[0], lw=1.0, label=j["arm"])
+        plot_trace(ax[0], (E[0] - E) / E[0], lw=1.0, label=j["arm"])
         h = np.asarray(j["qoi"]["helicity"])
         ax[1].plot(
             np.asarray(j["qoi"]["it"]),
