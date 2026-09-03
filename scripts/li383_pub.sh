@@ -16,7 +16,8 @@
 # sets li383_eta, and `SUB=li383_eta ... sections NAME` addresses it); job ids
 # to $MRX_ROOT/outputs/$SUB/jobs.tsv.
 set -euo pipefail
-ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+WT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # the checkout this launcher lives in
+ROOT=${MRX_ROOT:-$WT}
 export MRX_ROOT=$ROOT
 cd "$ROOT"
 SUB=${SUB:-li383_pub}
@@ -119,8 +120,7 @@ bonly() {  # bonly [smoke]
     # mrx/experimental/bonly_relaxation.py, twin of h16_p2_g1, helicity sampled
     # every 50 steps. The code comes from THIS checkout (worktree): SCRIPT is
     # absolute and PYTHONPATH is overridden; data and outputs stay under $ROOT.
-    local wt
-    wt=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+    local wt=$WT
     export EXTRA_ENV="PYTHONPATH=$wt"
     local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --save-every 100 --qoi-every 50 --stepper bonly"
     if [ "${1:-}" = smoke ]; then
