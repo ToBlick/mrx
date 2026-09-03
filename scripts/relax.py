@@ -653,8 +653,10 @@ def main(cli):
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
     res_it = np.array(tr["res_it"])
-    if cli.eta_max > 0:
-        solved = res_it != 0
+    solved = res_it != 0
+    if cli.eta_max > 0 and not solved.any():
+        print("    resistive solve never due in this run (eta off, or the window not reached)")
+    elif cli.eta_max > 0:
         rd = np.array(tr["res_delta"])[solved]
         print(f"    resistive solve on {int(solved.sum())}/{n_done} steps: MINRES iterations "
               f"mean {np.abs(res_it[solved]).mean():.1f}  max {np.abs(res_it).max()}  "
