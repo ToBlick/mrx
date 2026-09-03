@@ -46,11 +46,11 @@ result as a test of the worktree. Read that line before reading the result.
 
 ## Run the suite on a GPU node
 
-`pytest` (no arguments) runs the whole suite: one lean tier, 45 tests on one
-session sequence (li383 `(8, 12, 12)` p=3, `test/conftest.py`), in float64
-and float32 on the GitHub runners (`.github/workflows/ci.yml`). Everything
-it reads is tracked, so a worktree runs it as it is. On the cluster it is
-one GPU job:
+`pytest` (no arguments) runs the whole suite: one lean tier, 51 tests on two
+session sequences at `(8, 12, 12)` p=2 (li383 and the analytic toroid,
+`test/conftest.py`), in float64 and float32 on the GitHub runners
+(`.github/workflows/ci.yml`). Everything it reads is tracked, so a worktree
+runs it as it is. On the cluster it is one GPU job:
 
 ```
 SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=30 bash slurm/run.sh
@@ -64,11 +64,11 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests_cpu CPUS=4 EXTRA_ENV="JAX_PLATFORMS=cp
 ```
 
 `EXTRA_ENV="MRX_DTYPE=float32"` selects single precision for any of these.
-Measured 2026-09-02 (H100): 45 pass in 4:03 (float64) and 3:48 (float32)
-on the GPU, 5:21 on four CPU cores in float64. The suite is compile-bound:
-the session fixture (`build_sequence` plus the harmonic forms) is ~80 s of
-it on either backend, the 50-step relaxation 85 s on the GPU and 200 s on
-four cores, the four vacuum solves ~12 s each on the GPU.
+Measured 2026-09-02 (H100): 51 pass in 3:54 (float64) and 4:35 (float32)
+on the GPU, 3:55 on four CPU cores in float64. The suite is compile-bound:
+the li383 fixture (`build_sequence` plus the harmonic forms) is ~75 s of it
+on either backend, the toroid fixture ~25 s, the 50-step relaxation ~70 s,
+the eight manufactured solves 1-6 s each.
 
 The previous 263-test suite ran ~13 min on the GPU and crashed XLA's CPU
 backend deterministically after ~230 tests: tens of thousands of separate

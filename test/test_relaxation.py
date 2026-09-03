@@ -14,12 +14,13 @@ from mrx.relaxation import DescentMethod, TimeStepChoice, TimeStepper, relaxatio
 from test.conftest import NS
 
 OUTER, INNER = 2, 25
-# ||F||_end / ||F||_0 after OUTER x INNER steps on li383 (8, 12, 12) p=3,
-# measured 2026-09-02: 0.155 in float64, 0.173 in float32 (0.123 after 100
-# steps); band 1.25x the float32 value.
-FORCE_DROP = 0.22
-# |H_end - H_0| / (2 E_0): helicity is conserved to the solves' tolerance;
-# measured 1.44e-7 in float64 (seq.tol = 1.5e-8), so 25 tol in either precision.
+# ||F||_end / ||F||_0 after OUTER x INNER steps on li383 (8, 12, 12) p=2,
+# measured 2026-09-02: 0.113 .. 0.143 in float64, 0.154 in float32 across
+# three runs (the line search is not bitwise reproducible); band 1.25x the
+# largest.
+FORCE_DROP = 0.20
+# |H_end - H_0| / (2 E_0): helicity is conserved to the solves' tolerance,
+# so the band is a multiple of seq.tol in either precision.
 HELICITY_DRIFT_TOL = 25.0
 
 
