@@ -367,7 +367,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
-                   cmap=SECTION_CMAP, iota_lim=None, limits=None):
+                   cmap=SECTION_CMAP, iota_lim=None, limits=None, iota_scatter=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -399,9 +399,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     and the labels say so.
 
     Every kept line is drawn and fitted, chaotic ones included: the iota
-    profile carries ``iota_err`` as a ribbon (the fit uncertainty, see
-    :func:`trace_and_classify`), so a line without a rotational transform
-    shows as a point with a wide ribbon rather than as a separate category.
+    profile carries a ribbon, so a line without a rotational transform shows as
+    a point with a wide ribbon rather than as a separate category. The ribbon
+    is ``iota_scatter`` when given -- the std of iota over K equal ζ-windows
+    (:func:`mrx.poincare._iota_window_scatter`), the along-line spread that
+    reads like the pressure band -- else ``iota_err`` (the whole-line fit
+    RMS/N, see :func:`trace_and_classify`).
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
@@ -592,7 +595,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
 
     prof = per_line(shown) & jnp.isfinite(xs)
     order = jnp.argsort(xs[prof])
-    xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(iota_err)[prof][order]
+    # The ribbon is the iota scatter over K windows when given (the along-line
+    # spread, the analog of the pressure band), else the whole-line fit RMS/N.
+    band = iota_err if iota_scatter is None else iota_scatter
+    ribbon_label = (r"$\iota \pm$ fit RMS / $N$" if iota_scatter is None
+                    else r"$\iota \pm$ window std")
+    xo, io, eo = xs[prof][order], per_line(iota)[prof][order], per_line(band)[prof][order]
     # The ribbon is iota +- iota_err, the uncertainty of the fitted slope:
     # the RMS deviation of the unwrapped angle from the fitted line over the
     # length of the fit (trace_and_classify). ~1/N on a flux surface, the
@@ -627,7 +635,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         bx.set_xlabel(profile_xlabel)
         bx.set_ylabel(r"$\iota$")
     bx.fill_between(xo, io - eo, io + eo, color=left["color"], alpha=0.15, lw=0,
-                    label=r"$\iota \pm$ fit RMS / $N$")
+                    label=ribbon_label)
     for value, lab in zip(res_ticks, res_labels):
         bx.axhline(value, color="0.55", lw=0.6, ls="--", zorder=0)
         bx.annotate(lab, (0.995, value), xycoords=("axes fraction", "data"),

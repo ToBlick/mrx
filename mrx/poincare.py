@@ -393,6 +393,46 @@ def _iota_convergence(ys, saves_per_period, nfp, center=None):
     return jnp.abs(i1 - i2)
 
 
+#: Windows for the iota scatter band (:func:`_iota_window_scatter`): the trace
+#: is split into this many equal ζ-windows, iota is fitted in each, and their
+#: spread is the profile ribbon. 16 keeps each window a few dozen poloidal turns
+#: at the default trace length -- enough for a clean per-window slope -- while
+#: resolving the along-line variation an island or chaotic line carries.
+N_IOTA_WINDOWS = 16
+
+
+def _iota_window_scatter(ys, saves_per_period, nfp, n_windows=N_IOTA_WINDOWS,
+                         center=None):
+    r"""Std of the per-window rotational transform over ``n_windows`` equal
+    ζ-windows: the along-line scatter of iota.
+
+    The direct analog of the pressure band, which is the std of ``p`` over the
+    line's crossings. iota is a *slope*, not a per-crossing value, so its
+    scatter needs one window per estimate -- a single window would be one
+    sample of the slope, the very thing that made the half-split noisy as a
+    ribbon (:func:`_iota_convergence` is kept for the chaos test, where that
+    property is wanted). On a flux surface the windows agree and the band is
+    the per-window fit noise; on an island or a chaotic line the local winding
+    varies from window to window and the band opens, exactly as ``p``'s does.
+    """
+    if center is None:
+        center = axis_track(ys, saves_per_period)
+    d = ys - center
+    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
+    zeta = jnp.arange(ys.shape[1]) / saves_per_period
+    edges = jnp.linspace(0, ys.shape[1], n_windows + 1).astype(int)
+
+    def win_iota(lo, hi):
+        a, z = angle[:, lo:hi], zeta[lo:hi]
+        zc = z - jnp.mean(z)
+        ac = a - jnp.mean(a, axis=-1, keepdims=True)
+        return jnp.abs((ac @ zc) / (zc @ zc)) * nfp
+
+    iotas = jnp.stack([win_iota(int(edges[k]), int(edges[k + 1]))
+                       for k in range(n_windows)], axis=-1)
+    return jnp.std(iotas, axis=-1)
+
+
 def to_RZ(seq, ys, zeta):
     """Map ``(u, v)`` cross-section points at fixed logical zeta to ``(R, Z)``."""
     r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
@@ -567,6 +607,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     centre = axis_track(ys, saves_per_period)
     iota, resid = rotational_transform(ys, saves_per_period, nfp, center=centre)
     iota_err = nfp * resid / n_periods
+    iota_scatter = _iota_window_scatter(ys, saves_per_period, nfp, center=centre)
     chaotic = (_iota_convergence(ys, saves_per_period, nfp, center=centre)
                > CHAOS_TOL_PER_PERIOD / n_periods)
 
@@ -598,6 +639,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     return {"ys": np.asarray(ys[1:]), "ok": np.asarray(ok[1:]),
             "escaped": np.asarray(escaped[1:]), "iota": np.asarray(iota[1:]),
             "iota_err": np.asarray(iota_err[1:]), "chaotic": np.asarray(chaotic[1:]),
+            "iota_scatter": np.asarray(iota_scatter[1:]),
             "seeds": np.asarray(seeds[1:]), "axis": np.asarray(ys[0]),
             "walltime": walltime, "drift": drift, "drift_lines": int(idx.size),
             "saves_per_period": saves_per_period}
@@ -671,5 +713,5 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
         subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
                   f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"),
         axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-        logical=(lr, lth))
+        logical=(lr, lth), iota_scatter=res["iota_scatter"])
     return fig, res

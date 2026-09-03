@@ -1,4 +1,4 @@
-"""Poincare sections of a ``scripts/relax.py`` run.
+r"""Poincare sections of a ``scripts/relax.py`` run.
 
 Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
 run parameters as root attributes), rebuilds the sequence with
@@ -53,7 +53,9 @@ re-tracing) while the scatter layers are embedded as a high-dpi
 ``poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
 PATH (``module load texlive`` is NOT enough on this cluster -- its binaries are
 in the ``bin/x86_64-linux`` subdir the module does not add); without it the PNG
-is still written and the PGF is skipped with a message. Plus ``sections.npz``
+is still written and the PGF is skipped with a message. The document that
+``\input``s the ``.pgf`` must ``\usepackage[strings]{underscore}`` -- matplotlib
+writes plain-text underscores (e.g. a geometry name) raw, not escaped. Plus ``sections.npz``
 under ``--out`` with, per field, the crossing coordinates of every plane plus
 ``iota``, ``iota_err`` (the fit uncertainty drawn as the profile's ribbon, see
 ``trace_and_classify``), ``seed_r``, ``keep``, ``chaotic``, the step drift and
@@ -88,14 +90,23 @@ def save_section(fig, png_path, *, want_pgf):
     it and pulled in with ``\\includegraphics``. It needs ``xelatex`` on PATH;
     without one the PNG is still written and the PGF is skipped with a message
     rather than aborting the run (the trace is the expensive half).
+
+    The including document must load ``underscore``: matplotlib's pgf backend
+    writes plain-text ``_`` (as in a geometry name like ``wout_li383_1.4m.nc``)
+    raw, not escaped, so without it the ``.pgf`` fails to compile with a
+    "Missing $ inserted". We inject ``\\usepackage[strings]{underscore}`` into
+    the pgf preamble so it is listed in the file's own "required packages"
+    header; a document that \\input's the ``.pgf`` still needs that line.
     """
     fig.savefig(png_path, dpi=200)
     print(f"  -> {png_path}", flush=True)
     if not want_pgf:
         return
+    import matplotlib as mpl
     pgf_path = os.path.splitext(png_path)[0] + ".pgf"
     try:
-        fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+            fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
         print(f"  -> {pgf_path}", flush=True)
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
         if os.path.exists(pgf_path):
@@ -234,7 +245,8 @@ def main():
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
                     pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi),
-                    limits=None if p_lim is None else {"p": p_lim})
+                    limits=None if p_lim is None else {"p": p_lim},
+                    iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None)
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
                 save_section(fig, path, want_pgf=cli.pgf)
                 plt.close(fig)
@@ -337,7 +349,8 @@ def main():
                          f"traced in {cli.precision}",
                 axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                iota_lim=(lo, hi), limits=limits.get(plane))
+                iota_lim=(lo, hi), limits=limits.get(plane),
+                iota_scatter=res["iota_scatter"])
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie
                                       else f"poincare_{name}_zeta{plane:g}.png"))
             # A movie's frames are for ffmpeg, not slides: no .pgf per frame.
@@ -350,7 +363,8 @@ def main():
             if press is not None:
                 sections[f"{tag}_pressure"] = press
             sections[f"{tag}_xlabel"] = np.array(xlabel)
-        for key, arr in (("iota", res["iota"]), ("iota_err", res["iota_err"]), ("seed_r", res["seeds"][:, 0]),
+        for key, arr in (("iota", res["iota"]), ("iota_err", res["iota_err"]),
+                         ("iota_scatter", res["iota_scatter"]), ("seed_r", res["seeds"][:, 0]),
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
