@@ -201,6 +201,34 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 - A clean demonstration of "H conserves, B does not" needs either p = 1 or a helicity-conserving time integrator (midpoint in A) as the baseline. Not done. The dt^2 attribution is argued, not measured; a float64 H-form arm with the CFL cap forcing dt down by 4 would confirm it (about 1.3 GPU-h).
 - Cost: 0.8 + 1.3 + 1.3 + 0.1 + 0.1 GPU-h.
 
+### 5g. Resistive pulses after an ideal phase, and the pulse controller (2026-09-03, `outputs/li383_pulse/`)
+
+Question: does a resistive dose do more when it is applied after the ideal descent has built its current sheets than when it is spread over the descent (5e)? `--eta-schedule pulse --eta-pulse S,W[,P]` (driver, 164b9c4) holds eta_max on a window of W steps from step S (repeating every P) and zero elsewhere, with the stepper's resistive clock reset while it is off, so `--eta-every W` makes the pulse ONE backward-Euler solve of eps = eta x window time. Arms at the (16,32,32) p = 2 gamma = 1 rung: 2000 ideal steps, a 100-step pulse, ideal to 5000; eta = 1.5e-7 / 5e-7 / 1.5e-6 (doses 3.4e-5 / 1.1e-4 / 3.1e-4, one solve each), and 5e-7 repeated every 1000 steps (three solves, 3.2e-4 in all).
+
+| arm | eta_max | K | seed | steps | stop | s/step | `||F||` 0 -> end | min | last 500 | J/B 0 -> end | beta_vol 0 -> end | dH (abs) | (6,1) width | chaotic | GPU-h |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| pulse1.5e-6 | 2e-06 | 100 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 3.67e-04 | 3.45e-04 | 3.67e-04 | 0.659 -> 0.538 | 0.0442 -> 0.0339 | -2.1e-04 | -- | 9 | 0.82 |
+| pulse1.5e-7 | 1e-07 | 100 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 4.50e-04 | 4.16e-04 | 4.48e-04 | 0.659 -> 0.622 | 0.0442 -> 0.0410 | -2.7e-05 | -- | 2 | 0.81 |
+| pulse5e-7 | 5e-07 | 100 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 4.16e-04 | 3.85e-04 | 4.14e-04 | 0.659 -> 0.591 | 0.0442 -> 0.0383 | -8.3e-05 | -- | 9 | 0.82 |
+| pulse5e-7_cyc | 5e-07 | 100 | -- | 5000 | steps | 0.59 | 1.52e-02 -> 3.67e-04 | 3.57e-04 | 4.22e-04 | 0.659 -> 0.519 | 0.0442 -> 0.0320 | -2.4e-04 | -- | 8 | 0.81 |
+
+The comparison at equal dose (the trace's int eta dt; the tanh rungs' is 5.5e-5 / 1.7e-4 / 6.0e-4 at eta_max 1e-8 / 3e-8 / 1e-7):
+
+| dose | schedule | last-500 residual | J/B end | dH | (5,1) width | (6,1) width |
+|---|---|---|---|---|---|---|
+| 3.4e-5 | pulse 1.5e-7 | 4.5e-4 | 0.622 | -2.7e-5 | 0.041 | 0 |
+| 5.5e-5 | tanh 1e-8 | 4.3e-4 | 0.615 | -3.7e-5 | 0.042 | 0 |
+| 1.1e-4 | pulse 5e-7 | 4.1e-4 | 0.591 | -8.3e-5 | 0.066 | 0 |
+| 1.7e-4 | tanh 3e-8 | 3.6e-4 | 0.563 | -1.3e-4 | 0.081 | 0.008 |
+| 3.1e-4 | pulse 1.5e-6 | 3.7e-4 | 0.538 | -2.1e-4 | 0.102 | 0.032 |
+| 3.2e-4 | 3 x pulse 5e-7 | 4.2e-4 (3.7e-4 min) | 0.519 | -2.4e-4 | 0.117 | 0 |
+| 6.0e-4 | tanh 1e-7 | 3.0e-4 | 0.451 | -4.3e-4 | 0.180 | 0.029 |
+
+- The dose is the controlling variable and the timing is nearly irrelevant: on the dose axis (`li383_pulse/figures/pulse_islands.png`) the pulses sit on the tanh curve for residual, J/B, helicity (0.8 of helicity lost per unit dose either way) and the 3/5 island width at the two smaller doses, and slightly below it at the largest. Three pulses of 1.1e-4 do what one of 3.1e-4 does. There is no selectivity to gain from timing; a single large solve also leaves more chaotic lines (9 vs 5).
+- Mechanism (`pulse_traces.png`): a pulse drops J/B, beta and helicity in one step and kicks the residual up by 3x, since the diffused field is out of balance around the former sheets; the descent needs about a thousand steps to work that off and rebuilds sheets elsewhere, whereas a small continuous eta reconnects the sheets as they form. Only the operator would buy selectivity (hyper-resistivity, k^4 against k^2).
+- Machinery that came out of it and stays: the pulse schedule; `--checkpoint / --restart` (the full descent state as an equinox pytree with the step number, `equinox.tree_serialise_leaves`; verified by a 120 + 80 step chain against a 200-step run: identical schedule and step accounting, trajectories differing only by the run-to-run round-off of the GPU descent, which already separates two identical 120-step runs by 18%); and `--pulse-adaptive`, a controller that fires a pulse when the residual stalls (200-step block mean down by less than 5% over 1000 steps), snapshots the state in memory, judges the pulse at the next stall against the floor before it, reverts and halves the dose when it did not help, and stops at a helicity budget. Smoke-tested at (8,16,16) (fire / judge / revert / dose halving all exercised); not run at scale, because the dose finding above says the decision it automates is a budget, not a timing: every dose lowers the floor and costs helicity at a nearly flat exchange rate (0.7% of H_0 buys 17% of the floor, the next 2% another 16%, the next 6% another 17%). Open: redesign as a budget controller or drop it.
+- Cost: 4 x 0.8 GPU-h plus 0.3 for the smokes.
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
@@ -214,6 +242,7 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 9. p-sweep at (16,32,32) (`figures/psweep_p16.png`): the h-sweep's twin with the degree on the axis; p = 1 without an iota panel.
 10. Resistivity (`li383_eta/figures/eta_islands.png` and `eta_traces.png`): island width at 1/2 and 3/5 vs eta_max, seeded and unseeded; traces of residual, J/B, beta, helicity, energy vs step per rung; the zeta = 0.5 section of `eta1e-7`.
 11. Helicity without H: one table row per pair (section 5f).
+11b. Pulses (`li383_pulse/figures/pulse_islands.png`): island width vs dose, pulse vs tanh; one sentence that the dose is what matters.
 12. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
