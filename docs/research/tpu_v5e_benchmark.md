@@ -13,6 +13,10 @@ Reproduce with `scripts/benchmark/relaxation_bench.py` and
 `scripts/benchmark/matvec_bench.py`. Operational instructions are in
 `docs/source/tpu.md`; this note is the numbers.
 
+Two resolutions are reported. `12,24,12` is where the optimisation work was
+done and is the only one with before/after columns; `12,24,24` was measured
+once at the end, on the final tree, with all three backends in one session.
+
 ## The headline
 
 At `--ns 12,24,12 --p 3`:
@@ -38,6 +42,26 @@ The v5e went from 1.7x slower than the VM's own CPU to 3.7x faster. Four things
 did that, in order of size: the persistent compilation cache, the gather, the
 assembly, and compiling the extraction operator's two ops together. The first
 is configuration; the rest are in `mrx/mass.py` and `mrx/extraction_operators.py`.
+
+## At twice the resolution
+
+`--ns 12,24,24 --p 3`, one session, all three backends on the final tree:
+
+| Measurement | v5e | Same VM's CPU | One H200 |
+|---|---|---|---|
+| `build_sequence` (warm cache) | 36.8 s | 36.0 s | 65.1 s |
+| `compute_nullspaces`, `gap_sweeps=0` | 34.5 s | **10.9 s** | 19.4 s |
+| relaxation, per step | **6.15 s** | 11.03 s | 17.03 s |
+
+The ordering of the three machines survives the resolution change, but the
+margins do not, and they move in opposite directions. Against the CPU the v5e's
+lead narrows from 3.7x to 1.79x; against the H200 it widens from 3.6x to 2.77x.
+
+`compute_nullspaces` is the one place the v5e is now clearly the worst of the
+three, at 3.2x the CPU's time. It is a dense construction, not the matvec chain
+the rest of this note is about, and nothing here was aimed at it. It is 34 s
+once per run against 6.15 s every step, so it stops mattering after six steps,
+but it is the obvious next thing to look at if setup cost starts to bind.
 
 The per-step figure is 3.40 s rather than the 11.72 s it was, because the
 development branch replaced the smoothing solve's saddle MINRES with the split
@@ -114,6 +138,28 @@ The H200 columns are noisy at this scale -- its eager numbers move by 2x between
 adjacent rows for the same operator -- so read them as a magnitude. The v5e
 columns are stable to the last digit shown.
 
+The same table at `--ns 12,24,24 --p 3`, where the three backends were measured
+together on the final tree. Per-apply cost in **ms**, scan form:
+
+| operator | v5e | H200 f32 | VM CPU f32 |
+|---|---|---|---|
+| `apply_mass_matrix` k=1 | 1.424 | **0.117** | 3.234 |
+| `apply_mass_matrix` k=2 | 1.298 | **0.109** | 3.059 |
+| &nbsp;&nbsp;`mass_core` k=1 | 0.775 | **0.119** | 3.103 |
+| &nbsp;&nbsp;`mass_core` k=2 | 0.737 | **0.111** | 3.013 |
+| &nbsp;&nbsp;`E E^T` k=1 | 0.669 | **0.022** | 0.098 |
+| `apply_stiffness` k=1 | 1.371 | **0.123** | 3.273 |
+| `apply_stiffness` k=2 | 0.765 | **0.052** | 1.365 |
+| `apply_derivative` `D^T D` k=1 | 2.692 | **0.208** | 6.364 |
+| mass atom k=2 (precond) | 0.119 | **0.040** | 0.096 |
+| laplacian atom k=2 (precond) | 0.126 | **0.101** | 0.168 |
+
+This is the sharpest form of the result in the next section. Doubling the
+resolution does not change who wins a matvec -- the H200 takes every row, by
+12.2x on `apply_mass_matrix` k=1 -- and it does not change who wins a step,
+which the v5e takes by 2.77x. A machine 12x faster per apply finishing 2.8x
+slower is the whole finding, now measured at two resolutions.
+
 Three things this settles. **`apply_stiffness` is not cheap**: `K_k = G^T M G`
 contains a mass apply and at k=2 costs 58% of one on its own, and
 `apply_derivative_matrix` is `D_k = M_{k+1} G_k`, so most of its cost is the
@@ -145,6 +191,12 @@ almost no per-kernel cost; the GPU pays dispatch on each. This is consistent
 with the directly measured result that dispatch is *not* what makes a v5e kernel
 slow: one device call is 0.037 ms, and 20 scatters fused into one `jit` cost
 0.531 ms each against 0.533 ms unfused. Same fact from both ends.
+
+Doubling the resolution is the cleanest test of that explanation, because it
+scales the arithmetic per kernel while leaving the number of kernels alone. If
+the H200 were losing on arithmetic, more arithmetic per kernel would help it.
+It does the opposite: the v5e's lead grows from 1.08x to 2.77x. Per-kernel cost
+that does not scale with the kernel is what dispatch looks like.
 
 ## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
 
