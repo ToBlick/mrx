@@ -11,6 +11,7 @@ the note). Arms that have not finished are skipped.
 
 import argparse
 import glob
+import math
 import json
 import os
 
@@ -536,6 +537,76 @@ def eta_traces(arms, ideal, ideal_seeded, figdir):
     fig.savefig(os.path.join(figdir, "eta_traces.png"), dpi=150)
 
 
+def eta_islands(plain, seeded, figdir):
+    """Final width of the (6, 1) chain at iota = 1/2 and the (5, 1) chain at 3/5
+    against eta_max, unseeded and seeded arms of the same mesh and degree
+    (eta = 0 twins included; drawn one decade left of the smallest eta). A
+    hollow marker at zero means the final profile no longer crosses the
+    rational."""
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
+    etas = [
+        j["params"]["eta_max"] for j in plain + seeded if j["params"]["eta_max"] > 0
+    ]
+    x0 = min(etas) / 10 if etas else 1e-8
+
+    def xpos(j):
+        e = j["params"]["eta_max"]
+        return e if e > 0 else x0
+
+    for a, (m, n) in zip(ax, ((6, 1), (5, 1))):
+        target = NFP * n / m
+        for arms, lab, ls in (
+            (plain, "unseeded", "-"),
+            (seeded, "seeded (6,1) 3e-3", "--"),
+        ):
+            pts = []
+            for j in arms:
+                z = sections(j)
+                if z is None:
+                    continue
+                keep = z["final_keep"] & ~z["final_chaotic"]
+                io = np.abs(z["final_iota"][keep])
+                present = io.min() <= target <= io.max()
+                w = island_width(z, m, n) if present else (0.0, 0.0)
+                pts.append((xpos(j), w[0], w[1], present))
+            if not pts:
+                continue
+            pts.sort()
+            x = [q[0] for q in pts]
+            (l1,) = a.plot(x, [q[1] for q in pts], "o" + ls, label=f"{lab}: plateau")
+            (l2,) = a.plot(x, [q[2] for q in pts], "s" + ls, label=f"{lab}: excursion")
+            for q in pts:
+                if not q[3]:
+                    a.plot([q[0]], [0.0], "o", mfc="none", color=l1.get_color(), ms=10)
+        if seeded and m == 6:
+            z0 = next((sections(j) for j in seeded if sections(j) is not None), None)
+            if z0 is not None:
+                w0 = island_width_ic(z0, 6, 1)
+                a.axhline(w0[0], color="k", lw=0.6, ls=":")
+                a.axhline(
+                    w0[1],
+                    color="k",
+                    lw=0.6,
+                    ls="-.",
+                    label="seeded IC (plateau dotted, excursion dash-dot)",
+                )
+        a.set_xscale("log")
+        ticks = sorted(set([x0] + etas))
+        a.set_xticks(ticks)
+        a.set_xticklabels(["0" if t == x0 else f"{t:.0e}" for t in ticks])
+        a.set_xlabel(r"$\eta_{max}$ (tanh schedule)")
+        a.set_ylabel(r"final island width in $\rho$")
+        a.set_ylim(bottom=-0.005)
+        a.grid(alpha=0.3, which="both")
+        a.legend(fontsize=8)
+        g = math.gcd(NFP * n, m)
+        a.set_title(rf"({m}, {n}) chain at $\iota = {NFP * n // g}/{m // g}$")
+    fig.suptitle(
+        r"li383 (ns = 49), (16,32,32) p=2 $\gamma=1$: island widths after the resistive phase"
+    )
+    fig.savefig(os.path.join(figdir, "eta_islands.png"), dpi=150)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs")
@@ -592,6 +663,12 @@ def main():
             )
             if j is not None and len(j["trace"]["F"]) > 1
         ]
+        eta_islands(
+            [load(root, "li383_pub", "h16_p2_g1")] + eta_plain,
+            [j for j in [load(root, "li383_eta", "s61_eta0")] if j is not None]
+            + eta_seeded,
+            etadir,
+        )
         eta_traces(
             eta_all,
             load(root, "li383_pub", "h16_p2_g1"),
