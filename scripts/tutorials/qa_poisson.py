@@ -1,4 +1,4 @@
-"""Tutorial 2: a scalar Poisson problem on the QA domain.
+"""Tutorial 2 (warm-up): a scalar Poisson problem on the QA domain.
 
 Solve ``-Delta u = f`` with ``u = 0`` on the wall (the last closed flux
 surface of the QA equilibrium) and the source ``f = 1 - rho^2`` in the

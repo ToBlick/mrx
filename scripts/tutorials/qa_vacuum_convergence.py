@@ -1,4 +1,4 @@
-"""Tutorial 2: convergence to an analytic vacuum (coil) field on the QA domain.
+"""Tutorial 2 (convergence): convergence to an analytic vacuum (coil) field on the QA domain.
 
 The magnetic field of external coils, in the plasma region, is a *vacuum*
 field: curl-free (no current) and div-free (no monopoles). Those two facts pick

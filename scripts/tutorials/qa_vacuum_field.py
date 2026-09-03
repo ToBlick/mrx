@@ -1,4 +1,4 @@
-"""Tutorial 3: the vacuum field of the QA domain -- its own equilibrium.
+"""Tutorial 2: the vacuum field of the QA domain -- its own equilibrium.
 
 Inside a perfectly conducting wall the current-free, divergence-free field
 with ``B . n = 0`` and one unit of toroidal flux is the harmonic 2-form of
