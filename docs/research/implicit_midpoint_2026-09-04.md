@@ -122,6 +122,8 @@ every 100 steps; `scripts/midpoint_figures.py` draws the traces.
 | midpoint, natural H | 0.39 | 3.54 | 0.0151% | 1.10e-3 | -6.57e-7 | -1.3e-4 |
 | explicit, Dirichlet H | 0.38 | 1 | 0.0257% | 4.93e-3 | +2.22e-7 | +4.5e-5 |
 | **midpoint, Dirichlet H** | 0.39 | 3.94 | 0.0257% | 5.17e-3 | **+5.09e-12** | **+1.0e-9** |
+| explicit, B only | 0.37 | 1 | 0.0156% | 1.39e-3 | +2.61e-7 | +5.2e-5 |
+| midpoint, B only | 0.37 | 3.96 | 0.0155% | 1.25e-3 | +8.77e-8 | +1.8e-5 |
 
 Sampled drift `H(it) - H_0` (float64, `||B||_M = 1`, `H_0 = 4.987e-3`):
 
@@ -131,6 +133,8 @@ Sampled drift `H(it) - H_0` (float64, `||B||_M = 1`, `H_0 = 4.987e-3`):
 | midpoint, natural H | -4.7e-8 | -2.8e-7 | -6.1e-7 | -7.2e-7 | -8.9e-7 | -7.0e-7 |
 | explicit, Dirichlet H | -2.2e-7 | -1.2e-7 | -5.5e-8 | -3.3e-8 | -2.2e-8 | +1.0e-9 |
 | midpoint, Dirichlet H | -2.2e-13 | +3.4e-12 | +5.8e-13 | +3.1e-12 | +5.0e-13 | +4.9e-12 |
+| explicit, B only | -2.5e-7 | -3.5e-7 | -1.2e-6 | -1.3e-6 | -5.3e-7 | +1.4e-8 |
+| midpoint, B only | -2.6e-9 | -2.7e-7 | -1.1e-6 | -1.3e-6 | -4.6e-7 | +8.5e-8 |
 
 * With the natural `H` the two schemes drift together: the wall-layer
   leak of section 1, not the time integrator, and the midpoint scheme
@@ -141,6 +145,20 @@ Sampled drift `H(it) - H_0` (float64, `||B||_M = 1`, `H_0 = 4.987e-3`):
   ends at `3e-17`. The explicit Dirichlet-H drift is dominated by its
   first step and relaxes back as the force shrinks (the per-step error is
   `O(dt^2 |E|^2)`).
+* **The B-only route** (`--stepper bonly`, `J x B` and `u x B` on the
+  2-form, no proxy) separates the two errors, as intended: its midpoint
+  arm has no time error (first step -2.6e-9 against the explicit -2.5e-7,
+  same as the Dirichlet-H pair) and what remains is the grid's projection
+  error of the pairing, `int (u x B_mid) . (H_dir - B_mid)`, an excursion
+  to -1.3e-6 at step 500 that comes back to +8.5e-8 at step 1000 in BOTH
+  B-only arms. That error is state-dependent, not a monotone leak: the
+  discrete helicity differs from the conserved quantity by a projection
+  term that follows the field. So on this mesh the budget is: time error
+  of the explicit scheme ~2e-7 per first step, decaying with the force;
+  B-only projection error up to 1e-6; natural-H wall leak up to 1e-6;
+  Dirichlet-H midpoint 5e-12. (The li383 note's 5f numbers, explicit only,
+  found the B-only drift at or below the explicit one's at p >= 2: that was
+  the time error masking the projection error, which this isolates.)
 * Cost: 3.5-3.9 evaluations per step, 5% wall-clock over the explicit
   step (the two k=1 mass solves per sweep are cheap against the force).
   No halving, no unconverged step, energy monotone in every arm.
@@ -166,10 +184,53 @@ count of the driver (584 and 604 of 3000) is the float32 resolution of
 `E ~ 0.5` (ulp 6e-8) against per-step changes of `1e-8` at the end of the
 run, in both arms alike. No halving, no unconverged step.
 
+### 4.3 Production mesh (12,24,24) p=3, float64, Dirichlet H, 1500 steps
+
+| arm | s/step | eval/step | E removed | ||F|| final (mean last 100) | drift at step 1 | drift at 1500 |
+|---|---|---|---|---|---|---|
+| explicit | 1.84 | 1 | 0.0179% | 1.58e-2 (1.42e-2) | -6.7e-8 | -8.7e-8 |
+| **midpoint** | 1.86 | 3.66 | 0.0179% | 1.09e-2 (1.43e-2) | -3.7e-13 | **-2.2e-12** |
+
+Sampled: explicit -6.7e-8 / -1.1e-7 / -1.0e-7 / -9.8e-8 / -9.5e-8 / -9.2e-8 /
+-8.7e-8 at steps 1 / 100 / 300 / 500 / 700 / 1000 / 1500; midpoint -3.7e-13
+/ +3.3e-13 / -5.1e-13 / -4.1e-13 / -2.8e-12 / -1.8e-12 / -2.2e-12. Same
+descent, same force floor, 1% more wall-clock, no halving, no unconverged
+step, energy monotone; the Picard defect ends at 5e-17.
+
 ## 5. Verdict
 
-FILLED IN BELOW.
+* **Implemented, on the branch, tested**: `--scheme midpoint`, the
+  auxiliary-variable scheme with the explicit velocity, +1-5% cost, energy
+  monotone in every arm, exact discrete helicity to the solves when `E` and
+  `H` share a space (`--dirichlet-H`): 2e-12 against 9e-8 on the production
+  mesh in float64, 5e-12 against 2e-7 on the smoke mesh.
+* **The nonlinear midpoint is dead**: the line-search `dt` is 35x above its
+  Picard limit and no matrix-free acceleration rescues it (section 2).
+* **What the helicity budget is made of**, float64 (8,16,16) p=2: the
+  explicit time error ~2e-7 (front-loaded, decays with the force); the
+  natural-H wall leak up to 1e-6; the B-only projection error up to 1e-6,
+  state-dependent, shared by both B-only schemes. The midpoint removes the
+  first, the choice of `H` space decides the rest.
+* **In float32 the scheme changes nothing measurable**: the fixed point is
+  resolved to the solver tolerance, which is the size of the midpoint
+  correction, and the helicity diagnostic sits on the same floor.
+* **Open, Tobias's call**: whether `dirichlet_H=True` is acceptable physics
+  (`H_t = 0` at the wall changes the descent: 1.7x more energy removed and a
+  5x higher force floor on the smoke mesh, a boundary layer in `J x H`), or
+  whether the pairing should be repaired instead: a natural-space `E` with
+  its wall-normal trace removed after the fact, or the wall term of
+  `load(u x H)` kept and the helicity functional adjusted to match.
 
 ## 6. GPU time
 
-FILLED IN BELOW.
+5.5 h of the 10 h budget (`sacct`, gpu-h100, 2026-09-04 10:25-13:25):
+1.4 h finding out that the nonlinear midpoint does not converge (two smoke
+runs, four probes, one Anderson and one preconditioner probe, two
+per-sweep traces), 0.5 h tests and smoke runs of the scheme that works,
+3.6 h the study (float32 production pair 0.95 h, float64 production pair
+1.7 h, six small float64 arms 0.9 h). Every arm ran on
+`.claude/worktrees/implicit-midpoint` through `slurm/run.sh` with the
+worktree on `PYTHONPATH` (the log header says so).
+
+Figures: `docs/research/implicit_midpoint_2026-09-04/` (also
+`outputs/midpoint_sweep/figures/`, mirrored to the main checkout).
