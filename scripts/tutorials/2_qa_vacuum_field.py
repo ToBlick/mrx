@@ -21,7 +21,7 @@ This script builds the field, verifies ``div``, ``curl`` and the Rayleigh
 quotient, draws ``|B|`` on the torus (the 2-form pushed forward by Piola),
 and traces a Poincare section with its rotational transform.
 
-    MRX_DTYPE=float64 python -u scripts/tutorials/qa_vacuum_field.py
+    MRX_DTYPE=float64 python -u scripts/tutorials/2_qa_vacuum_field.py
 """
 
 # %%

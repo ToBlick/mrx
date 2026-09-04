@@ -27,7 +27,6 @@ If MRX is useful for your work, cite the
 
 getting_started
 tutorials
-poisson
 relaxation
 cluster
 ```

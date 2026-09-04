@@ -1,7 +1,7 @@
 # MRX documentation
 
 Everything is in `docs/source/`, the Sphinx tree: the guides
-(`getting_started.md`, `tutorials.md`, `poisson.md`, `relaxation.md`,
+(`getting_started.md`, `tutorials.md`, `relaxation.md`,
 `cluster.md`), the concept pages under `concepts/` (architecture, assembly,
 preconditioning, the polar axis, precision, the relaxation loop, the GVEC
 interface, the manufactured solutions, production settings, the testing

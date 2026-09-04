@@ -30,8 +30,8 @@ series coefficients, mode by mode, measures the toroidal handedness so that
 of the de Rham sequence on it. Everything else in MRX -- the Poisson solve,
 the vacuum field, the relaxation -- starts from this ``seq``.
 
-    python -u scripts/tutorials/qa_geometry.py
-    python -u scripts/tutorials/qa_geometry.py --geometry data/GVEC_State_final.dat --ns 12,24,24 --p 3
+    python -u scripts/tutorials/1_qa_geometry.py
+    python -u scripts/tutorials/1_qa_geometry.py --geometry data/GVEC_State_final.dat --ns 12,24,24 --p 3
 """
 
 # %%

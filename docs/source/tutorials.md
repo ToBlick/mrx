@@ -4,14 +4,13 @@ The scripts in `scripts/tutorials/` take a stellarator equilibrium from the
 file all the way to a resistively relaxed field, one concept at a time. Five
 numbered steps:
 
-1. **load and visualise a geometry** (`qa_geometry.py`),
+1. **load and visualise a geometry** (`1_qa_geometry.py`),
 2. **solve a field** -- the vacuum (coil) field as a curl-curl problem
-   (`qa_vacuum_field.py`, with `qa_poisson.py` as a scalar warm-up and
-   `qa_vacuum_convergence.py` as the convergence study),
-3. **relax** an equilibrium field to a nested state (`li383_relaxation.py`),
-4. **seed a magnetic island** in an ideal relaxation (`li383_island_seed.py`),
+   (`2_qa_vacuum_field.py`),
+3. **relax** an equilibrium field to a nested state (`3_li383_relaxation.py`),
+4. **seed a magnetic island** in an ideal relaxation (`4_li383_island_seed.py`),
 5. **relax with finite resistivity**, so the field can reconnect
-   (`li383_resistive.py`).
+   (`5_li383_resistive.py`).
 
 Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
@@ -31,13 +30,13 @@ the production precision. On a cluster run them through `slurm/run.sh` like
 every other MRX script:
 
 ```bash
-SCRIPT=scripts/tutorials/qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
+SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
 ```
 
 They default to `--ns 12,24,12 --p 3` (steps 4-5 use `--ns 12,24,24` and
 `--ns 16,32,32`) and write their figures to `outputs/tutorials/<name>/`.
 
-## 1. Load the geometry (`qa_geometry.py`)
+## 1. Load the geometry (`1_qa_geometry.py`)
 
 A VMEC `wout_*.nc` stores the flux surfaces as $R$ and $Z$ Fourier series in
 the angles $(\theta, \zeta)$ -- $\zeta$ spans **one field period**, `nfp`
@@ -73,7 +72,7 @@ outboard side of the torus and squeezed on the inboard side -- with
 the scalar) and `plot_crossections_separate`. It also prints what the file
 holds (basis, modes, the $\iota$ profile) and the DoF counts.
 
-## 2. Solve a field on the QA domain (`qa_vacuum_field.py`)
+## 2. Solve a field on the QA domain (`2_qa_vacuum_field.py`)
 
 Inside a perfectly conducting wall the current-free field with $B \cdot n = 0$
 and one unit of toroidal flux is the **harmonic 2-form** of the Dirichlet
@@ -102,33 +101,7 @@ double precision. This is the vacuum field *of the bounded domain* -- the wall
 is the equilibrium's last closed flux surface -- so it differs from the coil
 field outside it.
 
-**A scalar warm-up (`qa_poisson.py`).** Before the curl-curl solve, the same
-machinery solves the simplest case, $-\Delta u = 1 - \rho^2$ with $u = 0$ on
-the wall, in 0-forms:
-
-```python
-rhs = seq.load(f, 0, dirichlet=True)                      # int f v dV
-u_hat, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=True, return_info=True)
-```
-
-`load` integrates the source against the basis with the map's volume element,
-the Laplacian is the stiffness of the mapped metric, and the solve is the
-preconditioned CG behind `apply_inverse_laplacian` (`info` is its iteration
-count). The script checks the relative residual and the energy identity
-$\int |\nabla u|^2 = \int f u$; see [Solve a Poisson problem](poisson.md) for
-the same solve with manufactured solutions on analytic maps.
-
-**Convergence (`qa_vacuum_convergence.py`).** With a coil field known in closed
-form there is no discretisation floor, so the error falls at $O(h^p)$. The
-script fits an analytic vacuum field
-$B^\ast = e_\varphi / R + \lambda\,\nabla(R^2\cos 2\varphi)$ two ways over a
-mesh sweep -- as a **scalar potential** $H = \nabla f + \alpha h_1$ (a $k=0$
-solve) and as a **vector potential** $B = \operatorname{curl} A$ (a $k=1$
-curl-curl solve) -- and plots the relative $M$-norm error against $h$ with an
-$O(h^p)$ guide. Both reuse the preconditioned Hodge-Laplacian solvers; nothing
-new is built.
-
-## 3. A relaxation on li383 (`li383_relaxation.py`)
+## 3. A relaxation on li383 (`3_li383_relaxation.py`)
 
 li383 is the project's fruit-fly stellarator: a three-field-period
 (`nfp = 3`) NCSX configuration with $\iota \approx 0.40 \to 0.66$ and a genuine
@@ -152,7 +125,7 @@ $\text{scale} \approx 0.064 / n_r^2$, run through `relaxation_loop`:
 ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS, history_size=1,
                  dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                  velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / ns[0] ** 2)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=40, num_iters_inner=50,
+state, traces = relaxation_loop(B0, ts, num_iters_outer=20, num_iters_inner=50,
                                 force_tolerance=1e-3)
 ```
 
@@ -174,7 +147,7 @@ python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation/B.h5 \
     --planes 0,0.25,0.5 --out outputs/tutorials/li383_relaxation
 ```
 
-## 4. Seed a magnetic island (`li383_island_seed.py`)
+## 4. Seed a magnetic island (`4_li383_island_seed.py`)
 
 The ideal (eta = 0) descent is a frozen-in flow: it moves the field along its
 own streamlines, so it cannot change the field's topology. Add a small
@@ -209,7 +182,7 @@ The run is otherwise Tutorial 3's descent (gamma = 1, float32) and writes the
 same `B.h5`; the island shows in `poincare_relax.py`'s section at the seeded
 chain.
 
-## 5. Relax with finite resistivity (`li383_resistive.py`)
+## 5. Relax with finite resistivity (`5_li383_resistive.py`)
 
 Turn on a small resistivity and the frozen-in constraint breaks. Each step is
 now the ideal move followed by a backward-Euler diffusion of $B$ (an implicit
@@ -227,7 +200,7 @@ def eta_schedule(i):                                      # per outer block
     return eta_max * 0.5 * (1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
 
 ts = TimeStepper(seq=seq, ..., eta_every=1, resistive=True)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=100, num_iters_inner=50,
+state, traces = relaxation_loop(B0, ts, num_iters_outer=50, num_iters_inner=50,
                                 resistivity_schedule=eta_schedule, force_tolerance=1e-4)
 ```
 
