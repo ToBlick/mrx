@@ -30,6 +30,8 @@ resistivity, seeds).
 """
 
 # %%
+# Now we read the run's options and make the output folder. The defaults are
+# li383 at (10, 16, 16) p=2, 500 relaxation steps.
 from __future__ import annotations
 
 import argparse
@@ -57,6 +59,8 @@ os.makedirs(cli.out, exist_ok=True)
 
 
 # %%
+# Now we import MRX -- the sequence, the Clebsch initial condition, and the
+# relaxation time-stepper and loop.
 import h5py
 import jax.numpy as jnp
 import matplotlib
@@ -80,14 +84,16 @@ seq, ops = build_sequence(cli.geometry, ns, cli.p)
 seq.set_operators(compute_nullspaces(seq, ops))
 
 # %%
-# --- the initial condition: the equilibrium field as B = dA' -------------------
+# Now we set the initial condition: li383's own equilibrium field as B = dA'
+# from the histopolated Clebsch potential (divergence-free, wall-tangent, nested).
 cb = load_clebsch(cli.geometry)
 B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
 print(f"[ic] ||B||_M before normalisation {norm:.4e}, ||div B|| {divergence_norm(seq, B0):.2e}, "
       f"wall-normal part {wall:.1e}")
 
 # %%
-# --- the descent with scripts/relax.py's defaults + velocity smoothing -----
+# Now we relax: the energy descent of mrx.relaxation with scripts/relax.py's
+# defaults plus velocity smoothing, run toward a nested floor (~500 steps).
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, scale ~ 0.064/n_r^2.
 smoothing_scale = 0.064 / ns[0] ** 2
 print(f"[relax] velocity smoothing order 1, scale {smoothing_scale:.3e}")
@@ -118,7 +124,8 @@ else:
 print(f"  -> {path}")
 
 # %%
-# --- the weak pressure of the initial and relaxed fields -----------------
+# Now we compute the weak pressure -- the Lagrange multiplier the descent finds
+# -- and draw it on the torus.
 def weak_p(field):
     _, _, J, Hf, _ = compute_force(field, seq)
     p_w, _, _ = weak_pressure(J, Hf, seq)
@@ -150,7 +157,8 @@ else:
 print(f"  -> {path}")
 
 # %%
-# --- the archive scripts/poincare_relax.py reads --------------------------
+# Now we archive B (initial and final) so scripts/poincare_relax.py can draw
+# the Poincare sections of both states.
 h5_path = os.path.join(cli.out, "B.h5")
 attrs = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
              nfp="", maxiter=10_000, precision=str(mrx.DTYPE), steps=int(steps[-1]),

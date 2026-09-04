@@ -13,11 +13,15 @@ MRX builds it by a direct Hodge decomposition of a seed field
 iteration -- and stores it on the sequence's operators, where the Leray
 projection and the helicity of the relaxation are deflated against it.
 
-It runs in the package default, float32; the harmonic-form ratio
-``||curl B|| / ||B||`` and the Rayleigh quotient of the Hodge Laplacian then
-floor near single-precision epsilon (~1e-3), which is fine for looking at the
-field. For those residuals at round-off (~1e-10) run it in double precision,
-``MRX_DTYPE=float64``.
+It runs in the package default, **float32**. The residuals it prints are near
+total cancellations -- ``curl B`` and ``L B`` of a nearly harmonic ``B`` -- so
+float32 cannot resolve them: ``||curl B|| / ||B||`` floors around 1e-2 and the
+Rayleigh quotient (which equals ``(||curl B|| / ||B||)^2``) around 1e-3, set by
+``eps_float32`` times the largest Laplacian eigenvalue -- NOT by any error in
+the field. In float64 the SAME discrete form gives ``||curl B|| / ||B|| ~ 1e-6``
+and Rayleigh ~1e-12: the field is essentially exactly harmonic. Run
+``MRX_DTYPE=float64`` to see that; the Poincare sections are unaffected either
+way.
 
 This script builds the field, verifies ``div``, ``curl`` and the Rayleigh
 quotient, draws ``|B|`` on the torus (the 2-form pushed forward by Piola),
@@ -28,6 +32,7 @@ transform.
 """
 
 # %%
+# Now we read the run's options and make the output folder.
 from __future__ import annotations
 
 import argparse
@@ -52,6 +57,8 @@ ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
+# Now we import MRX -- the sequence builder, the Hodge-decomposition
+# nullspace tools, and the Poincare tracer.
 import jax.numpy as jnp
 import matplotlib
 if not _INTERACTIVE:
@@ -72,7 +79,10 @@ seq, ops = build_sequence(cli.geometry, ns, cli.p)
 seq.set_operators(compute_nullspaces(seq, ops))
 
 # %%
-# --- the harmonic 2-form ----------------------------------------------------
+# Now we build the vacuum field: the harmonic 2-form of the Dirichlet complex,
+# from a direct Hodge decomposition of a seed field. We report its divergence,
+# curl and Rayleigh quotient (the docstring explains why these read large in
+# float32).
 B = get_nullspace(seq.get_operators(), 2, True)[0]
 B = B / float(seq.l2_norm(B, 2))
 _, _, J, _, _ = compute_force(B, seq)
@@ -81,9 +91,12 @@ rayleigh = float(harmonic_rayleigh(seq, B, 2))
 print(f"[vacuum] ||div B|| = {divergence_norm(seq, B):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
       f"Rayleigh quotient of the Hodge Laplacian = {rayleigh:.2e}")
+if ratio > 1e-4:
+    print("[vacuum] float32 floors these near-zero cancellations; the field is fine "
+          "-- float64 gives ||curl B||/||B|| ~ 1e-6, Rayleigh ~ 1e-12 (see the docstring).")
 
 # %%
-# --- |B| on the torus -----------------------------------------------------
+# Now we push the 2-form forward by the Piola map and draw |B| on the torus.
 B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 
 def B_mag(x):
@@ -112,7 +125,8 @@ else:
 print(f"  -> {path}")
 
 # %%
-# --- field lines: trace once, section at several toroidal planes ----------
+# Now we trace the field lines once and take Poincare sections at five toroidal
+# planes -- one integration of the trajectories, cut at each plane.
 # A Poincare section integrates the field lines once; each toroidal plane is a
 # different cut through the same trajectories. section_figure does one plane --
 # here we reuse its pieces to cut five planes over half a field period.

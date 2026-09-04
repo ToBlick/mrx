@@ -12,25 +12,26 @@ relaxed field** if its checkpoint ``outputs/tutorials/li383_relaxation/B.h5`` is
 present (same ``(10, 16, 16) p = 2`` mesh), so the initial descent is not
 repeated; otherwise it builds the equilibrium initial condition itself. It then
 takes a **single resistive step** at ``--eta-max`` -- one reconnection event --
-and relaxes ideally for another 500 steps to a clean floor. The helicity drop
-across the resistive step is the reconnection; the ideal tail conserves it.
+and relaxes ideally for another 500 steps to a clean floor. Finally it draws
+Poincare sections of the field before and after, so the magnetic islands the
+reconnection opens or heals are visible.
 
 Pass ``--seed`` (the Tutorial 4 syntax) when it falls back to building the IC,
-to watch a seeded island reconnect. Runs in the default float32 with velocity
-smoothing of order 1 (gamma = 1).
+to start from a seeded island and watch it reconnect. Runs in the default
+float32 with velocity smoothing of order 1 (gamma = 1).
 
     python -u scripts/tutorials/5_li383_resistive.py
 """
 
 # %%
+# Now we parse the run's options. Everything has a default, so in a notebook
+# the cell just uses them; from the command line the flags below still apply.
 from __future__ import annotations
 
 import argparse
 import os
 import sys
 
-# Run the cells top to bottom in a notebook / VS Code interactive window,
-# or the whole file as a script (the CLI flags below still apply then).
 _INTERACTIVE = "ipykernel" in sys.modules
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -48,6 +49,8 @@ ap.add_argument("--seed-eps", type=float, default=0.0)
 ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations of the ideal tail")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-4, help="stop the ideal tail below this")
+ap.add_argument("--seeds", type=int, default=24, help="Poincare field lines")
+ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
 ap.add_argument("--cuts", type=int, default=6)
 ap.add_argument("--out", default="outputs/tutorials/li383_resistive")
 cli = ap.parse_args([] if _INTERACTIVE else None)
@@ -55,6 +58,8 @@ ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
+# Now we import MRX and its relaxation and Poincare machinery. Precision is the
+# package default (float32, the production precision); nothing is set here.
 import h5py
 import jax.numpy as jnp
 import matplotlib
@@ -64,21 +69,29 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
-from mrx.geometry import build_sequence
+from mrx.geometry import build_sequence, geometry_nfp
 from mrx.gvec import load_clebsch
 from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
 from mrx.nullspace import compute_nullspaces
-from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
+from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
+from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
+                          trace_and_classify, section_RZ, surface_label)
 from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper, compute_force,
                             relaxation_loop, weak_pressure)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
+# %%
+# Now we build the de Rham sequence on li383's geometry and its harmonic forms,
+# the operators every solve and the Poincare tracing lean on.
+nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
 seq.set_operators(compute_nullspaces(seq, ops))
 
 # %%
-# --- the starting field: warm-start from Tutorial 3, or build the IC -----------
+# Now we get the starting field: warm-start from Tutorial 3's relaxed B if its
+# checkpoint is on disk and matches this mesh, otherwise build the equilibrium
+# initial condition ourselves (optionally with a resonant seed).
 B0 = None
 if os.path.exists(cli.warm_start):
     with h5py.File(cli.warm_start, "r") as fh:
@@ -103,7 +116,8 @@ if B0 is None:
           f"||div B|| {divergence_norm(seq, B0):.2e}, wall-normal {wall:.1e}")
 
 # %%
-# --- one resistive reconnection step -------------------------------------------
+# Now we do the single reconnection step: one resistive substep at eta = eta-max.
+# Unlike the ideal descent it can change the topology, so helicity drops here.
 smoothing_scale = 0.064 / ns[0] ** 2
 ts_reconnect = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                            dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
@@ -119,7 +133,8 @@ print(f"[reconnect] helicity {Hr[0]:+.3e} -> {Hr[-1]:+.3e} (dH = {Hr[-1] - Hr[0]
 B_reconnected = state.B_n
 
 # %%
-# --- relax ideally for another 500 steps ---------------------------------------
+# Now we relax ideally for another 500 steps (eta = 0) to a clean floor. The
+# ideal tail conserves helicity and just settles the reconnected field.
 ts_ideal = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
                        dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                        eta_every=1, resistive=False, history_size=1,
@@ -137,6 +152,8 @@ print(f"[relax] {steps[-1]} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e}, E_0 - E = {E
       f"||div B|| {float(traces['divergence_B'][-1]):.1e}")
 B = state.B_n
 
+# %%
+# Now we plot the force residual against the energy over the ideal tail.
 fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
                         num_iters_inner=cli.inner, left_marker="o", right_marker="s")
 path = os.path.join(cli.out, "trace.png")
@@ -148,7 +165,39 @@ else:
 print(f"  -> {path}")
 
 # %%
-# --- the weak pressure of the reconnected, relaxed field -----------------------
+# Now we take Poincare sections of the field BEFORE the reconnection step and
+# AFTER the ideal tail, at five toroidal planes. This is where the magnetic
+# islands show: the resistive step can open or heal a chain the ideal descent
+# would have frozen. Each field is traced once and cut at all five planes.
+def sections(B_dof, tag, title):
+    field = logical_field(seq, jnp.asarray(B_dof), 2, True)
+    require_zeta_parameterisation(field, name=tag)
+    seeds = seed_from_axis(field, cli.seeds, 8, n_rays=4, steps_per_period=32)
+    res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+                             steps_per_period=32, saves_per_period=8)
+    render_keep = ~(res["escaped"] | ~res["ok"])
+    for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
+        R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], 8, plane)
+        a_eff, xlabel = surface_label(R, Z, aR, aZ)
+        fig, _ = render_section(
+            R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
+            title=f"{title}  |  $\\zeta = {plane:g}$",
+            subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}",
+            axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
+            logical=(lr, lth), iota_scatter=res["iota_scatter"])
+        path = os.path.join(cli.out, f"poincare_{tag}_zeta{plane:g}.png")
+        fig.savefig(path, dpi=200)
+        if _INTERACTIVE:
+            plt.show()
+        else:
+            plt.close(fig)
+        print(f"  -> {path}")
+
+sections(B0, "before", f"before reconnection {ns} p={cli.p}")
+sections(B, "after", f"after reconnection + relax {ns} p={cli.p}")
+
+# %%
+# Now we draw the weak pressure of the reconnected, relaxed field on the torus.
 def weak_p(field):
     _, _, J, Hf, _ = compute_force(field, seq)
     p_w, _, _ = weak_pressure(J, Hf, seq)
@@ -178,7 +227,8 @@ else:
 print(f"  -> {path}")
 
 # %%
-# --- the archive scripts/poincare_relax.py reads --------------------------
+# Now we archive B (initial and final) for scripts/poincare_relax.py, which can
+# redraw the sections at any planes from this file.
 h5_path = os.path.join(cli.out, "B.h5")
 attrs = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
              nfp="", maxiter=10_000, precision=str(mrx.DTYPE), steps=int(steps[-1]),
@@ -191,6 +241,4 @@ with h5py.File(h5_path, "w") as fh:
     fh.create_dataset("pw_final", data=pw_final)
     for k, v in attrs.items():
         fh.attrs[k] = v
-print(f"  -> {h5_path}  (trace the sections with:")
-print(f"     python -u scripts/poincare_relax.py {h5_path} "
-      f"--planes 0,0.125,0.25,0.375,0.5 --out {cli.out})")
+print(f"  -> {h5_path}")

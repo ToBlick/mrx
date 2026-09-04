@@ -35,6 +35,9 @@ the vacuum field, the relaxation -- starts from this ``seq``.
 """
 
 # %%
+# Now we read the run's options and make the output folder. The defaults load
+# the QA stellarator at (12, 24, 12) p=3; --geometry can point at any VMEC .nc
+# or GVEC .dat state instead.
 from __future__ import annotations
 
 import argparse
@@ -57,6 +60,8 @@ ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
+# Now we import MRX. build_sequence is the single call that turns a state file
+# into an MRX domain; the rest read the file and draw the geometry.
 import jax
 import jax.numpy as jnp
 import matplotlib
@@ -69,7 +74,9 @@ from mrx.gvec import load_clebsch, read_equilibrium
 from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
 
 # %%
-# --- 1. what the file holds --------------------------------------------
+# Now we look at what the file actually stores: R, Z and lambda as radial
+# B-splines times Fourier series, plus the flux, iota and pressure profiles.
+# A GVEC .dat state lands in exactly the same blocks.
 # R, Z, lambda as radial B-splines x Fourier series; the profiles at the
 # radial interpolation points. A GVEC .dat lands in the same blocks.
 st = read_equilibrium(cli.geometry)
@@ -90,7 +97,8 @@ if "a_minor" in st:
     print(f"[file] a = {st['a_minor']:.3f} m, R0 = {st['r_major']:.3f} m")
 
 # %%
-# --- 2. the sequence on the file's geometry -----------------------------
+# Now we build the de Rham sequence on that geometry: the spline/Fourier
+# spaces, the incidence operators and the preconditioners every solve uses.
 seq, _ = build_sequence(cli.geometry, ns, cli.p)
 jac = np.asarray(seq.geometry.jacobian_j)
 print(f"[seq] ns = {ns}, p = {cli.p}: {seq.n(0)} 0-form, {seq.n(1)} 1-form, {seq.n(2)} 2-form, "
@@ -100,7 +108,8 @@ x = jnp.array([0.5, 0.25, 0.0])
 print(f"[seq] the map at logical {np.asarray(x)}: physical {np.asarray(seq.map(x)).round(4)} m")
 
 # %%
-# --- 3. the Jacobian of the map on the torus -----------------------------
+# Now we draw the map's Jacobian det DF on the torus -- the volume element the
+# whole complex is weighted by, and the cleanest look at a vacuum geometry.
 # det DF is the volume element the whole de Rham complex is weighted by;
 # for a vacuum equilibrium with no pressure to draw it is the cleanest
 # look at the geometry itself.

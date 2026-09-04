@@ -31,6 +31,8 @@ five toroidal planes.
 """
 
 # %%
+# Now we read the run's options. The defaults seed the (6,1) chain on li383's
+# iota=1/2 surface at (10, 16, 16) p=2.
 from __future__ import annotations
 
 import argparse
@@ -59,6 +61,8 @@ ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
+# Now we import MRX -- the sequence, the seeded Clebsch initial condition, and
+# the Poincare tracer. There is no relaxation in this tutorial.
 import jax.numpy as jnp
 import matplotlib
 if not _INTERACTIVE:
@@ -80,7 +84,8 @@ seq, ops = build_sequence(cli.geometry, ns, cli.p)
 seq.set_operators(compute_nullspaces(seq, ops))
 
 # %%
-# --- the two initial fields: unseeded, and with a resonant seed ----------------
+# Now we build two initial fields: the plain equilibrium, and the same field
+# with a resonant seed added on the Clebsch potential.
 m, n, rho0, width = (float(v) for v in cli.seed.split(","))
 seed = (int(m), int(n), rho0, width, cli.seed_eps)
 cb = load_clebsch(cli.geometry)
@@ -96,7 +101,8 @@ print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {divergence_norm(seq, B
       f"wall-normal part {wall:.1e}")
 
 # %%
-# --- Poincare sections of each initial field at five toroidal planes -----------
+# Now we take Poincare sections of BOTH initial fields at five planes: the
+# island at the resonant chain shows in the seeded sections, not the unseeded.
 # Trace once per field, cut five planes over half a field period. The island at
 # the resonant chain shows in the seeded section, not the unseeded one.
 def sections(B_dof, tag, title):
