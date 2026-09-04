@@ -21,6 +21,8 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from mrx.plotstyle import LEFT, RIGHT, house_style  # noqa: E402
+
 NFP = 3
 GPU_H = 1.0 / 3600.0
 
@@ -707,6 +709,68 @@ def reconnect_rows(j):
     return rows
 
 
+def save_figure(fig, png_path, pgf=True):
+    """PNG at the house dpi and, with ``pgf``, the same figure through the
+    pgf backend under ``pgf/`` beside it (vector LaTeX, needs xelatex on PATH; the
+    including document must ``\\usepackage[strings]{underscore}``, as for
+    the section pages of scripts/poincare_relax.py)."""
+    fig.savefig(png_path)
+    if not pgf:
+        return
+    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
+    os.makedirs(pgf_dir, exist_ok=True)
+    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
+    try:
+        with matplotlib.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+            fig.savefig(pgf_path, backend="pgf")
+    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
+        if os.path.exists(pgf_path):
+            os.remove(pgf_path)
+        print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})")
+
+
+def ladder_figure(j, ideal, figdir):
+    """The reconnection ladder against the ideal run of the same rung, six
+    panels in the house style: force residual, energy released and the CFL
+    number taken (100-step block means, +-1 sd), helicity, ||J||/||B|| and
+    beta (the qoi samples); dotted lines mark the reconnections. Written as
+    ``ladder_traces.png`` and ``.pgf``."""
+    ladder = dict(color=LEFT["color"], ls="-", lw=1.0)
+    ref = dict(color=RIGHT["color"], ls="--", lw=1.0)
+    with house_style():
+        fig, ax = plt.subplots(2, 3, figsize=(11.0, 6.0), constrained_layout=True)
+        ax = ax.ravel()
+        for run, st, label in ((ideal, ref, "ideal"), (j, ladder, "reconnected every 2000 steps")):
+            q = run["qoi"]
+            E = np.asarray(run["trace"]["E"])
+            h = np.asarray(q["helicity"])
+            x = np.asarray(q["it"]) / 1000.0
+            plot_trace(ax[0], F(run), label=label, **st)
+            plot_trace(ax[1], E[0] - E, **st)
+            plot_trace(ax[2], np.asarray(run["trace"]["cfl"]), **st)
+            ax[3].plot(x, (h - h[0]) / h[0], **st)
+            ax[4].plot(x, q["JoverB"], **st)
+            ax[5].plot(x, q["beta_vol"], **st)
+        for a in ax[:3]:   # block-mean traces are in steps; label them in thousands like the qoi panels
+            a.set_yscale("log")
+            a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:g}"))
+        for ev in j.get("reconnect", []):
+            for k, a in enumerate(ax):
+                a.axvline(ev["it"] if k < 3 else ev["it"] / 1000.0, color="0.6", ls=":", lw=0.6)
+        ax[0].set_ylabel(r"$\|F\|_M$")
+        ax[1].set_ylabel(r"$E_0 - E$")
+        ax[2].set_ylabel(r"CFL number taken")
+        ax[3].set_ylabel(r"$(H - H_0) / H_0$")
+        ax[4].set_ylabel(r"$\|J\| / \|B\|$")
+        ax[5].set_ylabel(r"$\beta_{\mathrm{vol}}$")
+        for a in ax:
+            a.set_xlabel(r"step / $10^3$")
+            a.grid(True)
+        ax[0].legend(loc="upper right")
+        save_figure(fig, os.path.join(figdir, "ladder_traces.png"))
+        plt.close(fig)
+
+
 def reconnect_figure(arms, ideal, figdir):
     """Residual, ||J||/||B|| and helicity against the step for the reconnect
     arms, the reconnections marked, the ideal run of the same rung for reference."""
@@ -911,6 +975,9 @@ def main():
         full = [j for j in reconnect if "smoke" not in j["arm"]]
         if full:
             reconnect_figure(full, ideal16, pdir)
+        for j in full:
+            if "ladder" in j["arm"]:
+                ladder_figure(j, ideal16, pdir)
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
             + "".join(

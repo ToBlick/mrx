@@ -52,11 +52,11 @@ the profile is >= 0 and its lowest surface reads zero. See "Two pressures" in
 docs/source/concepts/relaxation.md.
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane -- and, unless
-``--no-pgf``, a presentation-ready ``poincare_<field>_zeta<plane>.pgf`` beside
-each: the same figure through matplotlib's ``pgf`` backend, so every line, axis
-and label is vector LaTeX (the labels are editable in the ``.pgf`` without
+``--no-pgf``, a presentation-ready ``pgf/poincare_<field>_zeta<plane>.pgf``
+for each: the same figure through matplotlib's ``pgf`` backend, so every line,
+axis and label is vector LaTeX (the labels are editable in the ``.pgf`` without
 re-tracing) while the scatter layers are embedded as a high-dpi
-``poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
+``pgf/poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
 PATH (``module load texlive`` is NOT enough on this cluster -- its binaries are
 in the ``bin/x86_64-linux`` subdir the module does not add); without it the PNG
 is still written and the PGF is skipped with a message. The document that
@@ -94,7 +94,9 @@ def save_section(fig, png_path, *, want_pgf):
     the ``.pgf`` (or its preamble) without re-tracing -- while the rasterized
     layers (the scatter of ~10^4 crossings, ``rasterized=True`` in
     :func:`mrx.plotting.render_section`) are written as a high-dpi PNG beside
-    it and pulled in with ``\\includegraphics``. It needs ``xelatex`` on PATH;
+    it and pulled in with ``\\includegraphics``. Both go under ``pgf/`` next
+    to the PNG pages, so the output directory holds one file per page. It
+    needs ``xelatex`` on PATH;
     without one the PNG is still written and the PGF is skipped with a message
     rather than aborting the run (the trace is the expensive half).
 
@@ -110,7 +112,9 @@ def save_section(fig, png_path, *, want_pgf):
     if not want_pgf:
         return
     import matplotlib as mpl
-    pgf_path = os.path.splitext(png_path)[0] + ".pgf"
+    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
+    os.makedirs(pgf_dir, exist_ok=True)
+    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
     try:
         with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
             fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
