@@ -96,8 +96,11 @@ class BOnlyTimeStepper(TimeStepper):
         dt = jnp.minimum(dt_star, self.cfl / cfl_max)
         B_ideal = B_n + dt * dB
 
-        resistive_time = state.resistive_time + dt
-        resistive_count = state.resistive_count + 1
+        # The resistive clock runs only while eta > 0, so a schedule that
+        # switches eta on diffuses over its own window, not over the ideal
+        # steps before it.
+        resistive_time = jnp.where(state.eta > 0, state.resistive_time + dt, 0.0)
+        resistive_count = jnp.where(state.eta > 0, state.resistive_count + 1, 0)
         if self.resistive:
             due = (state.eta > 0) & (resistive_count >= self.eta_every)
 

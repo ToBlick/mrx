@@ -653,8 +653,11 @@ class TimeStepper(eqx.Module):
         # eta_every batches the diffusion over several steps for the same
         # reason.  The cond skips the solve at zero cost when it is not due;
         # a run without resistivity sets ``resistive=False`` and never traces it.
-        resistive_time = state.resistive_time + dt
-        resistive_count = state.resistive_count + 1
+        # The resistive clock runs only while eta > 0, so a schedule that
+        # switches eta on diffuses over its own window, not over the ideal
+        # steps before it.
+        resistive_time = jnp.where(state.eta > 0, state.resistive_time + dt, 0.0)
+        resistive_count = jnp.where(state.eta > 0, state.resistive_count + 1, 0)
         if self.resistive:
             due = (state.eta > 0) & (resistive_count >= self.eta_every)
 
@@ -757,24 +760,17 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     iteration count and relative update), plus ``extra[name](state)`` for
     every extra probe.
 
-    ``eta_of_step(it)`` is the resistivity at the traced step count; while it
-    is 0 the resistive clock (``resistive_time``, ``resistive_count``) is held
-    at 0, so a schedule that switches eta on diffuses over its own window
-    only. Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
-    count); the chunk is the cadence at which the host sees the trace and may
-    act on the state.
+    ``eta_of_step(it)`` is the resistivity at the traced step count (the
+    stepper's resistive clock runs only while it is positive). Compile time
+    is the body's whatever ``n_chunk`` (a ``While`` trip count); the chunk is
+    the cadence at which the host sees the trace and may act on the state.
     """
     seq = ts.seq
     extra = extra or {}
 
     def body(state, it):
         if eta_of_step is not None:
-            eta = eta_of_step(it)
-            off = eta == 0.0
-            state = eqx.tree_at(
-                lambda s: (s.eta, s.resistive_time, s.resistive_count), state,
-                (eta, jnp.where(off, 0.0, state.resistive_time),
-                 jnp.where(off, 0, state.resistive_count)))
+            state = eqx.tree_at(lambda s: s.eta, state, eta_of_step(it))
         state = ts.relaxation_step(state)
         state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
         trace = dict(
@@ -820,27 +816,26 @@ def relaxation_loop(B_dof: jnp.ndarray,
     state = initial_state(B_dof, ts, dt0)
     run = chunk_runner(ts, num_iters_inner)
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
-    get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
-    get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
 
     traces = {k: [] for k in (
         "force_norm", "helicity", "timestep", "energy", "resistive_info",
         "velocity_norm", "divergence_B", "eta", "iteration")}
 
-    def record(state, iteration):
+    def record(state, iteration, energy, div_norm):
         traces["force_norm"].append(state.F_norm)
         h, A_new = get_helicity(state.B_n, seq, state.A)
         traces["helicity"].append(h)
         traces["timestep"].append(state.dt)
-        traces["energy"].append(get_energy(state.B_n))
+        traces["energy"].append(energy)
         traces["resistive_info"].append(state.resistive_info)
         traces["velocity_norm"].append(state.v_norm)
-        traces["divergence_B"].append(get_div_norm(state.B_n, seq))
+        traces["divergence_B"].append(div_norm)
         traces["eta"].append(state.eta)
         traces["iteration"].append(iteration)
         return eqx.tree_at(lambda s: s.A, state, A_new)
 
-    state = record(state, 0)
+    state = record(state, 0, 0.5 * seq.l2_norm_sq(state.B_n, 2),
+                   compute_divergence_norm(state.B_n, seq))
     print(f"Initial: |F|={state.F_norm:.2e}  "
           f"H={traces['helicity'][-1]:.2e}  "
           f"E={traces['energy'][-1]:.2e}")
@@ -850,9 +845,9 @@ def relaxation_loop(B_dof: jnp.ndarray,
             state = eqx.tree_at(lambda s: s.eta, state,
                                 resistivity_schedule(i))
 
-        state, _ = run(state, (i - 1) * num_iters_inner)
+        state, trace = run(state, (i - 1) * num_iters_inner)
 
-        state = record(state, i * num_iters_inner)
+        state = record(state, i * num_iters_inner, trace["E"][-1], trace["div"][-1])
         if callback is not None:
             state = callback(state, i)
 

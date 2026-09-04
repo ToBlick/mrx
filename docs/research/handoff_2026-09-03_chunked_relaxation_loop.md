@@ -42,9 +42,12 @@ every chunk cost 6% at n = 16. There is no reason for separate cadences.
    (`F_prev . M v`, the line-search identity), eta, res_it, res_delta, plus
    whatever `extra[name](state)` adds (the driver adds `resid = F /
    ||grad(B^2/2)||`). `eta_of_step(it)` is a traced function of the step
-   count (the schedules become `jnp`), applied in the body; the resistive
-   clock is reset while eta is 0, as before. Compile time is that of the body
-   and independent of `n_chunk` (a `While` trip count); no `unroll`.
+   count (the schedules become `jnp`), applied in the body. The resistive
+   clock runs only while eta > 0; since the 2026-09-04 cleanup that rule
+   lives in `TimeStepper.relaxation_step` (where the clock is advanced), so
+   every eta setter, the runner, `relaxation_loop`'s per-block schedule and
+   any callback, gets it. Compile time is that of the body and independent
+   of `n_chunk` (a `While` trip count); no `unroll`.
 2. `relaxation_loop` is rewritten on the runner with its signature and its
    per-chunk traces unchanged (tutorials and `test/test_relaxation.py` keep
    working); it just no longer owns a scan of its own.
@@ -164,6 +167,16 @@ with residuals 5.55e-4 / 4.61e-4 / 4.24e-4 at 0.63 / 0.62 / 0.62% of H_0 per
 solve; section 5h of `li383_sweep_results_2026-09-02.md` has the table and
 the sections. Its local exponent was 0.2 throughout: the "stalls" were the
 rate test crossing 5% per 1000 steps, which a t^-0.2 law does at step 4000.
+
+Cleanup 2026-09-04 (the /simplify pass on the branch): the resistive clock
+rule moved into the stepper, which fixed an off-by-one the runner had: the
+runner reset the clock before an ideal step and the stepper then advanced it,
+so one ideal step's dt leaked into every resistive window (the checkpoint
+smoke's pulse of 20 steps solved at step 168 with 19 window steps + 1 ideal
+step; now at 169 with the 20 window steps, res_delta 5% smaller in step with
+the 6% shorter accumulated time). Lean suite 51 passed (286 s), checkpoint
+chain SMOKE OK, the section render of the smoke through the plotter's
+rewritten field handling fine, ideal steps identical to round-off.
 
 Open: nothing in the loop itself. The launcher's full arm is now
 `--reconnect-every 2000` (4000 ideal steps, then three intervals of 2000);

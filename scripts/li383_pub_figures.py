@@ -713,8 +713,7 @@ def reconnect_figure(arms, ideal, figdir):
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
     entries = [(ideal, "ideal", "k")] + [(j, j["arm"], None) for j in arms]
     for j, label, color in entries:
-        kw = dict(label=label) if color is None else dict(label=label, color=color)
-        line = plot_trace(ax[0], F(j), **kw)
+        line = plot_trace(ax[0], F(j), label=label, color=color)
         q = j["qoi"]
         ax[1].plot(q["it"], q["JoverB"], "-", color=line.get_color(), label=label)
         h = np.asarray(q["helicity"])
@@ -825,6 +824,7 @@ def main():
     }
     fix = {a: load(root, "li383_axisfix", a) for a in ["r16_p3_g0", "r24_p3_g0"]}
     hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
+    ideal16 = load(root, "li383_pub", "h16_p2_g1")   # the reference rung of every comparison
     if hsweep:
         hsweep_figure(hsweep, figdir)
     psweep = [j for j in (load(root, "li383_pub", a) for a in PSWEEP) if j is not None]
@@ -841,7 +841,7 @@ def main():
     if eta_plain or eta_seeded:
         etadir = os.path.join(root, "li383_eta", "figures")
         os.makedirs(etadir, exist_ok=True)
-        eta_figure(eta_plain, eta_seeded, load(root, "li383_pub", "h16_p2_g1"), etadir)
+        eta_figure(eta_plain, eta_seeded, ideal16, etadir)
         eta_all = [
             j
             for j in (
@@ -851,14 +851,14 @@ def main():
             if j is not None and len(j["trace"]["F"]) > 1
         ]
         eta_islands(
-            [load(root, "li383_pub", "h16_p2_g1")] + eta_plain,
+            [ideal16] + eta_plain,
             [j for j in [load(root, "li383_eta", "s61_eta0")] if j is not None]
             + eta_seeded,
             etadir,
         )
         eta_traces(
             eta_all,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             load(root, "li383_pub", "r16_s61_e3e-3_g1"),
             etadir,
         )
@@ -882,7 +882,7 @@ def main():
         ]
         eta_traces(
             same_dose + pulse,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             None,
             pdir,
             title="resistive pulses after 2000 ideal steps against the tanh rungs of equal dose",
@@ -897,7 +897,7 @@ def main():
                 if j is not None
             ],
             pulse,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             pdir,
         )
         reconnect = [
@@ -910,7 +910,7 @@ def main():
         ]
         full = [j for j in reconnect if "smoke" not in j["arm"]]
         if full:
-            reconnect_figure(full, load(root, "li383_pub", "h16_p2_g1"), pdir)
+            reconnect_figure(full, ideal16, pdir)
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
             + "".join(

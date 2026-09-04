@@ -182,25 +182,20 @@ def main():
         attrs = dict(fh.attrs)
         dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
     fields = [w.strip() for w in cli.fields.split(",")]
-    reconnect_steps = {}
+    labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})", "final": "relaxed field"}
     if "reconnect" in fields:
         # The fields before each reconnection of a --reconnect-every run, in the layout of B.h5.
-        state_dir = os.path.dirname(os.path.abspath(cli.state))
-        files = sorted(glob.glob(os.path.join(state_dir, "reconnect", "*", "B.h5")),
-                       key=lambda f: int(os.path.basename(os.path.dirname(f))))
-        names = []
-        for f in files:
-            k = int(os.path.basename(os.path.dirname(f)))
-            with h5py.File(f, "r") as fh:
+        rdir = os.path.join(os.path.dirname(os.path.abspath(cli.state)), "reconnect")
+        ks = sorted(int(os.path.basename(d)) for d in glob.glob(os.path.join(rdir, "*")))
+        for k in ks:
+            with h5py.File(os.path.join(rdir, str(k), "B.h5"), "r") as fh:
                 for key in ("B", "p", "pw"):
                     dofs[f"{key}_reconnect{k}"] = np.asarray(fh[f"{key}_final"], dtype=np.float64)
-                reconnect_steps[k] = int(fh.attrs["reconnect_step"])
-            names.append(f"reconnect{k}")
-        fields = [n for w in fields for n in (names if w == "reconnect" else [w])]
-        cli.fields = ",".join(fields)
-    movie = cli.fields.strip() == "snapshots"
+                labels[f"reconnect{k}"] = f"before reconnection {k} (step {int(fh.attrs['reconnect_step'])})"
+        fields = [n for w in fields for n in ([f"reconnect{k}" for k in ks] if w == "reconnect" else [w])]
+    movie = fields == ["snapshots"]
     if movie:
-        # One frame per stored snapshot (relax.py --save-every), named by step.
+        # One frame per stored snapshot (relax.py --chunk), named by step.
         steps = [int(v) for v in dofs["snapshot_steps"]]
         if cli.snapshot_steps:
             wanted = set()
@@ -210,10 +205,11 @@ def main():
             keep_steps = [k for k in steps if k in wanted or k == steps[-1]]
         else:
             keep_steps = steps
-        cli.fields = ",".join(f"step{k:05d}" for k in keep_steps)
+        fields = [f"step{k:05d}" for k in keep_steps]
         for i, k in enumerate(steps):
             dofs[f"B_step{k:05d}"] = dofs["B_snapshots"][i]
             dofs[f"pw_step{k:05d}"] = dofs["pw_snapshots"][i]
+            labels[f"step{k:05d}"] = f"step {k}"
     geometry = str(attrs["geometry_path"])
     label = os.path.basename(geometry)
     ns = tuple(int(v) for v in attrs["ns"])
@@ -223,17 +219,12 @@ def main():
     out = cli.out or os.path.join(os.path.dirname(os.path.abspath(cli.state)), "poincare")
     os.makedirs(out, exist_ok=True)
     planes = [float(v) for v in cli.planes.split(",")]
-    which = [w.strip() for w in cli.fields.split(",")]
+    which = fields
     print(f"[state] {cli.state}: {geometry} ns={ns} p={p} nfp={nfp} "
           f"relaxed in {attrs.get('precision')} for {attrs.get('steps')} steps "
           f"({attrs.get('method')}, eta_max={attrs.get('eta_max')}); tracing in {cli.precision}",
           flush=True)
 
-    labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})",
-              **{n: f"step {int(n[4:])}" for n in cli.fields.split(",") if n.startswith("step")},
-              **{f"reconnect{k}": f"before reconnection {k} (step {step})"
-                 for k, step in reconnect_steps.items()},
-              "final": "relaxed field"}
     if cli.from_npz:
         z = np.load(os.path.join(out, "sections.npz"))
         lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
@@ -354,7 +345,7 @@ def main():
     # window, the split line (the FIRST frame's axis) and the profile abscissa,
     # all from the union over frames; iota_lim already is.
     if movie:
-        first = cli.fields.split(",")[0]
+        first = which[0]
         for plane in planes:
             Rs = np.concatenate([np.asarray(all_cuts[n][plane][0])[traced[n][1]].ravel() for n in traced])
             Zs = np.concatenate([np.asarray(all_cuts[n][plane][1])[traced[n][1]].ravel() for n in traced])

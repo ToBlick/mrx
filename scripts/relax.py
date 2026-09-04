@@ -205,9 +205,9 @@ def eta_schedule(kind, eta_max, steps, pulse=(2000, 100, 0)):
 
         return pulsed
     if kind == "tanh":
-        return lambda it: eta_max * 0.5 * (1.0 - jnp.tanh(4.0 * jnp.pi * (it / max(steps, 1) - 0.5)))
+        return lambda it: eta_max * 0.5 * (1.0 - jnp.tanh(4.0 * jnp.pi * (it / steps - 0.5)))
     if kind == "linear":
-        return lambda it: eta_max * (1.0 - it / max(steps, 1))
+        return lambda it: eta_max * (1.0 - it / steps)
     return lambda it: jnp.full((), eta_max)
 
 
@@ -498,10 +498,10 @@ def main(cli):
                        extra=dict(resid=lambda st: st.F_norm / normaliser(st.B_n)))
     reconnect_eps = cli.reconnect_eps * (1.0 / ns[0]) ** 2
     reconnect_fn = jax.jit(lambda B: resistive_step(B, seq, reconnect_eps))
-    reconnect_chunks = max(1, round(cli.reconnect_every / cli.chunk)) if cli.reconnect_every else 0
-    if reconnect_chunks and reconnect_chunks * cli.chunk != cli.reconnect_every:
-        print(f"[reconnect] --reconnect-every {cli.reconnect_every} rounded to "
-              f"{reconnect_chunks * cli.chunk} ({reconnect_chunks} chunks)", flush=True)
+    reconnect_every = max(1, round(cli.reconnect_every / cli.chunk)) * cli.chunk if cli.reconnect_every else 0
+    if reconnect_every != cli.reconnect_every:
+        print(f"[reconnect] --reconnect-every {cli.reconnect_every} rounded to {reconnect_every} "
+              f"({reconnect_every // cli.chunk} chunks)", flush=True)
 
     p_ic = np.asarray(state.p)
     pw_ic = np.asarray(pw0)
@@ -519,12 +519,11 @@ def main(cli):
     t_arm = time.perf_counter()
     t_qoi = 0.0     # time in the qoi samples, saves and reconnections; the recorded wall excludes it
     n_done = 0
-    chunks_since_reconnect = 0
     print(f"\n=== {cli.method}  m={cli.history} "
           f"smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
           f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max} eta-every={cli.eta_every}  "
           f"steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
-          f"reconnect-every={reconnect_chunks * cli.chunk} ===",
+          f"reconnect-every={reconnect_every} ===",
           flush=True)
 
     def write_field(path, B_now, p_now, pw_now, snapshots=False, **extra):
@@ -546,14 +545,10 @@ def main(cli):
     def save():
         results["trace"] = tr
         results["qoi"] = qoi
-        window = tr["resid"][-cli.chunk:]
         results["summary"] = dict(
             steps=n_done, stop=stop, wall=time.perf_counter() - t_arm - t_qoi,
-            E_final=tr["E"][-1] if tr["E"] else E0,
-            F_final=tr["F"][-1] if tr["F"] else F0n,
-            resid_final=tr["resid"][-1] if tr["resid"] else resid0,
-            resid_window_mean=float(np.mean(window)) if window else resid0,
-            **latest["diag"])
+            E_final=tr["E"][-1], F_final=tr["F"][-1], resid_final=tr["resid"][-1],
+            resid_window_mean=resid_now, **latest["diag"])
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
         eqx.tree_serialise_leaves(ckpt, (state, jnp.int32(it0 + n_done)))
@@ -590,7 +585,8 @@ def main(cli):
         n_done += cli.chunk
         it = it0 + n_done
         with np.errstate(invalid="ignore"):   # a backward line-search step has no gain
-            tr["cos"].extend((chunk["Fu"] / (chunk["F"] * chunk["v"])).tolist())
+            cos = chunk["Fu"] / (chunk["F"] * chunk["v"])
+            tr["cos"].extend(cos.tolist())
             tr["gain"].extend(((chunk["Fu"] / chunk["dt"]) ** 0.5 / chunk["v"]).tolist())
         tr["dE_meas"].extend(np.diff(chunk["E"], prepend=E_prev).tolist())
         tr["dE_pred"].extend((-0.5 * chunk["dt"] * chunk["Fu"]).tolist())
@@ -603,12 +599,11 @@ def main(cli):
         snaps.append((it, np.asarray(state.B_n), latest["pw"]))
         print(f"  it {it:>5d}  E={E_prev:.8e}  |F|={chunk['F'][-1]:.4e}  "
               f"resid={resid_now:.3e} (chunk mean)  H={h:+.6e}  dH={h - h0:+.3e}  "
-              f"dt={chunk['dt'].mean():+.3e}  cos min={np.nanmin(chunk['Fu'] / (chunk['F'] * chunk['v'])):+.4f}  "
+              f"dt={chunk['dt'].mean():+.3e}  cos min={np.nanmin(cos):+.4f}  "
               f"divB={chunk['div'].max():.2e}  res_it max={int(np.abs(chunk['res_it']).max())}  "
               f"[{tq - t_arm - t_qoi:.0f}s solve +{t_qoi:.0f}s qoi]\n           {pressure_line(diag)}",
               flush=True)
-        chunks_since_reconnect += 1
-        if reconnect_chunks and chunks_since_reconnect == reconnect_chunks and n_done < cli.steps:
+        if reconnect_every and n_done % reconnect_every == 0 and n_done < cli.steps:
             k = len(results["reconnect"]) + 1
             rdir = os.path.join(out, "reconnect", str(k))
             os.makedirs(rdir, exist_ok=True)
@@ -628,7 +623,6 @@ def main(cli):
                       helicity_after=h, JoverB_after=JoverB,
                       **{f"{kk}_after": v for kk, v in diag.items()})
             results["reconnect"].append(ev)
-            chunks_since_reconnect = 0
             print(f"  [reconnect {k}] at it={it}: chunk mean {resid_now:.3e}; "
                   f"eps={reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
                   f"|F| {ev['F_before']:.3e} -> {ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} "
@@ -638,23 +632,16 @@ def main(cli):
             stop = "floor"
             print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below "
                   f"{cli.floor_tol:.1e} at it={it}", flush=True)
-            t_qoi += time.perf_counter() - tq
-            break
-        if cli.seconds is not None and time.perf_counter() - t_arm > cli.seconds:
+        elif cli.seconds is not None and time.perf_counter() - t_arm > cli.seconds:
             stop = "seconds"
             print(f"  [budget] {cli.seconds:.0f} s spent at it={it}", flush=True)
-            t_qoi += time.perf_counter() - tq
-            break
-        save()
+        else:
+            save()
         t_qoi += time.perf_counter() - tq
+        if stop != "steps":
+            break
 
     wall = time.perf_counter() - t_arm - t_qoi
-    if qoi["it"][-1] != it0 + n_done:
-        # The pressures stored next to B_final are evaluated AT B_final.
-        _, p, J, H, JxH = force_probe(state.B_n, state.p, state.H, state.JxH)
-        p_w, _, diag = pressure_probe(state.B_n, p, J, H, pw_guess)
-        latest = {"p": np.asarray(p), "pw": np.asarray(p_w),
-                  "diag": {k: float(v) for k, v in diag.items()}}
     dEm, dEp = np.array(tr["dE_meas"]), np.array(tr["dE_pred"])
     ident = np.abs(dEm - dEp) / E0
     resid_tr = np.array(tr["resid"])

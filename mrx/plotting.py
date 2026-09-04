@@ -612,7 +612,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         lx.scatter(lr[csel_iota], lth[csel_iota], c=colour[csel_iota], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
         csel_p = shown2 & ~top
-        if split_iota_p and csel_p.any():
+        if csel_p.any():
             lx.scatter(lr[csel_p], lth[csel_p], c=pressure_scale * pressure[csel_p], s=size,
                        cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
         if (~keep).any():
