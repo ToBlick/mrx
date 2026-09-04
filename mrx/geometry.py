@@ -17,6 +17,7 @@ map onto the spline basis of a sequence.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Callable
 
@@ -302,46 +303,80 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
 # Solve geometries for the driver scripts, by analytic name or by file path
 # ---------------------------------------------------------------------------
 #
-# A geometry is either an analytic name (``toroid``, ``cylinder``,
-# ``rot-ellipse``) or the path of an equilibrium file -- a GVEC state
-# (``.dat``, :mod:`mrx.gvec`) or a VMEC wout (``.nc``, :mod:`mrx.vmec`), both
-# read in closed form; ``os.path.isfile`` decides. :func:`build_sequence` turns it into a polar sequence with the map
-# installed and the preconditioners built; nullspaces are left to the caller.
+# A geometry is a file: a GVEC state (``.dat``, :mod:`mrx.gvec`) or a VMEC
+# wout (``.nc``, :mod:`mrx.vmec`), both read in closed form, or an analytic
+# geometry (``.json``): a map of :mod:`mrx.mappings` with its parameters and
+# the profiles of the analytic initial condition (``scripts/relax.py``).
+# ``data/torus.json``, ``data/cylinder.json`` and ``data/rot_ellipse.json``
+# are the shipped ones. :func:`build_sequence` turns a geometry into a polar
+# sequence with the map installed and the preconditioners built; nullspaces
+# are left to the caller.
 
-#: Field periods spanned by logical zeta in [0, 1] for the analytic maps.
-ANALYTIC_NFP = {"toroid": 1, "cylinder": 1, "rot-ellipse": 3}
+#: The maps an analytic geometry file may name.
+ANALYTIC_MAPS = ("torus", "cylinder", "rot-ellipse")
 
 
-def _unknown(geometry):
-    return ValueError(
-        f"geometry {geometry!r} is neither an analytic name "
-        f"({', '.join(ANALYTIC_NFP)}) nor an existing file")
+def read_analytic(path):
+    """The analytic geometry file ``path``::
+
+        {"map": "torus" | "cylinder" | "rot-ellipse",
+         "map_params": {...},                       # keyword arguments of the map
+         "profile": {"iota": [i0, i1], "iota_exp": e, "flux_exp": q,
+                     "lambda": [[m, n, amp], ...]}}  # the logical-grid field
+
+    ``map_params`` are ``toroid_map``'s ``epsilon, kappa, R0``,
+    ``cylinder_map``'s ``a, h`` or ``rotating_ellipse_map``'s ``eps, kappa,
+    R0, nfp``; the profile is ``iota = i0 + (i1 - i0) rho^e``, ``Phi' =
+    rho^q`` and ``lambda = sum amp rho^|m| sin(2 pi (m theta - n zeta))``
+    (``mrx.initial_conditions``).
+    """
+    with open(path) as fh:
+        spec = json.load(fh)
+    if spec.get("map") not in ANALYTIC_MAPS:
+        raise ValueError(f"{path}: 'map' must be one of {', '.join(ANALYTIC_MAPS)}, "
+                         f"got {spec.get('map')!r}")
+    return spec
+
+
+def geometry_kind(geometry):
+    """``"gvec"`` for a state file, ``"vmec"`` for a wout, the map's name for
+    an analytic geometry file; anything else raises."""
+    if not os.path.isfile(geometry):
+        raise ValueError(f"geometry {geometry!r} is not a file; MRX reads GVEC state files "
+                         "(.dat), VMEC wout files (.nc) and analytic geometry files (.json)")
+    if geometry.endswith(".dat"):
+        return "gvec"
+    if geometry.endswith(".nc"):
+        return "vmec"
+    if geometry.endswith(".json"):
+        return read_analytic(geometry)["map"]
+    raise ValueError(f"{geometry}: not a geometry file; MRX reads GVEC state files (.dat), "
+                     "VMEC wout files (.nc) and analytic geometry files (.json)")
 
 
 def geometry_nfp(geometry, nfp=None):
     """Field periods of a geometry.
 
     Args:
-        geometry: an analytic name or the path of an equilibrium file.
-        nfp: overrides the file's ``nfp``; ignored for the analytic names.
+        geometry: the path of an equilibrium or analytic geometry file.
+        nfp: overrides an equilibrium file's ``nfp``; ignored for an
+            analytic geometry, whose map fixes it.
 
     Returns:
         The number of field periods spanned by logical zeta in [0, 1].
     """
-    if os.path.isfile(geometry):
+    kind = geometry_kind(geometry)
+    if kind == "gvec":
         if nfp is not None:
             return int(nfp)
-        if geometry.endswith(".dat"):
-            from mrx.gvec import read_state  # noqa: PLC0415  (imports this module)
-            return read_state(geometry)["nfp"]
-        if geometry.endswith(".nc"):
-            from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
-            return read_nfp(geometry)
-        raise ValueError(f"{geometry}: not an equilibrium file; MRX reads GVEC "
-                         "state files (.dat) and VMEC wout files (.nc)")
-    if geometry in ANALYTIC_NFP:
-        return ANALYTIC_NFP[geometry]
-    raise _unknown(geometry)
+        from mrx.gvec import read_state  # noqa: PLC0415  (imports this module)
+        return read_state(geometry)["nfp"]
+    if kind == "vmec":
+        if nfp is not None:
+            return int(nfp)
+        from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
+        return read_nfp(geometry)
+    return int(read_analytic(geometry)["map_params"].get("nfp", 1))
 
 
 def parse_r_refine(spec):
@@ -393,15 +428,15 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
 
     Args:
         geometry:
-            an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
             a GVEC state file (``.dat``, read in closed form, ``mrx.gvec``),
-            or a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``).
+            a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``),
+            or an analytic geometry file (``.json``, :func:`read_analytic`).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
         tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
-        nfp: overrides the file's ``nfp`` (see ``mrx.gvec``); ignored for
-            the analytic names.
+        nfp: overrides an equilibrium file's ``nfp`` (see ``mrx.gvec``);
+            ignored for an analytic geometry.
         r_windows: radial refinement windows ``[(a, b, m), ...]`` for
             :func:`radial_knots`; empty for the uniform radial grid.
 
@@ -410,9 +445,8 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
         preconditioner built (``seq.operators is ops``).
 
     Raises:
-        ValueError: if ``geometry`` is neither an analytic name nor a file,
-            if the file is neither a ``.dat`` nor a ``.nc``, or (from
-            ``set_geometry``) if the map folds.
+        ValueError: if ``geometry`` is not a file, is of another kind, or
+            (from ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map  # noqa: PLC0415
@@ -422,18 +456,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
                          polar=True, tol=tol, maxiter=maxiter, knots=knots,
                          betti_numbers=(1, 1, 0, 0))
-    if os.path.isfile(geometry):
+    kind = geometry_kind(geometry)
+    if kind in ("gvec", "vmec"):
         map_func, info = build_gvec_map(geometry, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
         seq.set_map(map_func)
-    elif geometry == "toroid":
-        seq.set_map(toroid_map(epsilon=1/3, R0=1.0))
-    elif geometry == "cylinder":
-        seq.set_map(cylinder_map(a=1/3, h=1.0))
-    elif geometry == "rot-ellipse":
-        seq.set_map(rotating_ellipse_map(eps=1/3, kappa=1.3, nfp=3))
     else:
-        raise _unknown(geometry)
+        maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
+        seq.set_map(maps[kind](**read_analytic(geometry)["map_params"]))
     return seq, seq.build_preconditioners()

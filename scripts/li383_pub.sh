@@ -5,20 +5,24 @@
 #   bash scripts/li383_pub.sh reader     # reread arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
-#   bash scripts/li383_pub.sh anchor      # m = 0, 3, 5 and gamma = 0 departures from h16_p2_g1
+#   bash scripts/li383_pub.sh anchor     # m = 0, 3, 5 and gamma = 0 departures from h16_p2_g1
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
 #   bash scripts/li383_pub.sh psweep_p16 # gamma = 1 p-sweep at (16,32,32) (about 7 GPU-h)
-#   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
-#   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
-#   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
-#   bash scripts/li383_pub.sh reconnect [smoke|ladder|ladder5k|refine_smoke]  # reconnection series (--reconnect-every), outputs/li383_pulse; ladder = nine equilibria at c = 0.02
+#   bash scripts/li383_pub.sh aux [smoke|pairs]  # the auxiliary-H step next to the B step, outputs/li383_bonly
+#   bash scripts/li383_pub.sh reconnect [smoke|ladder|ladder5k|refine_smoke]  # reconnection series (--reconnect-every), outputs/li383_pulse; ladder = nine equilibria at 1.25% of H each
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
+# Every arm before 2026-09-04 ran the H step with the natural H (no wall
+# condition) and the in-loop resistivity schedule; both are gone (the
+# auxiliary H is Dirichlet now, the default step reads B itself, reconnection
+# is one solve between chunks). The tanh resistivity sweep (eta) and the
+# scheduled pulses (pulse) have no successor and were removed with them; their
+# results stay in docs/research/li383_sweep_results_2026-09-02.md.
+#
 # MRX_ROOT selects the checkout the jobs run (default: this one). Outputs go
-# to $MRX_ROOT/outputs/$SUB/<arm> (SUB defaults to li383_pub; the eta sweep
-# sets li383_eta, and `SUB=li383_eta ... sections NAME` addresses it); job ids
-# to $MRX_ROOT/outputs/$SUB/jobs.tsv.
+# to $MRX_ROOT/outputs/$SUB/<arm> (SUB defaults to li383_pub; `SUB=li383_pulse
+# ... sections NAME` addresses another); job ids to $MRX_ROOT/outputs/$SUB/jobs.tsv.
 set -euo pipefail
 WT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)   # the checkout this launcher lives in
 ROOT=${MRX_ROOT:-$WT}
@@ -33,10 +37,11 @@ GEOM=$ROOT/data/wout_li383_low_res_reference.nc
 GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 # floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
 # there): let --steps / --seconds end the run and show whether it bottoms out.
-COMMON="--ic clebsch --floor-tol 1e-4 --steps 6000"
+COMMON="--floor-tol 1e-4 --steps 6000"
 G1_12="--velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4"   # mu = 0.064 / n_r^2
 G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
 G1_32="--velocity-smoothing-order 1 --velocity-smoothing-scale 6.25e-5"
+AUX="--auxiliary-B-field true"
 
 submit() {  # submit KIND NAME SCRIPT ARGS TIMEOUT_MIN
     local kind=$1 name=$2 script=$3 args=$4 tmin=$5
@@ -93,11 +98,11 @@ deep() {
 anchor_sweeps() {
     # 2026-09-04: one-flag departures from the anchor h16_p2_g1 (the (16,32,32)
     # p = 2 gamma = 1 rung of hsweep_p2): the L-BFGS history m = 0 (steepest
-    # descent, --method gradient: L-BFGS refuses history 0), 3, 5 (m = 1 is the
-    # anchor), and gamma = 0. 5000 steps, no floor, so every run ends on the
-    # step cap; the anchor's --seconds cap is dropped for the same reason.
+    # descent), 3, 5 (m = 1 is the anchor), and gamma = 0. 5000 steps, no
+    # floor, so every run ends on the step cap; the anchor's --seconds cap is
+    # dropped for the same reason.
     local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000"
-    arm h16_p2_g1_m0 "$GEOM_HI" "$common $G1_16 --method gradient"  300
+    arm h16_p2_g1_m0 "$GEOM_HI" "$common $G1_16 --history 0"        300
     arm h16_p2_g1_m3 "$GEOM_HI" "$common $G1_16 --history 3"        300
     arm h16_p2_g1_m5 "$GEOM_HI" "$common $G1_16 --history 5"        300
     arm h16_p2_g0    "$GEOM_HI" "$common --velocity-smoothing-order 0" 300
@@ -127,76 +132,30 @@ psweep_p16() {
     arm h16_p4_g1 "$GEOM_HI" "$common --p 4 --seconds 18000" 600
 }
 
-eta() {
-    # 2026-09-03: resistivity sweep mirroring the h-sweep's (16,32,32) rung:
-    # p = 2, gamma = 1, tanh schedule (eta_max for the first third of the 5000
-    # steps, dropped to ~0 over the middle third, ideal at the end), unseeded
-    # and with the (6, 1) chain at eps 3e-3. --eta-every keeps eta K dt >= 2e-5
-    # per resistive solve (dt is about 2 under gamma = 1). SUB=li383_eta.
-    # Floor 0 since 2026-09-03 (the first launch used 1e-5 and the eta >= 1e-5
-    # arms tripped it inside the resistive phase, ending resistive instead of
-    # ideal); `eta ETA...` reruns only the named etas.
-    local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000 $G1_16 --eta-schedule tanh --seconds 7200"
-    local s61="--seed 6,1,0.544,0.1 --seed-eps 3e-3"
-    local e K
-    # 2026-09-03 second launch: 1e-8, 3e-8, 3e-7 fill the decade where the
-    # islands open (1e-7) before the current is gone (1e-6); K keeps
-    # eta K dt = 2e-5 per solve.
-    for e in 1e-8:1000 3e-8:300 1e-7:100 3e-7:30 1e-6:10 1e-5:1 1e-4:1; do
-        K=${e#*:}; e=${e%:*}
-        # `eta 1e-5` reruns both arms of that rung, `eta s61_eta1e-5` one arm.
-        if [ $# -eq 0 ] || [[ " $* " == *" $e "* ]] || [[ " $* " == *" eta$e "* ]]; then
-            arm eta$e     "$GEOM_HI" "$common --eta-max $e --eta-every $K"      300
-        fi
-        if [ $# -eq 0 ] || [[ " $* " == *" $e "* ]] || [[ " $* " == *" s61_eta$e "* ]]; then
-            arm s61_eta$e "$GEOM_HI" "$common --eta-max $e --eta-every $K $s61" 300
-        fi
-    done
-    # eta = 0 seeded control at the same mesh and degree (added 2026-09-03).
-    if [ $# -eq 0 ] || [[ " $* " == *" s61_eta0 "* ]]; then
-        arm s61_eta0 "$GEOM_HI" "$common $s61" 300
-    fi
-}
-
-bonly() {  # bonly [smoke]
-    # 2026-09-03: the B-only step (J x B, u x B, no auxiliary H) of
-    # mrx/experimental/bonly_relaxation.py, twin of h16_p2_g1, helicity sampled
-    # every 50 steps. The code comes from THIS checkout (worktree): SCRIPT is
-    # absolute and PYTHONPATH is overridden; data and outputs stay under $ROOT.
+aux() {  # aux [smoke|pairs]
+    # 2026-09-03/04: the auxiliary-H step (J x H, u x H with the Dirichlet
+    # 1-form H = M_1^-1 P B) next to the default B step, twin of h16_p2_g1,
+    # helicity sampled every chunk. The code comes from THIS checkout
+    # (worktree): SCRIPT is absolute and PYTHONPATH is overridden; data and
+    # outputs stay under $ROOT.
     local wt=$WT
     export EXTRA_ENV="PYTHONPATH=$wt"
-    local common="--ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 --stepper bonly"
+    local common="--ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 $AUX"
     if [ "${1:-}" = smoke ]; then
-        submit relax bonly_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --chunk 100 --stepper bonly --out $PUB/bonly_smoke" 30
+        submit relax aux_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --chunk 100 $AUX --out $PUB/aux_smoke" 30
     elif [ "${1:-}" = pairs ]; then
-        # 2026-09-03: the (16,32,32) f32 twins showed the same drift (roundoff,
-        # -8e-8): the B-only rate is a product of two projection errors. Two
-        # pairs make it visible: float64 at (12,24,24) p = 2 and float32 at
-        # (8,16,16) p = 1, each with the production and the B-only stepper.
-        local base="--ic clebsch --floor-tol 1e-5 --steps 5000 --seconds 7200"
-        local st
-        for st in h bonly; do
-            submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 --stepper $st --out $PUB/h12_p2_f64_$st" 300
-            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 --velocity-smoothing-scale 1.0e-3 --stepper $st --out $PUB/h8_p1_$st" 120
+        # Two pairs, each with the B step and the auxiliary-H step: float64 at
+        # (12,24,24) p = 2 and float32 at (8,16,16) p = 1.
+        local base="--floor-tol 1e-5 --steps 5000 --seconds 7200"
+        local st flag
+        for st in B H; do
+            flag=""; [ $st = H ] && flag=$AUX
+            submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 $flag --out $PUB/h12_p2_f64_$st" 300
+            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 --velocity-smoothing-scale 1.0e-3 $flag --out $PUB/h8_p1_$st" 120
         done
     else
-        submit relax bonly_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/bonly_h16_p2_g1" 300
+        submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/aux_h16_p2_g1" 300
     fi
-}
-
-pulse() {
-    # 2026-09-03: resistive PULSE after an ideal phase, driver of THIS checkout
-    # (--eta-schedule pulse). (16,32,32) p = 2 gamma = 1, 2000 ideal steps, one
-    # 100-step pulse (one backward-Euler solve of eta x window time, dose
-    # eta tau = 3e-5 / 1e-4 / 3e-4 at dt ~ 2, matching the 1e-8 / 3e-8 / 1e-7
-    # tanh rungs), then ideal to 5000; plus the middle dose every 1000 steps.
-    export EXTRA_ENV="PYTHONPATH=$WT"
-    local common="--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 5000 --seconds 7200 --eta-schedule pulse --eta-every 100"
-    local e
-    for e in 1.5e-7 5e-7 1.5e-6; do
-        submit relax pulse$e "$WT/scripts/relax.py" "$common --eta-max $e --eta-pulse 2000,100 --out $PUB/pulse$e" 300
-    done
-    submit relax pulse5e-7_cyc "$WT/scripts/relax.py" "$common --eta-max 5e-7 --eta-pulse 2000,100,1000 --out $PUB/pulse5e-7_cyc" 300
 }
 
 reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
@@ -204,36 +163,34 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     # resistive solve every K steps (--reconnect-every; the descent is a
     # power law, there is no stall to wait for); the outcome is the series
     # under <arm>/reconnect/<k>/ plus the final field. (16,32,32) p = 2
-    # gamma = 1, 8000 steps = 4000 ideal + three intervals of 2000 (the
-    # per-step detector's arm reconnected at 3948 / 5691 / 7423).
-    # 2026-09-04 ladder: the same rung, every 2000 steps from step 0, c = 0.02
-    # (1.25% of H_0 per rung), eight solves + the final field = nine ideal
-    # equilibria; the cumulative dose 6.2e-4 after eight is the tanh 1e-7
-    # arm's, so the ladder spans ideal to fully reconnected. 18000 steps,
-    # about 3 h at 0.57 s/step.
+    # gamma = 1, 8000 steps = 4000 ideal + three intervals of 2000.
+    # 2026-09-04 ladder: the same rung, every 2000 steps from step 0, 1.25% of
+    # H per solve (the dose c = 0.02 of the original run), eight solves + the
+    # final field = nine ideal equilibria spanning ideal to fully reconnected.
+    # 18000 steps, about 3 h at 0.57 s/step.
     # 2026-09-04 ladder5k: three meshes, 10000 steps with ONE solve at 5000
-    # at the dose that costs 1% of H_0 (the price is linear in eps on this
-    # rung: 3.9e-5 -> 0.63%, 7.8e-5 -> 1.24%, so eps = 6.25e-5); eps = c h^2
-    # with h = 1 / n_r, so c = 0.016 at n_r = 16 and 0.064 at n_r = 32. Meshes:
-    # (16,32,32); (32,32,32) uniform; (32,32,32) with the radial cells of the
-    # n_r = 16 grid outside two windows and 6 cells of 0.025 + 15 cells of 0.017 inside
-    # [0.47, 0.62] (iota = 1/2) and [0.68, 0.94] (iota = 3/5), the outer chain finer.
+    # spending 1% of H (the dose is set from the helicity since the prune;
+    # the original runs used eps = 6.25e-5, calibrated to the same 1%).
+    # Meshes: (16,32,32); (32,32,32) uniform; (32,32,32) with the radial
+    # cells of the n_r = 16 grid outside two windows and 6 cells of 0.025 +
+    # 15 cells of 0.017 inside [0.47, 0.62] (iota = 1/2) and [0.68, 0.94]
+    # (iota = 3/5), the outer chain finer.
     export EXTRA_ENV="PYTHONPATH=$WT"
-    L5="--floor-tol 0 --steps 10000 --reconnect-every 5000"
+    L5="--floor-tol 0 --steps 10000 --reconnect-every 5000 --reconnect-helicity 0.01"
     R32="--r-refine 0.47:0.62:6,0.68:0.94:15"
     if [ "${1:-}" = ladder5k ]; then
-        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 $L5 --reconnect-eps 0.016 --out $PUB/reconnect_l5_h16_p2_g1" 240
-        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $L5 --reconnect-eps 0.064 --out $PUB/reconnect_l5_h32u_p2_g1" 480
-        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --reconnect-eps 0.064 --out $PUB/reconnect_l5_h32r_p2_g1" 540
+        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 $L5 --out $PUB/reconnect_l5_h16_p2_g1" 240
+        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $L5 --out $PUB/reconnect_l5_h32u_p2_g1" 480
+        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --out $PUB/reconnect_l5_h32r_p2_g1" 540
     elif [ "${1:-}" = refine_smoke ]; then
         # The refined radial grid end to end at n_r = 16: 5 + 5 window cells, 300 steps, one solve.
-        submit relax refine_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,16,16 --p 2 $G1_16 --r-refine 0.45:0.65:5,0.68:0.92:5 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-eps 0.04 --out $PUB/refine_smoke" 40
+        submit relax refine_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,16,16 --p 2 $G1_16 --r-refine 0.45:0.65:5,0.68:0.92:5 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-helicity 0.02 --out $PUB/refine_smoke" 40
     elif [ "${1:-}" = ladder ]; then
-        submit relax reconnect_ladder_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 18000 --reconnect-every 2000 --reconnect-eps 0.02 --out $PUB/reconnect_ladder_h16_p2_g1" 420
+        submit relax reconnect_ladder_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 18000 --reconnect-every 2000 --reconnect-helicity 0.0125 --out $PUB/reconnect_ladder_h16_p2_g1" 420
     elif [ "${1:-}" = smoke ]; then
-        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
+        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
     else
-        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
+        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
     fi
 }
 
@@ -259,11 +216,9 @@ case ${1:-} in
     hsweep_p2) hsweep_p2 ;;
     anchor) anchor_sweeps ;;
     psweep_p16) psweep_p16 ;;
-    eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
     reconnect) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; reconnect "${2:-}" ;;
-    pulse) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; pulse ;;
-    bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
+    aux) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; aux "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | anchor | psweep_p16 | eta | pulse | reconnect [smoke|ladder|ladder5k|refine_smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | anchor | psweep_p16 | reconnect [smoke|ladder|ladder5k|refine_smoke] | aux [smoke|pairs] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac

@@ -8,28 +8,42 @@ runs the script, and reads its output. The algorithm is in
 
 ## Geometry
 
-`mrx.geometry.build_sequence` turns a geometry into a polar sequence
-with the map installed and every solver operator built:
+Every geometry is a file, and the file also fixes the initial condition.
+`mrx.geometry.build_sequence` turns it into a polar sequence with the map
+installed and every solver operator built:
 
 ```python
 from mrx.geometry import build_sequence
 
-seq, ops = build_sequence("toroid", ns=(8, 16, 8), p=3)
-seq, ops = build_sequence("data/GVEC_State_final.dat", ns=(8, 16, 16), p=2)
+seq, ops = build_sequence("data/torus.json", ns=(8, 16, 8), p=3)
+seq, ops = build_sequence("data/wout_li383_1.4m.nc", ns=(8, 16, 16), p=2)
 ```
 
-| geometry | map |
+| geometry file | map |
 |---|---|
-| `toroid`, `cylinder`, `rot-ellipse` | analytic, from `mrx.mappings` |
-| the path of a GVEC state (`.dat`) or a VMEC wout (`.nc`) | spline coefficients built from the file's series; `os.path.isfile` decides |
+| a VMEC wout (`.nc`) or a GVEC state (`.dat`) | spline coefficients built from the file's series |
+| an analytic geometry (`.json`) | a map of `mrx.mappings` with the parameters the file gives |
 
-Any other string raises, and so does a file of any other kind. A GVEC
-state or VMEC wout becomes two scalar splines `R`, `Z` on the sequence's
-own spline space, built from the series coefficients, so `ns` and `p` are
-also the map resolution. `build_gvec_map` checks that $\det D\Phi > 0$
-everywhere and raises otherwise. `nfp=` overrides the file's value for a
-file that declares it wrong. What MRX reads from the file is in
-[GVEC → MRX interface](concepts/gvec_mrx_interface.md).
+Anything else raises. A GVEC state or VMEC wout becomes two scalar
+splines `R`, `Z` on the sequence's own spline space, built from the series
+coefficients, so `ns` and `p` are also the map resolution. `build_gvec_map`
+checks that $\det D\Phi > 0$ everywhere and raises otherwise. `nfp=`
+overrides the file's value for a file that declares it wrong. What MRX
+reads from the file is in [GVEC → MRX interface](concepts/gvec_mrx_interface.md).
+
+An analytic geometry file names the map and its parameters, and the
+profiles of the initial condition below (`mrx.geometry.read_analytic`):
+
+```json
+{"map": "torus",
+ "map_params": {"epsilon": 0.3333, "kappa": 1.0, "R0": 1.0},
+ "profile": {"iota": [0.4, 0.9], "iota_exp": 2.0, "flux_exp": 1.0, "lambda": []}}
+```
+
+`data/torus.json`, `data/cylinder.json` and `data/rot_ellipse.json` are the
+three shipped ones (`toroid_map`, `cylinder_map`, `rotating_ellipse_map`);
+copy one and edit the numbers. `mrx.geometry.geometry_kind(path)` returns
+`vmec`, `gvec`, or the map's name.
 
 ## Initial condition
 
@@ -43,13 +57,13 @@ $$
 $$
 
 This field is divergence-free and tangent to the boundary for any
-$\lambda$ and any geometry. Three sources of the profiles:
+$\lambda$ and any geometry. The geometry file decides where the profiles
+come from:
 
-| `--ic` | profiles |
+| geometry | initial condition |
 |---|---|
-| `clebsch` (default) | GVEC's own `dPhi_dr`, `dchi_dr`, and `LA` from the geometry file; needs a file geometry |
-| `analytic` | prescribed power laws on the logical grid: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$; no external data |
-| `dzeta` | the constant 2-form $(0, 0, 1)$; relaxes to the harmonic field |
+| VMEC wout, GVEC state | the equilibrium's own field, $B = dA'$ from the file's `dPhi_dr`, `dchi_dr` and `LA` through the histopolated potential (exactly divergence-free) |
+| analytic `.json` | the `profile` block: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$, $\lambda = \sum a\, \rho^{|m|} \sin 2\pi(m\theta - n\zeta)$ on the logical grid, projected and Leray-cleaned |
 
 In code:
 
@@ -73,11 +87,11 @@ The script always Leray-projects the initial condition.
 Every run is a GPU job through `slurm/run.sh`:
 
 ```bash
-SCRIPT=scripts/relax.py JOB_NAME=relax_w7x TIMEOUT_MIN=60 \
-  ARGS="--geometry data/GVEC_State_final.dat" bash slurm/run.sh
+SCRIPT=scripts/relax.py JOB_NAME=relax_li383 TIMEOUT_MIN=60 \
+  ARGS="--geometry data/wout_li383_1.4m.nc" bash slurm/run.sh
 
 SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
-  ARGS="--geometry toroid --ic analytic --ns 6,12,6 --steps 50 --chunk 25" \
+  ARGS="--geometry data/torus.json --ns 6,12,6 --steps 50 --chunk 25" \
   bash slurm/run.sh
 ```
 
@@ -85,23 +99,24 @@ Flags, defaults in brackets:
 
 | flag | meaning |
 |---|---|
-| `--geometry G` (required) | `toroid`, `cylinder`, `rot-ellipse`, or the path of a GVEC export |
+| `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
 | `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
-| `--maxiter N [2000]`, `--tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
+| `--r-refine a:b:m,... [""]` | radial refinement: `m` uniform cells in each window `[a, b]` of the logical radius, the remaining `n_r - p` cells spread over the gaps (`mrx.geometry.radial_knots`) |
+| `--solve-maxiter N [2000]`, `--solve-tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
-| `--ic {clebsch,analytic,dzeta} [clebsch]` | initial condition; `clebsch` with an analytic geometry stops with `use --ic analytic` |
-| `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | clebsch IC only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
-| `--iota I0,I1 [0.4,0.9]`, `--iota-exp E [2.0]`, `--flux-exp Q [1.0]`, `--lam SPEC [""]` | analytic IC only: the profiles above and $\lambda$ modes `"m,n,amp;..."`; ignored for `--ic clebsch` |
-| `--method {gradient,lbfgs} [lbfgs]`, `--history M [1]` | descent method and secant pairs (1 = CG) |
+| `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
+| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
+| `--scheme {explicit,midpoint} [explicit]` | forward Euler on the descent velocity, or the midpoint-implicit induction with the explicit velocity (Picard on the increment, `dt` halved on a blow-up; `mrx.relaxation.PICARD_*`) |
+| `--history M [1]` | L-BFGS secant pairs: 0 is steepest descent, 1 memoryless BFGS (= CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
-| `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | exact energy-minimising step or a fixed one, and the CFL cap |
-| `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
+| `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
-| `--reconnect-every K [0]`, `--reconnect-eps C [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B` with `eps = C h^2`, `h = 1 / n_r`, after which the descent restarts on the diffused field; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
+| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
+| `--checkpoint PATH [<out>/state.eqx]`, `--restart PATH` | the descent state at every save; continue from one |
 
 `python scripts/relax.py --help` prints the same list.
 
@@ -128,10 +143,10 @@ solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
 
 | file | content |
 |---|---|
-| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`, `res_delta`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`; the `ic` summary and the `summary` with the stopping reason, both with the same pressure diagnostics |
-| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the strong pressures, 3-form DoFs), `pw_ic`, `pw_final` (the weak pressures, Dirichlet 0-form DoFs) with the run parameters as attributes; `geometry` as given and `geometry_path` resolved |
+| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`; `reconnect`, one record per reconnection; the `ic` summary and the `summary` with the stopping reason, both with the same pressure diagnostics |
+| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the strong pressures, 3-form DoFs), `pw_ic`, `pw_final` (the weak pressures, Dirichlet 0-form DoFs), the snapshots of every chunk, with the run parameters as attributes; `geometry` as given, `geometry_path` resolved, `ic` the kind of initial condition |
 
-`relax.json` is rewritten at every qoi sample, so a run that runs out of
+`relax.json` is rewritten at every chunk, so a run that runs out of
 time still leaves its trace.
 
 ## Inspect
@@ -146,7 +161,7 @@ resid = run["trace"]["resid"]             # ||F|| / ||grad(B²/2)|| after every 
 H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 
-Three checks of a healthy ideal run (`--eta-max 0`, `--dt-mode linesearch`):
+Three checks of a healthy run (`--scheme explicit`, no reconnection):
 
 - `E` decreases at every step, and `dE_meas` matches `dE_pred` to
   roundoff. The prediction is an operator identity.
@@ -162,9 +177,9 @@ A run carries two pressures.
 
 | | strong `p` | weak `p_w` |
 |---|---|---|
-| where | `compute_force`, the Leray multiplier of the descent | `weak_pressure`, from the same `J` and `H` |
+| where | `compute_force`, the Leray multiplier of the descent | `weak_pressure`, from the same `J` and field |
 | space | 3-form, Dirichlet complex | 0-form, zero on the wall |
-| boundary | $\partial p / \partial n = 0$ by construction: $J \times H$ is projected onto the Dirichlet 2-form space first, which discards $(J \times H) \cdot n$ | $p_w = 0$; $J \times H$ is projected onto the natural 1-form space, which keeps $(J \times H) \cdot n$, and $\partial p_w / \partial n$ is the wall force once the remainder $F_w$ vanishes |
+| boundary | $\partial p / \partial n = 0$ by construction: the Lorentz force is projected onto the Dirichlet 2-form space first, which discards its normal component | $p_w = 0$; the force is projected onto the natural 1-form space, which keeps its normal component, and $\partial p_w / \partial n$ is the wall force once the remainder $F_w$ vanishes |
 | gauge | a constant | none |
 | read it for | the force residual of the constrained principle | the pressure profile, the wall force, beta |
 
@@ -178,7 +193,7 @@ k=0 solve). Every qoi sample records, and `ic` / `summary` repeat:
 | `gradp_cmp` | $\|\Pi_2 \nabla p_w - \nabla_w p\|_{M_2} / \|\Pi_2 \nabla p_w\|_{M_2}$, gauge-free: $\nabla_w p$ is the weak gradient of the 3-form in the Dirichlet 2-form space and $\Pi_2$ projects the exact $\nabla p_w$ onto the same space, so both lose the same normal trace |
 | `p_cmp` | the $L^2$ distance of the two pressures as functions with their means removed, relative to $p_w$'s |
 | `weak_resid` | $\|F_w\|_{M_1} / \|v\|_{M_1}$ |
-| `dpdn_wall`, `JxBn_wall` | $\max \lvert \partial p_w / \partial n \rvert$ and $\max \lvert (J \times H) \cdot n \rvert$ on the wall, both relative to $\max \lvert \nabla p_w \rvert$ |
+| `dpdn_wall`, `JxBn_wall` | $\max \lvert \partial p_w / \partial n \rvert$ and $\max \lvert (J \times B) \cdot n \rvert$ on the wall, both relative to $\max \lvert \nabla p_w \rvert$ |
 | `beta_vol` | $\int p_w \, dV / \int B^2/2 \, dV$; code units, the magnetic pressure is $B^2/2$ |
 | `beta_axis` | the same ratio on the coordinate axis (logical $r = 0$: the innermost radial quadrature layer, averaged over $\theta$ and $\zeta$) |
 

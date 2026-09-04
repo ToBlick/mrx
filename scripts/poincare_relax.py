@@ -187,7 +187,7 @@ def main():
         attrs = dict(fh.attrs)
         dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
     fields = [w.strip() for w in cli.fields.split(",")]
-    labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})", "final": "relaxed field"}
+    labels = {"ic": f"initial condition ({attrs.get('ic', '?')})", "final": "relaxed field"}
     if "reconnect" in fields:
         # The fields before each reconnection of a --reconnect-every run, in the layout of B.h5.
         rdir = os.path.join(os.path.dirname(os.path.abspath(cli.state)), "reconnect")
@@ -227,7 +227,8 @@ def main():
     which = fields
     print(f"[state] {cli.state}: {geometry} ns={ns} p={p} nfp={nfp} "
           f"relaxed in {attrs.get('precision')} for {attrs.get('steps')} steps "
-          f"({attrs.get('method')}, eta_max={attrs.get('eta_max')}); tracing in {cli.precision}",
+          f"({attrs.get('scheme')}, auxiliary B field {attrs.get('auxiliary_B_field')}); "
+          f"tracing in {cli.precision}",
           flush=True)
 
     if cli.from_npz:
@@ -281,7 +282,7 @@ def main():
                 plt.close(fig)
         return
 
-    seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override,
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
                             r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
 
     def physical_pressure(name, lr, lth, zeta):

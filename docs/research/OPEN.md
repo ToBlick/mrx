@@ -194,6 +194,21 @@ Route A) measured as an order-3.2 stall -- the same symptom. A k=1 free
 solve deflates against that vector. Not verified on `nbc_k1` itself.
 *Detail:* `precond_h_scaling_2026-09-02.md` §1.
 
+### 3.12 The (0, 3) and (3, 0) projection masses return a vector in the input's space
+
+Found 2026-09-04 while testing the quadratic loads (`test/test_products.py`).
+On li383 (8,12,12) p=2, `apply_projection_matrix(v, 0, 3, dirichlet_in,
+dirichlet_out)` takes a 0-form (900 free / 756 Dirichlet DoFs) and returns a
+0-form-sized vector (900 or 756 by `dirichlet_out`), and `(3, 0)` maps the
+864 3-form DoFs to 864, whereas `(2, 1)` and `(1, 2)` do cross degrees as
+their name says. `_PROJECTION_SPACES` in `mrx/operators.py` lists
+`(0, 3): (0, 3)` and `(3, 0): (3, 0)` where the vector pairs are
+`(2, 1): (1, 2)`, so the row/column assignment of the scalar pairs is the
+transposed convention (the raw cores of `mrx/mass.py` are built on the right pair; the extraction pairing in `apply_projection_matrix` is where to look). Nothing
+in production calls them (the 0-3 pairing is the scalar product's job:
+`scalar_product_load(one, g, 3, 0, 0)` is `P_03 g` and passes against the
+masses). Fix or delete; the test avoids them.
+
 ## 4. Where the folding time goes
 
 Production logs show XLA constant-folding alarms individually exceeding 2 s

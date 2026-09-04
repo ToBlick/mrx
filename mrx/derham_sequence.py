@@ -961,6 +961,11 @@ class DeRhamSequence():
             Ginvw_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, w_jk)
             Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
             f_jk = Ginvw_x_u_jk * (self.quad.w)[:, None]
+        elif n == 1 and m == 1 and k == 2:
+            # The (1, 2, 1) case with the factors swapped: w x u = -(u x w).
+            Gu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, u_jk)
+            w_x_Gu_jk = jnp.cross(w_jk, Gu_jk, axis=1)
+            f_jk = w_x_Gu_jk * (self.quad.w / self.jacobian_j)[:, None]
         elif n == 2 and m == 2 and k == 2:
             w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
             f_jk = w_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
@@ -970,6 +975,124 @@ class DeRhamSequence():
         return en @ integrate_against(
             f_jk, comp_info_n, comp_shapes_n, self.quad.shape)
 
+    # --- the other quadratic operators ------------------------------------
+    #
+    # Every product below is an L2 load: the pointwise product of two
+    # discrete forms, evaluated at the quadrature points from their
+    # reference components, integrated against the basis of the output
+    # space (``M_n^-1`` of the result is the L2 projection). In reference
+    # components a vector is either COVARIANT (a 1-form, ``a_i = DF^T
+    # a_phys``) or a CONTRAVARIANT DENSITY (a 2-form, ``b^i = J DF^-1
+    # b_phys``), a scalar either a value (0-form) or a density (3-form, ``J``
+    # times the value), with ``G = DF^T DF`` and ``J = det DF``. The products
+    # that are wedge products or contractions of differential forms are
+    # metric-free in these components: ``a x b`` of two 1-forms is the
+    # 2-form ``a ^ b`` with components ``a x b``, ``a . b`` of a 1-form and a
+    # 2-form is the 3-form ``a ^ b`` with the value ``a . b``, a 0-form
+    # times any form is the pointwise product (``f ^ omega``), and ``u x B``
+    # of a velocity and a 2-form ``B`` is the contraction ``-i_u B``, the
+    # 1-form ``(B x u) / J``. The metric enters where a Hodge star does
+    # (two 1-forms dotted, two 2-forms crossed, a 3-form as a value) and in
+    # the pairing with the output basis: a 1-form against the 1-form basis
+    # carries ``G^-1 J``, a 2-form against the 2-form basis ``G / J``, a
+    # 1-form against the 2-form basis or a 2-form against the 1-form basis
+    # nothing (the ``P_12`` pairing), a value against the 0-form basis
+    # ``J``, against the 3-form basis nothing.
+
+    def _scalar_load_values(self, s_jk, n, dirichlet_n=True):
+        """Load a physical scalar (values at the quadrature points, shape
+        ``(n_q,)``) onto the n-form space: ``int Λ⁰_i s J dx`` for n = 0,
+        ``int Λ³_i s dx`` for n = 3."""
+        from mrx.quadrature import integrate_against
+        if n not in (0, 3):
+            raise ValueError("n must be 0 or 3")
+        weight = self.quad.w * self.jacobian_j if n == 0 else self.quad.w
+        comp_info, comp_shapes = self._form_comp_info(n)
+        return self.E(n, dirichlet_n) @ integrate_against(
+            (s_jk * weight)[:, None], comp_info, comp_shapes, self.quad.shape)
+
+    def _vector_load_values(self, c_jk, rep, n, dirichlet_n=True):
+        """Load a physical vector, given in covariant (``rep = 1``) or
+        contravariant-density (``rep = 2``) reference components, onto the
+        n-form space, n = 1 or 2; the pairing is metric-free when ``rep``
+        and ``n`` differ."""
+        from mrx.quadrature import integrate_against
+        if n not in (1, 2):
+            raise ValueError("n must be 1 or 2")
+        if n == 1 and rep == 1:
+            f_jk = (jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, c_jk)
+                    * (self.quad.w * self.jacobian_j)[:, None])
+        elif n == 2 and rep == 2:
+            f_jk = (jnp.einsum('jkl,jk->jl', self.metric_jkl, c_jk)
+                    * (self.quad.w / self.jacobian_j)[:, None])
+        else:
+            f_jk = c_jk * self.quad.w[:, None]
+        comp_info, comp_shapes = self._form_comp_info(n)
+        return self.E(n, dirichlet_n) @ integrate_against(
+            f_jk, comp_info, comp_shapes, self.quad.shape)
+
+    def _physical_scalar(self, s_jk, k):
+        """The value of a 0-form (``k = 0``) or a 3-form (``k = 3``) from its
+        reference component at the quadrature points, shape ``(n_q,)``."""
+        if k not in (0, 3):
+            raise ValueError("a scalar form has degree 0 or 3")
+        return s_jk[:, 0] if k == 0 else s_jk[:, 0] / self.jacobian_j
+
+    def dot_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i (w . u)`` from quadrature values of the m-form
+        ``w`` and the k-form ``u`` (m, k in {1, 2}) onto the 0-forms
+        (``n = 0``, weight ``J``) or the 3-forms (``n = 3``). A 1-form
+        dotted with a 2-form is the wedge product ``w ^ u``, metric-free;
+        two 1-forms need ``G^-1``, two 2-forms ``G / J^2``."""
+        if m not in (1, 2) or k not in (1, 2):
+            raise ValueError("m and k must be 1 or 2")
+        if m == 1 and k == 1:
+            s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_inv_jkl, u_jk)
+        elif m == 2 and k == 2:
+            s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_jkl, u_jk) / self.jacobian_j ** 2
+        else:
+            s_jk = jnp.sum(w_jk * u_jk, axis=1) / self.jacobian_j
+        return self._scalar_load_values(s_jk, n, dirichlet_n)
+
+    def dot_product_load(self, w, u, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of ``w . u`` (``n`` 0 or 3; ``w`` an
+        m-form, ``u`` a k-form, both 1 or 2): :meth:`evaluate_at_quadrature`
+        on both inputs followed by :meth:`dot_product_load_values`."""
+        w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
+        u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
+        return self.dot_product_load_values(w_jk, u_jk, n, m, k, dirichlet_n)
+
+    def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i f g`` from quadrature values of the scalar
+        m-form ``f`` and k-form ``g`` (m, k, n in {0, 3}): the pointwise
+        product of the two values, a 3-form counting as its value ``rho / J``."""
+        s_jk = self._physical_scalar(f_jk, m) * self._physical_scalar(g_jk, k)
+        return self._scalar_load_values(s_jk, n, dirichlet_n)
+
+    def scalar_product_load(self, f, g, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of the product of two scalar forms
+        (``n``, ``m``, ``k`` in {0, 3}); see :meth:`scalar_product_load_values`."""
+        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
+        g_jk = self.evaluate_at_quadrature(g, k, dirichlet_k)
+        return self.scalar_product_load_values(f_jk, g_jk, n, m, k, dirichlet_n)
+
+    def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i . (f v)`` from quadrature values of the scalar
+        m-form ``f`` (0 or 3) and the vector k-form ``v`` (1 or 2) onto the
+        n-forms (1 or 2): ``f ^ v``, the pointwise product, metric-free up
+        to the pairing with the output basis."""
+        if k not in (1, 2):
+            raise ValueError("k must be 1 or 2")
+        c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
+        return self._vector_load_values(c_jk, k, n, dirichlet_n)
+
+    def scalar_vector_load(self, f, v, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of a scalar m-form times a vector
+        k-form; see :meth:`scalar_vector_load_values`."""
+        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
+        v_jk = self.evaluate_at_quadrature(v, k, dirichlet_k)
+        return self.scalar_vector_load_values(f_jk, v_jk, n, m, k, dirichlet_n)
+
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.
 
@@ -977,12 +1100,8 @@ class DeRhamSequence():
         ``Λ⁰_i B^T G B / J``. ``M_0^{-1} v`` is the L2 projection of the
         energy density ``|B|^2`` onto the 0-forms (free space).
         """
-        from mrx.quadrature import integrate_against
         B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
-        GB_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, B_jk)
-        f_jk = (jnp.sum(B_jk * GB_jk, axis=1) * self.quad.w / self.jacobian_j)[:, None]
-        comp_info, comp_shapes = self._form_comp_info(0)
-        return self.E(0) @ integrate_against(f_jk, comp_info, comp_shapes, self.quad.shape)
+        return self.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False)
 
     def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
         """

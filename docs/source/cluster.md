@@ -20,7 +20,7 @@ Put them in `slurm/site.env`, which is gitignored and sourced by
 ## One script: `slurm/run.sh`
 
 ```bash
-SCRIPT=scripts/relax.py ARGS="--geometry toroid --ic analytic --steps 50" JOB_NAME=smoke bash slurm/run.sh
+SCRIPT=scripts/relax.py ARGS="--geometry data/torus.json --steps 50" JOB_NAME=smoke bash slurm/run.sh
 SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=30 bash slurm/run.sh
 ```
 

@@ -26,12 +26,11 @@ the ``+ B_harm`` being what cancels the harmonic terms.
 Three sources of the profiles:
 
 * :func:`analytic_profile_form`: prescribed power laws, no external data;
-  the ``analytic`` initial condition of ``scripts/relax.py``.
+  the initial condition of an analytic geometry file (``scripts/relax.py``,
+  ``mrx.geometry.read_analytic``).
 * :func:`clebsch_form`: GVEC's own ``dPhi_dr``, ``dchi_dr`` and ``lambda``
   from a file read by :func:`mrx.gvec.load_clebsch`; the equilibrium field
   rebuilt from three scalars instead of resampled as a vector.
-* :func:`dzeta_form`: the constant 2-form ``(0, 0, 1)``, whose relaxation has
-  an exactly known target, the harmonic field.
 
 :func:`project_reference_two_form` turns any of them into DoFs. It pushes the
 form forward and uses ``load(frame='phys')``: ``load(frame='ref')`` wants
@@ -63,17 +62,6 @@ def make_profiles(iota0, iota1, iota_exp, flux_exp):
         return r ** flux_exp
 
     return iota, dPhi
-
-
-def parse_lambda(spec):
-    """``"m,n,amp;m,n,amp;..."`` -> list of ``(m, n, amp)``. Empty string -> []."""
-    if not spec:
-        return []
-    modes = []
-    for term in spec.split(";"):
-        m, n, amp = term.split(",")
-        modes.append((int(m), int(n), float(amp)))
-    return modes
 
 
 def make_lambda(modes):
@@ -255,20 +243,6 @@ def potential_two_form(seq, A_ref):
     n_full, norm = float(seq.l2_norm(B_full, 2, False)), float(seq.l2_norm(B, 2))
     wall = abs(n_full ** 2 - norm ** 2) ** 0.5 / norm
     return B / norm, norm, wall
-
-
-def dzeta_form():
-    """The constant reference 2-form ``(0, 0, 1)``.
-
-    Zero shear; minimising the energy at fixed
-    toroidal flux lands on the harmonic 2-form of the Dirichlet complex, which
-    is curl-free, so the target field, J = 0 and a flat pressure are all known
-    in advance.
-    """
-    def omega_ref(x):
-        return jnp.array([0.0, 0.0, 1.0])
-
-    return omega_ref
 
 
 def project_reference_two_form(seq, omega_ref):

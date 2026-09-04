@@ -62,7 +62,7 @@ def main():
     p = int(attrs["p"])
     nfp_override = None if str(attrs["nfp"]) == "" else int(attrs["nfp"])
     print(f"[state] {cli.state}: {geometry} ns={ns} p={p}", flush=True)
-    seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override,
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
                             r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
 
     # The cuts span one field period: zeta in [0, 1) is the logical toroidal

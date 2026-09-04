@@ -10,7 +10,7 @@ roundoff.
 """
 import numpy as np
 
-from mrx.relaxation import DescentMethod, TimeStepChoice, TimeStepper, relaxation_loop
+from mrx.relaxation import IntegrationScheme, TimeStepper, relaxation_loop
 from test.conftest import NS
 
 OUTER, INNER = 2, 25
@@ -26,9 +26,7 @@ HELICITY_DRIFT_TOL = 25.0
 
 def test_relaxation_lowers_the_energy(seq, b0):
     B0 = b0
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                     eta_every=1, resistive=False, history_size=1,
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                      velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / NS[0] ** 2)
     state, traces = relaxation_loop(B0, ts, num_iters_outer=OUTER, num_iters_inner=INNER,
                                     dt0=1.0, force_tolerance=1e-12)
@@ -46,12 +44,10 @@ def test_relaxation_lowers_the_energy(seq, b0):
 
 
 def test_midpoint_conserves_helicity(seq, b0):
-    """Midpoint-implicit induction: Picard converges on every recorded
-    step, the energy falls, and helicity is conserved to the solves' tolerance."""
-    from mrx.relaxation import IntegrationScheme
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                     eta_every=1, resistive=False, history_size=1,
+    """Midpoint-implicit induction with the auxiliary field: Picard converges
+    on every recorded step, the energy falls, and helicity is conserved to
+    the solves' tolerance."""
+    ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5, history_size=1,
                      scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
     state, traces = relaxation_loop(b0, ts, num_iters_outer=2, num_iters_inner=10,
                                     dt0=1.0, force_tolerance=1e-12)
