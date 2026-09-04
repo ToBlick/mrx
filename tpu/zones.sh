@@ -17,8 +17,9 @@ MAX_RUN_DURATION="${MAX_RUN_DURATION:-4h}"
 # compilation cache; short enough that forgetting costs one coffee. Set to 0 to
 # install the reaper but never let it fire.
 IDLE_TIMEOUT_MIN="${IDLE_TIMEOUT_MIN:-20}"
-# The branch a fresh node checks out. Override to measure a feature branch
-# without SYNC_LOCAL_MRX; the node otherwise clones the development branch.
+# The branch a fresh node checks out, and the one run_on_tpu.sh re-checks out
+# before a run. Override to measure a feature branch; the node otherwise clones
+# the development branch.
 MRX_BRANCH="${MRX_BRANCH:-static-dynamic-refactor}"
 DATA_DISK="${DATA_DISK:-my-data-disk}"
 DATA_SNAPSHOT="${DATA_SNAPSHOT:-my-data-snapshot}"
@@ -30,9 +31,7 @@ VM_NAME="${VM_NAME:-my-tpu-vm}"
 TPU_RUNTIME="${TPU_RUNTIME:-tpu-ubuntu2204-base}"
 PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 
-# ---------------------------------------------------------------------------
 # Candidate ladder
-# ---------------------------------------------------------------------------
 # Entries are generation:type:zone:model:api, tried in order.
 #
 # `api` is either `gce` (gcloud compute instances create) or `tpuapi`
@@ -48,7 +47,9 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 #                    the TPU-LITE-PODSLICE-V5 quota of 512 actually governs.
 #   v5p via gce      works; currently ZONE_RESOURCE_POOL_EXHAUSTED. Quota 768.
 #   v6e via gce      quota is a hard 0.0 in us-east5 and us-east4, and every
-#                    other reachable zone has been in continuous stockout.
+#                    other reachable zone has been in continuous stockout, so
+#                    v6e is not in the ladder: it cannot succeed without a CT6E
+#                    grant. Add entries back if one is obtained.
 #
 # Also constraining things: constraints/gcp.resourceLocations restricts this
 # project to US locations, so the non-US regions carrying a CT6E limit of 48
@@ -87,14 +88,6 @@ DEFAULT_CANDIDATES=(
     v5e:v5litepod-4:us-east5-b:SPOT:tpuapi
     v5e:v5litepod-1:us-east5-b:SPOT:tpuapi
     v5e:v5litepod-1:us-east5-a:SPOT:tpuapi
-
-    # v6e last: needs a CT6E quota grant in us-east5/us-east4 to work at all.
-    v6e:ct6e-standard-4t:us-central1-a:FLEX_START:gce
-    v6e:ct6e-standard-4t:us-central1-b:FLEX_START:gce
-    v6e:ct6e-standard-4t:us-central1-c:FLEX_START:gce
-    v6e:ct6e-standard-4t:us-east1-d:FLEX_START:gce
-    v6e:ct6e-standard-4t:us-east1-b:FLEX_START:gce
-    v6e:ct6e-standard-4t:us-west1-c:FLEX_START:gce
 )
 
 # Cloud Quotas bucket that actually governs each generation. The generic
@@ -104,7 +97,6 @@ quota_bucket_for() {
     case "$1" in
         v5e) echo "TPU-LITE-PODSLICE-V5-per-project-region" ;;
         v5p) echo "TPU-V5P-per-project-region" ;;
-        v6e) echo "PREEMPTIBLE-TPU-V6E-per-project-region" ;;
         *)   echo "TPUS-PER-TPU-FAMILY-per-project-region" ;;
     esac
 }
@@ -135,10 +127,9 @@ build_candidates() {
     done
 }
 
-# Cloud TPU API nodes are a different resource type and are not returned by
-# `compute instances list`. Their zone is embedded in the resource name and
-# their healthy state is READY, not RUNNING.
-# Find a READY Cloud TPU API node, returning its zone.
+# Find a READY Cloud TPU API node, returning its zone. Such a node is a
+# different resource type, invisible to `compute instances list`, and its
+# healthy state is READY, not RUNNING.
 #
 # Two traps here, both of which cost a live TPU once. `tpu-vm list` without a
 # zone errors out rather than returning nothing, and with --zone=- it prints
@@ -177,9 +168,7 @@ tpu_running_zone() {
     return 1
 }
 
-# ---------------------------------------------------------------------------
 # Failure classification
-# ---------------------------------------------------------------------------
 # Echoes one of:
 #   STOCKOUT   no hardware in the zone
 #   QUOTA      permitted machine type, but the quota bucket is exhausted or 0
@@ -279,9 +268,7 @@ zones_available_hint() {
     printf '%s' "${raw}" | tr -d '[:space:]'
 }
 
-# ---------------------------------------------------------------------------
 # Disk helpers
-# ---------------------------------------------------------------------------
 data_disk_exists() {
     gcloud compute disks describe "${DATA_DISK}" --zone="$1" \
         --format="value(name)" >/dev/null 2>&1
@@ -315,7 +302,8 @@ ensure_data_disk() {
     if [[ -n "${count}" ]] && (( count >= MAX_DATA_DISKS )); then
         echo "  ${count} ${DATA_DISK} volume(s) already exist (cap ${MAX_DATA_DISKS});" >&2
         echo "  not creating another in ${zone}. This run uses the boot disk." >&2
-        echo "  Free one with './acquire_tpu.sh --gc', or raise MAX_DATA_DISKS." >&2
+        echo "  Delete an unattached one with 'gcloud compute disks delete" >&2
+        echo "  ${DATA_DISK} --zone=<zone>', or raise MAX_DATA_DISKS." >&2
         return 1
     fi
 
