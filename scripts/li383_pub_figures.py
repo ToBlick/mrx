@@ -732,39 +732,36 @@ def save_figure(fig, png_path, pgf=True):
 
 def ladder_figure(j):
     """The reconnection ladder's own trace figure, written into the run's
-    directory (``<run>/figures/ladder_traces.png`` and ``pgf/``): two
-    panels on twin y axes in the house style, black / purple / teal. Left:
-    the force residual (black, log, 100-step block means with the +-1 sd
-    band) with beta (purple). Right: the relative energy change (black,
-    block means) with the relative helicity change (teal). Dotted lines
-    mark the reconnections."""
+    directory (``<run>/figures/ladder_traces.png`` and ``pgf/``): one panel
+    in the house style, black / purple / teal. Left axis: the force residual
+    (black, log, 100-step block means with the +-1 sd band). Right axis, in
+    per cent: beta (purple, solid) and the relative helicity change (teal,
+    dashed). Dotted lines mark the reconnections."""
     from mrx.plotting import P_COLOR, plot_twin_axis  # noqa: PLC0415 -- pulls jax; only this figure needs it
     black, purple, teal = LEFT["color"], P_COLOR, RIGHT["color"]
     q = j["qoi"]
     tq = np.asarray(q["it"]) / 1000.0
     h = np.asarray(q["helicity"])
-    E = np.asarray(j["trace"]["E"])
     marks = [ev["it"] / 1000.0 for ev in j.get("reconnect", [])]
-    thin = dict(marker="none", linestyle="-", markersize=0)
-    xlab = r"step / $10^3$"
+    thin = dict(marker="none", markersize=0)
     with house_style():
-        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
+        fig, ax = plt.subplots(figsize=(6.4, 3.8), constrained_layout=True)
         x, m, lo, hi = blocked(F(j), log=True)
-        _, (a, _) = plot_twin_axis(
-            m, q["beta_vol"], x_left=x / 1000.0, x_right=tq,
-            left_label=r"$\|F\|_M$", right_label=r"$\beta_{\mathrm{vol}}$",
+        _, (a, ar) = plot_twin_axis(
+            m, 100.0 * np.asarray(q["beta_vol"]), x_left=x / 1000.0, x_right=tq,
+            left_label=r"$\|F\|_M$", right_label=r"$\beta_{\mathrm{vol}}$, $(H - H_0) / H_0$ (\%)",
             left_log=True, right_log=False, left_color=black, right_color=purple,
-            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=xlab, ax=ax[0])
+            left_plot_kwargs=dict(thin, linestyle="-"),
+            right_plot_kwargs=dict(thin, linestyle="-", label=r"$\beta_{\mathrm{vol}}$"),
+            x_label=r"step / $10^3$", ax=ax)
         a.fill_between(x / 1000.0, lo, hi, color=black, alpha=0.2, lw=0)
-        x, m, _, _ = blocked((E - E[0]) / E[0], log=False)
-        plot_twin_axis(
-            m, (h - h[0]) / h[0], x_left=x / 1000.0, x_right=tq,
-            left_label=r"$(E - E_0) / E_0$", right_label=r"$(H - H_0) / H_0$",
-            left_log=False, right_log=False, left_color=black, right_color=teal,
-            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=xlab, ax=ax[1])
-        for a in ax:
-            for xm in marks:
-                a.axvline(xm, color="0.6", ls=":", lw=0.6)
+        ar.plot(tq, 100.0 * (h - h[0]) / h[0], color=teal, linestyle="--", lw=1.0,
+                label=r"$(H - H_0) / H_0$")
+        ar.set_ylabel(ar.get_ylabel(), color=black)
+        ar.tick_params(axis="y", labelcolor=black)
+        ar.legend(loc="center right")
+        for xm in marks:
+            a.axvline(xm, color="0.6", ls=":", lw=0.6)
         figdir = os.path.join(j["dir"], "figures")
         os.makedirs(figdir, exist_ok=True)
         save_figure(fig, os.path.join(figdir, "ladder_traces.png"))
