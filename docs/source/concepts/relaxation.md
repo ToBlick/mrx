@@ -120,10 +120,57 @@ on the ideal part keeps the frozen-in flux to `O(dt²)`, so a large
 line-search step can change the field-line topology with `div B` and
 monotone energy intact; a fixed small `--dt0` is the control.
 
+**Midpoint-implicit induction** (`IntegrationScheme.IMPLICIT_MIDPOINT`,
+`--scheme midpoint`) keeps steps 1-7 and replaces step 8 by
+`B_{n+1} = B_n + dt · curl(u × H_mid)`, `H_mid = M_1^{-1} P (B_n + B_{n+1})/2`
+the 1-form proxy of the midpoint field, with the predictor's velocity `u`
+and `dt`: the auxiliary-variable scheme. It exists for one exact identity.
+The discrete helicity `<A, B + B_harm>` of `compute_helicity` is conserved
+by the semi-discrete flow for ANY velocity: the pairing of the 2-form `B`
+with a 1-form `E` goes through the proxy `H = M_1^{-1} P B`, so
+`E^T P B = H^T load(u × H) = ∫ H_h · (u_h × H_h) = 0` at every quadrature
+node, and with the exact discrete Stokes identity
+`d/dt <A, B + B_harm> = 2 <B, E> = 0` (`B_harm` is constant, `dB/dt` lies
+in `range D_1`). The helicity is a quadratic form in `B`, and evaluating
+`E` at the midpoint field keeps it exactly, whatever `u` is; the explicit
+scheme's drift is entirely the time-integration error of evaluating `H`
+at `B_n`. The energy change is `-dt <u, F_mid>_M` with the force at the
+midpoint field: descent while the predictor's velocity still correlates
+with the midpoint force, second order in `dt`, not the line search's
+guarantee.
+
+The velocity stays explicit on purpose. Taking `u` at the midpoint too
+makes the step a nonlinear fixed point in `B` through the force, whose
+linearisation is the descent operator `|H|² curl curl` with largest
+eigenvalue `|H|²/h²`; on li383 (8,16,16) p=2 the line-search `dt` is 35x
+above the Picard contraction limit (the iterates blow up in six sweeps,
+Anderson acceleration and a Laplacian preconditioner do not rescue it
+because the operator is soft on the force-free perturbations the
+Laplacian is stiff on, and Newton is a Krylov solve inside a Krylov
+solve). With `u` frozen the map `x -> dt · curl(u × H(B_n + x/2))` is
+linear in the increment `x` with contraction constant `dt |u| / 2h`, small
+because `u` is the force, so plain Picard (`_midpoint_solve`) converges in a
+few sweeps of one k=1 mass solve for `H_mid`, one for `E` and the
+topological curl, warm-started from the previous sweep. Convergence is
+judged on the defect `||g(x) - x||_M` relative to the predictor's increment
+`||dt · dB(B_n)||_M` (the defect form again) against `picard_tol`, by
+default ten times `seq.tol` because the inner solves define the map. Should
+the defect blow up (`PICARD_BLOWUP` times the predictor's increment, NaN
+included) or `picard_max` sweeps not converge, `dt` is halved and the
+solve restarts from the predictor, at most `picard_restarts` times, after
+which the step goes out unconverged with `state.picard_residual` above
+the tolerance. The state records `picard_iterations` (1 for the explicit
+step, the predictor plus the sweeps otherwise), `picard_restarts` and
+`picard_residual`; `F`, `u` and the L-BFGS pair are the predictor's, as in
+the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
+Cost: one explicit step plus a few pairs of k=1 mass solves; the
+resistive half is unchanged.
+
 `State` holds `B_n`, the warm-start guesses (`p`, `p_v`, `H`, `JxH`, `E`,
 `A`), `F_prev`, `MF_prev`, the four history arrays, `dt`, `dt_star`,
 `cfl_max`, `eta`, `resistive_info`, `resistive_delta`, `resistive_count`,
-`resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`. Build it with `initial_state(B_dof, ts, dt)`, which
+`resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`, `picard_iterations`,
+`picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first secant and CG coefficient see a true
 previous gradient. `relaxation_loop(B_dof, ts, num_iters_outer,
 num_iters_inner, ...)` runs `num_iters_inner` steps in a `jax.lax.scan` per
@@ -267,6 +314,7 @@ method per run. Flags, defaults in brackets:
 | `--method {gradient,lbfgs} [lbfgs]`, `--history M [1]` | descent method and secant pairs (1 = CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | step choice and its CFL cap |
+| `--scheme {explicit,midpoint} [explicit]`, `--picard-tol TOL [10 x the solver tol]`, `--picard-max K [20]`, `--picard-restarts R [4]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): exact discrete helicity, solved by Picard iteration to `TOL` on the increment, `dt` halved after `K` sweeps or a blow-up, at most `R` times; the trace records `picard_it`, `picard_restarts`, `picard_resid` |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity (implicit, any size); `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--save-every K [0]` | store `B` and `p_w` every `K` steps in `B.h5` (`B_snapshots`, `pw_snapshots`, `snapshot_steps`) for `scripts/poincare_relax.py --fields snapshots`, which traces every stored step at the chosen plane and writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | clebsch IC only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |

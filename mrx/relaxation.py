@@ -1,7 +1,7 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, NamedTuple, Optional
 
 import equinox as eqx
 import jax
@@ -328,6 +328,15 @@ class State(eqx.Module):
         actually used by the two-loop recursion.  Reported, never clamped: a
         negative value means the stored pair is not a descent pair and the
         approximate inverse Hessian it builds is indefinite.
+    picard_iterations : int
+        1 under ``EXPLICIT``; the predictor plus every Picard sweep (two
+        k=1 mass solves and a curl each) under ``IMPLICIT_MIDPOINT``.
+    picard_restarts : int
+        Times the midpoint solve halved ``dt`` and restarted (0 explicit).
+    picard_residual : float
+        Fixed-point defect of the last midpoint sweep, ``||g(x) - x||_M``
+        relative to the predictor's increment ``||dt dB(B_n)||_M`` (0
+        explicit). Above ``picard_tol`` means the step went out unconverged.
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
@@ -355,6 +364,9 @@ class State(eqx.Module):
     F_norm: float = 0.0
     v_norm: float = 0.0
     lbfgs_sy: float = 0.0
+    picard_iterations: int = 0
+    picard_restarts: int = 0
+    picard_residual: float = 0.0
 
     def __post_init__(self):
         if self.B_nplus1 is None:
@@ -366,6 +378,44 @@ class State(eqx.Module):
 class TimeStepChoice(Enum):
     FIXED = 0
     ANALYTIC_LINESEARCH = 1
+
+
+#: A midpoint sweep whose defect exceeds this many times the predictor's
+#: increment is not contracting: halve ``dt`` and start again.
+PICARD_BLOWUP = 1e3
+
+
+class IntegrationScheme(Enum):
+    """``EXPLICIT`` is forward Euler on the descent velocity, ``B_{n+1} =
+    B_n + dt curl(u x H_n)``, with the line search choosing ``dt``.
+    ``IMPLICIT_MIDPOINT`` keeps that velocity and ``dt`` and makes the
+    induction midpoint-implicit, ``B_{n+1} = B_n + dt curl(u x H_mid)`` with
+    ``H_mid`` the proxy of ``(B_n + B_{n+1}) / 2``, a linear fixed point
+    solved by Picard iteration (``TimeStepper._midpoint_solve``): it
+    conserves the discrete helicity ``<A, B + B_harm>`` exactly.
+    """
+    EXPLICIT = 0
+    IMPLICIT_MIDPOINT = 1
+
+
+class Increment(NamedTuple):
+    """The ideal increment ``dB = curl(u x H)`` at one field, with what the
+    step computed on the way: the force and direction it stores, and the
+    solutions that warm-start the next evaluation's five Krylov solves."""
+    dB: jnp.ndarray
+    u: jnp.ndarray
+    Mu: jnp.ndarray
+    F: jnp.ndarray
+    MF: jnp.ndarray
+    p: jnp.ndarray
+    p_v: jnp.ndarray
+    H: jnp.ndarray
+    JxH: jnp.ndarray
+    E: jnp.ndarray
+    cfl_max: jnp.ndarray
+    sy: jnp.ndarray
+    y_history: jnp.ndarray
+    My_history: jnp.ndarray
 
 
 class DescentMethod(Enum):
@@ -381,15 +431,27 @@ class DescentMethod(Enum):
 
 
 class TimeStepper(eqx.Module):
-    """One explicit step of the energy descent.
+    """One step of the energy descent.
 
     The step is an operator splitting (Lie): ideal transport,
     ``B_ideal = B_n + dt curl E_ideal`` with ``E_ideal = u x H`` and the
     descent velocity ``u``, then implicit (backward-Euler) resistive
-    diffusion of ``B_ideal``. The splitting is first order in ``dt``.
+    diffusion of ``B_ideal``. The splitting is first order in ``dt``. The
+    ideal transport is forward Euler or the implicit midpoint rule
+    (:class:`IntegrationScheme`).
 
     Attributes:
         seq: The de Rham sequence.
+        scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
+        picard_tol: Convergence tolerance of the midpoint fixed point,
+            ``||g(x) - x||_M`` relative to the predictor's increment
+            ``||dt dB(B_n)||_M``; ``None`` (the default) is ten times
+            ``seq.tol``, the inner solves that define the map.
+        picard_max: Sweeps at one ``dt`` before the solve halves ``dt`` and
+            restarts from the predictor (a blow-up restarts at once).
+        picard_restarts: Halvings allowed per step; after the last one the
+            step goes out unconverged with ``state.picard_residual`` above
+            ``picard_tol``.
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``.
             0 (the default) leaves the direction as it is.
@@ -430,11 +492,19 @@ class TimeStepper(eqx.Module):
     resistive: bool = False
     history_size: int = 1
     dirichlet_H: bool = False
+    scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
+    picard_tol: Optional[float] = None
+    picard_max: int = 20
+    picard_restarts: int = 4
     cfl_weights: jnp.ndarray = None
 
     def __post_init__(self):
         if self.descent_method == DescentMethod.LBFGS and self.history_size < 1:
             raise ValueError("history_size must be at least 1 for L-BFGS.")
+        if self.scheme == IntegrationScheme.IMPLICIT_MIDPOINT and self.picard_max < 1:
+            raise ValueError("picard_max must be at least 1 for the midpoint rule.")
+        if self.picard_tol is None:
+            self.picard_tol = 10.0 * self.seq.tol
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
@@ -538,28 +608,32 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy'], value) -> State:  # noqa: E501
+    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'eta', 'resistive_info', 'resistive_delta', 'resistive_count', 'resistive_time', 'F_norm', 'v_norm', 'lbfgs_sy', 'picard_iterations', 'picard_restarts', 'picard_residual'], value) -> State:  # noqa: E501
         return eqx.tree_at(
             lambda s: getattr(s, field_name),
             state,
             value
         )
 
-    def relaxation_step(self, state: State) -> State:
-        """Advance ``state.B_n`` by one step into ``state.B_nplus1``.
+    def _ideal_increment(self, B: jnp.ndarray, state: State,
+                         p_guess: jnp.ndarray, p_v_guess: jnp.ndarray,
+                         H_guess: jnp.ndarray, JxH_guess: jnp.ndarray,
+                         E_guess: jnp.ndarray) -> Increment:
+        """The ideal increment ``dB = curl(u x H)`` evaluated at the field ``B``.
 
-        Operator-split (Lie): ideal transport, then implicit resistive
-        diffusion. The ideal half is explicit Euler on the descent
-        velocity, ``B_ideal = B_n + dt curl(u x H)``; the resistive half is
-        backward Euler on ``B_ideal``. The splitting is first order in
-        ``dt``; resistivity is not applied to ``B_n``.
+        Force, descent direction (the L-BFGS secant ``y = F_prev - F`` is
+        pushed against ``state``'s history here, see part 1 below), velocity
+        smoothing, Leray projection, the cross product and the topological
+        curl. The explicit step evaluates it once at ``B_n``; the midpoint
+        step at ``(B_n + B_{n+1}) / 2`` on every Picard sweep. The five
+        guesses warm-start the five Krylov solves; they come from ``state``
+        (the previous step) or from the previous sweep.
         """
-        B_n = state.B_n
         F, p, _, H, JxH = compute_force(
-            B_n, self.seq, dirichlet_H=self.dirichlet_H,
-            p_guess=state.p, H_guess=state.H, JxH_guess=state.JxH)
+            B, self.seq, dirichlet_H=self.dirichlet_H,
+            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
         # M F ONCE.  It serves ||F||_M and the L-BFGS secant
-        # M y = M F_prev - M F; the step applies M_2 three times in total
+        # M y = M F_prev - M F; the increment applies M_2 three times in total
         # (M F, M u, M dB) whichever method is running -- L-BFGS used to
         # apply it 4m + 6 times.
         MF = self.seq.apply_mass_matrix(F, 2)
@@ -577,6 +651,9 @@ class TimeStepper(eqx.Module):
             # Pushing it HERE, rather than next to the brand-new s_k at the end
             # of this step, is what keeps (s_i, y_i) aligned.  Pushing it at
             # the end instead leaves y lagging its paired s by exactly one step.
+            # Under the midpoint rule every sweep re-pushes it against the
+            # SAME state history, so the pair is (s_{k-1}, F_prev - F(B_mid))
+            # of the converged sweep and never an inner iterate's.
             y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.F_prev - F)
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
 
@@ -589,7 +666,7 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown descent_method: {self.descent_method}. Supported methods are given by the DescentMethod enum.")
         u = self.smooth_velocity(u)
-        u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=state.p_v)
+        u, p_v = self.seq.apply_leray_projection(u, k=2, p_guess=p_v_guess)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = self.seq.apply_mass_matrix(u, 2)
 
@@ -598,7 +675,7 @@ class TimeStepper(eqx.Module):
         u_jk = self.seq.evaluate_at_quadrature(u, 2, True)
         H_jk = self.seq.evaluate_at_quadrature(H, 1, self.dirichlet_H)
         E_dual = self.seq.cross_product_load_values(u_jk, H_jk, 1, 2, 1, True)
-        E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=state.E)
+        E = self.seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
 
         # The TOPOLOGICAL curl, not M_2^-1 D_1.  Three reasons, all measured
@@ -621,18 +698,147 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = self.seq.apply_incidence_matrix(
             E, 1, dirichlet_in=True, dirichlet_out=True)
+        return Increment(dB, u, Mu, F, MF, p, p_v, H, JxH, E, cfl_max, sy, y_hist, My_hist)
+
+    def _step_size(self, inc: Increment, state: State) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """``(dt, dt_star)``: the fixed or line-search step at ``inc`` and its CFL cap."""
         if self.dt_mode == TimeStepChoice.FIXED:
             dt_star = state.dt
         elif self.dt_mode == TimeStepChoice.ANALYTIC_LINESEARCH:
-            dt_star = F @ Mu / self.seq.l2_norm_sq(dB, 2)
+            dt_star = inc.F @ inc.Mu / self.seq.l2_norm_sq(inc.dB, 2)
         else:
             raise ValueError(
                 f"Unknown dt_mode: {self.dt_mode}. Supported modes are given by the TimeStepChoice enum.")
         # The CFL cap.  cfl = inf gives min(dt_star, inf) = dt_star exactly.
-        dt = jnp.minimum(dt_star, self.cfl / cfl_max)
-        B_ideal = B_n + dt * dB
+        return jnp.minimum(dt_star, self.cfl / inc.cfl_max), dt_star
 
-        # Resistive diffusion, BACKWARD Euler on top of the ideal step, in
+    def _midpoint_solve(self, state: State):
+        """Midpoint-implicit induction with the explicit descent velocity.
+
+        The step is ``B_{n+1} = B_n + dt curl(u x H_mid)`` with ``u`` the
+        descent velocity of the explicit predictor at ``B_n`` (direction,
+        smoothing, Leray projection, line-search ``dt``, CFL cap: all of
+        ``_ideal_increment``) and ``H_mid = M_1^-1 P (B_n + B_{n+1}) / 2`` the
+        1-form proxy of the MIDPOINT field.  The auxiliary-variable scheme.
+
+        WHY IT CONSERVES HELICITY.  The pairing of the 2-form ``B`` with a
+        discrete 1-form ``E`` goes through the proxy ``H = M_1^-1 P B``
+        (``P`` the 1-form/2-form pairing matrix)::
+
+            E^T P B = E^T M_1 H = H^T load(u x H) = int H_h . (u_h x H_h) = 0
+
+        at every quadrature node, for ANY ``u``.  With ``B = D_1 A + B_harm``
+        (``A`` the Dirichlet potential of ``compute_helicity``) and the exact
+        discrete Stokes identity ``<A, D_1 E> = <D_1 A, E>`` (``A``
+        tangentially zero)::
+
+            d/dt <A, B + B_harm> = 2 <A, D_1 E> + 2 <E, B_harm> = 2 <B, E> = 0,
+
+        ``B_harm`` being constant (``dB/dt = D_1 E`` lies in ``range D_1``)
+        and the gauge freedom in ``dA/dt`` pairing a Dirichlet gradient with
+        ``D_2 B_harm = 0``.  So the semi-discrete flow conserves the discrete
+        helicity exactly; as ``A`` and ``B_harm`` are linear in ``B`` the
+        helicity is a quadratic form ``Q(B)``, and evaluating ``E`` at the
+        midpoint field keeps it exactly, ``Q(B_{n+1}) - Q(B_n) = 2 dt <B_mid,
+        E> = 0``, whatever ``u`` is.  The explicit scheme's helicity drift is
+        entirely the time-integration error of evaluating ``H`` at ``B_n``.
+        Energy: ``E_{n+1} - E_n = dt B_mid^T M_2 D_1 E = -dt <u, F_mid>_M``
+        with ``F_mid`` the force at the midpoint field, so the step descends
+        as long as the predictor's velocity still correlates with the
+        midpoint force -- second order in ``dt``, not a guarantee; the line
+        search of the predictor sets ``dt``.
+
+        WHY THE VELOCITY STAYS EXPLICIT.  Taking ``u`` at the midpoint too
+        makes the step a nonlinear fixed point in ``B`` through the force,
+        whose linearisation is the descent operator ``|H|^2 curl curl`` on
+        the field: its largest eigenvalue is ``|H|^2 / h^2`` and the
+        line-search ``dt`` sits 35x above the Picard contraction limit on
+        li383 (8,16,16) p=2 (iterates blow up in six sweeps; a Laplacian
+        preconditioner only flips the spectrum, because the operator is
+        soft on the force-free perturbations the Laplacian is stiff on;
+        Newton is a Krylov solve inside a Krylov solve).  With ``u`` frozen
+        the map ``x -> dt curl(u x H(B_n + x / 2))`` is LINEAR in the
+        increment ``x`` with contraction constant ``dt |u| / (2 h)``, which
+        is small because ``u`` is the force (``dt* |u| ~ h^2 |F| / |H|^2``
+        under the line search), so plain Picard converges in a few sweeps,
+        each one k=1 mass solve for ``H_mid``, one for ``E`` and the
+        topological curl, warm-started from the previous sweep.  Should the
+        defect ever blow up (``PICARD_BLOWUP`` times the predictor's
+        increment, NaN included) or ``picard_max`` sweeps not converge,
+        ``dt`` is halved and the solve restarts from the predictor, at most
+        ``picard_restarts`` times, after which the step goes out
+        unconverged with ``state.picard_residual`` above ``picard_tol``.
+        Convergence is judged on the defect ``||g(x) - x||_M / ||dt
+        dB(B_n)||_M``, relative to the predictor's INCREMENT and never to
+        ``B`` (the defect form of ``resistive_step``); ``picard_tol`` cannot
+        be tighter than the inner solves that define ``g``, hence its
+        default of ten times ``seq.tol``.
+
+        Returns ``(inc, dt, dt_star, B_ideal, evaluations, restarts,
+        residual)``: ``inc`` is the predictor's increment with ``H`` and
+        ``E`` replaced by the midpoint's, the warm starts of the next step.
+        """
+        B_n = state.B_n
+        seq = self.seq
+        inc0 = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+        dt0, dt_star = self._step_size(inc0, state)
+        dB0 = inc0.dB
+        dB0_norm = seq.l2_norm(dB0, 2)
+        u_jk = seq.evaluate_at_quadrature(inc0.u, 2, True)
+        one = jnp.ones((), B_n.dtype)
+
+        def sweep(carry):
+            k, n_eval, restarts, dt, x, H, E, resid = carry
+            H_dual = seq.apply_projection_matrix(B_n + 0.5 * x, 2, 1, True, dirichlet_out=self.dirichlet_H)
+            H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=self.dirichlet_H, guess=H)
+            H_jk = seq.evaluate_at_quadrature(H, 1, self.dirichlet_H)
+            E_dual = seq.cross_product_load_values(u_jk, H_jk, 1, 2, 1, True)
+            E = seq.apply_inverse_mass_matrix(E_dual, 1, guess=E)
+            g = dt * seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
+            resid = seq.l2_norm(g - x, 2) / (dt * dB0_norm)
+            k, n_eval = k + 1, n_eval + 1
+            converged = resid <= self.picard_tol
+            restart = (~converged & (~(resid < PICARD_BLOWUP) | (k >= self.picard_max))
+                       & (restarts < self.picard_restarts))
+            dt = jnp.where(restart, 0.5 * dt, dt)
+            x = jnp.where(restart, dt * dB0, g)
+            k = jnp.where(restart, 0, k)
+            resid = jnp.where(restart, one, resid)
+            restarts = restarts + restart.astype(jnp.int32)
+            return k, n_eval, restarts, dt, x, H, E, resid
+
+        def unconverged(carry):
+            k, _, _, _, _, _, _, resid = carry
+            return ~(resid <= self.picard_tol) & (resid < PICARD_BLOWUP) & (k < self.picard_max)
+
+        carry = (jnp.int32(0), jnp.int32(1), jnp.int32(0), dt0, dt0 * dB0, inc0.H, inc0.E, one)
+        _, n_eval, restarts, dt, x, H, E, resid = jax.lax.while_loop(unconverged, sweep, carry)
+        return inc0._replace(H=H, E=E), dt, dt_star, B_n + x, n_eval, restarts, resid
+
+    def relaxation_step(self, state: State) -> State:
+        """Advance ``state.B_n`` by one step into ``state.B_nplus1``.
+
+        Operator-split (Lie): ideal transport, then implicit resistive
+        diffusion. The ideal half is forward Euler on the descent velocity,
+        ``B_ideal = B_n + dt curl(u x H)``, or the implicit midpoint rule
+        (``scheme``); the resistive half is backward Euler on ``B_ideal``.
+        The splitting is first order in ``dt``; resistivity is not applied
+        to ``B_n``.
+        """
+        B_n = state.B_n
+        if self.scheme == IntegrationScheme.EXPLICIT:
+            inc = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+            dt, dt_star = self._step_size(inc, state)
+            B_ideal = B_n + dt * inc.dB
+            n_eval, restarts, resid = jnp.int32(1), jnp.int32(0), jnp.zeros((), B_n.dtype)
+        elif self.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
+            # inc is the predictor's (u, F, dt* are the explicit step's);
+            # only the induction is implicit.
+            inc, dt, dt_star, B_ideal, n_eval, restarts, resid = self._midpoint_solve(state)
+        else:
+            raise ValueError(
+                f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
+
         # Second half of the Lie splitting: backward Euler on B_ideal in
         # DEFECT form:
         #     (M_2 + eps L_2) delta = -eps L_2 B_ideal,   B_{n+1} = B_ideal + delta,
@@ -684,22 +890,25 @@ class TimeStepper(eqx.Module):
         # it with a y that is a secant of a different map entirely, and the
         # curvature <s, y>_M goes negative on a third to a half of all steps.
         # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
-        if lbfgs:
-            s_hist = jnp.roll(s_hist, 1, axis=0).at[0].set(dt * u)
-            Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * Mu)
+        s_hist, Ms_hist = state.s_history, state.Ms_history
+        if self.descent_method == DescentMethod.LBFGS:
+            s_hist = jnp.roll(s_hist, 1, axis=0).at[0].set(dt * inc.u)
+            Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * inc.Mu)
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max, s.resistive_info,
                        s.resistive_delta, s.resistive_count, s.resistive_time,
-                       s.s_history, s.y_history, s.Ms_history, s.My_history),
+                       s.s_history, s.y_history, s.Ms_history, s.My_history,
+                       s.picard_iterations, s.picard_restarts, s.picard_residual),
             state,
-            (B_nplus1, u, p, p_v, H, JxH, E,
-             F, MF, jnp.sqrt(F @ MF), jnp.sqrt(u @ Mu), sy,
-             dt, dt_star, cfl_max, resistive_info,
+            (B_nplus1, inc.u, inc.p, inc.p_v, inc.H, inc.JxH, inc.E,
+             inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
+             dt, dt_star, inc.cfl_max, resistive_info,
              resistive_delta, resistive_count, resistive_time,
-             s_hist, y_hist, Ms_hist, My_hist))
+             s_hist, inc.y_history, Ms_hist, inc.My_history,
+             n_eval, restarts, resid))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
@@ -736,6 +945,9 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         y_history=jnp.zeros((m, n)),
         Ms_history=jnp.zeros((m, n)),
         My_history=jnp.zeros((m, n)),
+        picard_iterations=jnp.int32(0),
+        picard_restarts=jnp.int32(0),
+        picard_residual=jnp.zeros((), B_dof.dtype),
     )
 
 
@@ -759,7 +971,8 @@ def relaxation_loop(B_dof: jnp.ndarray,
     -------
     state : State
     traces : dict  with keys: force_norm, helicity, timestep, energy,
-             resistive_info, velocity_norm, divergence_B, eta, iteration
+             resistive_info, velocity_norm, divergence_B, eta, iteration,
+             picard_iterations, picard_residual (of the last step of each chunk)
     """
     seq = ts.seq
     state = initial_state(B_dof, ts, dt0)
@@ -779,7 +992,8 @@ def relaxation_loop(B_dof: jnp.ndarray,
 
     traces = {k: [] for k in (
         "force_norm", "helicity", "timestep", "energy", "resistive_info",
-        "velocity_norm", "divergence_B", "eta", "iteration")}
+        "velocity_norm", "divergence_B", "eta", "iteration",
+        "picard_iterations", "picard_residual")}
 
     def record(state, iteration):
         traces["force_norm"].append(state.F_norm)
@@ -792,6 +1006,8 @@ def relaxation_loop(B_dof: jnp.ndarray,
         traces["divergence_B"].append(get_div_norm(state.B_n, seq))
         traces["eta"].append(state.eta)
         traces["iteration"].append(iteration)
+        traces["picard_iterations"].append(int(state.picard_iterations))
+        traces["picard_residual"].append(float(state.picard_residual))
         return eqx.tree_at(lambda s: s.A, state, A_new)
 
     state = record(state, 0)

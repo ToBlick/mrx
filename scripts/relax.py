@@ -47,6 +47,14 @@ Flags, defaults in brackets:
       --dt0 DT [1.0]               the step for --dt-mode fixed
       --cfl C [0.5]                cap the step at C / (largest logical CFL
                                    number of the velocity); inf disables it
+      --scheme {explicit,midpoint} [explicit]
+                                   forward Euler on the descent velocity, or
+                                   midpoint-implicit induction with that
+                                   velocity, curl(u x H_mid), solved by Picard
+                                   iteration: exact discrete helicity
+      --picard-tol TOL [10 x the solver tol], --picard-max K [20],
+      --picard-restarts R [4]      midpoint only: tolerance on the increment,
+                                   sweeps per dt before dt is halved, halvings
       --eta-max ETA [0.0]          peak resistivity; backward Euler in defect
                                    form after the ideal step, any size is
                                    stable; helicity is not conserved
@@ -162,7 +170,11 @@ The trace records the linesearch identity ``dE_pred = -dt (F,u)_M / 2``
 against the measured decrease: it is an operator identity (curl adjointness,
 the cross-product sign, Leray M-orthogonality) and holds to round-off when
 eta = 0 and --dt-mode linesearch. With eta > 0 the implicit resistive solve
-removes energy on top of the ideal step, so ``dE_meas <= dE_pred``.
+removes energy on top of the ideal step, so ``dE_meas <= dE_pred``. Under
+``--scheme midpoint`` the exact change is ``-dt (F_mid, u)_M`` with the
+force at the MIDPOINT field, which the trace does not evaluate; its
+``dE_pred = -dt (F,u)_M`` is the first-order slope at ``B_n`` and the
+comparison measures the ``O(dt^2)`` curvature, not a defect.
 """
 from __future__ import annotations
 
@@ -250,6 +262,14 @@ def parse_args(argv=None):
     ap.add_argument("--dt-mode", default="linesearch", choices=("linesearch", "fixed"))
     ap.add_argument("--dt0", type=float, default=1.0)
     ap.add_argument("--cfl", type=float, default=0.5)
+    ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
+    ap.add_argument("--picard-tol", type=float, default=None)
+    ap.add_argument("--picard-max", type=int, default=20)
+    ap.add_argument("--picard-restarts", type=int, default=4)
+    ap.add_argument("--dirichlet-H", action="store_true",
+                    help="take the 1-form proxy H of B in the Dirichlet space (tangential H = 0 "
+                         "at the wall) instead of the natural one; E lives there already, so the "
+                         "midpoint scheme's discrete helicity is then exact to the solves")
     ap.add_argument("--eta-max", type=float, default=0.0)
     ap.add_argument("--eta-schedule", default="tanh", choices=("tanh", "constant", "linear", "pulse"))
     ap.add_argument("--eta-pulse", default="2000,100",
@@ -347,10 +367,12 @@ def main(cli):
                                         make_profiles, parse_lambda,
                                         project_reference_two_form)
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
+    from mrx.relaxation import (DescentMethod, IntegrationScheme, TimeStepChoice, TimeStepper,
                                 compute_force, compute_helicity, initial_state, resistive_step,
                                 pressure_diagnostics, weak_pressure)
     if cli.stepper == "bonly":  # experimental hook (2026-09-03): J x B and u x B, no H
+        if cli.scheme != "explicit":
+            raise ValueError("--stepper bonly has no midpoint rule")
         from mrx.experimental.bonly_relaxation import (BOnlyTimeStepper as TimeStepper,
                                                        compute_force_bonly as compute_force,
                                                        initial_state_bonly as initial_state)
@@ -427,7 +449,7 @@ def main(cli):
     if cli.presmooth > 0:
         smooth = jax.jit(lambda B: resistive_step(B, seq, cli.presmooth_eps))
         for k in range(cli.presmooth):
-            _, _, J, _, _ = compute_force(B0, seq)
+            _, _, J, _, _ = compute_force(B0, seq, dirichlet_H=cli.dirichlet_H)
             jb = float(seq.l2_norm(J, 1) / seq.l2_norm(B0, 2))
             if cli.presmooth_jb is not None and jb <= cli.presmooth_jb:
                 print(f"[presmooth] ||J||/||B|| {jb:.4e} <= {cli.presmooth_jb:g}: done", flush=True)
@@ -446,12 +468,13 @@ def main(cli):
 
     @jax.jit
     def force_probe(B, p_guess, H_guess, JxH_guess):
-        return compute_force(B, seq, p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
+        return compute_force(B, seq, dirichlet_H=cli.dirichlet_H,
+                             p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
 
     def pressure_probe_eager(B, p, J, H, pw_guess):
         """The weak pressure of ``compute_force``'s ``(p, J, H)`` at ``B``,
         ||J||/||B||, and the strong/weak comparison (see "Two pressures")."""
-        p_w, F_w, v = weak_pressure(J, H, seq, p_guess=pw_guess)
+        p_w, F_w, v = weak_pressure(J, H, seq, dirichlet_H=cli.dirichlet_H, p_guess=pw_guess)
         JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
         return p_w, JoverB, pressure_diagnostics(B, p, p_w, F_w, v, seq)
 
@@ -466,7 +489,7 @@ def main(cli):
                 f"weak_resid={d['weak_resid']:.3e}  "
                 f"wall dpw/dn={d['dpdn_wall']:.3e}  (JxB).n={d['JxBn_wall']:.3e}")
 
-    F0, p0, J0, Hf0, JxH0 = compute_force(B0, seq)
+    F0, p0, J0, Hf0, JxH0 = compute_force(B0, seq, dirichlet_H=cli.dirichlet_H)
     pw0, JoverB0, diag0 = pressure_probe_eager(B0, p0, J0, Hf0, jnp.zeros(seq.n(0, True)))
     diag0 = {k: float(v) for k, v in diag0.items()}
     F0n = float(seq.l2_norm(F0, 2))
@@ -489,9 +512,13 @@ def main(cli):
         dt_mode=(TimeStepChoice.ANALYTIC_LINESEARCH if cli.dt_mode == "linesearch"
                  else TimeStepChoice.FIXED),
         cfl=cli.cfl, eta_every=cli.eta_every, resistive=cli.eta_max > 0,
-        history_size=cli.history,
+        history_size=cli.history, dirichlet_H=cli.dirichlet_H,
+        scheme={"explicit": IntegrationScheme.EXPLICIT,
+                "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
+        picard_tol=cli.picard_tol, picard_max=cli.picard_max, picard_restarts=cli.picard_restarts,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale)
+    params["picard_tol"] = float(ts.picard_tol)   # the resolved value (None = 10 x seq.tol)
     apply_M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))
     get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
 
@@ -527,7 +554,8 @@ def main(cli):
     latest = {"p": p_ic, "pw": pw_ic, "diag": diag0}
 
     tr = {k: [] for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                          "gain", "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
+                          "gain", "eta", "res_it", "res_delta", "dE_meas", "dE_pred",
+                          "picard_it", "picard_restarts", "picard_resid")}
     qoi = {k: [] for k in ("it", "helicity", "JoverB", "wall", "gradp_cmp", "p_cmp",
                            "weak_resid", "dpdn_wall", "JxBn_wall", "beta_vol", "beta_axis")}
     E_prev = E0
@@ -535,7 +563,7 @@ def main(cli):
     t_arm = time.perf_counter()
     t_qoi = 0.0     # time inside the qoi samples; the recorded wall excludes it
     n_done = 0
-    print(f"\n=== {cli.method}  m={cli.history} "
+    print(f"\n=== {cli.scheme} {cli.method}  m={cli.history} "
           f"smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
           f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max} eta-every={cli.eta_every}  "
           f"steps<={cli.steps} floor-tol={cli.floor_tol:.1e} over {cli.floor_steps} steps ===",
@@ -614,7 +642,13 @@ def main(cli):
         tr["res_it"].append(int(state.resistive_info))
         tr["res_delta"].append(float(state.resistive_delta))
         tr["dE_meas"].append(E - E_prev)
-        tr["dE_pred"].append(-0.5 * float(state.dt) * Fu)
+        # Explicit: the line-search identity at dt*. Midpoint: the
+        # first-order slope -dt (F, u)_M at B_n (the exact change has the
+        # force at the midpoint field, not evaluated).
+        tr["dE_pred"].append(-(0.5 if cli.scheme == "explicit" else 1.0) * float(state.dt) * Fu)
+        tr["picard_it"].append(int(state.picard_iterations))
+        tr["picard_restarts"].append(int(state.picard_restarts))
+        tr["picard_resid"].append(float(state.picard_residual))
         E_prev = E
         n_done = it - it0
         if cli.save_every and (it % cli.save_every == 0 or it == it0 + cli.steps):
@@ -654,7 +688,9 @@ def main(cli):
                   f"cfl={float(state.cfl_max) * float(state.dt):.2f}  cos={cos:+.4f}  gain={gain:.2e}  "
                   f"divB={div:.2e}  dE_meas={tr['dE_meas'][-1]:+.3e}  "
                   f"dE_pred={tr['dE_pred'][-1]:+.3e}  res_it={tr['res_it'][-1]}  "
-                  f"res_delta={tr['res_delta'][-1]:.2e}",
+                  f"res_delta={tr['res_delta'][-1]:.2e}"
+                  + (f"  picard={tr['picard_it'][-1]}/{tr['picard_restarts'][-1]}"
+                     f"@{tr['picard_resid'][-1]:.1e}" if cli.scheme == "midpoint" else ""),
                   flush=True)
         if cli.pulse_adaptive and it - pulse_last >= cli.pulse_spacing:
             # Only the history since the last event counts: after a revert the
@@ -730,8 +766,14 @@ def main(cli):
           f"min {resid_tr.min():.4e})")
     print(f"    linesearch identity |dE_meas - dE_pred| / E0: median "
           f"{np.median(ident):.3e}  max {ident.max():.3e}"
-          + ("  (not an identity with eta > 0 or a fixed dt)"
-             if cli.eta_max > 0 or cli.dt_mode == "fixed" else ""))
+          + ("  (not an identity with eta > 0, a fixed dt or the midpoint scheme)"
+             if cli.eta_max > 0 or cli.dt_mode == "fixed" or cli.scheme == "midpoint" else ""))
+    if cli.scheme == "midpoint":
+        pit, prs, prd = (np.array(tr[k]) for k in ("picard_it", "picard_restarts", "picard_resid"))
+        print(f"    picard: increment evaluations/step mean {pit.mean():.2f}  max {pit.max()}  "
+              f"(total {int(pit.sum())});  dt halved on {int((prs > 0).sum())}/{n_done} steps "
+              f"(max {prs.max()} halvings);  unconverged steps {int((prd > ts.picard_tol).sum())};  "
+              f"final residual {prd[-1]:.2e}", flush=True)
     print(f"    energy increases on {int((dEm > 0).sum())}/{n_done} steps;  "
           f"||div B|| max {max(tr['div']):.3e};  ||J||/||B|| "
           f"{qoi['JoverB'][0]:.4e} -> {qoi['JoverB'][-1]:.4e}")
