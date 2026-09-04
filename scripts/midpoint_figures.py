@@ -139,7 +139,7 @@ def eight_figure(arms, figdir):
     (explicit / midpoint) on the (8,16,16) p=2 mesh: rows the quantity,
     columns the precision, colour the route, dash the scheme."""
     d = dict(arms)
-    fig, axes = plt.subplots(2, 2, figsize=figsize("text", rows=2, cols=2, aspect=0.7), sharex="col")
+    fig, axes = plt.subplots(2, 2, figsize=figsize("text", rows=2, cols=2, aspect=0.7))
     for col, prec in enumerate(("float32", "float64")):
         for route, colour in (("H", 0), ("B", 2)):
             for dash, arm in enumerate(EIGHT[(prec, route)]):
@@ -153,7 +153,7 @@ def eight_figure(arms, figdir):
                 plot_trace(axes[1, col], j["trace"]["resid"], log=True, **st)
         axes[0, col].axhline(0, color="0.7", lw=0.6, zorder=0)
         axes[0, col].set_yscale("symlog", linthresh=1e-12)
-        axes[0, col].set(title=f"(8,16,16) p=2, {prec}")
+        axes[0, col].set(title=f"(8,16,16) p=2, {prec}", xlabel="step")
         axes[1, col].set(xscale="log", yscale="log", xlabel="step")
         axes[0, col].legend()
     axes[0, 0].set_ylabel(r"$H - H_0$  ($\|B\|_M = 1$)")
