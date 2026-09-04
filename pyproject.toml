@@ -64,6 +64,9 @@ extend-exclude = ["*.ipynb"]
 [tool.setuptools.packages.find]
 include = ["mrx*"]
 
+[tool.setuptools.package-data]
+mrx = ["*.mplstyle"]
+
 [project.optional-dependencies]
 DOCS = ["sphinx", "myst-parser", "sphinx-rtd-theme"]
 

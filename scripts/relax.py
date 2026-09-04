@@ -371,8 +371,6 @@ def main(cli):
                                 compute_force, compute_helicity, initial_state, resistive_step,
                                 pressure_diagnostics, weak_pressure)
     if cli.stepper == "bonly":  # experimental hook (2026-09-03): J x B and u x B, no H
-        if cli.scheme != "explicit":
-            raise ValueError("--stepper bonly has no midpoint rule")
         from mrx.experimental.bonly_relaxation import (BOnlyTimeStepper as TimeStepper,
                                                        compute_force_bonly as compute_force,
                                                        initial_state_bonly as initial_state)

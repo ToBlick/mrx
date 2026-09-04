@@ -48,6 +48,10 @@ small() {
     arm mp_small_f64    "--scheme midpoint $c --seconds 2700"               75
     arm ex_small_f64_Hd "--scheme explicit $c --seconds 1800 --dirichlet-H" 60
     arm mp_small_f64_Hd "--scheme midpoint $c --seconds 2700 --dirichlet-H" 75
+    # the B-only route (J x B, u x B, no proxy): its midpoint drift is the
+    # grid's projection error alone, the time error being gone
+    arm ex_small_f64_bonly "--scheme explicit $c --seconds 1800 --stepper bonly" 60
+    arm mp_small_f64_bonly "--scheme midpoint $c --seconds 2700 --stepper bonly" 75
 }
 
 f64() {
