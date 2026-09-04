@@ -277,6 +277,24 @@ Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 
 - Consequence: a stall test at any tolerance is a step count in disguise, scaling the tolerance with the chunk only fixes that count, and an exponent test would never fire. The interval is now chosen outright: `--reconnect-every K`, rounded to whole chunks, no solve on the last chunk; the launcher's full arm is `--reconnect-every 2000` on 8000 steps (to be rerun for the paper), the smoke `--reconnect-every 600` at `--chunk 100` (job 17458707: reconnections at 600 / 1200 / 1800 / 2400, none on the last chunk, 2.4 / 2.3 / 2.2 / 2.1% of H_0 per solve, the same prices as the per-step smoke at its detector's steps). The series should be described as ideal equilibria sampled along a power-law descent at a chosen interval, not as stalled equilibria.
 - The reconnections still buy time: the first interval's t^-0.2 law would need about 16000 steps to reach the residual this arm had at step 7000 after two solves, at 1.2% of H_0.
 
+**The ladder, `reconnect_ladder_h16_p2_g1` (2026-09-04, job 17461050, `li383_pub.sh reconnect ladder`).** The same rung, `--reconnect-every 2000 --reconnect-eps 0.02 --steps 18000`: eight solves of eps = 7.8e-5 (1.2% of H_0 each) from step 0 at a uniform interval, nine ideal equilibria (eight checkpoints under `reconnect/<k>/` plus the final field), 18000 steps in 10063 s (0.56 s/step). Sections of all ten fields in one call (`poincare/poincare_{ic,reconnect<k>,final}_zeta*.png`, one colour scale); composite `figures/ladder_zeta0.png`, traces in `figures/reconnect_traces.png` next to the three-rung arm and the ideal run.
+
+| k | step | resid (chunk mean before) | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 2000 | 6.55e-4 | 5.0112e-3 -> 4.9492e-3 (-1.24%) | 0.648 -> 0.586 | 0.0433 -> 0.0383 | 0.020 | 0 | 2 |
+| 2 | 4000 | 4.53e-4 | 4.9493e-3 -> 4.8896e-3 (-1.21%) | 0.601 -> 0.556 | 0.0392 -> 0.0355 | 0.057 | 0.007 | 5 |
+| 3 | 6000 | 4.04e-4 | 4.8895e-3 -> 4.8320e-3 (-1.18%) | 0.570 -> 0.531 | 0.0363 -> 0.0333 | 0.077 | 0.014 | 10 |
+| 4 | 8000 | 3.83e-4 | 4.8319e-3 -> 4.7762e-3 (-1.15%) | 0.543 -> 0.510 | 0.0340 -> 0.0314 | 0.099 | 0.021 | 9 |
+| 5 | 10000 | 3.50e-4 | 4.7761e-3 -> 4.7221e-3 (-1.13%) | 0.519 -> 0.490 | 0.0320 -> 0.0297 | 0.117 | 0.028 | 4 |
+| 6 | 12000 | 3.51e-4 | 4.7220e-3 -> 4.6695e-3 (-1.11%) | 0.499 -> 0.473 | 0.0302 -> 0.0282 | 0.134 | 0.014 | 4 |
+| 7 | 14000 | 3.35e-4 | 4.6694e-3 -> 4.6183e-3 (-1.09%) | 0.481 -> 0.457 | 0.0287 -> 0.0268 | 0.148 | 0.012 | 4 |
+| 8 | 16000 | 3.21e-4 | 4.6182e-3 -> 4.5684e-3 (-1.08%) | 0.464 -> 0.442 | 0.0272 -> 0.0256 | 0.164 | 0 | 8 |
+| final | 18000 | 3.07e-4 | 4.5684e-3 (-8.84% in all) | 0.449 | 0.0260 | 0.180 | 0.023 | 5 |
+
+- The 3/5 chain grows monotonically with the cumulative dose, 0.020 -> 0.164 over the eight rungs and 0.180 at the end (dose 6.25e-4, the tanh 1e-7 arm's); the 1/2 chain opens to 0.028 at rung 5 and the width measure loses it afterwards (the axis iota falls from 0.60 to 0.54 as current leaves, moving the resonance outward into the 3/5 chain's neighbourhood; the sections show small 1/2 ovals at r = 0.5 from rung 4 on). Rung 2 sits at the dose of the three-rung arm's rung 3 (7.8e-5) and gives the same width, 0.057 against 0.059.
+- The residual level before each solve falls with the dose and flattens: 6.55, 4.53, 4.04, 3.83, 3.50, 3.51, 3.35, 3.21 (x1e-4), final 3.07e-4; the kick per solve is 2.1x at this c (1.5x at c = 0.01) and is gone within the first 500-step chunk. The helicity price per rung is exact and shrinks slightly with the current, 1.24% -> 1.08%; J/B goes 0.648 -> 0.449, beta_vol 0.043 -> 0.026, and between solves the descent recovers about a quarter of the current the solve removed.
+- Cost 2.8 GPU-h for the run, 12 min for the ten sections.
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
