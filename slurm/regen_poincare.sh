@@ -29,7 +29,7 @@ VENV=${VENV:-$REPO/.venv}              # main checkout's venv
 
 ROOTS=${ROOTS:-"outputs/li383_eta outputs/li383_sweep"}
 NAME_GLOB=${NAME_GLOB:-}              # if set, only state dirs matching it, e.g. "*_g1"
-PLANES=${PLANES:-0,0.25,0.5}          # the standard three planes
+PLANES=${PLANES:-0,0.125,0.25,0.375,0.5}   # the standard five planes (half a period)
 PERIODS=${PERIODS:-400}
 FIELDS=${FIELDS:-ic,final}
 TEXBIN=${TEXBIN:-$HOME/texlive/2026/bin/x86_64-linux}

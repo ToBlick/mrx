@@ -33,8 +33,8 @@ controller, a shift) stay ordinary parameters.
 relative residual a solve can reach when the matvec itself is rounded.
 `scripts/poisson_study.py --tol` defaults to `1e-9` because the archived
 convergence numbers were measured there. `scripts/relax.py` takes
-`--precision` (default float32) and stops when the mean over `--floor-steps`
-steps of the relative force residual drops below `--floor-tol` (default
+`--precision` (default float32) and stops when the mean over the last chunk
+(`--chunk` steps) of the relative force residual drops below `--floor-tol` (default
 `1e-3`).
 
 The scripts set `MRX_DTYPE` from `--precision` before importing `mrx`.
@@ -63,9 +63,9 @@ Measured on 2026-08-26, toroid and W7-X, `(8,16,8)`, `p=3`:
   `--floor-tol` below that never fires; the run ends on `--steps` or
   `--seconds`, and the float64 run continues to step 3000 with the same
   nested surfaces.
-- Resistive increments `eps = dt * eta` of `1e-7` are a few ulps of `B`.
-  Use `--eta-every K` (`K` of 10 to 100 at `eta ~ 1e-4`) so each solve applies
-  a representable increment.
+- A resistive increment is solved for in defect form, `(M + eps L) delta =
+  -eps L B`, so a reconnection dose that moves `B` by a few ulps is still
+  resolved relative to `delta`.
 
 Measured on the same Clebsch relaxation after 111 steps, both states evaluated
 in float64 (mass norms, force, helicity):

@@ -16,6 +16,8 @@ makes the figures here from a ``scripts/relax.py`` run.
 
 from typing import Callable, Optional
 
+import os
+
 import jax
 import jax.numpy as jnp
 import matplotlib as mpl
@@ -252,6 +254,31 @@ def plot_crossections_separate(
 
 
 @house_style()
+def save_figure(fig, png_path, pgf=True, dpi=None):
+    """Save a figure as PNG and, with ``pgf``, as ``pgf/<stem>.pgf`` in a
+    subfolder beside it: the same figure through matplotlib's pgf backend,
+    vector LaTeX for lines and text, rasterized artists as a high-dpi PNG
+    that the backend writes next to the .pgf. Needs ``xelatex`` on PATH;
+    without it the PNG is still written and the PGF skipped with a message.
+    The including document must ``\\usepackage[strings]{underscore}`` (the
+    backend writes underscores raw) and ``\\providecommand{\\mathdefault}[1]{#1}``
+    (log-axis tick labels); both are put in the pgf preamble so the file's
+    own header lists them."""
+    fig.savefig(png_path, dpi=dpi)
+    if not pgf:
+        return
+    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
+    os.makedirs(pgf_dir, exist_ok=True)
+    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
+    try:
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
+            fig.savefig(pgf_path, backend="pgf", dpi=dpi)
+    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
+        if os.path.exists(pgf_path):
+            os.remove(pgf_path)   # a half-written .pgf is not a usable file
+        print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})", flush=True)
+
+
 def plot_twin_axis(
     left_y,
     right_y,
@@ -603,14 +630,17 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         # because the magnetic axis is not at r=0 -- shows up immediately,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
-        # Split the same way the physical panel does: iota above the magnetic
-        # axis, p below it, per CROSSING (the same ``upper`` / ``sel_p`` masks).
-        # The divider is Z = z_axis in physical space, which is not a straight
-        # line in the (r, theta) chart, so none is drawn here.
-        lx.scatter(lr[sel_iota], lth[sel_iota], c=colour[sel_iota], s=size, vmin=lo,
+        # The chart splits by ITS coordinate, per crossing: iota on theta < 1/2
+        # (the top half, theta increases downward), p on theta >= 1/2. The
+        # physical panel's divider Z = z_axis maps to a theta interval that
+        # wraps around on planes away from zeta = 0, so it is not reused here.
+        top = jnp.asarray(lth) < 0.5 if split_iota_p else jnp.ones_like(R, dtype=bool)
+        csel_iota = shown2 & top
+        lx.scatter(lr[csel_iota], lth[csel_iota], c=colour[csel_iota], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
-        if split_iota_p and sel_p.any():
-            lx.scatter(lr[sel_p], lth[sel_p], c=pressure_scale * pressure[sel_p], s=size,
+        csel_p = shown2 & ~top
+        if csel_p.any():
+            lx.scatter(lr[csel_p], lth[csel_p], c=pressure_scale * pressure[csel_p], s=size,
                        cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
         if (~keep).any():
             lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,

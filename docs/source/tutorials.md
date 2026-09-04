@@ -141,11 +141,11 @@ The script prints the traces, draws $\|F\|_M$ against $E$ on twin axes
 (`plot_twin_axis`) and the weak pressure on the torus, and writes a `B.h5` in
 `scripts/relax.py`'s format. `scripts/poincare_relax.py` then draws the
 Poincaré sections of the initial and relaxed fields at the standing three
-planes $\zeta = 0, 0.25, 0.5$ (per half period):
+planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$ (half a field period; the other half follows by stellarator symmetry):
 
 ```bash
 python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation/B.h5 \
-    --planes 0,0.25,0.5 --out outputs/tutorials/li383_relaxation
+    --planes 0,0.125,0.25,0.375,0.5 --out outputs/tutorials/li383_relaxation
 ```
 
 ## 4. Seed a magnetic island (`4_li383_island_seed.py`)

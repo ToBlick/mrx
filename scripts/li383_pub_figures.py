@@ -21,6 +21,9 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
+from mrx.plotstyle import LEFT, RIGHT, house_style  # noqa: E402
+from mrx.plotting import save_figure  # noqa: E402
+
 NFP = 3
 GPU_H = 1.0 / 3600.0
 
@@ -677,6 +680,156 @@ def dose(j):
     return float(np.sum(np.asarray(t["eta"]) * np.asarray(t["dt"])))
 
 
+def reconnect_rows(j):
+    """One row per reconnection of a --reconnect-every arm: the residual's
+    chunk mean before the solve, the dose, and what the solve did to |F|,
+    helicity, current and beta; widths and chaotic lines from the arm's
+    sections, where the fields before each solve are the ``reconnect<k>``
+    tags (poincare_relax.py --fields reconnect, traced in one call with ic
+    and final)."""
+    z = sections(j)
+    rows = [
+        "| k | step | resid | eps | `||F||` before -> after | H before -> after | dH | "
+        "J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for ev in j["reconnect"]:
+        tag = f"reconnect{ev['k']}"
+        traced = z is not None and f"{tag}_iota" in z.files
+        w5 = fmt(island_width(z, 5, 1, tag=tag), "f3") if traced else "-"
+        w6 = fmt(island_width(z, 6, 1, tag=tag), "f3") if traced else "-"
+        ch = int(z[f"{tag}_chaotic"].sum()) if traced else "-"
+        rows.append(
+            f"| {ev['k']} | {ev['it']} | {ev['resid']:.2e} | {ev['eps']:.2e} | "
+            f"{ev['F_before']:.2e} -> {ev['F_after']:.2e} | "
+            f"{ev['helicity_before']:+.4e} -> {ev['helicity_after']:+.4e} | "
+            f"{ev['helicity_after'] - ev['helicity_before']:+.2e} | "
+            f"{ev['JoverB_before']:.3f} -> {ev['JoverB_after']:.3f} | "
+            f"{ev['beta_vol_before']:.4f} -> {ev['beta_vol_after']:.4f} | {w5} | {w6} | {ch} |"
+        )
+    return rows
+
+
+def ladder_figure(j):
+    """The reconnection ladder's own trace figure, written into the run's
+    directory (``<run>/figures/ladder_traces.png`` and ``pgf/``): one panel
+    in the house style, black / purple / teal. Left axis: the force residual
+    (black, log, 100-step block means with the +-1 sd band). Right axis, in
+    per cent: beta (purple, solid) and the relative helicity loss |H - H_0| / |H_0| (teal,
+    dashed). Dotted lines mark the reconnections."""
+    from mrx.plotting import P_COLOR, plot_twin_axis  # noqa: PLC0415 -- pulls jax; only this figure needs it
+    black, purple, teal = LEFT["color"], P_COLOR, RIGHT["color"]
+    q = j["qoi"]
+    tq = np.asarray(q["it"]) / 1000.0
+    h = np.asarray(q["helicity"])
+    marks = [ev["it"] / 1000.0 for ev in j.get("reconnect", [])]
+    thin = dict(marker="none", markersize=0)
+    with house_style():
+        fig, ax = plt.subplots(figsize=(6.4, 3.8), constrained_layout=True)
+        x, m, lo, hi = blocked(F(j), log=True)
+        _, (a, ar) = plot_twin_axis(
+            m, 100.0 * np.asarray(q["beta_vol"]), x_left=x / 1000.0, x_right=tq,
+            left_label=r"$\|F\|_M$", right_label=r"$\beta_{\mathrm{vol}}$, $|H - H_0| / |H_0|$ $(\%)$",
+            left_log=True, right_log=False, left_color=black, right_color=purple,
+            left_plot_kwargs=dict(thin, linestyle="-"),
+            right_plot_kwargs=dict(thin, linestyle="-", label=r"$\beta_{\mathrm{vol}}$"),
+            x_label=r"step / $10^3$", ax=ax)
+        a.fill_between(x / 1000.0, lo, hi, color=black, alpha=0.2, lw=0)
+        ar.plot(tq, 100.0 * np.abs(h - h[0]) / abs(h[0]), color=teal, linestyle="--", lw=1.0,
+                label=r"$|H - H_0| / |H_0|$")
+        ar.set_ylabel(ar.get_ylabel(), color=black)
+        ar.tick_params(axis="y", labelcolor=black)
+        ar.legend(loc="center right")
+        for xm in marks:
+            a.axvline(xm, color="0.6", ls=":", lw=0.6)
+        figdir = os.path.join(j["dir"], "figures")
+        os.makedirs(figdir, exist_ok=True)
+        save_figure(fig, os.path.join(figdir, "ladder_traces.png"))
+        plt.close(fig)
+
+
+def anchor_figure(anchor, ms, g0, figdir):
+    """The one-flag departures from the anchor (section 5j): left, the force
+    residual of the L-BFGS histories m = 0 (steepest descent), 1 (the anchor),
+    3, 5; right, the anchor against gamma = 0. 100-step block means, +-1 sd.
+    Black is the anchor, teal / purple / grey the departures. ``anchor_traces.png``."""
+    from mrx.plotting import P_COLOR  # noqa: PLC0415 -- pulls jax; only this figure needs it
+    with house_style():
+        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
+        plot_trace(ax[0], F(anchor), color=LEFT["color"], lw=1.0, label="m = 1 (anchor)")
+        for (m, j), c in zip(ms, ("0.55", RIGHT["color"], P_COLOR)):
+            plot_trace(ax[0], F(j), color=c, lw=1.0, ls="--" if m == 0 else "-",
+                       label="steepest descent" if m == 0 else f"m = {m}")
+        plot_trace(ax[1], F(anchor), color=LEFT["color"], lw=1.0, label=r"$\gamma = 1$ (anchor)")
+        plot_trace(ax[1], F(g0), color=RIGHT["color"], lw=1.0, ls="--", label=r"$\gamma = 0$")
+        for a in ax:
+            a.set_yscale("log")
+            a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:g}"))
+            a.set_xlabel(r"step / $10^3$")
+            a.set_ylabel(r"$\|F\|_M$")
+            a.grid(True, which="both")
+            a.legend(loc="upper right")
+        save_figure(fig, os.path.join(figdir, "anchor_traces.png"))
+        plt.close(fig)
+
+
+def l5_figure(arms, figdir):
+    """The three-mesh reconnection arms (section 5i) overlaid: the force
+    residual (100-step block means, +-1 sd) and beta in per cent against the
+    step, one colour per mesh (black, teal, purple in the order given), the
+    reconnection dotted. ``l5_traces.png`` and ``pgf/``."""
+    from mrx.plotting import P_COLOR  # noqa: PLC0415 -- pulls jax; only this figure needs it
+    colours = [LEFT["color"], RIGHT["color"], P_COLOR]
+    with house_style():
+        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
+        for j, c in zip(arms, colours):
+            label = j["arm"].replace("reconnect_l5_", "").replace("_p2_g1", "")
+            label = {"h16": "(16, 32, 32)", "h32u": "(32, 32, 32)", "h32r": "(32, 32, 32) refined"}[label]
+            plot_trace(ax[0], F(j), color=c, lw=1.0, label=label)
+            q = j["qoi"]
+            ax[1].plot(np.asarray(q["it"]) / 1000.0, 100.0 * np.asarray(q["beta_vol"]), color=c, lw=1.0, label=label)
+        for ev in arms[0].get("reconnect", []):
+            ax[0].axvline(ev["it"], color="0.6", ls=":", lw=0.6)
+            ax[1].axvline(ev["it"] / 1000.0, color="0.6", ls=":", lw=0.6)
+        ax[0].set_yscale("log")
+        ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:g}"))
+        ax[0].set_ylabel(r"$\|F\|_M$")
+        ax[1].set_ylabel(r"$\beta_{\mathrm{vol}}$ $(\%)$")
+        for a in ax:
+            a.set_xlabel(r"step / $10^3$")
+            a.grid(True, which="both")
+        ax[0].legend(loc="upper right")
+        save_figure(fig, os.path.join(figdir, "l5_traces.png"))
+        plt.close(fig)
+
+
+def reconnect_figure(arms, ideal, figdir):
+    """Residual, ||J||/||B|| and helicity against the step for the reconnect
+    arms, the reconnections marked, the ideal run of the same rung for reference."""
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
+    entries = [(ideal, "ideal", "k")] + [(j, j["arm"], None) for j in arms]
+    for j, label, color in entries:
+        line = plot_trace(ax[0], F(j), label=label, color=color)
+        q = j["qoi"]
+        ax[1].plot(q["it"], q["JoverB"], "-", color=line.get_color(), label=label)
+        h = np.asarray(q["helicity"])
+        ax[2].plot(q["it"], h - h[0], "-", color=line.get_color(), label=label)
+        for ev in j.get("reconnect", []):
+            for a in ax:
+                a.axvline(ev["it"], color=line.get_color(), ls=":", lw=0.8)
+    ax[0].set_yscale("log")
+    ax[0].set_ylabel(r"$\|F\|$ (100-step mean $\pm$ sd)")
+    ax[1].set_ylabel(r"$\|J\| / \|B\|$")
+    ax[2].set_ylabel(r"$H - H_0$")
+    for a in ax:
+        a.set_xlabel("step")
+        a.grid(alpha=0.3)
+    ax[0].legend()
+    fig.suptitle("ideal descent, reconnected every K steps: dotted lines mark the reconnections")
+    fig.savefig(os.path.join(figdir, "reconnect_traces.png"), dpi=140)
+    plt.close(fig)
+
+
 def pulse_islands(tanh_arms, pulse_arms, ideal, figdir):
     """Island width at 3/5 and 1/2 against the dose, tanh rungs vs pulses."""
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
@@ -767,6 +920,12 @@ def main():
     }
     fix = {a: load(root, "li383_axisfix", a) for a in ["r16_p3_g0", "r24_p3_g0"]}
     hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
+    ideal16 = load(root, "li383_pub", "h16_p2_g1")   # the reference rung of every comparison
+    anchor = load(root, "li383_pub", "h16_p2_g1")
+    ms = [(m, load(root, "li383_pub", f"h16_p2_g1_m{m}")) for m in (0, 3, 5)]
+    g0 = load(root, "li383_pub", "h16_p2_g0")
+    if anchor is not None and g0 is not None and all(j is not None for _, j in ms):
+        anchor_figure(anchor, ms, g0, figdir)
     if hsweep:
         hsweep_figure(hsweep, figdir)
     psweep = [j for j in (load(root, "li383_pub", a) for a in PSWEEP) if j is not None]
@@ -783,7 +942,7 @@ def main():
     if eta_plain or eta_seeded:
         etadir = os.path.join(root, "li383_eta", "figures")
         os.makedirs(etadir, exist_ok=True)
-        eta_figure(eta_plain, eta_seeded, load(root, "li383_pub", "h16_p2_g1"), etadir)
+        eta_figure(eta_plain, eta_seeded, ideal16, etadir)
         eta_all = [
             j
             for j in (
@@ -793,14 +952,14 @@ def main():
             if j is not None and len(j["trace"]["F"]) > 1
         ]
         eta_islands(
-            [load(root, "li383_pub", "h16_p2_g1")] + eta_plain,
+            [ideal16] + eta_plain,
             [j for j in [load(root, "li383_eta", "s61_eta0")] if j is not None]
             + eta_seeded,
             etadir,
         )
         eta_traces(
             eta_all,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             load(root, "li383_pub", "r16_s61_e3e-3_g1"),
             etadir,
         )
@@ -824,7 +983,7 @@ def main():
         ]
         eta_traces(
             same_dose + pulse,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             None,
             pdir,
             title="resistive pulses after 2000 ideal steps against the tanh rungs of equal dose",
@@ -839,11 +998,32 @@ def main():
                 if j is not None
             ],
             pulse,
-            load(root, "li383_pub", "h16_p2_g1"),
+            ideal16,
             pdir,
         )
+        reconnect = [
+            j
+            for j in (
+                load(root, "li383_pulse", os.path.basename(d))
+                for d in sorted(glob.glob(os.path.join(root, "li383_pulse", "reconnect*")))
+            )
+            if j is not None and j.get("reconnect")
+        ]
+        full = [j for j in reconnect if "smoke" not in j["arm"] and "_l5_" not in j["arm"]]
+        if full:
+            reconnect_figure(full, ideal16, pdir)
+        l5 = [j for j in reconnect if "_l5_" in j["arm"]]
+        if l5:
+            l5_figure(sorted(l5, key=lambda j: ["h16", "h32u", "h32r"].index(j["arm"].split("_")[2])), pdir)
+        for j in full:
+            if "ladder" in j["arm"]:
+                ladder_figure(j)
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
+            + "".join(
+                f"\n## reconnections of {j['arm']}\n" + "\n".join(reconnect_rows(j)) + "\n"
+                for j in reconnect
+            )
         )
         open(os.path.join(root, "li383_eta", "tables.md"), "w").write(
             "## eta sweep rows\n" + "\n".join(eta_rows(eta_plain + eta_seeded)) + "\n"

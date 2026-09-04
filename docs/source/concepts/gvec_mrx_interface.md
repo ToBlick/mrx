@@ -145,7 +145,7 @@ should be put through them before it is used for anything.
 5. Helicity — unchanged when lambda is switched off, since lambda is a
    pure gauge transformation.
 
-`scripts/relax.py --ic clebsch` runs 1, 2 and 4 on a state file; the
+`scripts/relax.py --geometry <state file>` runs 1, 2 and 4; the
 synthetic state below is where the answers are known in closed form.
 
 ## 6. Traps, all of them already paid for
