@@ -9,6 +9,7 @@
 #
 #   bash scripts/midpoint_sweep.sh small                 # float64 smoke mesh: scheme x (B, auxiliary H)
 #   bash scripts/midpoint_sweep.sh small32               # their float32 twins
+#   bash scripts/midpoint_sweep.sh r16                   # the eight arms on (16,32,32) p=2
 #   bash scripts/midpoint_sweep.sh f64                   # float64 production pair, auxiliary H
 #   bash scripts/midpoint_sweep.sh arm NAME "RELAX ARGS" TIMEOUT_MIN
 #
@@ -56,6 +57,20 @@ small32() {
     arm mp_small_f32_Hd    "--scheme midpoint $c --seconds 2700 $AUX" 75
 }
 
+r16() {
+    # the same eight arms on (16,32,32) p=2 (Tobias, 2026-09-04: the smoke
+    # mesh is too coarse); ~0.5 s/step float32, ~1.2 s/step float64, 1000 steps
+    local c="--steps 1000 --ns 16,32,32 --p 2"
+    arm ex_r16_f32_bonly "--scheme explicit $c --seconds 2400"                          75
+    arm mp_r16_f32_bonly "--scheme midpoint $c --seconds 3000"                          90
+    arm ex_r16_f32_Hd    "--scheme explicit $c --seconds 2400 $AUX"                     75
+    arm mp_r16_f32_Hd    "--scheme midpoint $c --seconds 3000 $AUX"                     90
+    arm ex_r16_f64_bonly "--scheme explicit $c --seconds 4200 --precision float64"      120
+    arm mp_r16_f64_bonly "--scheme midpoint $c --seconds 5400 --precision float64"      150
+    arm ex_r16_f64_Hd    "--scheme explicit $c --seconds 4200 --precision float64 $AUX" 120
+    arm mp_r16_f64_Hd    "--scheme midpoint $c --seconds 5400 --precision float64 $AUX" 150
+}
+
 f64() {
     # float64 on the production mesh, auxiliary H: the publication pair.
     arm ex_lbfgs_f64_Hd "--scheme explicit --steps 1500 --seconds 3600 --precision float64 $AUX" 120
@@ -65,7 +80,8 @@ f64() {
 case ${1:-} in
     small) small ;;
     small32) small32 ;;
+    r16) r16 ;;
     f64) f64 ;;
     arm) arm "$2" "$3" "$4" ;;
-    *) echo "usage: $0 small | small32 | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
+    *) echo "usage: $0 small | small32 | r16 | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
 esac
