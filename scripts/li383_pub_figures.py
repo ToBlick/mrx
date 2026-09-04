@@ -677,26 +677,27 @@ def dose(j):
     return float(np.sum(np.asarray(t["eta"]) * np.asarray(t["dt"])))
 
 
-def stall_rows(j):
-    """One row per stalled equilibrium of a --reconnect arm: the descent's
-    floor at the stall, the dose, and what the solve did to |F|, helicity,
-    current and beta; widths and chaotic lines from the arm's sections, where
-    the stalled fields are the ``stall<k>`` tags (poincare_relax.py --fields
-    stalls, traced in one call with ic and final)."""
+def reconnect_rows(j):
+    """One row per reconnection of a --reconnect-every arm: the residual's
+    chunk mean before the solve, the dose, and what the solve did to |F|,
+    helicity, current and beta; widths and chaotic lines from the arm's
+    sections, where the fields before each solve are the ``reconnect<k>``
+    tags (poincare_relax.py --fields reconnect, traced in one call with ic
+    and final)."""
     z = sections(j)
     rows = [
-        "| stall | step | floor | eps | `||F||` before -> after | H before -> after | dH | "
+        "| k | step | resid | eps | `||F||` before -> after | H before -> after | dH | "
         "J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
-    for ev in j["stalls"]:
-        tag = f"stall{ev['stall']}"
+    for ev in j["reconnect"]:
+        tag = f"reconnect{ev['k']}"
         traced = z is not None and f"{tag}_iota" in z.files
         w5 = fmt(island_width(z, 5, 1, tag=tag), "f3") if traced else "-"
         w6 = fmt(island_width(z, 6, 1, tag=tag), "f3") if traced else "-"
         ch = int(z[f"{tag}_chaotic"].sum()) if traced else "-"
         rows.append(
-            f"| {ev['stall']} | {ev['it']} | {ev['floor']:.2e} | {ev['eps']:.2e} | "
+            f"| {ev['k']} | {ev['it']} | {ev['resid']:.2e} | {ev['eps']:.2e} | "
             f"{ev['F_before']:.2e} -> {ev['F_after']:.2e} | "
             f"{ev['helicity_before']:+.4e} -> {ev['helicity_after']:+.4e} | "
             f"{ev['helicity_after'] - ev['helicity_before']:+.2e} | "
@@ -708,7 +709,7 @@ def stall_rows(j):
 
 def reconnect_figure(arms, ideal, figdir):
     """Residual, ||J||/||B|| and helicity against the step for the reconnect
-    arms, the stalls marked, the ideal run of the same rung for reference."""
+    arms, the reconnections marked, the ideal run of the same rung for reference."""
     fig, ax = plt.subplots(1, 3, figsize=(16, 4.6), constrained_layout=True)
     entries = [(ideal, "ideal", "k")] + [(j, j["arm"], None) for j in arms]
     for j, label, color in entries:
@@ -718,7 +719,7 @@ def reconnect_figure(arms, ideal, figdir):
         ax[1].plot(q["it"], q["JoverB"], "-", color=line.get_color(), label=label)
         h = np.asarray(q["helicity"])
         ax[2].plot(q["it"], h - h[0], "-", color=line.get_color(), label=label)
-        for ev in j.get("stalls", []):
+        for ev in j.get("reconnect", []):
             for a in ax:
                 a.axvline(ev["it"], color=line.get_color(), ls=":", lw=0.8)
     ax[0].set_yscale("log")
@@ -729,7 +730,7 @@ def reconnect_figure(arms, ideal, figdir):
         a.set_xlabel("step")
         a.grid(alpha=0.3)
     ax[0].legend()
-    fig.suptitle("stall -> checkpoint -> reconnect: dotted lines mark the stalls")
+    fig.suptitle("ideal descent, reconnected every K steps: dotted lines mark the reconnections")
     fig.savefig(os.path.join(figdir, "reconnect_traces.png"), dpi=140)
     plt.close(fig)
 
@@ -905,7 +906,7 @@ def main():
                 load(root, "li383_pulse", os.path.basename(d))
                 for d in sorted(glob.glob(os.path.join(root, "li383_pulse", "reconnect*")))
             )
-            if j is not None and j.get("stalls")
+            if j is not None and j.get("reconnect")
         ]
         full = [j for j in reconnect if "smoke" not in j["arm"]]
         if full:
@@ -913,7 +914,7 @@ def main():
         open(os.path.join(root, "li383_pulse", "tables.md"), "w").write(
             "## pulse rows\n" + "\n".join(eta_rows(pulse)) + "\n"
             + "".join(
-                f"\n## stalls of {j['arm']}\n" + "\n".join(stall_rows(j)) + "\n"
+                f"\n## reconnections of {j['arm']}\n" + "\n".join(reconnect_rows(j)) + "\n"
                 for j in reconnect
             )
         )

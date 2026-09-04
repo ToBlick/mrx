@@ -229,7 +229,9 @@ The comparison at equal dose (the trace's int eta dt; the tanh rungs' is 5.5e-5 
 - Machinery that came out of it and stays: the pulse schedule; `--checkpoint / --restart` (the full descent state as an equinox pytree with the step number, `equinox.tree_serialise_leaves`; verified by a 120 + 80 step chain against a 200-step run: identical schedule and step accounting, trajectories differing only by the run-to-run round-off of the GPU descent, which already separates two identical 120-step runs by 18%). An accept/reject pulse controller (fire at a stall, judge at the next, revert when it did not help) was smoke-tested and dropped the same day: the dose finding says the decision it automates is a budget, not a timing (0.7% of H_0 buys 17% of the floor, the next 2% another 16%, the next 6% another 17%). Section 5h has what replaced it.
 - Cost: 4 x 0.8 GPU-h plus 0.3 for the smokes.
 
-### 5h. The reconnect series: stall -> checkpoint -> reconnect (2026-09-03, `outputs/li383_pulse/reconnect_*`)
+### 5h. The reconnect series: checkpoint -> reconnect every K steps (2026-09-03, `outputs/li383_pulse/reconnect_*`)
+
+Late 2026-09-03 the stall test was retired for a plain interval, `--reconnect-every K` (see the end of this section: the ideal descent is a power law, nothing stalls). The arms below ran with the stall test; on disk they have since been renamed to the interval layout (`reconnect/<k>/` instead of `stalls/<k>/`, `reconnect<k>` tags in the sections, `results["reconnect"]` with `k` and `resid`), the wording of the runs is kept as it was.
 
 Decided 2026-09-03 (Tobias): no accept/reject. The descent runs until it stalls, the stalled equilibrium is checkpointed, one resistive solve reconnects it, the descent continues; the outcome is a series of stalled ideal equilibria at decreasing helicity, and the user picks. `--reconnect` in the driver (b449e97): stalled = the block mean of the residual (blocks of a fifth of `--stall-steps`, default 1000) dropped by less than `--stall-tol` (5%) over `--stall-steps`, on the history since the last reconnection; stall k writes `<out>/stalls/<k>/B.h5` (field and pressures in the layout of `B.h5`, so `poincare_relax.py` reads it) and `state.eqx` (a `--restart` file, so any stall can be continued with another dose); the dose is `eps = c h^2`, `c = --reconnect-eps` (0.01: a diffusion length of a tenth of a cell, the scale the h-independent floor of 5c is made of), one backward-Euler solve, then `initial_state` on the diffused field (fresh L-BFGS pair). `results["stalls"]` has step, floor, eps, |F|, helicity, ||J||/||B|| and the pressures before and after each solve. The helicity price of a solve is exact, dH = -2 eps int J.B, so it could also be set from a helicity fraction per stall; the grid-scale rule was kept because it scales with h.
 
@@ -255,7 +257,25 @@ Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 
 - The first stall IS the ideal floor of the rung (5.55e-4 against the 5.4e-4 window mean of `h16_p2_g1`), reached at step 3948; the series then reads 5.55e-4 -> 4.61e-4 -> 4.24e-4 (-17%, -8%) at a flat price of 0.62% of H_0 per solve. The exchange rate is the dose sweep's: 0.6% of H_0 for a 17% floor drop was the tanh 1e-8 rung's (0.7% for 17%). The residual kick is 1.5x here (2.5x at n = 8: the dose per cell is 4x smaller), the field moves by 0.08% per solve, MINRES takes 64 iterations.
 - Island widths follow the cumulative dose: 3/5 at 0.021 (the ideal state; `h16_p2_g1` has 0.027 at 5000), 0.044 after one solve (dose 3.9e-5; pulse1.5e-7 at 3.4e-5 gave 0.041), 0.059 after two (7.8e-5; between the pulse arms at 3.4e-5 and 1.1e-4), 0.067 at step 8000 after three (1.2e-4; pulse5e-7 at 1.1e-4 gave 0.066), the 1/2 chain still closed. Each stalled equilibrium is an ideal fixed point at its own helicity, which the sections show as nested surfaces with one growing chain: the paper's "pick your equilibrium" series.
 - Between stalls the descent recovers a third of the current the solve removed (0.609 -> 0.618, 0.590 -> 0.599) and about a third of beta, then stalls lower. Cost 1.3 GPU-h.
-- The driver has since moved to the chunked loop (`docs/research/handoff_2026-09-03_chunked_relaxation_loop.md`, b54a0ff): `--chunk 500` is the single cadence, the stall test compares the last two chunk means (`--stall-tol 0.02`), verified against this arm's driver on the same node (0.56 s/step both, chunk means within 1%); the arm itself ran on the per-step driver.
+- The driver has since moved to the chunked loop (`docs/research/handoff_2026-09-03_chunked_relaxation_loop.md`, b54a0ff): `--chunk 500` is the single cadence, verified against this arm's driver on the same node (0.56 s/step both, chunk means within 1%); the arm itself ran on the per-step driver.
+
+**Nothing stalls: the ideal descent is a power law (2026-09-03, late).** Tobias observed that the log-log slope of the residual looks constant; checked on every ideal gamma = 1 li383 arm (`li383_pub`, `li383_sweep`, the ideal part of this arm; 500-step block means, local exponent between consecutive blocks, fit over steps >= 1000; `outputs/li383_pulse/figures/ideal_slopes_g1.png`, job-scratch `slopes.py`):
+
+| arm | mesh, p | a (fit) | first half | second half |
+|---|---|---|---|---|
+| h8_p2_g1 | (8,16,16) 2 | 0.34 | 0.37 | 0.29 |
+| h12_p2_g1 | (12,24,24) 2 | 0.30 | 0.33 | 0.25 |
+| h16_p2_g1 | (16,32,32) 2 | 0.20 | 0.22 | 0.15 |
+| reconnect_h16_p2_g1, steps < 3948 | (16,32,32) 2 | 0.20 | | 0.21 |
+| h24_p2_g1 | (24,48,48) 2 | 0.22 | 0.23 | 0.23 |
+| h32_p2_g1 | (32,64,64) 2 | 0.23 | 0.31 | 0.10 |
+| h16_p1_g1 | (16,32,32) 1 | 0.66 | 0.78 | 0.46 |
+| h16_p3_g1 | (16,32,32) 3 | 0.15 | 0.20 | 0.07 |
+| r12 / r16 / r24_p3_g1 | (n,2n,n) 3 | 0.50 / 0.38 / 0.27 | | constant |
+
+- `resid ~ t^-a` with a constant local exponent (block-to-block scatter about 0.05) to the end of every run; no plateau. The four blocks before this arm's first "stall" read 0.21, 0.19, 0.21, 0.20: the stall test fired because the drop per 1000 steps of a t^-0.2 law crosses 5% at step 4000 (t = a N / tol), not because anything flattened. A few (n,2n,2n) arms drift to 0.1 in their last 1000 steps, within two block noises. gamma = 0 arms are not power laws at this block length (local exponent between -1 and 2 from block to block).
+- Consequence: a stall test at any tolerance is a step count in disguise, scaling the tolerance with the chunk only fixes that count, and an exponent test would never fire. The interval is now chosen outright: `--reconnect-every K`, rounded to whole chunks, no solve on the last chunk; the launcher's full arm is `--reconnect-every 2000` on 8000 steps (to be rerun for the paper), the smoke `--reconnect-every 600` at `--chunk 100` (job 17458707: reconnections at 600 / 1200 / 1800 / 2400, none on the last chunk, 2.4 / 2.3 / 2.2 / 2.1% of H_0 per solve, the same prices as the per-step smoke at its detector's steps). The series should be described as ideal equilibria sampled along a power-law descent at a chosen interval, not as stalled equilibria.
+- The reconnections still buy time: the first interval's t^-0.2 law would need about 16000 steps to reach the residual this arm had at step 7000 after two solves, at 1.2% of H_0.
 
 ## 6. Figures for the paper
 

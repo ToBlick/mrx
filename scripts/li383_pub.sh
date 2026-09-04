@@ -10,7 +10,7 @@
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
-#   bash scripts/li383_pub.sh reconnect [smoke]  # stall -> checkpoint -> reconnect series, outputs/li383_pulse
+#   bash scripts/li383_pub.sh reconnect [smoke]  # reconnection series (--reconnect-every), outputs/li383_pulse
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -185,15 +185,17 @@ pulse() {
 }
 
 reconnect() {  # reconnect [smoke]
-    # 2026-09-03: run until the descent stalls, checkpoint the stalled
-    # equilibrium, reconnect it with one resistive solve, carry on
-    # (--reconnect); the outcome is the series under <arm>/stalls/<k>/.
-    # (16,32,32) p = 2 gamma = 1, 8000 steps so several stalls fit.
+    # 2026-09-03: the ideal descent, checkpointed and reconnected with one
+    # resistive solve every K steps (--reconnect-every; the descent is a
+    # power law, there is no stall to wait for); the outcome is the series
+    # under <arm>/reconnect/<k>/ plus the final field. (16,32,32) p = 2
+    # gamma = 1, 8000 steps = 4000 ideal + three intervals of 2000 (the
+    # per-step detector's arm reconnected at 3948 / 5691 / 7423).
     export EXTRA_ENV="PYTHONPATH=$WT"
     if [ "${1:-}" = smoke ]; then
-        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect --out $PUB/reconnect_smoke" 40
+        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
     else
-        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect --out $PUB/reconnect_h16_p2_g1" 400
+        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
     fi
 }
 
@@ -202,9 +204,9 @@ reconnect() {  # reconnect [smoke]
 # does; TeX for the .pgf comes from the same place as there.
 PLOTTER_ENV="PYTHONPATH=$WT PATH=$HOME/texlive/2026/bin/x86_64-linux:$PATH"
 
-sections() {  # sections NAME [TIMEOUT_MIN]: ic, final and the stalled equilibria of a --reconnect arm, one call, one colour scale
+sections() {  # sections NAME [TIMEOUT_MIN]: ic, final and the reconnection series of an arm, one call, one colour scale
     export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_relax.py" \
-        "$PUB/$1/B.h5 --fields ic,final,stalls --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
+        "$PUB/$1/B.h5 --fields ic,final,reconnect --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
 }
 
 movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]

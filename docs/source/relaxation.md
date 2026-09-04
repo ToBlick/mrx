@@ -98,8 +98,9 @@ Flags, defaults in brackets:
 | `--dt-mode {linesearch,fixed} [linesearch]`, `--dt0 DT [1.0]`, `--cfl C [0.5]` | exact energy-minimising step or a fixed one, and the CFL cap |
 | `--eta-max ETA [0.0]`, `--eta-schedule {tanh,constant,linear} [tanh]`, `--eta-every K [1]` | resistivity; `tanh` drops it to zero over the middle third of the run; the solve runs every `K` steps |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
-| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, stall and wall-time tests run once per chunk; `--steps` is a multiple of it |
+| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
+| `--reconnect-every K [0]`, `--reconnect-eps C [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B` with `eps = C h^2`, `h = 1 / n_r`, after which the descent restarts on the diffused field; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 
 `python scripts/relax.py --help` prints the same list.

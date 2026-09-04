@@ -13,10 +13,12 @@ Usage:
 Flags (defaults in brackets):
     state                  path to B.h5 (positional)
     --fields F             comma-separated subset of ic,final [ic,final];
-                           `stalls` expands to one field stall<k> per
-                           <state dir>/stalls/<k>/B.h5 (relax.py --reconnect),
-                           traced in the same call as ic and final so all of
-                           them share one iota and one p colour scale;
+                           `reconnect` expands to one field reconnect<k>
+                           per <state dir>/reconnect/<k>/B.h5, the field
+                           before reconnection k of a relax.py
+                           --reconnect-every run, traced in the same call
+                           as ic and final so all of them share one iota
+                           and one p colour scale;
                            or `snapshots`: one frame per stored step (relax.py
                            --chunk) with every axis held fixed, written as
                            frame_zeta<plane>_<i>.png for ffmpeg
@@ -180,21 +182,21 @@ def main():
         attrs = dict(fh.attrs)
         dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
     fields = [w.strip() for w in cli.fields.split(",")]
-    stall_steps = {}
-    if "stalls" in fields:
-        # The stalled equilibria of a --reconnect run, in the layout of B.h5.
+    reconnect_steps = {}
+    if "reconnect" in fields:
+        # The fields before each reconnection of a --reconnect-every run, in the layout of B.h5.
         state_dir = os.path.dirname(os.path.abspath(cli.state))
-        stall_files = sorted(glob.glob(os.path.join(state_dir, "stalls", "*", "B.h5")),
-                             key=lambda f: int(os.path.basename(os.path.dirname(f))))
+        files = sorted(glob.glob(os.path.join(state_dir, "reconnect", "*", "B.h5")),
+                       key=lambda f: int(os.path.basename(os.path.dirname(f))))
         names = []
-        for f in stall_files:
+        for f in files:
             k = int(os.path.basename(os.path.dirname(f)))
             with h5py.File(f, "r") as fh:
                 for key in ("B", "p", "pw"):
-                    dofs[f"{key}_stall{k}"] = np.asarray(fh[f"{key}_final"], dtype=np.float64)
-                stall_steps[k] = int(fh.attrs["stall_step"])
-            names.append(f"stall{k}")
-        fields = [n for w in fields for n in (names if w == "stalls" else [w])]
+                    dofs[f"{key}_reconnect{k}"] = np.asarray(fh[f"{key}_final"], dtype=np.float64)
+                reconnect_steps[k] = int(fh.attrs["reconnect_step"])
+            names.append(f"reconnect{k}")
+        fields = [n for w in fields for n in (names if w == "reconnect" else [w])]
         cli.fields = ",".join(fields)
     movie = cli.fields.strip() == "snapshots"
     if movie:
@@ -229,7 +231,8 @@ def main():
 
     labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})",
               **{n: f"step {int(n[4:])}" for n in cli.fields.split(",") if n.startswith("step")},
-              **{f"stall{k}": f"stalled equilibrium {k} (step {step})" for k, step in stall_steps.items()},
+              **{f"reconnect{k}": f"before reconnection {k} (step {step})"
+                 for k, step in reconnect_steps.items()},
               "final": "relaxed field"}
     if cli.from_npz:
         z = np.load(os.path.join(out, "sections.npz"))
@@ -338,7 +341,7 @@ def main():
                              for plane in planes}
         all_pmin[name] = pressure_gauge(cli.pressure, all_presses[name], keep)
     # ONE pressure scale across every rendered field and every plane, for the
-    # same reason iota_lim is one: ic, final, the stalled equilibria and the
+    # same reason iota_lim is one: ic, final, the reconnection series and the
     # planes are then comparable at a glance.
     limits = {}
     ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]]

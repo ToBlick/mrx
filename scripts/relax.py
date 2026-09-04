@@ -78,9 +78,11 @@ Flags, defaults in brackets:
                                    interest are sampled (helicity, the two
                                    pressures, beta; see "Two pressures"), a
                                    snapshot, the checkpoint and the outputs
-                                   are written, and the floor, stall and
-                                   wall-time tests run, once per chunk;
+                                   are written, and the floor, reconnect
+                                   and wall-time tests run, once per chunk;
                                    --steps is a multiple of it
+      --reconnect-every K [0]      see "Reconnection series"; 0 = off
+      --reconnect-eps C [0.01]     its dose, eps = C h^2
       --floor-tol TOL [1e-3]       see "Stopping criterion"
       --out DIR [outputs/relax/<date>/<time>]
 
@@ -134,22 +136,26 @@ Output (``--out``):
                  as given and ``geometry_path`` resolved. Written when the
                  loop ends.
 
-``--reconnect`` runs the ideal descent and, whenever it stalls, checkpoints
-the stalled equilibrium and reconnects it with one backward-Euler solve of
-``(M + eps L) delta = -eps L B``, then restarts the optimiser on the diffused
-field and carries on. Stalled means the residual's mean over the last chunk
-is above ``(1 - --stall-tol)`` times the previous chunk's, both chunks after
-the last reconnection (the descent is a slow power law, so this is a rate
-test: 2% per 500 steps against a chunk-to-chunk scatter of a few tenths of a
-percent at (16,32,32) gamma = 1). The dose is ``eps = c h^2`` with ``h = 1 / n_r`` and
-``c = --reconnect-eps`` (a diffusion length of ``sqrt(c)`` cells), the same
-for every reconnection. Stall ``k`` leaves ``<out>/stalls/<k>/B.h5`` (the
-stalled field with its pressures, in the layout of ``B.h5``, so
-``poincare_relax.py`` reads it) and ``state.eqx`` (a ``--restart`` file);
-``results["stalls"]`` records step, floor, |F|, helicity and ||J||/||B||
-before and after each solve. The run ends on ``--steps`` or ``--seconds``;
-its outcome is the series of stalled equilibria, one per reconnection, to
-choose from.
+Reconnection series:
+    ``--reconnect-every K`` runs the ideal descent and, every ``K`` steps
+    (rounded to a whole number of chunks), checkpoints the current field and
+    reconnects it with one backward-Euler solve of ``(M + eps L) delta =
+    -eps L B``, then restarts the optimiser on the diffused field and carries
+    on. The ideal descent is a power law, ``resid ~ t^-a`` with a = 0.2 at
+    (16,32,32) p = 2 gamma = 1 and 1/3 at n = 8 and 12, never a plateau (the
+    ideal li383 arms, 5000-6000 steps, 2026-09-03), so there is no stall to
+    detect and the interval is a choice: any "stalled" test on a power law
+    is a step count in disguise. The dose is ``eps = c h^2`` with ``h = 1 /
+    n_r`` and ``c = --reconnect-eps`` (a diffusion length of ``sqrt(c)``
+    cells; helicity price exact, dH = -2 eps int J.B), the same for every
+    reconnection. Reconnection ``k`` leaves ``<out>/reconnect/<k>/B.h5`` (the
+    field before the solve with its pressures, in the layout of ``B.h5``, so
+    ``poincare_relax.py --fields reconnect`` reads it) and ``state.eqx`` (a
+    ``--restart`` file); ``results["reconnect"]`` records step, the chunk
+    mean of the residual, |F|, helicity and ||J||/||B|| before and after each
+    solve. The run ends on ``--steps`` or ``--seconds``; its outcome is the
+    series of ideal equilibria, one per reconnection plus the final field,
+    to choose from.
 
 ``--checkpoint PATH`` (default ``<out>/state.eqx``) serialises the full
 descent state -- B, the pressure and warm-start guesses, the L-BFGS pair,
@@ -256,16 +262,13 @@ def parse_args(argv=None):
     ap.add_argument("--seconds", type=float, default=None)
     ap.add_argument("--chunk", type=int, default=500,
                     help="steps per compiled chunk; trace, qoi sample, snapshot, checkpoint, "
-                         "outputs and the floor / stall / wall-time tests once per chunk")
+                         "outputs and the floor / reconnect / wall-time tests once per chunk")
     ap.add_argument("--floor-tol", type=float, default=1e-3,
                     help="stop when the last chunk's mean relative force residual is below this")
     ap.add_argument("--out", default=None)
-    ap.add_argument("--reconnect", action="store_true",
-                    help="checkpoint the stalled equilibrium and reconnect it with one "
-                         "resistive solve whenever the descent stalls (see the docstring)")
-    ap.add_argument("--stall-tol", type=float, default=0.02,
-                    help="stalled when the last chunk's mean residual dropped by less than "
-                         "this fraction against the previous chunk's")
+    ap.add_argument("--reconnect-every", type=int, default=0,
+                    help="checkpoint the field and reconnect it with one resistive solve "
+                         "every K steps, rounded to whole chunks; 0 = off (see the docstring)")
     ap.add_argument("--reconnect-eps", type=float, default=0.01,
                     help="dose eps = c h^2 of every reconnection, h = 1 / n_r, with this c")
     ap.add_argument("--checkpoint", default=None,
@@ -495,6 +498,10 @@ def main(cli):
                        extra=dict(resid=lambda st: st.F_norm / normaliser(st.B_n)))
     reconnect_eps = cli.reconnect_eps * (1.0 / ns[0]) ** 2
     reconnect_fn = jax.jit(lambda B: resistive_step(B, seq, reconnect_eps))
+    reconnect_chunks = max(1, round(cli.reconnect_every / cli.chunk)) if cli.reconnect_every else 0
+    if reconnect_chunks and reconnect_chunks * cli.chunk != cli.reconnect_every:
+        print(f"[reconnect] --reconnect-every {cli.reconnect_every} rounded to "
+              f"{reconnect_chunks * cli.chunk} ({reconnect_chunks} chunks)", flush=True)
 
     p_ic = np.asarray(state.p)
     pw_ic = np.asarray(pw0)
@@ -506,17 +513,18 @@ def main(cli):
                           "gain", "eta", "res_it", "res_delta", "dE_meas", "dE_pred")}
     qoi = {k: [] for k in ("it", "helicity", "JoverB", "wall", "gradp_cmp", "p_cmp",
                            "weak_resid", "dpdn_wall", "JxBn_wall", "beta_vol", "beta_axis")}
-    results["stalls"] = []
+    results["reconnect"] = []
     E_prev = E0
     stop = "steps"
     t_arm = time.perf_counter()
     t_qoi = 0.0     # time in the qoi samples, saves and reconnections; the recorded wall excludes it
     n_done = 0
-    chunks_since_stall = 0
+    chunks_since_reconnect = 0
     print(f"\n=== {cli.method}  m={cli.history} "
           f"smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
           f"dt-mode={cli.dt_mode} cfl={cli.cfl} eta-max={cli.eta_max} eta-every={cli.eta_every}  "
-          f"steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} ===",
+          f"steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
+          f"reconnect-every={reconnect_chunks * cli.chunk} ===",
           flush=True)
 
     def write_field(path, B_now, p_now, pw_now, snapshots=False, **extra):
@@ -599,36 +607,33 @@ def main(cli):
               f"divB={chunk['div'].max():.2e}  res_it max={int(np.abs(chunk['res_it']).max())}  "
               f"[{tq - t_arm - t_qoi:.0f}s solve +{t_qoi:.0f}s qoi]\n           {pressure_line(diag)}",
               flush=True)
-        chunks_since_stall += 1
-        if cli.reconnect and chunks_since_stall >= 2:
-            resid_prev = float(np.mean(tr["resid"][-2 * cli.chunk:-cli.chunk]))
-            if resid_now > (1.0 - cli.stall_tol) * resid_prev:
-                k = len(results["stalls"]) + 1
-                sdir = os.path.join(out, "stalls", str(k))
-                os.makedirs(sdir, exist_ok=True)
-                # The stalled equilibrium: field, pressures (just sampled), restart file.
-                write_field(os.path.join(sdir, "B.h5"), state.B_n, latest["p"], latest["pw"],
-                            stall=k, stall_step=it)
-                eqx.tree_serialise_leaves(os.path.join(sdir, "state.eqx"), (state, jnp.int32(it)))
-                ev = dict(stall=k, it=it, floor=resid_now, floor_prev=resid_prev,
-                          eps=float(reconnect_eps), F_before=float(state.F_norm),
-                          helicity_before=h, JoverB_before=JoverB,
-                          **{f"{kk}_before": v for kk, v in diag.items()})
-                # Reconnect and restart the optimiser on the diffused field; the
-                # qoi gets a second sample at this step, the reconnected field's.
-                B_new, info, rel = reconnect_fn(state.B_n)
-                state = initial_state(B_new, ts, dt=float(state.dt))
-                state, h, JoverB, diag = sample_qoi(state, it)
-                ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
-                          helicity_after=h, JoverB_after=JoverB,
-                          **{f"{kk}_after": v for kk, v in diag.items()})
-                results["stalls"].append(ev)
-                chunks_since_stall = 0
-                print(f"  [stall {k}] at it={it}: chunk mean {resid_prev:.3e} -> {resid_now:.3e}; "
-                      f"reconnect eps={reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
-                      f"|F| {ev['F_before']:.3e} -> {ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} "
-                      f"-> {ev['helicity_after']:+.6e}, J/B {ev['JoverB_before']:.3f} -> "
-                      f"{ev['JoverB_after']:.3f}; wrote {sdir}", flush=True)
+        chunks_since_reconnect += 1
+        if reconnect_chunks and chunks_since_reconnect == reconnect_chunks and n_done < cli.steps:
+            k = len(results["reconnect"]) + 1
+            rdir = os.path.join(out, "reconnect", str(k))
+            os.makedirs(rdir, exist_ok=True)
+            # The field before the solve: field, pressures (just sampled), restart file.
+            write_field(os.path.join(rdir, "B.h5"), state.B_n, latest["p"], latest["pw"],
+                        reconnect=k, reconnect_step=it)
+            eqx.tree_serialise_leaves(os.path.join(rdir, "state.eqx"), (state, jnp.int32(it)))
+            ev = dict(k=k, it=it, resid=resid_now, eps=float(reconnect_eps),
+                      F_before=float(state.F_norm), helicity_before=h, JoverB_before=JoverB,
+                      **{f"{kk}_before": v for kk, v in diag.items()})
+            # Reconnect and restart the optimiser on the diffused field; the
+            # qoi gets a second sample at this step, the reconnected field's.
+            B_new, info, rel = reconnect_fn(state.B_n)
+            state = initial_state(B_new, ts, dt=float(state.dt))
+            state, h, JoverB, diag = sample_qoi(state, it)
+            ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
+                      helicity_after=h, JoverB_after=JoverB,
+                      **{f"{kk}_after": v for kk, v in diag.items()})
+            results["reconnect"].append(ev)
+            chunks_since_reconnect = 0
+            print(f"  [reconnect {k}] at it={it}: chunk mean {resid_now:.3e}; "
+                  f"eps={reconnect_eps:.3e} ({int(info)} it, moved {float(rel):.2e}); "
+                  f"|F| {ev['F_before']:.3e} -> {ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} "
+                  f"-> {ev['helicity_after']:+.6e}, J/B {ev['JoverB_before']:.3f} -> "
+                  f"{ev['JoverB_after']:.3f}; wrote {rdir}", flush=True)
         if resid_now < cli.floor_tol:
             stop = "floor"
             print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below "

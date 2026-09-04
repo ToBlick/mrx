@@ -26,11 +26,10 @@ paper), the per-step trace is not needed for any decision:
 | drop per 1000-step chunk | 38, 11, 6.7, 3.8% |
 | one QoI sample (helicity solve, force, weak pressure, beta) | 3.4 s, against 58 s per 100 steps |
 
-So: a chunk MEAN is quiet (a single sample is not, 8% tails), the descent is
-a slow power law rather than a plateau, and "stalled" is a rate test that two
-consecutive 500-step chunk means resolve cleanly (2% per chunk against a few
-tenths of a percent of noise). QoI, snapshot, checkpoint and save every chunk
-cost 6% at n = 16. There is no reason for separate cadences.
+So: a chunk MEAN is quiet (a single sample is not, 8% tails), and the descent
+is a power law rather than a plateau, which is why "stalled" was dropped as a
+criterion the same evening (decision 5). QoI, snapshot, checkpoint and save
+every chunk cost 6% at n = 16. There is no reason for separate cadences.
 
 ## The decisions
 
@@ -49,45 +48,60 @@ cost 6% at n = 16. There is no reason for separate cadences.
 2. `relaxation_loop` is rewritten on the runner with its signature and its
    per-chunk traces unchanged (tutorials and `test/test_relaxation.py` keep
    working); it just no longer owns a scan of its own.
-3. **The driver keeps its own thin outer loop** (60 lines: QoI, save, stall,
+3. **The driver keeps its own thin outer loop** (60 lines: QoI, save,
    reconnect, floor, budget) on the runner. Making it the `callback` of
    `relaxation_loop` was considered and rejected: the callback would have to
    replace the state, stop the run and own the printing, and the library
    loop's own record/print would duplicate it.
 4. **One cadence, `--chunk N` (default 500)**: trace transfer, QoI sample,
-   snapshot, checkpoint, save, stall test, floor test and wall-time test all
+   snapshot, checkpoint, save, reconnect, floor test and wall-time test all
    at the chunk boundary. `--qoi-every`, `--save-every`, `--floor-steps`,
    `--stall-steps` are deleted (not deprecated). `--steps` must be a multiple
    of `--chunk`. Snapshots (for movies) are always stored, one per chunk.
    The first QoI sample is taken at `it0` before the first chunk, so
    `qoi["helicity"][0]` is H_0 (previously the sample at step 1).
-5. **Stall = two chunks**: stalled when the last chunk mean of the residual is
-   above `(1 - --stall-tol)` times the previous chunk's, both chunks after
-   the last reconnection; `--stall-tol` default 0.02 per chunk (the old 5% per
-   1000 steps). Floor: last chunk mean below `--floor-tol`.
+5. **Reconnect every K steps, no stall test** (`--reconnect-every K`, rounded
+   to whole chunks; Tobias, 2026-09-03 late, replacing the two-chunk rate
+   test `--stall-tol` of the afternoon). Checked on every ideal gamma = 1
+   li383 arm (5000-6000 steps, 500-step block means,
+   `outputs/li383_pulse/figures/ideal_slopes_g1.png`): the residual is a
+   power law `resid ~ t^-a` with a constant local exponent to the end of the
+   run, a = 0.20 on the (16,32,32) p = 2 rung (0.21, 0.19, 0.21, 0.20 over the
+   four blocks before the arm's first "stall"), 0.30 / 0.34 at n = 12 / 8,
+   0.66 at p = 1, 0.15 at p = 3, 0.4-0.65 on the (n,2n,n) meshes; block noise
+   about 0.05 in the exponent. No plateau anywhere. On a power law a rate test
+   "drop < tol over N steps" fires at t = aN/tol, a step count in disguise,
+   and scaling tol with N only fixes that count; an exponent test would never
+   fire. So the interval is chosen outright. Floor: last chunk mean below
+   `--floor-tol`. gamma = 0 arms are not power laws at this block length
+   (local exponents swing between -1 and 2), so nothing of this applies to
+   them.
 6. `gamma = 1` velocity smoothing is the default descent; chunk statistics
    are calibrated on gamma = 1 arms only (gamma = 0 scatters more).
 7. **Upper limit on N** is wall time per chunk, nothing in JAX: work lost on a
    kill (up to one chunk, the checkpoint sits at the boundary), controller
-   latency (a stall is acted on at the next boundary), visibility. N = 500 is
-   5 min at n = 16 (0.58 s/step) and 38 min at n = 32 (4.6 s/step); keep N
-   fixed across meshes since the stall threshold is per chunk. Reverse-mode
+   latency (a reconnection lands on a boundary), visibility. N = 500 is
+   5 min at n = 16 (0.58 s/step) and 38 min at n = 32 (4.6 s/step);
+   `--reconnect-every` is rounded to whole chunks. Reverse-mode
    differentiation through the loop would store N carries and need
    `jax.checkpoint` on the body; nobody does that today.
 
-## The reconnect controller (already in, b449e97; adapted to chunks here)
+## The reconnection series (b449e97 as a stall controller; `--reconnect-every` since the evening)
 
-`--reconnect`: run until stalled, write the stalled equilibrium to
-`<out>/stalls/<k>/B.h5` (layout of `B.h5`, `poincare_relax.py` reads it) and
-`state.eqx` (a `--restart` file), one backward-Euler solve `(M + eps L) delta
-= -eps L B` with `eps = --reconnect-eps h^2` (c = 0.01: a tenth of a cell, the
-scale the h-independent ideal floor is made of; helicity price exact, dH =
--2 eps int J.B, 2.3% of H_0 per stall at n = 8, about 0.6% at n = 16),
-`initial_state` on the diffused field, carry on. No accept/reject, no dose
-adaptation. `results["stalls"]` records step, floor, eps, |F|, helicity, J/B
-and the pressures before and after. Smoke at (8,16,16): floors 5.8e-4, 3.3e-4,
-2.9e-4 at three stalls (section 5h of `li383_sweep_results_2026-09-02.md`).
-Full arm `reconnect_h16_p2_g1` running on the pre-chunk driver (job 17419921).
+`--reconnect-every K`: every K steps (whole chunks) write the field to
+`<out>/reconnect/<k>/B.h5` (layout of `B.h5`, `poincare_relax.py --fields
+reconnect` reads the series) and `state.eqx` (a `--restart` file), one
+backward-Euler solve `(M + eps L) delta = -eps L B` with `eps =
+--reconnect-eps h^2` (c = 0.01: a tenth of a cell, the scale the
+h-independent ideal floor is made of; helicity price exact, dH = -2 eps int
+J.B, 2.3% of H_0 per solve at n = 8, about 0.6% at n = 16), `initial_state`
+on the diffused field, carry on; no solve on the last chunk. No accept/reject,
+no dose adaptation. `results["reconnect"]` records step, the residual's chunk
+mean, eps, |F|, helicity, J/B and the pressures before and after. The arms
+run with the stall detector (`reconnect_smoke_prechunk`, `reconnect_h16_p2_g1`)
+were renamed on disk to the same layout (`stalls/` -> `reconnect/`, `stall<k>`
+-> `reconnect<k>` tags, json record `k`, `resid`); their intervals were the
+detector's, not a chosen K. Section 5h of `li383_sweep_results_2026-09-02.md`.
 
 ## Files
 
@@ -109,9 +123,10 @@ Full arm `reconnect_h16_p2_g1` running on the pre-chunk driver (job 17419921).
    (8,16,16), `--chunk 10` (the job-scratch `ckpt_smoke.py` with the new
    flags): identical schedule and step accounting, trajectories within the
    run-to-run round-off.
-3. `reconnect smoke` at (8,16,16), `--chunk 100 --steps 3000`: a series of
-   stalls like the pre-chunk smoke's; `stalls/<k>/` populated; relax.json has
-   `stalls`; the figure script renders the stall table.
+3. `reconnect smoke` at (8,16,16), `--chunk 100 --steps 3000
+   --reconnect-every 600`: reconnections at 600, 1200, 1800, 2400 and none at
+   3000; `reconnect/<k>/` populated; relax.json has `reconnect`; the figure
+   script renders the table.
 4. Lean suite (`test/`, about 4 min): `test_relaxation` unchanged.
 5. A 1000-step (16,32,32) gamma = 1 arm with `--chunk 500` against
    `h16_p2_g1`'s first 1000 steps: chunk means of ||F|| within the
@@ -127,14 +142,14 @@ GPU:
 2. Checkpoint chain, float32 (8,16,16) `--chunk 20`, 200 against 120 + 80
    with a pulse on steps 150 .. 169: restart at 120, identical schedule and
    accounting, "SMOKE OK".
-3. `reconnect_smoke` ((8,16,16) p = 2, `--chunk 100`, 3000 steps): four
-   stalls at 900, 1500, 2100, 2700 with their `stalls/<k>/` files, the qoi
-   from step 0, a snapshot per chunk, the stall table rendered by the figure
-   script. Stalls 1 and 4 were declared on chunks where the residual ROSE
-   (5.1e-4 -> 1.0e-3, 2.84e-4 -> 2.98e-4): the rate test counts a rise as
-   "not descending", which is right, and at N = 100 on a gamma = 0 coarse
-   mesh such excursions are visible. The calibration holds for N = 500,
-   gamma = 1.
+3. `reconnect_smoke` ((8,16,16) p = 2, `--chunk 100`, 3000 steps), first
+   with the stall test: four stalls at 900, 1500, 2100, 2700, two of them
+   declared on chunks where the residual ROSE (a rate test counts a rise as
+   "not descending"), which with the power-law finding is what retired the
+   test. Rerun with `--reconnect-every 600` (job 17458707): reconnections at 600 / 1200 / 1800 / 2400 and none at 3000,
+   chunk means 8.2e-4 / 3.4e-4 / 3.5e-4 / 2.7e-4, 2.4 / 2.3 / 2.2 / 2.1% of H_0
+   per solve (the pre-chunk smoke's prices), 35 qoi samples (31 + one per
+   solve), 406 s; the series read by the plotter and the figure script.
 4. Lean suite: 51 passed in 325 s on the worktree.
 5. `chunk_h16` (1000 steps, `--chunk 500`) against `h16_p2_g1`'s first 1000
    steps: chunk means of ||F|| within 0.2% and 0.9%, energy within 1e-9,
@@ -143,12 +158,14 @@ GPU:
    timed): 0.557 / 0.563 / 0.558 s per step. No cost; the 0.66 s/step of a
    first run was node variation.
 
-The full reconnect arm `reconnect_h16_p2_g1` (8000 steps, still the per-step
-driver, job 17419921) stalled at 3948 / 5691 / 7423 with floors 5.55e-4 /
-4.61e-4 / 4.24e-4 at 0.63 / 0.62 / 0.62% of H_0 per solve; section 5h of
-`li383_sweep_results_2026-09-02.md` has the table and the sections.
+The full reconnect arm `reconnect_h16_p2_g1` (8000 steps, the per-step
+driver with its rate test, job 17419921) reconnected at 3948 / 5691 / 7423
+with residuals 5.55e-4 / 4.61e-4 / 4.24e-4 at 0.63 / 0.62 / 0.62% of H_0 per
+solve; section 5h of `li383_sweep_results_2026-09-02.md` has the table and
+the sections. Its local exponent was 0.2 throughout: the "stalls" were the
+rate test crossing 5% per 1000 steps, which a t^-0.2 law does at step 4000.
 
-Open: nothing in the loop itself. The reconnect arms of the paper should be
-rerun on the chunked driver if their per-step trace matters for a figure
-(the stall test differs: two 500-step chunks instead of 200-step blocks over
-1000 steps), otherwise the existing arm stands.
+Open: nothing in the loop itself. The launcher's full arm is now
+`--reconnect-every 2000` (4000 ideal steps, then three intervals of 2000);
+rerun it (`li383_pub.sh reconnect`, 1.3 GPU-h) before the paper figure so the
+series is the chosen cadence and not the detector's.
