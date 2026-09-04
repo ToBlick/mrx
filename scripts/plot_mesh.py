@@ -5,8 +5,8 @@ and where the knots land.
         --meshes "16,32,32;32,32,32;32,32,32|0.47:0.62:6,0.68:0.94:15" --out DIR
 
 Writes ``mesh_2d.png``: one column per mesh, one row per plane of ``--planes``,
-the poloidal cross-section with the radial breakpoints as closed curves (the
-cells of a ``--r-refine`` window in purple, see ``mrx.geometry.radial_knots``)
+the poloidal cross-section with the radial breakpoints as closed curves (a
+``--r-refine`` window shows as denser lines, see ``mrx.geometry.radial_knots``)
 and the poloidal knots as spokes. With ``--sections`` a panel is split at the
 magnetic axis like the section pages: the grid above, the Poincaré crossings
 of that mesh's field below, coloured by iota (``scripts/poincare_relax.py``'s
@@ -55,9 +55,9 @@ def main(cli):
     from mrx.geometry import parse_r_refine, radial_knots
     from mrx.gvec import build_gvec_map
     from mrx.plotstyle import LEFT, SECTION_CMAP, house_style
-    from mrx.plotting import P_COLOR, save_figure
+    from mrx.plotting import save_figure
 
-    black, purple, grey = LEFT["color"], P_COLOR, "0.55"
+    black, grey = LEFT["color"], "0.55"
     planes = [float(v) for v in cli.planes.split(",")]
     sections = [w for w in cli.sections.split(";") if w]
     meshes = []
@@ -121,9 +121,8 @@ def main(cli):
 
                 th = np.linspace(0.0, 1.0, n_t)
                 for r in bp[1:]:
-                    in_window = any(a - 1e-9 <= r <= b + 1e-9 for a, b, _ in windows)
                     R, Z = half(*RZ(F, np.full(n_t, min(r, 1.0 - 1e-6)), th, np.full(n_t, ze)))
-                    ax.plot(R, Z, color=purple if in_window else black, lw=0.6 if in_window else 0.5)
+                    ax.plot(R, Z, color=black, lw=0.5)
                 rr = np.linspace(0.0, 1.0 - 1e-6, n_r)
                 for j in range(ns[1]):
                     R, Z = half(*RZ(F, rr, np.full(n_r, j / ns[1]), np.full(n_r, ze)))
