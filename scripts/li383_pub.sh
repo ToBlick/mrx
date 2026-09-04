@@ -5,6 +5,7 @@
 #   bash scripts/li383_pub.sh reader     # reread arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh seeded     # seeded arms (about 9 GPU-h)
 #   bash scripts/li383_pub.sh deep       # three arms past the 1e-3 floor
+#   bash scripts/li383_pub.sh anchor      # m = 0, 3, 5 and gamma = 0 departures from h16_p2_g1
 #   bash scripts/li383_pub.sh hsweep_p2  # gamma = 1 h-sweep at p = 2 (about 16 GPU-h)
 #   bash scripts/li383_pub.sh psweep_p16 # gamma = 1 p-sweep at (16,32,32) (about 7 GPU-h)
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
@@ -87,6 +88,19 @@ deep() {
     arm hi_r12x24_p3_g0_f4 "$GEOM_HI" "--ns 12,24,24 --p 3 --seconds 5400"                            180
     arm s61_e3e-3_g0_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 --seconds 5400"       180
     arm s61_e3e-3_g1_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 7200" 240
+}
+
+anchor_sweeps() {
+    # 2026-09-04: one-flag departures from the anchor h16_p2_g1 (the (16,32,32)
+    # p = 2 gamma = 1 rung of hsweep_p2): the L-BFGS history m = 0 (steepest
+    # descent, --method gradient: L-BFGS refuses history 0), 3, 5 (m = 1 is the
+    # anchor), and gamma = 0. 5000 steps, no floor, so every run ends on the
+    # step cap; the anchor's --seconds cap is dropped for the same reason.
+    local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000"
+    arm h16_p2_g1_m0 "$GEOM_HI" "$common $G1_16 --method gradient"  300
+    arm h16_p2_g1_m3 "$GEOM_HI" "$common $G1_16 --history 3"        300
+    arm h16_p2_g1_m5 "$GEOM_HI" "$common $G1_16 --history 5"        300
+    arm h16_p2_g0    "$GEOM_HI" "$common --velocity-smoothing-order 0" 300
 }
 
 hsweep_p2() {
@@ -243,6 +257,7 @@ case ${1:-} in
     seeded) seeded ;;
     deep) deep ;;
     hsweep_p2) hsweep_p2 ;;
+    anchor) anchor_sweeps ;;
     psweep_p16) psweep_p16 ;;
     eta) SUB=li383_eta; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; shift; eta "$@" ;;
     reconnect) SUB=li383_pulse; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; reconnect "${2:-}" ;;
@@ -250,5 +265,5 @@ case ${1:-} in
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | reconnect [smoke|ladder|ladder5k|refine_smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | anchor | psweep_p16 | eta | pulse | reconnect [smoke|ladder|ladder5k|refine_smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac
