@@ -60,6 +60,9 @@ extend-exclude = ["*.ipynb"]
 [tool.ruff.lint.per-file-ignores]
 # The package namespace is assembled from star imports on purpose.
 "mrx/__init__.py" = ["F403"]
+# The tutorials are VS Code cell scripts: imports follow the argument-parsing
+# cell, and MRX_DTYPE must be set before mrx is imported, so E402 is expected.
+"scripts/tutorials/*.py" = ["E402"]
 
 [tool.setuptools.packages.find]
 include = ["mrx*"]
