@@ -11,9 +11,7 @@ a 0-form it is the L2 projection of 1 onto the natural 0-forms, as a
 pairing, and the dot product integrated against either is the inner
 product or the pairing. The cross-product loads are checked for
 antisymmetry across the (m, k) pairs. All on li383 with ``J`` the weak curl
-of the session field ``b0``. (The ``(0, 3)`` and ``(3, 0)`` projection
-masses are not used: as built they return a vector in the input's own
-space, see the 2026-09-04 note in ``docs/research/OPEN.md``.)
+of the session field ``b0``.
 """
 import numpy as np
 import pytest
@@ -73,6 +71,11 @@ def test_products_with_one_are_the_mass_and_projection_matrices(seq, fields):
         close(seq.scalar_product_load(unit, g, 0, m, 0, False, False, False), M(g, 0, False), seq, f"1 g onto 0, 1 as a {m}-form", tol)
         close(seq.scalar_product_load(unit, rho, 3, m, 3, False, False, False), M(rho, 3, False), seq, f"1 rho onto 3, 1 as a {m}-form", tol)
     close(one @ seq.magnitude_squared_load(B), B @ M(B, 2, True), seq, "|B|^2")
+    # The scalar pairing P_03 / P_30 (the 0-form 1 is exact, so these are exact).
+    close(seq.scalar_product_load(one, g, 3, 0, 0, False, False, False),
+          seq.apply_projection_matrix(g, 0, 3, False, False), seq, "1 g onto 3 is P_03 g")
+    close(seq.scalar_product_load(one, rho, 0, 0, 3, False, False, False),
+          seq.apply_projection_matrix(rho, 3, 0, False, False), seq, "1 rho onto 0 is P_30 rho")
 
 
 def test_trilinear_forms_do_not_depend_on_the_test_factor(seq, fields):

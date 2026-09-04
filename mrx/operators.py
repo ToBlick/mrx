@@ -741,23 +741,22 @@ def apply_incidence_matrix(seq, v, k: int,
     return e_out @ (sp @ (e_in_T @ v))
 
 
-# Row/column spaces of the projection masses ``P_{k_in k_out}``: rows are the
-# space of ``e_out`` and columns the space of ``e_in`` in
-# :func:`_projection_extraction`.
-_PROJECTION_SPACES = {(2, 1): (1, 2), (1, 2): (2, 1), (0, 3): (0, 3), (3, 0): (3, 0)}
+#: The projection masses ``P_{k_in k_out}`` that ``set_geometry`` builds: a
+#: ``k_in``-form in, a dual ``k_out``-form out, so the rows live in the
+#: ``k_out`` space and the columns in the ``k_in`` space (the raw core is
+#: ``seq.projection_apply[(k_out, k_in)]``). Until 2026-09-04 the scalar
+#: pairs were tabulated the other way round, and ``(0, 3)`` took a 3-form.
+_PROJECTION_PAIRS = ((2, 1), (1, 2), (0, 3), (3, 0))
 
 
 def projection_core_apply(seq, k_in: int, k_out: int):
     """The raw-DOF apply of the projection mass ``P_{k_in k_out}`` (built by ``set_geometry``)."""
-    try:
-        k_row, k_col = _PROJECTION_SPACES[(k_in, k_out)]
-    except KeyError:
+    if (k_in, k_out) not in _PROJECTION_PAIRS:
         raise ValueError(
-            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-        ) from None
+            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
     if seq.projection_apply is None:
         raise ValueError("no geometry installed: call seq.set_map first")
-    return seq.projection_apply[(k_row, k_col)]
+    return seq.projection_apply[(k_out, k_in)]
 
 
 def extraction(seq, k: int, dirichlet: bool):
@@ -780,16 +779,11 @@ def _derivative_extraction(seq, k: int, dirichlet_in: bool, dirichlet_out: bool)
 
 def _projection_extraction(seq, k_in: int, k_out: int,
                            dirichlet_in: bool, dirichlet_out: bool):
-    try:
-        k_row, k_col = _PROJECTION_SPACES[(k_in, k_out)]
-    except KeyError:
+    if (k_in, k_out) not in _PROJECTION_PAIRS:
         raise ValueError(
-            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported"
-        ) from None
-    # Rows of P_{k_in k_out} live in the space of ``e_out`` (``k_row``) and
-    # its columns in the space of ``e_in`` (``k_col``).
-    e_in = extraction(seq, k_col, dirichlet_in)
-    e_out = extraction(seq, k_row, dirichlet_out)
+            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
+    e_in = extraction(seq, k_in, dirichlet_in)
+    e_out = extraction(seq, k_out, dirichlet_out)
     return e_in, e_in.T, e_out
 
 
