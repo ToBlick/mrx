@@ -101,7 +101,7 @@ def picard_figure(arms, figdir):
 
 
 def summary(arms):
-    rows = ["| arm | steps | stop | s/step | eval/step | dt halved | unconverged | E removed | resid final (mean last 100) | identity max | dH abs | dH / 2E0 |",
+    rows = ["| arm | steps | stop | s/step | eval/step | dt halved | unconverged | E removed | resid final (mean last 100) | identity max | dH abs (from the IC) | dH / H0 |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for arm, j in arms:
         tr, s = j["trace"], j["summary"]
@@ -118,7 +118,7 @@ def summary(arms):
             f"| {arm} | {n} | {s['stop']} | {s['wall'] / max(n, 1):.2f} | {pit.mean():.2f} "
             f"| {int((prs > 0).sum())} | {int((prd > tol).sum()) if tol else 0} "
             f"| {(E0 - tr['E'][-1]) / E0:.4%} | {tr['resid'][-1]:.3e} ({np.mean(tr['resid'][-100:]):.3e}) "
-            f"| {ident.max():.2e} | {dh:+.3e} | {dh / (2 * E0):+.3e} |")
+            f"| {ident.max():.2e} | {dh:+.3e} | {dh / j['ic']['H']:+.3e} |")
     return "\n".join(rows)
 
 

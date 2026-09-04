@@ -150,6 +150,22 @@ Sampled drift `H(it) - H_0` (float64, `||B||_M = 1`, `H_0 = 4.987e-3`):
   lands on a 5x higher force floor, its boundary layer (`H_t = 0` at the
   wall) being a different problem.
 
+### 4.2 Production mesh (12,24,24) p=3, float32, natural H, 3000 steps
+
+| arm | s/step | eval/step | E removed | ||F|| final (mean last 100) | helicity drift abs | relative |
+|---|---|---|---|---|---|---|
+| explicit | 0.50 | 1 | 0.0146% | 3.28e-3 (3.33e-3) | +1.44e-8 | +2.9e-6 |
+| midpoint | 0.50 | 2.02 | 0.0145% | 2.91e-3 (3.27e-3) | +4.28e-8 | +8.6e-6 |
+
+Same wall-clock to the digit (the extra k=1 mass solve pair per step is
+below the noise of the force evaluation), same descent, and both drifts
+at the float32 floor: the qoi helicity itself is a k=1 Hodge solve at
+`sqrt(eps_32)`, and `picard_tol = 3.4e-3` makes the midpoint step the
+explicit one to within the midpoint correction. The "energy increases"
+count of the driver (584 and 604 of 3000) is the float32 resolution of
+`E ~ 0.5` (ulp 6e-8) against per-step changes of `1e-8` at the end of the
+run, in both arms alike. No halving, no unconverged step.
+
 ## 5. Verdict
 
 FILLED IN BELOW.
