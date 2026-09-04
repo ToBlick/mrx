@@ -58,6 +58,10 @@ def parse_args():
                     help="primitives only; skips the multi-minute phase timings")
     ap.add_argument("--skip-relax", action="store_true",
                     help="skip the relaxation phase (the slowest item)")
+    ap.add_argument("--relax-steps", type=int, default=5,
+                    help="inner steps per timed relaxation call. The per-step "
+                         "cost is read off the slope between this and twice "
+                         "this, so raising it buys accuracy with wall time")
     ap.add_argument("--map-batch-size", type=int, default=None,
                     help="mrx.MAP_BATCH_SIZE_INNER; 0 (the mrx default) is a "
                          "full vmap and is rejected by jax < 0.9, so the "
@@ -501,36 +505,53 @@ def bench_relaxation(bench, seq, args, dtype):
                      velocity_smoothing_order=1,
                      velocity_smoothing_scale=0.064 / ns[0] ** 2)
 
-    inner = 5
-    # Two identical calls. The first compiles the scanned step; the second does
-    # not, so (first - second) / inner is the compile cost amortised per step
-    # and second / inner is the true per-step cost.
-    t0 = time.perf_counter()
-    state, _ = relaxation_loop(B0, ts, num_iters_outer=1,
-                               num_iters_inner=inner, dt0=1.0,
-                               force_tolerance=0.0)
-    _sync(state.B_n)
-    first_s = time.perf_counter() - t0
+    inner = args.relax_steps
 
-    t0 = time.perf_counter()
-    state2, _ = relaxation_loop(B0, ts, num_iters_outer=1,
-                                num_iters_inner=inner, dt0=1.0,
-                                force_tolerance=0.0)
-    _sync(state2.B_n)
-    second_s = time.perf_counter() - t0
+    def run(n_steps):
+        t0 = time.perf_counter()
+        state, _ = relaxation_loop(B0, ts, num_iters_outer=1,
+                                   num_iters_inner=n_steps, dt0=1.0,
+                                   force_tolerance=0.0)
+        _sync(state.B_n)
+        return time.perf_counter() - t0
+
+    # The first call at a given length compiles the scan and relaxation_loop
+    # caches it, so the second does not. That caching is the whole reason this
+    # measurement means anything: until it existed, every call rebuilt the jit
+    # and the "steady" number was a second compile.
+    first_s = run(inner)
+    steady_s = run(inner)
+
+    # Per step from the slope between two lengths, not from steady / inner.
+    # Each call also pays a fixed cost outside the scan -- initial_state runs a
+    # compute_force, and record() runs three probes -- and dividing by the step
+    # count would charge all of that to the steps. Differencing cancels it.
+    # The doubled length compiles its own scan, so take its second call too.
+    run(2 * inner)
+    long_s = run(2 * inner)
+    per_step = (long_s - steady_s) / inner
+    overhead_s = steady_s - inner * per_step
 
     bench.rows["relax_compile"] = {
-        "first_s": first_s, "steady_s": second_s,
-        "compile_s": first_s - second_s,
+        "first_s": first_s, "steady_s": steady_s,
+        "compile_s": first_s - steady_s,
         "note": f"{inner} inner steps"}
     bench.rows["relax_step"] = {
-        "first_s": first_s / inner, "steady_s": second_s / inner,
-        "compile_s": (first_s - second_s) / inner,
-        "note": "per step"}
+        "first_s": None, "steady_s": per_step, "compile_s": None,
+        "note": f"per step, slope {inner}->{2 * inner}"}
+    bench.rows["relax_call_overhead"] = {
+        "first_s": None, "steady_s": overhead_s, "compile_s": None,
+        "note": "per call, outside the scan"}
+
     print(f"  {'relaxation ' + str(inner) + ' steps':<38} first {first_s:9.3f}s"
-          f"   steady {second_s:9.4f}s", flush=True)
-    print(f"  {'-> per step':<38} first {first_s / inner:9.3f}s"
-          f"   steady {second_s / inner:9.4f}s", flush=True)
+          f"   steady {steady_s:9.4f}s", flush=True)
+    print(f"  {'relaxation ' + str(2 * inner) + ' steps':<38} "
+          f"{'':>15} steady {long_s:9.4f}s", flush=True)
+    print(f"  {'-> per step (slope)':<38} {'':>15} {per_step:15.4f}s", flush=True)
+    print(f"  {'-> compile, once':<38} {'':>15} "
+          f"{first_s - steady_s:15.4f}s", flush=True)
+    print(f"  {'-> per-call overhead outside the scan':<38} {'':>15} "
+          f"{overhead_s:15.4f}s", flush=True)
 
 
 # ------------------------------------------------------------- reporting ---

@@ -290,23 +290,18 @@ def _fuse_yz(By, Bz):
         ne_y, ne_z, qy * qz, nly * nlz)
 
 
-def _to_quadrature(Bvals, x_flat, gather_plan):
+def _to_quadrature(Bvals, x_local):
     """Column half of :func:`_elem_block_mixed` folded against a vector.
 
-    Reads the element-local input by rolled slices over the shift plan and
-    evaluates the component's field at the element quadrature points,
-    ``(ne_x, ne_y, ne_z, qx, qy, qz)``.
-
-    ``gather_plan`` may instead be ``None``, in which case ``x_flat`` is taken
-    to be element-local already; that is how the fused factorization is tested
-    against the three-stage chain without also exercising the read.
+    Evaluates the component's field at the element quadrature points,
+    ``(ne_x, ne_y, ne_z, qx, qy, qz)``, from an already element-local input.
+    The read that produces ``x_local`` is :func:`_structured_gather`, done by
+    the caller, so this is a contraction and nothing else.
 
     Two stages, not three: see :func:`_fuse_yz` for why the y and z
     contractions are fused.
     """
     Bx, By, Bz, Byz = Bvals
-    x_local = (x_flat if gather_plan is None
-               else _structured_gather(x_flat, gather_plan))
     ne_x, qx, _ = Bx.shape
     ne_y, qy, nly = By.shape
     ne_z, qz, nlz = Bz.shape
@@ -524,8 +519,12 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, *,
     """
     W = {pair: Ws[c] for pair, c in zip(pairs, cols)}
     n_c, n_r = len(Bvals_c), len(Bvals_r)
-    u = [_to_quadrature(Bvals_c[c], x[starts_c[c]:starts_c[c + 1]],
-                        gather_plans[c])
+    # The read is here rather than inside _to_quadrature, so that the two
+    # halves of the element block stay pure contractions and mirror each other:
+    # gather, contract, weight, contract, accumulate.
+    u = [_to_quadrature(
+            Bvals_c[c],
+            _structured_gather(x[starts_c[c]:starts_c[c + 1]], gather_plans[c]))
          for c in range(n_c)]
     y_parts = []
     for cr in range(n_r):

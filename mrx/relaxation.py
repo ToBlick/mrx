@@ -739,6 +739,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     )
 
 
+#: One slot, holding the compiled scan and probes for the most recent
+#: ``(stepper, chunk length)``. See :func:`relaxation_loop` for why.
+_RELAXATION_SCAN_CACHE: dict = {}
+
+
 def relaxation_loop(B_dof: jnp.ndarray,
                     ts: TimeStepper,
                     num_iters_outer: int,
@@ -764,18 +769,41 @@ def relaxation_loop(B_dof: jnp.ndarray,
     seq = ts.seq
     state = initial_state(B_dof, ts, dt0)
 
-    def body_fn(state, _):
-        state = ts.relaxation_step(state)
-        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
-        return state, None
+    # The scan and the three probes are built once and reused, not rebuilt on
+    # every call. jax.jit keys its cache on function identity, so defining them
+    # in this body handed each call a fresh entry and a fresh XLA compile.
+    #
+    # That is invisible in one long run, where the scan is reused across the
+    # outer iterations. It is not invisible to anything that calls this twice:
+    # a benchmark timing a second call in order to subtract the compile cost
+    # measured the compile both times and reported it as per-step cost.
+    #
+    # Keyed on the stepper's identity rather than on the stepper, because
+    # TimeStepper carries jnp arrays and is therefore unhashable. One slot,
+    # since a run uses one stepper; holding the stepper in the value pins its
+    # id, so a later object cannot land at the same address and alias the key.
+    cache_key = (id(ts), num_iters_inner)
+    cached = _RELAXATION_SCAN_CACHE.get(cache_key)
+    if cached is None or cached[0] is not ts:
+        def body_fn(state, _):
+            state = ts.relaxation_step(state)
+            state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
+            return state, None
 
-    @jax.jit
-    def _run_scan(state):
-        return jax.lax.scan(body_fn, state, None, length=num_iters_inner)
+        @jax.jit
+        def _run_scan(state):
+            return jax.lax.scan(body_fn, state, None, length=num_iters_inner)
 
-    get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
-    get_energy = jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2))
-    get_div_norm = jax.jit(compute_divergence_norm, static_argnames=["seq"])
+        _RELAXATION_SCAN_CACHE.clear()
+        _RELAXATION_SCAN_CACHE[cache_key] = (
+            ts,
+            _run_scan,
+            jax.jit(compute_helicity, static_argnames=["seq"]),
+            jax.jit(lambda B: 0.5 * seq.l2_norm_sq(B, 2)),
+            jax.jit(compute_divergence_norm, static_argnames=["seq"]),
+        )
+    _, _run_scan, get_helicity, get_energy, get_div_norm = \
+        _RELAXATION_SCAN_CACHE[cache_key]
 
     traces = {k: [] for k in (
         "force_norm", "helicity", "timestep", "energy", "resistive_info",

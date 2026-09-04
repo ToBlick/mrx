@@ -30,18 +30,19 @@ At `--ns 12,24,12 --p 3`:
 | `E` apply k=1 | 1.999 ms | **0.182 ms** | 0.100 ms | - |
 | `apply_derivative_matrix` k=1 | 7.15 ms | **3.02 ms** | 4.77 ms | - |
 | `apply_laplacian` k=1 (nested CG) | 10 020 ms | **85.7 ms** | 102 ms | - |
-| relaxation, per step | 100.3 s | **3.40 s** | 12.74 s | 12.21 s |
 
 The v5e and CPU columns are one session on one node, so they differ only in
-`JAX_PLATFORMS`. The H200 is the same commit and script, float32; in float64 it
-is 13.07 s/step. The v5e runs a step **3.7x faster than the CPU it is bolted
-to** and **3.6x faster than the H200**, and setup went from about 7 minutes to
-46 seconds.
+`JAX_PLATFORMS`. Setup went from about 7 minutes to 46 seconds.
 
-The v5e went from 1.7x slower than the VM's own CPU to 3.7x faster. Four things
-did that, in order of size: the persistent compilation cache, the gather, the
-assembly, and compiling the extraction operator's two ops together. The first
-is configuration; the rest are in `mrx/mass.py` and `mrx/extraction_operators.py`.
+**The relaxation per-step rows that used to sit at the bottom of both tables
+are withdrawn.** They measured XLA compile time, not steps; see *The per-step
+figures were wrong* below.
+
+Four things moved the v5e columns, in order of size: the persistent compilation
+cache, the gather, the assembly, and compiling the extraction operator's two ops
+together. The first is configuration; the rest are in `mrx/mass.py` and
+`mrx/extraction_operators.py`. The before/after columns above are what each is
+worth per kernel; what they are worth per step is pending the re-measurement.
 
 ## At twice the resolution
 
@@ -51,23 +52,63 @@ is configuration; the rest are in `mrx/mass.py` and `mrx/extraction_operators.py
 |---|---|---|---|
 | `build_sequence` (warm cache) | 36.8 s | 36.0 s | 65.1 s |
 | `compute_nullspaces`, `gap_sweeps=0` | 34.5 s | **10.9 s** | 19.4 s |
-| relaxation, per step | **6.15 s** | 11.03 s | 17.03 s |
 
-The ordering of the three machines survives the resolution change, but the
-margins do not, and they move in opposite directions. Against the CPU the v5e's
-lead narrows from 3.7x to 1.79x; against the H200 it widens from 3.6x to 2.77x.
+The setup rows survive the resolution change. The relaxation row that used to
+be here does not; it is withdrawn for the reason below.
 
 `compute_nullspaces` is the one place the v5e is now clearly the worst of the
-three, at 3.2x the CPU's time. It is a dense construction, not the matvec chain
-the rest of this note is about, and nothing here was aimed at it. It is 34 s
-once per run against 6.15 s every step, so it stops mattering after six steps,
-but it is the obvious next thing to look at if setup cost starts to bind.
+three, at 3.2x the CPU's time. It is not a dense construction: it is two
+matrix-free Hodge solves (`mrx/nullspace.py`), the same kind of Krylov chain
+the rest of this note is about. Nothing here was aimed at it. It is measured
+once per run and therefore includes its own XLA compile, so the gap between
+the columns is at least partly compile time and not arithmetic -- which is
+what makes it the obvious next thing to look at if setup cost starts to bind.
 
-The per-step figure is 3.40 s rather than the 11.72 s it was, because the
-development branch replaced the smoothing solve's saddle MINRES with the split
-identity and the shifted-stiffness atom, cutting its iteration count about 15x.
-That change is not this branch's, and it moved the v5e and the CPU together:
-the *ratio* between the columns is where this branch's work shows up.
+## The per-step figures were wrong
+
+Every relaxation per-step number this note originally reported was compile time
+divided by a step count. Two separate faults produced it, found by Tobi Blickhan
+in review:
+
+`relaxation_loop` built its jitted scan **inside its own body**. `jax.jit` keys
+its cache on function identity, so each call made a new object and retraced. The
+benchmark timed two identical calls and divided the second by the step count,
+on the assumption that the second was compile-free. It was not: it was a second
+compile. Separately, dividing a whole call by its step count also charges the
+steps for work outside the scan -- `initial_state` runs a `compute_force`, and
+each `record` runs three probes -- which does not scale with the step count at
+all.
+
+Both are fixed. The scan and the probes are now built once and cached
+(`mrx/relaxation.py`), and the benchmark reads the per-step cost off the slope
+between two step counts, reporting compile, per-step and per-call overhead as
+separate rows.
+
+What one timed call is actually made of, at `(8,12,12)` p=2 float32 on a local
+CPU -- the one configuration re-measurable while both the v5e ladder and the
+H200 queue were unavailable:
+
+| component of one 4-step call | seconds |
+|---|---|
+| compile, first call only | 8.45 |
+| fixed work outside the scan, every call | 2.13 |
+| the four steps themselves | 1.35 |
+| **per step** | **0.338** |
+
+The old method divided a whole call by its step count. On this run that alone
+gives 3.48 / 4 = 0.87 s/step against a true 0.338, and before the library fix
+the call being divided also carried the 8.45 s compile. **The re-measurement of
+all three backends at `(12,24,24)` p=3
+is outstanding**, and until it lands this note makes no claim about relaxation
+throughput on any backend. The claim most at risk is the dispatch argument: XLA
+compile is far more expensive on a TPU than on a CPU or a GPU, so the v5e's
+apparent lead was flattered by the bug more than the other two columns were,
+and it may narrow or reverse.
+
+**The matvec and primitive numbers above are unaffected.** `matvec_bench.py`
+hoists its jit and reuses it across repeats, which is why those rows -- the
+gather, the assembly, the fused transforms, the extraction operator -- are the
+results this branch actually rests on.
 
 ## Fix 1: XLA was recompiling, not the device computing
 
@@ -154,11 +195,10 @@ together on the final tree. Per-apply cost in **ms**, scan form:
 | mass atom k=2 (precond) | 0.119 | **0.040** | 0.096 |
 | laplacian atom k=2 (precond) | 0.126 | **0.101** | 0.168 |
 
-This is the sharpest form of the result in the next section. Doubling the
-resolution does not change who wins a matvec -- the H200 takes every row, by
-12.2x on `apply_mass_matrix` k=1 -- and it does not change who wins a step,
-which the v5e takes by 2.77x. A machine 12x faster per apply finishing 2.8x
-slower is the whole finding, now measured at two resolutions.
+Doubling the resolution does not change who wins a matvec: the H200 takes every
+row, by 12.2x on `apply_mass_matrix` k=1. Whether it also loses the step, and by
+how much, is the question the withdrawn per-step numbers were answering, and it
+is open until they are re-measured.
 
 Three things this settles. **`apply_stiffness` is not cheap**: `K_k = G^T M G`
 contains a mass apply and at k=2 costs 58% of one on its own, and
@@ -173,30 +213,29 @@ Where the extraction operator is concerned the ordering inverts: `E` and `E^T`
 are 7-11x *cheaper* on the CPU than on either accelerator, because they are pure
 data movement with no arithmetic to hide behind.
 
-## Why the GPU loses
+## The dispatch argument, and what is left of it
 
-Per matvec the arithmetic says an H200 should be **5.9x faster** than the v5e.
-Measured end to end it was **1.37x slower** (at the pre-split-solve step cost of
-13.04 s against 17.92 s). The whole discrepancy is how much each machine pays
-over its own matvec budget: composing the velocity-smoothing solve from the
-scan-form costs and its per-iteration call counts gives 12.90 s on the v5e
-against 9.73 s attributed from the measured step -- a residual of 0.75x, i.e.
-the real fused body is slightly *cheaper* than the sum of its parts. The same
-composition on the H200 gives 2.20 s against 13.37 s attributed: **6.1x** over
-budget.
+The original claim was that the H200 wins every matvec and still loses the step,
+because a step is a chain of order 250 000 sequentially dependent kernels: the
+v5e runs the whole `lax.scan` body as one on-device program, while the GPU pays
+a dispatch on each. The end-to-end half of that rested on the withdrawn step
+costs and has to be re-established.
 
-A relaxation step is a chain of order 250 000 sequentially dependent kernels.
-The v5e executes the whole `lax.scan` body as one on-device program and has
-almost no per-kernel cost; the GPU pays dispatch on each. This is consistent
-with the directly measured result that dispatch is *not* what makes a v5e kernel
-slow: one device call is 0.037 ms, and 20 scatters fused into one `jit` cost
-0.531 ms each against 0.533 ms unfused. Same fact from both ends.
+What still stands is the per-kernel evidence, which comes from `matvec_bench.py`
+and is not affected:
 
-Doubling the resolution is the cleanest test of that explanation, because it
-scales the arithmetic per kernel while leaving the number of kernels alone. If
-the H200 were losing on arithmetic, more arithmetic per kernel would help it.
-It does the opposite: the v5e's lead grows from 1.08x to 2.77x. Per-kernel cost
-that does not scale with the kernel is what dispatch looks like.
+* **Eager microbenchmarks overstate the scan form by wildly different amounts
+  per backend** -- 1.0-1.6x on CPU, 1.3-6.8x on the v5e, **5.9-66x on the
+  H200**. The backend whose eager and scan forms disagree most is the one paying
+  most per call. That is dispatch, measured directly, with no step cost in it.
+* Dispatch is *not* what makes a v5e kernel slow: one device call is 0.037 ms,
+  and 20 scatters fused into one `jit` cost 0.531 ms each against 0.533 ms
+  unfused.
+
+So the mechanism is measured and the direction is argued for. The magnitude --
+whether it is enough to overturn a 12x per-matvec deficit over a whole step --
+is exactly what the re-measurement has to decide, and it is the claim most
+likely to change.
 
 ## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
 

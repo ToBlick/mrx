@@ -31,20 +31,26 @@ incidence and extraction operators.
    `(ne_x, ne_y, ne_z, p+1, p+1, p+1)`. On a tensor-product B-spline basis the
    element-to-DoF map of every axis is the pure shift `(e + l) mod S`, so this
    is a stack of rolled slices with no index tensor at all.
-2. **Column transforms** (`_to_quadrature`): three einsums, one axis at a
-   time, take the cube to values at the element's quadrature points,
-   `(ne_x, ne_y, ne_z, qx, qy, qz)`. One transform per column component.
+2. **Column transforms** (`_to_quadrature`): two einsums take the cube to
+   values at the element's quadrature points,
+   `(ne_x, ne_y, ne_z, qx, qy, qz)`. One transform per column component. Two
+   rather than three because the y and z tables are fused into one `Byz`
+   ahead of time (`_fuse_yz`), trading 1.5x the arithmetic for one fewer
+   stage. A pure contraction: the read is step 1 and stays there.
 3. **Pointwise mix.** For each row component `cr`,
    `v = Σ_cc W_split[(cr, cc)] * u[cc]`: `n_comp^2` multiply-adds at the
    quadrature points. `W_split[(cr, cc)]` is the `(cr, cc)` entry of the
    metric weight reshaped to elements with the Gauss weights folded in.
-4. **Row transforms** (`_from_quadrature`): the adjoint three einsums, one
-   per row component.
+4. **Row transforms** (`_from_quadrature`): the adjoint two einsums, one per
+   row component, against the same fused `Byz`.
 5. **Assembly.** `_structured_accumulate` over the same shift plan: shifted
    dense adds per component, concatenated into the output. Again no indices.
 
-Steps 2 and 4 are sum factorisation: `O(q(p+1) + q^2(p+1) + q^3)` per element
-instead of `O(q^3 (p+1)^3)`. Mixing at the quadrature points rather than per
+Steps 2 and 4 are sum factorisation, which replaces the `O(q^3 (p+1)^3)` per
+element of a direct evaluation with a chain of one-axis contractions. Fusing y
+and z shortens that chain to two stages and costs 1.5x the FLOPs, which is a
+win because both a v5e and an H200 charge far more per contraction than per
+FLOP at widths of 3-4 (`_fuse_yz`). Mixing at the quadrature points rather than per
 `(cr, cc)` pair does a third of the transform work. Row and column bases are
 the same tables, so the applied operator is symmetric by construction.
 

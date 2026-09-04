@@ -103,65 +103,26 @@ the current preconditioner is `eta <= 1e-2` (the production range is
 `<= 1e-2`, mostly `1e-4`); the `--cfl 0.5` default keeps `dt` near `0.02`
 and so keeps `eps` in range for `eta <= 1e-1` too.
 
-*Fix: SUPERSEDED by the production atom in the update below.* A separable
-`(M + eps L)` atom was built and measured on 2026-09-03 and then removed
-again: it was wired into no solve, and it lost the comparison that decides
-adoption -- 185 CG iterations against the mass atom's 149 at the smoothing
-shift -- because it carried no polar-core block, even though its relative miss
-was bounded over four decades of `eps` where the mass atom grows linearly. The
-measurements are kept in `docs/research/tpu_v5e_benchmark.md`; the code is
-not.
-
-**Both reasons this entry originally gave for a separable atom being hard were
-wrong**, which is the part that outlived the atom, and the production solution
-below rests on the first of them:
-
-* *"Their Kronecker structures do not share a generalised eigenbasis."* They
-  do. `_kron_mass_model_1d` and `metric_lumping_laplacian.component_factors`
-  both assemble the axis mass as
-  `_assemble_weighted_1d_mass(basis, quad_w[a])` on the same derivative-axis
-  pattern, both deliberately UNWEIGHTED with the metric carried outside as a
-  diagonal. The 1-D factors come out bit-identical for k=0..3 and every
-  component. Only *which* outer diagonal differs, and that is a choice, not a
-  structural obstruction.
-* *"Fast-diagonalised as a whole for each `eps`."* Once, for all `eps`. Where
-  `V.T M V = I` and `V.T L V = diag(mu)`, `M + eps L` is `1 + eps*mu`, so
-  `eps` reaches the apply through a diagonal reciprocal only and can be a
-  tracer. One build serves the whole line search.
-
-The polar core is what decided it. At `eps = 0` both atoms model the same
-operator with the same 1-D factors, and the bulk-only atom still took 82
-iterations against 57: a 1.44x deficit from the untreated core rows alone,
-larger than anything the shift handling won back. Any future separable atom
-should carry a core block from the start.
-
-Note also that a shifted atom cannot help the k=3 Leray/Schur block: `L_3` is
-identically zero (no 4-form for `G_3` to map into, measured as `||L_3 x|| = 0`
-exactly), so at k=3 a shifted atom IS the mass atom.
-
-The shifted-Jacobi kind exists but its lazy Laplacian-diagonal builder
-converts to numpy at trace time, so it cannot be used inside the jitted step
-as is.
-*Detail:* `docs/source/concepts/relaxation.md` §2,
-`docs/research/tpu_v5e_benchmark.md`.
-*Update 2026-09-02:* the saddle MINRES is gone. `D_k D_{k-1} = 0` gives the
-exact split `(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1}
-+ eps S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves with the mass
-atom, no inner mass solve. li383 p=3 at the smoothing eps: 330 / 772 / 1326
-iterations at (8,16,8) / (12,24,12) / (16,32,16) against 2134 / 8478 /
-20362 for the MINRES (`docs/research/shifted_split_2026-09-02.md`).
-*Same day:* the joint atom exists: the Laplacian atom's strong-half
-(primal-axis) Kronecker terms divided by `1 + eps lambda` in their own
-eigenbasis are `(M^ + eps S^)^-1` for the atom's separable mass
+*RESOLVED as a production item.* `D_k D_{k-1} = 0` gives the exact split
+`(M_k + eps L_k)^-1 = (M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps
+S_{k-1})^-1 D_{k-1}^T`: two SPD matrix-free PCG solves, no inner mass solve
+and no saddle MINRES. The strong half is served by the Laplacian atom's
+primal-axis Kronecker terms divided by `1 + eps lambda`
 (`MetricLumpingLaplacian.shifted_stiffness_apply`, the diffusion slot's
-`'auto'`). CG on `M_k + eps S_k`, li383 p=3, smoothing eps: k=2 69 / 117
-and k=1 74 / 128 at (8,16,8) / (12,24,12) against 153 / 371 and 181 / 422
-with the mass atom -- the whole smoothing solve 145 / 249 iterations from
-2134 / 8478 in the morning. Two factorisations with the Jacobian in the
-1-D masses (J profiles; the mass atom's exact-diagonal sandwich) were
-measured and lost (~100 / ~200). The count still grows, ~`n_r^1.3`; the
-dropped cross-component blocks of `S_k` and the uncoupled core are the
-remaining candidates. RESOLVED as a production item.
+`'auto'`). li383 p=3 at the smoothing shift: the whole solve takes 145 / 249
+iterations at (8,16,8) / (12,24,12), against 2134 / 8478 for the MINRES.
+
+At k=3 the strong stiffness `S_3` is zero -- there is no 4-form for `D_3` to
+map into -- so the shifted-stiffness half degenerates to the mass atom there.
+`L_3 = D_2 M_2^-1 D_2^T` is *not* zero; its Schur term is carried by the k=2
+solve.
+
+A standalone separable `(M + eps L)` atom was tried and dropped: it lost on
+iteration count because it carried no polar-core block. Any future one should
+carry a core block from the start. The count still grows as ~`n_r^1.3`, and
+the dropped cross-component blocks of `S_k` are the remaining candidate.
+*Detail:* `docs/source/concepts/relaxation.md` §2,
+`docs/research/shifted_split_2026-09-02.md`.
 
 ### 3.10 RESOLVED 2026-08-26: the iota = 1 core at (8,16,8) is a mesh artefact
 
