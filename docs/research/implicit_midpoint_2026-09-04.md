@@ -197,6 +197,22 @@ Sampled: explicit -6.7e-8 / -1.1e-7 / -1.0e-7 / -9.8e-8 / -9.5e-8 / -9.2e-8 /
 descent, same force floor, 1% more wall-clock, no halving, no unconverged
 step, energy monotone; the Picard defect ends at 5e-17.
 
+### 4.4 (route) x (precision) x (scheme), (8,16,16) p=2, 1000 steps: `eight.png`
+
+The float32 twins of the natural-H and B-only arms of 4.1:
+
+| arm | s/step | eval/step | E removed | ||F|| final | helicity drift (driver, from step 1) |
+|---|---|---|---|---|---|
+| explicit, natural H, float32 | 0.17 | 1 | -- | 2.1e-3 | -4.4e-7 |
+| midpoint, natural H, float32 | 0.17 | 2.01 | -- | -- | -5.0e-7 |
+| explicit, B only, float32 | 0.16 | 1 | -- | 2.9e-3 | -4.6e-8 |
+| midpoint, B only, float32 | 0.16 | 2.03 | -- | -- | -1.8e-7 |
+
+In float32 the four lines sit on the same floor as their float64 twins'
+projection errors (a few 1e-7), the midpoint correction is inside the
+solver tolerance (one sweep converges), and the "energy increases" count
+(130-180 of 1000) is the float32 resolution of `E ~ 0.5` again.
+
 ## 5. Verdict
 
 * **Implemented, on the branch, tested**: `--scheme midpoint`, the
@@ -223,12 +239,12 @@ step, energy monotone; the Picard defect ends at 5e-17.
 
 ## 6. GPU time
 
-5.5 h of the 10 h budget (`sacct`, gpu-h100, 2026-09-04 10:25-13:25):
+5.9 h of the 10 h budget (`sacct`, gpu-h100, 2026-09-04 10:25-14:15):
 1.4 h finding out that the nonlinear midpoint does not converge (two smoke
 runs, four probes, one Anderson and one preconditioner probe, two
 per-sweep traces), 0.5 h tests and smoke runs of the scheme that works,
-3.6 h the study (float32 production pair 0.95 h, float64 production pair
-1.7 h, six small float64 arms 0.9 h). Every arm ran on
+4.0 h the study (float32 production pair 0.95 h, float64 production pair
+1.7 h, six small float64 arms 0.9 h, four small float32 arms 0.4 h). Every arm ran on
 `.claude/worktrees/implicit-midpoint` through `slurm/run.sh` with the
 worktree on `PYTHONPATH` (the log header says so).
 

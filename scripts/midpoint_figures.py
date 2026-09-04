@@ -29,11 +29,23 @@ ARMS = {
     "mp_small_f64_Hd":    ("small", 1, 1, "midpoint, Dirichlet H"),
     "ex_small_f64_bonly": ("small", 2, 0, "explicit, B only"),
     "mp_small_f64_bonly": ("small", 2, 1, "midpoint, B only"),
+    "ex_small_f32":       ("small32", 0, 0, "explicit, natural H"),
+    "mp_small_f32":       ("small32", 0, 1, "midpoint, natural H"),
+    "ex_small_f32_bonly": ("small32", 2, 0, "explicit, B only"),
+    "mp_small_f32_bonly": ("small32", 2, 1, "midpoint, B only"),
 }
 PANELS = {
     "f32": "(12,24,24) p=3, float32, natural H",
     "f64": "(12,24,24) p=3, float64",
     "small": "(8,16,16) p=2, float64",
+    "small32": "(8,16,16) p=2, float32",
+}
+#: The 2 x 2 x 2 comparison: (precision, route) -> (explicit arm, midpoint arm)
+EIGHT = {
+    ("float32", "H"): ("ex_small_f32", "mp_small_f32"),
+    ("float32", "B"): ("ex_small_f32_bonly", "mp_small_f32_bonly"),
+    ("float64", "H"): ("ex_small_f64", "mp_small_f64"),
+    ("float64", "B"): ("ex_small_f64_bonly", "mp_small_f64_bonly"),
 }
 
 
@@ -121,6 +133,34 @@ def picard_figure(arms, figdir):
     fig.savefig(os.path.join(figdir, "picard.png"))
 
 
+@house_style()
+def eight_figure(arms, figdir):
+    """Helicity and force traces of (route H / B only) x (float32 / float64) x
+    (explicit / midpoint) on the (8,16,16) p=2 mesh: rows the quantity,
+    columns the precision, colour the route, dash the scheme."""
+    d = dict(arms)
+    fig, axes = plt.subplots(2, 2, figsize=figsize("text", rows=2, cols=2, aspect=0.7), sharex="col")
+    for col, prec in enumerate(("float32", "float64")):
+        for route, colour in (("H", 0), ("B", 2)):
+            for dash, arm in enumerate(EIGHT[(prec, route)]):
+                if arm not in d:
+                    continue
+                j = d[arm]
+                st = arm_style(colour, dash, label=f"{'explicit' if dash == 0 else 'midpoint'}, "
+                                                   f"{'H' if route == 'H' else 'B only'}")
+                h = np.array(j["qoi"]["helicity"])
+                axes[0, col].plot(j["qoi"]["it"], h - j["ic"]["H"], marker=".", **st)
+                plot_trace(axes[1, col], j["trace"]["resid"], log=True, **st)
+        axes[0, col].axhline(0, color="0.7", lw=0.6, zorder=0)
+        axes[0, col].set_yscale("symlog", linthresh=1e-12)
+        axes[0, col].set(title=f"(8,16,16) p=2, {prec}")
+        axes[1, col].set(xscale="log", yscale="log", xlabel="step")
+        axes[0, col].legend()
+    axes[0, 0].set_ylabel(r"$H - H_0$  ($\|B\|_M = 1$)")
+    axes[1, 0].set_ylabel("force residual")
+    fig.savefig(os.path.join(figdir, "eight.png"))
+
+
 def summary(arms):
     rows = ["| arm | steps | stop | s/step | eval/step | dt halved | unconverged | E removed | resid final (mean last 100) | identity max | dH abs (from the IC) | dH / H0 |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -155,6 +195,7 @@ def main():
     helicity_figure(arms, figdir)
     descent_figure(arms, figdir)
     picard_figure(arms, figdir)
+    eight_figure(arms, figdir)
     table = summary(arms)
     with open(os.path.join(cli.root, "summary.md"), "w") as fh:
         fh.write(table + "\n")

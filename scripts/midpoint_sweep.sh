@@ -5,6 +5,7 @@
 #
 #   bash scripts/midpoint_sweep.sh main                  # float32 (12,24,24) p=3 pair
 #   bash scripts/midpoint_sweep.sh small                 # float64 smoke-mesh 2x2, scheme x H-space
+#   bash scripts/midpoint_sweep.sh small32               # their float32 twins (natural H, B only)
 #   bash scripts/midpoint_sweep.sh f64                   # float64 production pair, Dirichlet H
 #   bash scripts/midpoint_sweep.sh arm NAME "RELAX ARGS" TIMEOUT_MIN
 #
@@ -54,6 +55,16 @@ small() {
     arm mp_small_f64_bonly "--scheme midpoint $c --seconds 2700 --stepper bonly" 75
 }
 
+small32() {
+    # the float32 twins of the natural-H and B-only small arms: the
+    # (route) x (precision) x (scheme) figure, scripts/midpoint_figures.py eight_figure
+    local c="--method lbfgs --steps 1000 --ns 8,16,16 --p 2"
+    arm ex_small_f32       "--scheme explicit $c --seconds 1800"                 60
+    arm mp_small_f32       "--scheme midpoint $c --seconds 2700"                 75
+    arm ex_small_f32_bonly "--scheme explicit $c --seconds 1800 --stepper bonly" 60
+    arm mp_small_f32_bonly "--scheme midpoint $c --seconds 2700 --stepper bonly" 75
+}
+
 f64() {
     # float64 on the production mesh, Dirichlet H
     arm ex_lbfgs_f64_Hd "--scheme explicit --method lbfgs --steps 1500 --seconds 3600 --precision float64 --dirichlet-H" 120
@@ -63,7 +74,8 @@ f64() {
 case ${1:-} in
     main) main ;;
     small) small ;;
+    small32) small32 ;;
     f64) f64 ;;
     arm) arm "$2" "$3" "$4" ;;
-    *) echo "usage: $0 main | small | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
+    *) echo "usage: $0 main | small | small32 | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
 esac
