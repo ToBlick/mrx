@@ -392,7 +392,10 @@ class IntegrationScheme(Enum):
     induction midpoint-implicit, ``B_{n+1} = B_n + dt curl(u x H_mid)`` with
     ``H_mid`` the proxy of ``(B_n + B_{n+1}) / 2``, a linear fixed point
     solved by Picard iteration (``TimeStepper._midpoint_solve``): it
-    conserves the discrete helicity ``<A, B + B_harm>`` exactly.
+    conserves the discrete helicity ``<A, B + B_harm>`` exactly when ``E``
+    and ``H`` live in the same 1-form space (``dirichlet_H=True``); with
+    the natural ``H`` both schemes leak it through the wall layer of
+    ``load(u x H)`` that the Dirichlet ``E`` discards.
     """
     EXPLICIT = 0
     IMPLICIT_MIDPOINT = 1
@@ -742,6 +745,18 @@ class TimeStepper(eqx.Module):
         midpoint field keeps it exactly, ``Q(B_{n+1}) - Q(B_n) = 2 dt <B_mid,
         E> = 0``, whatever ``u`` is.  The explicit scheme's helicity drift is
         entirely the time-integration error of evaluating ``H`` at ``B_n``.
+
+        THE ONE CONDITION.  ``E^T P B = E^T M_1 H`` needs ``E`` and ``H`` in
+        the SAME space.  ``compute_force`` takes ``H`` natural (the proxy of
+        a wall-tangent ``B`` has a tangential trace) and ``E`` Dirichlet (so
+        ``D_1 E`` keeps ``B . n = 0``); then ``M_1 E = R^T load_free(u x H)``
+        drops the tangential wall DoFs of the load and ``E^T P B = -int (u x
+        H_h) . (H_h - Pi_dir H_h)``, a wall layer that is zero in the
+        continuum and ``O(h^p)`` discretely.  Measured on li383 (8,16,16)
+        p=2 in float64 over 1000 L-BFGS steps: natural ``H`` drifts -5.5e-7
+        (explicit) and -6.6e-7 (midpoint), the same leak; ``dirichlet_H=True``
+        drifts +2.2e-7 (explicit) and +5e-12 (midpoint), exact to the
+        solves.  See docs/research/implicit_midpoint_2026-09-04.md.
         Energy: ``E_{n+1} - E_n = dt B_mid^T M_2 D_1 E = -dt <u, F_mid>_M``
         with ``F_mid`` the force at the midpoint field, so the step descends
         as long as the predictor's velocity still correlates with the

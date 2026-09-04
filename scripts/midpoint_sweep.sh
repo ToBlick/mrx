@@ -4,7 +4,8 @@
 # through slurm/run.sh. Every arm samples the helicity every 100 steps.
 #
 #   bash scripts/midpoint_sweep.sh main                  # float32 (12,24,24) p=3 pair
-#   bash scripts/midpoint_sweep.sh f64                   # float64 pairs, production + smoke mesh
+#   bash scripts/midpoint_sweep.sh small                 # float64 smoke-mesh 2x2, scheme x H-space
+#   bash scripts/midpoint_sweep.sh f64                   # float64 production pair, Dirichlet H
 #   bash scripts/midpoint_sweep.sh arm NAME "RELAX ARGS" TIMEOUT_MIN
 #
 # Job ids and the launch command go to outputs/midpoint_sweep/jobs.tsv;
@@ -37,19 +38,28 @@ main() {
     arm mp_lbfgs "--scheme midpoint --method lbfgs --steps 3000 --seconds 5400"    150
 }
 
+small() {
+    # float64 on the smoke mesh, scheme x H-space: the O(dt) drift of the
+    # explicit scheme against the midpoint's, with the natural H (E and H in
+    # different spaces, the wall layer of load(u x H) leaks) and the
+    # Dirichlet H (exact to the solves).
+    local c="--method lbfgs --steps 1000 --precision float64 --ns 8,16,16 --p 2"
+    arm ex_small_f64    "--scheme explicit $c --seconds 1800"               60
+    arm mp_small_f64    "--scheme midpoint $c --seconds 2700"               75
+    arm ex_small_f64_Hd "--scheme explicit $c --seconds 1800 --dirichlet-H" 60
+    arm mp_small_f64_Hd "--scheme midpoint $c --seconds 2700 --dirichlet-H" 75
+}
+
 f64() {
-    # float64: the O(dt) drift of the explicit scheme against the exact
-    # discrete helicity of the midpoint scheme, production mesh and the
-    # smoke mesh (an h-contrast).
-    arm ex_lbfgs_f64 "--scheme explicit --method lbfgs --steps 1500 --seconds 3600 --precision float64" 120
-    arm mp_lbfgs_f64 "--scheme midpoint --method lbfgs --steps 1500 --seconds 5400 --precision float64" 150
-    arm ex_small_f64 "--scheme explicit --method lbfgs --steps 1500 --seconds 1800 --precision float64 --ns 8,16,16 --p 2" 60
-    arm mp_small_f64 "--scheme midpoint --method lbfgs --steps 1500 --seconds 2700 --precision float64 --ns 8,16,16 --p 2" 75
+    # float64 on the production mesh, Dirichlet H
+    arm ex_lbfgs_f64_Hd "--scheme explicit --method lbfgs --steps 1500 --seconds 3600 --precision float64 --dirichlet-H" 120
+    arm mp_lbfgs_f64_Hd "--scheme midpoint --method lbfgs --steps 1500 --seconds 5400 --precision float64 --dirichlet-H" 150
 }
 
 case ${1:-} in
     main) main ;;
+    small) small ;;
     f64) f64 ;;
     arm) arm "$2" "$3" "$4" ;;
-    *) echo "usage: $0 main | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
+    *) echo "usage: $0 main | small | f64 | arm NAME ARGS TMIN" >&2; exit 2 ;;
 esac

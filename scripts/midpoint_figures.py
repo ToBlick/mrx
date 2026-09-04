@@ -18,10 +18,12 @@ from li383_pub_figures import plot_trace, plt  # scripts/ is sys.path[0]; sets t
 STYLE = {
     "ex_lbfgs": dict(color="k", ls="-", label="explicit, L-BFGS"),
     "mp_lbfgs": dict(color="tab:red", ls="-", label="midpoint, L-BFGS"),
-    "ex_lbfgs_f64": dict(color="k", ls="--", label="explicit, float64"),
-    "mp_lbfgs_f64": dict(color="tab:red", ls="--", label="midpoint, float64"),
-    "ex_small_f64": dict(color="tab:gray", ls="--", label="explicit, float64, (8,16,16) p=2"),
-    "mp_small_f64": dict(color="tab:orange", ls="--", label="midpoint, float64, (8,16,16) p=2"),
+    "ex_lbfgs_f64_Hd": dict(color="k", ls="--", label="explicit, float64, Dirichlet H"),
+    "mp_lbfgs_f64_Hd": dict(color="tab:red", ls="--", label="midpoint, float64, Dirichlet H"),
+    "ex_small_f64": dict(color="tab:gray", ls="-", label="explicit, float64, (8,16,16) p=2"),
+    "mp_small_f64": dict(color="tab:orange", ls="-", label="midpoint, float64, (8,16,16) p=2"),
+    "ex_small_f64_Hd": dict(color="tab:gray", ls="--", label="explicit, float64, (8,16,16) p=2, Dirichlet H"),
+    "mp_small_f64_Hd": dict(color="tab:orange", ls="--", label="midpoint, float64, (8,16,16) p=2, Dirichlet H"),
 }
 
 

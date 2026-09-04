@@ -134,7 +134,17 @@ node, and with the exact discrete Stokes identity
 in `range D_1`). The helicity is a quadratic form in `B`, and evaluating
 `E` at the midpoint field keeps it exactly, whatever `u` is; the explicit
 scheme's drift is entirely the time-integration error of evaluating `H`
-at `B_n`. The energy change is `-dt <u, F_mid>_M` with the force at the
+at `B_n`. One condition: `E^T P B = E^T M_1 H` needs `E` and `H` in the
+same 1-form space. With the natural `H` of `compute_force` (the proxy of a
+wall-tangent `B` has a tangential trace) and the Dirichlet `E` (so that
+`D_1 E` keeps `B · n = 0`), the load `load(u × H)` loses its tangential
+wall DoFs on the way to `E` and both schemes leak helicity through that
+wall layer at the same rate (li383 (8,16,16) p=2, float64, 1000 L-BFGS
+steps: -5.5e-7 explicit, -6.6e-7 midpoint); with `dirichlet_H=True`
+(`--dirichlet-H`) the spaces coincide and the midpoint scheme is exact to
+the solves (+2.2e-7 explicit, +5e-12 midpoint), at the price of `H_t = 0`
+at the wall. See `docs/research/implicit_midpoint_2026-09-04.md`. The
+energy change is `-dt <u, F_mid>_M` with the force at the
 midpoint field: descent while the predictor's velocity still correlates
 with the midpoint force, second order in `dt`, not the line search's
 guarantee.
