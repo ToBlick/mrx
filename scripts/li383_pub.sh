@@ -230,7 +230,7 @@ PLOTTER_ENV="PYTHONPATH=$WT PATH=$HOME/texlive/2026/bin/x86_64-linux:$PATH"
 
 sections() {  # sections NAME [TIMEOUT_MIN]: ic, final and the reconnection series of an arm, one call, one colour scale
     export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_relax.py" \
-        "$PUB/$1/B.h5 --fields ic,final,reconnect --planes 0,0.25,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
+        "$PUB/$1/B.h5 --fields ic,final,reconnect --planes 0,0.125,0.25,0.375,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
 }
 
 movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
