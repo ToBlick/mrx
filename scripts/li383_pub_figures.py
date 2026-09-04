@@ -732,12 +732,12 @@ def save_figure(fig, png_path, pgf=True):
 
 def ladder_figure(j):
     """The reconnection ladder's own trace figure, written into the run's
-    directory (``<run>/figures/ladder_traces.png`` and ``pgf/``): four
-    panels in the house style, three colours (black, purple, teal). The
-    force residual and the helicity share a panel on twin y axes, as do
-    ||J||/||B|| and beta; the energy released and the CFL number taken have
-    a panel each. Per-step traces are 100-step block means with the +-1 sd
-    band; dotted lines mark the reconnections."""
+    directory (``<run>/figures/ladder_traces.png`` and ``pgf/``): two
+    panels on twin y axes in the house style, black / purple / teal. Left:
+    the force residual (black, log, 100-step block means with the +-1 sd
+    band) with beta (purple). Right: the relative energy change (black,
+    block means) with the relative helicity change (teal). Dotted lines
+    mark the reconnections."""
     from mrx.plotting import P_COLOR, plot_twin_axis  # noqa: PLC0415 -- pulls jax; only this figure needs it
     black, purple, teal = LEFT["color"], P_COLOR, RIGHT["color"]
     q = j["qoi"]
@@ -746,33 +746,22 @@ def ladder_figure(j):
     E = np.asarray(j["trace"]["E"])
     marks = [ev["it"] / 1000.0 for ev in j.get("reconnect", [])]
     thin = dict(marker="none", linestyle="-", markersize=0)
+    xlab = r"step / $10^3$"
     with house_style():
-        fig, ax = plt.subplots(2, 2, figsize=(9.5, 6.4), constrained_layout=True)
-        ax = ax.ravel()
-        # (a) ||F||_M (block means, left, log) with (H - H_0) / H_0 (right, linear)
+        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
         x, m, lo, hi = blocked(F(j), log=True)
-        _, (a0, a0r) = plot_twin_axis(
-            m, (h - h[0]) / h[0], x_left=x / 1000.0, x_right=tq,
-            left_label=r"$\|F\|_M$", right_label=r"$(H - H_0) / H_0$",
+        _, (a, _) = plot_twin_axis(
+            m, q["beta_vol"], x_left=x / 1000.0, x_right=tq,
+            left_label=r"$\|F\|_M$", right_label=r"$\beta_{\mathrm{vol}}$",
             left_log=True, right_log=False, left_color=black, right_color=purple,
-            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=r"step / $10^3$", ax=ax[0])
-        a0.fill_between(x / 1000.0, lo, hi, color=black, alpha=0.2, lw=0)
-        # (b) ||J|| / ||B|| (left) with beta_vol (right)
+            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=xlab, ax=ax[0])
+        a.fill_between(x / 1000.0, lo, hi, color=black, alpha=0.2, lw=0)
+        x, m, _, _ = blocked((E - E[0]) / E[0], log=False)
         plot_twin_axis(
-            q["JoverB"], q["beta_vol"], x_left=tq, x_right=tq,
-            left_label=r"$\|J\| / \|B\|$", right_label=r"$\beta_{\mathrm{vol}}$",
-            left_log=False, right_log=False, left_color=black, right_color=purple,
-            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=r"step / $10^3$", ax=ax[1])
-        # (c) energy released, (d) CFL number taken: block means, teal
-        for a, y, label in ((ax[2], E[0] - E, r"$E_0 - E$"),
-                            (ax[3], np.asarray(j["trace"]["cfl"]), "CFL number taken")):
-            x, m, lo, hi = blocked(y, log=True)
-            a.plot(x / 1000.0, m, color=teal, lw=1.0)
-            a.fill_between(x / 1000.0, lo, hi, color=teal, alpha=0.2, lw=0)
-            a.set_yscale("log")
-            a.set_ylabel(label)
-            a.set_xlabel(r"step / $10^3$")
-            a.grid(True, which="both")
+            m, (h - h[0]) / h[0], x_left=x / 1000.0, x_right=tq,
+            left_label=r"$(E - E_0) / E_0$", right_label=r"$(H - H_0) / H_0$",
+            left_log=False, right_log=False, left_color=black, right_color=teal,
+            left_plot_kwargs=thin, right_plot_kwargs=thin, x_label=xlab, ax=ax[1])
         for a in ax:
             for xm in marks:
                 a.axvline(xm, color="0.6", ls=":", lw=0.6)
