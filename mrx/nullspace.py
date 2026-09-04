@@ -412,8 +412,17 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                 if gap_sweeps and k in (1, 2):
                     lam, sweeps = estimate_spectral_gap(
                         seq, operators, k, dirichlet, maxiter=gap_sweeps)
-                    line += (f",  lambda_1 ~ {lam:.2e} ({sweeps} sweeps)"
-                             f"  ->  ratio {rq / lam:.1e}")
+                    # The gap sweep is one shifted saddle solve; in float32 that
+                    # solve can diverge for a near-singular block (e.g. QA k=2),
+                    # returning a non-finite estimate. Report that plainly instead
+                    # of printing NaN; the estimate needs float64 to be reliable.
+                    if jnp.isfinite(lam):
+                        line += (f",  lambda_1 ~ {lam:.2e} ({sweeps} sweeps)"
+                                 f"  ->  ratio {rq / lam:.1e}")
+                    else:
+                        line += (f",  lambda_1 gap sweep did not converge "
+                                 f"({sweeps} sweeps) -- float32 shifted solve; "
+                                 f"use float64 for the gap")
                 print(line, flush=True)
 
     return operators
@@ -694,7 +703,13 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
                 preconditioner=shifted_preconditioner,
                 tol=inner_tol)
             w = project_out(w)
-            w = w / seq.l2_norm(w, k, dirichlet=dirichlet)
+            # M is SPD so w^T M w >= 0 exactly; in float32 the deflated
+            # cancellation can round it slightly negative, which would make
+            # l2_norm's sqrt return NaN and kill the gap estimate. Guard the
+            # sqrt and the division so a single-precision sweep stays finite.
+            wgram = seq.l2_norm_sq(w, k, dirichlet=dirichlet)
+            wnorm = jnp.sqrt(jnp.maximum(wgram, 0.0))
+            w = w / jnp.where(wnorm > 0.0, wnorm, 1.0)
             Lw = seq.apply_laplacian(
                 w, k, dirichlet=dirichlet, operators=operators)
             # w is M-normalised on the line above, so w @ Lw IS the Rayleigh
