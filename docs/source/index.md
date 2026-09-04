@@ -30,6 +30,7 @@ tutorials
 poisson
 relaxation
 cluster
+faq
 ```
 
 ```{toctree}
