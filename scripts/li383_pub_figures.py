@@ -748,6 +748,36 @@ def ladder_figure(j):
         plt.close(fig)
 
 
+def l5_figure(arms, figdir):
+    """The three-mesh reconnection arms (section 5i) overlaid: the force
+    residual (100-step block means, +-1 sd) and beta in per cent against the
+    step, one colour per mesh (black, teal, purple in the order given), the
+    reconnection dotted. ``l5_traces.png`` and ``pgf/``."""
+    from mrx.plotting import P_COLOR  # noqa: PLC0415 -- pulls jax; only this figure needs it
+    colours = [LEFT["color"], RIGHT["color"], P_COLOR]
+    with house_style():
+        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
+        for j, c in zip(arms, colours):
+            label = j["arm"].replace("reconnect_l5_", "").replace("_p2_g1", "")
+            label = {"h16": "(16, 32, 32)", "h32u": "(32, 32, 32)", "h32r": "(32, 32, 32) refined"}[label]
+            plot_trace(ax[0], F(j), color=c, lw=1.0, label=label)
+            q = j["qoi"]
+            ax[1].plot(np.asarray(q["it"]) / 1000.0, 100.0 * np.asarray(q["beta_vol"]), color=c, lw=1.0, label=label)
+        for ev in arms[0].get("reconnect", []):
+            ax[0].axvline(ev["it"], color="0.6", ls=":", lw=0.6)
+            ax[1].axvline(ev["it"] / 1000.0, color="0.6", ls=":", lw=0.6)
+        ax[0].set_yscale("log")
+        ax[0].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:g}"))
+        ax[0].set_ylabel(r"$\|F\|_M$")
+        ax[1].set_ylabel(r"$\beta_{\mathrm{vol}}$ $(\%)$")
+        for a in ax:
+            a.set_xlabel(r"step / $10^3$")
+            a.grid(True, which="both")
+        ax[0].legend(loc="upper right")
+        save_figure(fig, os.path.join(figdir, "l5_traces.png"))
+        plt.close(fig)
+
+
 def reconnect_figure(arms, ideal, figdir):
     """Residual, ||J||/||B|| and helicity against the step for the reconnect
     arms, the reconnections marked, the ideal run of the same rung for reference."""
@@ -949,9 +979,12 @@ def main():
             )
             if j is not None and j.get("reconnect")
         ]
-        full = [j for j in reconnect if "smoke" not in j["arm"]]
+        full = [j for j in reconnect if "smoke" not in j["arm"] and "_l5_" not in j["arm"]]
         if full:
             reconnect_figure(full, ideal16, pdir)
+        l5 = [j for j in reconnect if "_l5_" in j["arm"]]
+        if l5:
+            l5_figure(sorted(l5, key=lambda j: ["h16", "h32u", "h32r"].index(j["arm"].split("_")[2])), pdir)
         for j in full:
             if "ladder" in j["arm"]:
                 ladder_figure(j)
