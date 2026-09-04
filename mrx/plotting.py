@@ -16,6 +16,8 @@ makes the figures here from a ``scripts/relax.py`` run.
 
 from typing import Callable, Optional
 
+import os
+
 import jax
 import jax.numpy as jnp
 import matplotlib as mpl
@@ -252,6 +254,31 @@ def plot_crossections_separate(
 
 
 @house_style()
+def save_figure(fig, png_path, pgf=True, dpi=None):
+    """Save a figure as PNG and, with ``pgf``, as ``pgf/<stem>.pgf`` in a
+    subfolder beside it: the same figure through matplotlib's pgf backend,
+    vector LaTeX for lines and text, rasterized artists as a high-dpi PNG
+    that the backend writes next to the .pgf. Needs ``xelatex`` on PATH;
+    without it the PNG is still written and the PGF skipped with a message.
+    The including document must ``\\usepackage[strings]{underscore}`` (the
+    backend writes underscores raw) and ``\\providecommand{\\mathdefault}[1]{#1}``
+    (log-axis tick labels); both are put in the pgf preamble so the file's
+    own header lists them."""
+    fig.savefig(png_path, dpi=dpi)
+    if not pgf:
+        return
+    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
+    os.makedirs(pgf_dir, exist_ok=True)
+    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
+    try:
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
+            fig.savefig(pgf_path, backend="pgf", dpi=dpi)
+    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
+        if os.path.exists(pgf_path):
+            os.remove(pgf_path)   # a half-written .pgf is not a usable file
+        print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})", flush=True)
+
+
 def plot_twin_axis(
     left_y,
     right_y,

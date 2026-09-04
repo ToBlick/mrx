@@ -22,6 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 from mrx.plotstyle import LEFT, RIGHT, house_style  # noqa: E402
+from mrx.plotting import save_figure  # noqa: E402
 
 NFP = 3
 GPU_H = 1.0 / 3600.0
@@ -707,27 +708,6 @@ def reconnect_rows(j):
             f"{ev['beta_vol_before']:.4f} -> {ev['beta_vol_after']:.4f} | {w5} | {w6} | {ch} |"
         )
     return rows
-
-
-def save_figure(fig, png_path, pgf=True):
-    """PNG at the house dpi and, with ``pgf``, the same figure through the
-    pgf backend under ``pgf/`` beside it (vector LaTeX, needs xelatex on PATH; the
-    including document must ``\\usepackage[strings]{underscore}`` and
-    ``\\providecommand{\\mathdefault}[1]{#1}`` for the log-axis tick labels,
-    as for the section pages of scripts/poincare_relax.py)."""
-    fig.savefig(png_path)
-    if not pgf:
-        return
-    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
-    os.makedirs(pgf_dir, exist_ok=True)
-    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
-    try:
-        with matplotlib.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
-            fig.savefig(pgf_path, backend="pgf")
-    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
-        if os.path.exists(pgf_path):
-            os.remove(pgf_path)
-        print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})")
 
 
 def ladder_figure(j):
