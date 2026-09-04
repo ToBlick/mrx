@@ -256,7 +256,11 @@ walk_ladder() {
 
     local log_dir
     log_dir="$(mktemp -d)"
-    trap 'rm -rf "${log_dir}"' EXIT
+    # Expanded now, not at trap time: log_dir is local to this function, which
+    # has already returned by the time the subshell fires its EXIT trap, so the
+    # deferred form died on `set -u` and leaked the directory every sweep.
+    # shellcheck disable=SC2064
+    trap "rm -rf '${log_dir}'" EXIT
 
     local entry gen mt zone model api log kind
     for entry in "${CANDIDATES[@]}"; do
