@@ -2,21 +2,23 @@
 
 ## Can MRX run in free-boundary mode?
 
-No. MRX is a fixed-boundary code. The computational domain is the mapped
-logical cube, and its outer surface `r = 1` is the boundary of the input
-equilibrium: the last closed surface of a GVEC or VMEC file, or the surface
-of an analytic map. The magnetic field lives in the Dirichlet 2-form space,
-so `B · n = 0` on that surface, and the relaxation velocity is tangent to
-it, so the boundary never moves during a run. What MRX does not assume is
-anything *inside* the boundary: no nested surfaces, no flux label, no
-profile in a flux coordinate.
+Yes. Nothing in MRX identifies the computational boundary with the plasma
+boundary. The computational domain is the mapped logical cube, its outer
+surface `r = 1` is fixed, the field lives in the Dirichlet 2-form space
+with `B · n = 0` there, and the relaxation velocity is tangent to it. That
+surface can be the last closed surface of a GVEC or VMEC file, which is
+what the fixed-boundary tutorials do, but it can equally lie far out in
+vacuum. The relaxation then decides where the plasma ends: the pressure is
+the Lagrange multiplier of the constrained energy minimisation (next
+question), it is not prescribed on any surface, and it goes to zero where
+the field carries no current. Islands, chaotic regions and the plasma edge
+are all outcomes of the same run.
 
-A free-boundary calculation needs a vacuum region between the plasma and a
-coil field, and a plasma-vacuum interface that moves until the total
-pressure balances across it. MRX has neither. The closest thing you can do
-is choose a larger fixed boundary that encloses the plasma and a region of
-(near) vacuum; the relaxation then decides where the current and the
-pressure end up inside it, but the outer surface stays where you put it.
+What stays fixed is the computational boundary itself. A vacuum region is
+part of the same domain and the same spline spaces, and MRX has no coil
+model, so the field in the vacuum region is whatever the initial condition
+put there and the relaxation makes of it under `B · n = 0` on the outer
+surface. Choose that surface far enough out that it does not matter.
 
 ## What about pressure?
 
