@@ -43,3 +43,25 @@ def test_relaxation_lowers_the_energy(seq, b0):
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E[0], \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
     assert div < 1e3 * seq.tol * np.sqrt(2 * E[-1]), f"||div B|| {div:.2e}"
+
+
+def test_midpoint_conserves_helicity(seq, b0):
+    """Midpoint-implicit induction: Picard converges on every recorded
+    step, the energy falls, and helicity is conserved to the solves' tolerance."""
+    from mrx.relaxation import IntegrationScheme
+    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
+                     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
+                     eta_every=1, resistive=False, history_size=1,
+                     scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
+    state, traces = relaxation_loop(b0, ts, num_iters_outer=2, num_iters_inner=10,
+                                    dt0=1.0, force_tolerance=1e-12)
+    E = np.asarray(traces["energy"], dtype=float)
+    H = np.asarray(traces["helicity"], dtype=float)
+    it = traces["picard_iterations"][1:]
+    resid = traces["picard_residual"][1:]
+    print(f"\n  20 midpoint steps: E {E[0]:.6e} -> {E[-1]:.6e}, dH/2E0 "
+          f"{abs(H[-1] - H[0]) / (2 * E[0]):.2e}, increment evaluations {it}, residuals {resid}")
+    assert np.all(np.diff(E) < 0.0), f"energy not monotone: {E}"
+    assert max(resid) < ts.picard_tol, f"Picard did not converge: {resid}"
+    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E[0], \
+        f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
