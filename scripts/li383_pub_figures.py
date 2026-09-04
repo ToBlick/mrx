@@ -748,6 +748,31 @@ def ladder_figure(j):
         plt.close(fig)
 
 
+def anchor_figure(anchor, ms, g0, figdir):
+    """The one-flag departures from the anchor (section 5j): left, the force
+    residual of the L-BFGS histories m = 0 (steepest descent), 1 (the anchor),
+    3, 5; right, the anchor against gamma = 0. 100-step block means, +-1 sd.
+    Black is the anchor, teal / purple / grey the departures. ``anchor_traces.png``."""
+    from mrx.plotting import P_COLOR  # noqa: PLC0415 -- pulls jax; only this figure needs it
+    with house_style():
+        fig, ax = plt.subplots(1, 2, figsize=(9.5, 3.6), constrained_layout=True)
+        plot_trace(ax[0], F(anchor), color=LEFT["color"], lw=1.0, label="m = 1 (anchor)")
+        for (m, j), c in zip(ms, ("0.55", RIGHT["color"], P_COLOR)):
+            plot_trace(ax[0], F(j), color=c, lw=1.0, ls="--" if m == 0 else "-",
+                       label="steepest descent" if m == 0 else f"m = {m}")
+        plot_trace(ax[1], F(anchor), color=LEFT["color"], lw=1.0, label=r"$\gamma = 1$ (anchor)")
+        plot_trace(ax[1], F(g0), color=RIGHT["color"], lw=1.0, ls="--", label=r"$\gamma = 0$")
+        for a in ax:
+            a.set_yscale("log")
+            a.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda v, _: f"{v / 1000:g}"))
+            a.set_xlabel(r"step / $10^3$")
+            a.set_ylabel(r"$\|F\|_M$")
+            a.grid(True, which="both")
+            a.legend(loc="upper right")
+        save_figure(fig, os.path.join(figdir, "anchor_traces.png"))
+        plt.close(fig)
+
+
 def l5_figure(arms, figdir):
     """The three-mesh reconnection arms (section 5i) overlaid: the force
     residual (100-step block means, +-1 sd) and beta in per cent against the
@@ -896,6 +921,11 @@ def main():
     fix = {a: load(root, "li383_axisfix", a) for a in ["r16_p3_g0", "r24_p3_g0"]}
     hsweep = [j for j in (load(root, "li383_pub", a) for a in HSWEEP) if j is not None]
     ideal16 = load(root, "li383_pub", "h16_p2_g1")   # the reference rung of every comparison
+    anchor = load(root, "li383_pub", "h16_p2_g1")
+    ms = [(m, load(root, "li383_pub", f"h16_p2_g1_m{m}")) for m in (0, 3, 5)]
+    g0 = load(root, "li383_pub", "h16_p2_g0")
+    if anchor is not None and g0 is not None and all(j is not None for _, j in ms):
+        anchor_figure(anchor, ms, g0, figdir)
     if hsweep:
         hsweep_figure(hsweep, figdir)
     psweep = [j for j in (load(root, "li383_pub", a) for a in PSWEEP) if j is not None]

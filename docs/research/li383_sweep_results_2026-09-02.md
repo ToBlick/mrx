@@ -311,6 +311,21 @@ Tobias's question: does the mesh matter for the reconnected equilibrium, and doe
 - Cost: the refined mesh runs at 0.92 s/step against 1.15 for the uniform 32^3 (fewer CG iterations on its coarse outer cells), and 0.56 for the 16 mesh. Its one visible price is the shifted resistive solve: 59 CG iterations against 66 on the 16 mesh and 111 on uniform 32^3. 1.6 + 3.2 + 2.6 GPU-h.
 - The helicity price is exactly the 1% aimed for on all three (dH/H_0 = -1.002%, -0.999%, -1.001%): the price of a solve is a property of the field, not the mesh.
 
+### 5j. One-flag departures from the anchor: L-BFGS history and gamma = 0 (2026-09-04, `outputs/li383_pub/h16_p2_g1_m{0,3,5}`, `h16_p2_g0`)
+
+The anchor of every 1-D sweep is `h16_p2_g1`: (16,32,32) p = 2 on the ns = 49 reference, Clebsch IC, gamma = 1 with mu = 2.5e-4, L-BFGS m = 1, exact line search with the CFL cap 0.5, float32, 5000 steps. `li383_pub.sh anchor` runs it with one flag changed at a time, 5000 steps, no floor and no wall cap so every arm ends on the step count: `--method gradient` (m = 0, steepest descent with the same line search; L-BFGS refuses history 0), `--history 3`, `--history 5`, and `--velocity-smoothing-order 0` (gamma = 0). `figures/anchor_traces.png`.
+
+| arm | s/step | resid at 1000 / 2000 / 3000 / 4000 / 5000 (500-step means) | lowest 100-step block | dH / H_0 | J/B | beta_vol | mean line-search cosine |
+|---|---|---|---|---|---|---|---|
+| m = 0 (steepest descent) | 0.54 | 9.7e-4 / 7.3e-4 / 6.6e-4 / 6.1e-4 / 5.85e-4 | 5.81e-4 | -1.8e-5 | 0.648 | 0.0432 | 0.55 |
+| m = 1 (anchor) | 0.58 | 8.0e-4 / 6.6e-4 / 6.0e-4 / 5.6e-4 / 5.42e-4 | 5.39e-4 | -1.7e-5 | 0.645 | 0.0431 | 0.25 |
+| m = 3 | 0.58 | 8.1e-4 / 6.3e-4 / 5.7e-4 / 5.5e-4 / 5.39e-4 | 5.34e-4 | -1.8e-5 | 0.645 | 0.0431 | 0.20 |
+| m = 5 | 0.58 | 7.8e-4 / 6.3e-4 / 5.7e-4 / 5.5e-4 / 5.34e-4 | 5.29e-4 | -2.8e-5 | 0.645 | 0.0431 | 0.11 |
+| gamma = 0 | 0.50 | 1.7e-3 / 9.8e-4 / 1.1e-3 / 5.4e-4 / 5.13e-4 | 4.82e-4 | -1.1e-5 | 0.639 | 0.0428 | 0.15 |
+
+- The L-BFGS history does nothing measurable beyond m = 1: m = 3 and m = 5 end 1 to 2% below the anchor, inside the run-to-run scatter, at the same cost per step; steepest descent ends 8% above it and is 1000 steps behind along the whole descent. The 2026-08-28 decision (m = 1, the PR-CG equivalent) stands. The line-search cosine falls with m (0.55, 0.25, 0.20, 0.11): the longer history gives directions further from the force, without a better floor.
+- gamma = 0 ends lowest (5.13e-4, lowest block 4.82e-4) but is not a descent one can read: 1.7e-3 at 1000, back up to 1.1e-3 at 3000, then 5.4e-4 at 4000, with the 100-step scatter several times the gamma = 1 arms'. It is 14% cheaper per step (no smoothing solve) and its equilibrium (J/B 0.639, beta 0.0428) is within 1% of the anchor's. gamma = 1 remains the default for the reason it was chosen: a monotone, readable residual at a cost of 14% per step and a floor within the scatter of gamma = 0's.
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
