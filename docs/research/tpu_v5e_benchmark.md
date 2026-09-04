@@ -84,26 +84,33 @@ Both are fixed. The scan and the probes are now built once and cached
 between two step counts, reporting compile, per-step and per-call overhead as
 separate rows.
 
-What one timed call is actually made of, at `(8,12,12)` p=2 float32 on a local
-CPU -- the one configuration re-measurable while both the v5e ladder and the
-H200 queue were unavailable:
+Re-measured on the H200 at `(12,24,24)` p=3 float32, the same configuration the
+withdrawn table used, with the corrected code. What one timed call is actually
+made of:
 
-| component of one 4-step call | seconds |
+| component of one 10-step call | seconds |
 |---|---|
-| compile, first call only | 8.45 |
-| fixed work outside the scan, every call | 2.13 |
-| the four steps themselves | 1.35 |
-| **per step** | **0.338** |
+| compile, first call only | 82.54 |
+| fixed work outside the scan, every call | 9.02 |
+| the ten steps themselves | 3.52 |
+| **per step** | **0.352** |
 
-The old method divided a whole call by its step count. On this run that alone
-gives 3.48 / 4 = 0.87 s/step against a true 0.338, and before the library fix
-the call being divided also carried the 8.45 s compile. **The re-measurement of
-all three backends at `(12,24,24)` p=3
-is outstanding**, and until it lands this note makes no claim about relaxation
-throughput on any backend. The claim most at risk is the dispatch argument: XLA
-compile is far more expensive on a TPU than on a CPU or a GPU, so the v5e's
-apparent lead was flattered by the bug more than the other two columns were,
-and it may narrow or reverse.
+Against the 17.03 s/step this note published: **a factor of 48**. The old figure
+was `(82.5 + 9.0 + 5 x 0.35) / 5`, which is 18.7 -- the reported 17.03 to within
+the noise on a compile. It was one GPU compile with a step count divided into it,
+exactly as Tobi read it off the arithmetic, and his independent H100 figure of
+0.5 s/step is the corroboration.
+
+The setup rows re-measure at 60.7 s and 18.7 s against the 65.1 s and 19.4 s in
+the table above, so the harness itself was sound; the relaxation row was the
+only bad one.
+
+**The v5e and its host CPU are still outstanding** -- the ladder has been in
+total stockout, every rung returning `zonesAvailable empty`. Until they land
+this note makes no claim about relaxation throughput on a TPU. The bar is now
+explicit and it is high: **the v5e has to beat 0.352 s/step to win the step at
+all**, and its withdrawn 6.15 s was measured the same contaminated way, over a
+compile that is typically larger on a TPU than on a GPU.
 
 **The matvec and primitive numbers above are unaffected.** `matvec_bench.py`
 hoists its jit and reuses it across repeats, which is why those rows -- the
@@ -232,10 +239,10 @@ and is not affected:
   and 20 scatters fused into one `jit` cost 0.531 ms each against 0.533 ms
   unfused.
 
-So the mechanism is measured and the direction is argued for. The magnitude --
-whether it is enough to overturn a 12x per-matvec deficit over a whole step --
-is exactly what the re-measurement has to decide, and it is the claim most
-likely to change.
+So the mechanism is measured and the direction is argued for. The magnitude is
+not. Half the comparison is now back: the H200 runs a step in 0.352 s. A v5e
+step has to come in under that for any of the end-to-end argument to survive,
+and there is no longer any reason to assume it does.
 
 ## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
 
