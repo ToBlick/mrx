@@ -96,6 +96,44 @@ Everything else is a composition of applies and is never materialised:
 | strong derivative | `apply_incidence_matrix`: `G_k` with the polar corrections of [polar.md](polar.md) |
 | projections `P_{k->l}` | `apply_projection_matrix` |
 
+### Quadratic operators
+
+The nonlinear terms of the physics are pointwise products of two discrete
+forms, and MRX exposes each as an L2 load: the product is evaluated at the
+quadrature points from the reference components of its factors and
+integrated against the basis of the output space (`M_n^{-1}` of the load
+is the L2 projection). `DeRhamSequence.cross_product_load(w, u, n, m, k)`
+covers `w × u` for every `(n, m, k)` in `{1, 2}³`, `dot_product_load` the
+inner product of two vector forms onto the 0- or 3-forms,
+`scalar_product_load` the product of two scalar forms (0 or 3) onto either,
+and `scalar_vector_load` a scalar form times a vector form onto the 1- or
+2-forms; each has a `_values` twin that takes quadrature values, so a
+factor evaluated once can feed several loads (the force step evaluates `u`
+once for the cross product and the CFL number).
+
+In the language of forms these are wedge products and contractions, and
+that is what decides where the metric appears. In reference components a
+1-form is covariant (`a_i = DF^T a_phys`), a 2-form a contravariant density
+(`b^i = J DF^{-1} b_phys`), a 0-form a value and a 3-form a density (`J`
+times the value). The wedge products are metric-free in these components:
+`a¹ ∧ b¹` is the 2-form with components `a × b`, `a¹ ∧ b²` the 3-form with
+the value `a · b`, `f⁰ ∧ ω` the pointwise product. So is the contraction:
+`u × B` of a velocity `u` (a 2-form, `u_ref = J ξ̇`) with the flux 2-form
+`B` is `-i_u B`, the 1-form `(B × u)/J`, which is why the induction
+`dB/dt = curl(u × B)` is the Lie derivative `L_u B = d i_u B` of a closed
+form and conserves flux exactly on the discrete level. The metric enters
+only where a Hodge star does (two 1-forms dotted need `G^{-1}`, two 2-forms
+crossed give a 1-form `(a × b)/J` and dotted need `G/J²`, a 3-form read as
+a value needs `1/J`) and in the pairing with the output basis: a 1-form
+against the 1-form basis carries `J G^{-1}`, a 2-form against the 2-form
+basis `G/J`, a 1-form against the 2-form basis or a 2-form against the
+1-form basis nothing (the `P_12` pairing of section 2), a value against
+the 0-form basis `J`, against the 3-form basis nothing. The mass matrices
+are the special case of `scalar_vector_load` and `scalar_product_load` with
+the constant 1 as one factor, the projection masses `P_12` and `P_03`
+likewise across degrees; `test/test_products.py` checks every case
+against them.
+
 ## 3. Extraction
 
 Assembly runs on the unconstrained tensor-product basis. An extraction

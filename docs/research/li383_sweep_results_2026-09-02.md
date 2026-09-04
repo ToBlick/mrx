@@ -1,6 +1,6 @@
 # li383 (NCSX) relaxation: sweep results and seeded islands -- 2026-09-02
 
-Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs, p-sweep at (16,32,32) complete (52 GPU-h); resistive pulses and the pulse controller in section 5g. Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
+Status: 2026-09-03: reruns, seeded arms, floor-1e-4 arms, gamma = 1 h-sweep at p = 2, resistivity sweep, B-only helicity pairs, p-sweep at (16,32,32) complete (52 GPU-h); resistive pulses in section 5g; the reconnect series (stall -> checkpoint -> reconnect, the controller as decided) in section 5h, full arm done (three stalls, widths in the table). Seeded arms follow the (n, 2n, 2n) rule of 2026-09-02; the reruns keep the (n, 2n, n) meshes of the 2026-08 sweep they reproduce. `outputs/li383_pub/README.md` explains that folder.
 Read it for: every li383 relaxation number that exists, which arms back which figure, the seeded-island result.
 Do not read it for: the solver internals (`shifted_split_2026-09-02.md`) or the wout reader (`docs/source/concepts/`).
 
@@ -200,6 +200,7 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 - The B-only term is a tenth of it at p = 2 and the larger term only at p = 1 on the coarse mesh (2.4x). H_0 = 5.0e-3 in every arm.
 - A clean demonstration of "H conserves, B does not" needs either p = 1 or a helicity-conserving time integrator (midpoint in A) as the baseline. Not done. The dt^2 attribution is argued, not measured; a float64 H-form arm with the CFL cap forcing dt down by 4 would confirm it (about 1.3 GPU-h).
 - Cost: 0.8 + 1.3 + 1.3 + 0.1 + 0.1 GPU-h.
+- Follow-up 2026-09-04 (branch implicit-midpoint, `docs/research/implicit_midpoint_2026-09-04.md` section 4.1, `outputs/midpoint_sweep/{ex,mp}_small_f64_bonly`): with the midpoint-implicit induction step on (8,16,16) p = 2 float64 the first-step time error disappears in B-only as well (-2.6e-9 against -2.5e-7 explicit), and what remains, shared by both B-only arms, is the projection error of the pairing int (u x B_mid) . (H_dir - B_mid): a state-dependent excursion to -1.3e-6 that returns to about zero by step 1000, not a monotone leak; Dirichlet-H midpoint holds 5e-12 throughout. The reading above (B-only at or below explicit at p >= 2) was the time error masking the projection error.
 
 ### 5g. Resistive pulses after an ideal phase, and the pulse controller (2026-09-03, `outputs/li383_pulse/`)
 
@@ -226,8 +227,104 @@ The comparison at equal dose (the trace's int eta dt; the tanh rungs' is 5.5e-5 
 
 - The dose is the controlling variable and the timing is nearly irrelevant: on the dose axis (`li383_pulse/figures/pulse_islands.png`) the pulses sit on the tanh curve for residual, J/B, helicity (0.8 of helicity lost per unit dose either way) and the 3/5 island width at the two smaller doses, and slightly below it at the largest. Three pulses of 1.1e-4 do what one of 3.1e-4 does. There is no selectivity to gain from timing; a single large solve also leaves more chaotic lines (9 vs 5).
 - Mechanism (`pulse_traces.png`): a pulse drops J/B, beta and helicity in one step and kicks the residual up by 3x, since the diffused field is out of balance around the former sheets; the descent needs about a thousand steps to work that off and rebuilds sheets elsewhere, whereas a small continuous eta reconnects the sheets as they form. Only the operator would buy selectivity (hyper-resistivity, k^4 against k^2).
-- Machinery that came out of it and stays: the pulse schedule; `--checkpoint / --restart` (the full descent state as an equinox pytree with the step number, `equinox.tree_serialise_leaves`; verified by a 120 + 80 step chain against a 200-step run: identical schedule and step accounting, trajectories differing only by the run-to-run round-off of the GPU descent, which already separates two identical 120-step runs by 18%); and `--pulse-adaptive`, a controller that fires a pulse when the residual stalls (200-step block mean down by less than 5% over 1000 steps), snapshots the state in memory, judges the pulse at the next stall against the floor before it, reverts and halves the dose when it did not help, and stops at a helicity budget. Smoke-tested at (8,16,16) (fire / judge / revert / dose halving all exercised); not run at scale, because the dose finding above says the decision it automates is a budget, not a timing: every dose lowers the floor and costs helicity at a nearly flat exchange rate (0.7% of H_0 buys 17% of the floor, the next 2% another 16%, the next 6% another 17%). Open: redesign as a budget controller or drop it.
+- Machinery that came out of it and stays: the pulse schedule; `--checkpoint / --restart` (the full descent state as an equinox pytree with the step number, `equinox.tree_serialise_leaves`; verified by a 120 + 80 step chain against a 200-step run: identical schedule and step accounting, trajectories differing only by the run-to-run round-off of the GPU descent, which already separates two identical 120-step runs by 18%). An accept/reject pulse controller (fire at a stall, judge at the next, revert when it did not help) was smoke-tested and dropped the same day: the dose finding says the decision it automates is a budget, not a timing (0.7% of H_0 buys 17% of the floor, the next 2% another 16%, the next 6% another 17%). Section 5h has what replaced it.
 - Cost: 4 x 0.8 GPU-h plus 0.3 for the smokes.
+
+### 5h. The reconnect series: checkpoint -> reconnect every K steps (2026-09-03, `outputs/li383_pulse/reconnect_*`)
+
+Late 2026-09-03 the stall test was retired for a plain interval, `--reconnect-every K` (see the end of this section: the ideal descent is a power law, nothing stalls). The arms below ran with the stall test; on disk they have since been renamed to the interval layout (`reconnect/<k>/` instead of `stalls/<k>/`, `reconnect<k>` tags in the sections, `results["reconnect"]` with `k` and `resid`), the wording of the runs is kept as it was.
+
+Decided 2026-09-03 (Tobias): no accept/reject. The descent runs until it stalls, the stalled equilibrium is checkpointed, one resistive solve reconnects it, the descent continues; the outcome is a series of stalled ideal equilibria at decreasing helicity, and the user picks. `--reconnect` in the driver (b449e97): stalled = the block mean of the residual (blocks of a fifth of `--stall-steps`, default 1000) dropped by less than `--stall-tol` (5%) over `--stall-steps`, on the history since the last reconnection; stall k writes `<out>/stalls/<k>/B.h5` (field and pressures in the layout of `B.h5`, so `poincare_relax.py` reads it) and `state.eqx` (a `--restart` file, so any stall can be continued with another dose); the dose is `eps = c h^2`, `c = --reconnect-eps` (0.01: a diffusion length of a tenth of a cell, the scale the h-independent floor of 5c is made of), one backward-Euler solve, then `initial_state` on the diffused field (fresh L-BFGS pair). `results["stalls"]` has step, floor, eps, |F|, helicity, ||J||/||B|| and the pressures before and after each solve. The helicity price of a solve is exact, dH = -2 eps int J.B, so it could also be set from a helicity fraction per stall; the grid-scale rule was kept because it scales with h.
+
+Inner/outer loop: the ideal descent is the inner loop (helicity conserved, terminates on the stall test), the reconnection is the outer loop (changes the topology, restarts the inner loop from a checkpoint). Host-side Python for the outer loop is the right split: the stall test is a scalar over a 1000-step history, the checkpoint is I/O, the restart changes the optimiser state; none of it belongs inside the jit. What the driver does badly is dispatching one jitted step per Python iteration with a host sync per step (needed for its per-step trace); `run_relaxation` in the library already scans N steps per dispatch with a callback, and the driver should become that callback once the arms are done.
+
+Smoke `reconnect_smoke_prechunk` (the per-step driver, stall window 300 steps), (8,16,16) p = 2 gamma = 0, 3000 steps, eps = 1.6e-4 (c = 0.01 at h = 1/8), 0.14 s/step:
+
+| stall | step | floor | |F| before -> after | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after |
+|---|---|---|---|---|---|---|
+| 1 | 1040 | 5.8e-4 | 8.0e-4 -> 2.0e-3 | 5.007e-3 -> 4.888e-3 (-2.4%) | 0.643 -> 0.554 | 0.0415 -> 0.0353 |
+| 2 | 1924 | 3.3e-4 | 3.4e-4 -> 1.7e-3 | 4.888e-3 -> 4.776e-3 (-2.3%) | 0.580 -> 0.511 | 0.0368 -> 0.0317 |
+| 3 | 2739 | 2.9e-4 | 2.9e-4 -> 1.5e-3 | 4.776e-3 -> 4.671e-3 (-2.2%) | 0.530 -> 0.475 | 0.0329 -> 0.0287 |
+
+- Each reconnection lowers the next floor (5.8e-4 -> 3.3e-4 -> 2.9e-4) with diminishing returns (x1.7, then x1.2) at a flat helicity price (2.2 .. 2.4% of H_0 per solve at this coarse mesh, where eps = c h^2 is 4x the n = 16 value); between stalls the descent recovers ||J||/||B|| and beta partly (0.554 -> 0.580, 0.0353 -> 0.0368) and then stalls lower. The reconnected equilibria carry less current and less pressure, which is the physics of the dose (5e), now as a discrete series. A solve takes 44 MINRES iterations and moves the field by 0.2%.
+Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 0.57 s/step), the per-step driver's detector (5% over 1000 steps), eps = 3.9e-5 (c = 0.01 at h = 1/16: the pulse1.5e-7 dose, per stall). Widths from the sections of the stalled fields (`poincare/poincare_stall<k>_*`: `poincare_relax.py --fields ic,final,stalls` traces them in one call with the IC and the final field, so all share one iota and one p colour scale; `li383_pub.sh sections NAME`):
+
+| stall | step | floor | |F| before -> after | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 3948 | 5.55e-4 | 5.4e-4 -> 8.1e-4 | 5.0111e-3 -> 4.9794e-3 (-0.63%) | 0.646 -> 0.609 | 0.0432 -> 0.0402 | 0.021 | 0 | 4 |
+| 2 | 5691 | 4.61e-4 | 4.4e-4 -> 7.5e-4 | 4.9793e-3 -> 4.9482e-3 (-0.62%) | 0.618 -> 0.590 | 0.0407 -> 0.0384 | 0.044 | 0 | 1 |
+| 3 | 7423 | 4.24e-4 | 4.1e-4 -> 6.9e-4 | 4.9482e-3 -> 4.9177e-3 (-0.62%) | 0.599 -> 0.574 | 0.0389 -> 0.0369 | 0.059 | 0.008 | 5 |
+
+- The first stall IS the ideal floor of the rung (5.55e-4 against the 5.4e-4 window mean of `h16_p2_g1`), reached at step 3948; the series then reads 5.55e-4 -> 4.61e-4 -> 4.24e-4 (-17%, -8%) at a flat price of 0.62% of H_0 per solve. The exchange rate is the dose sweep's: 0.6% of H_0 for a 17% floor drop was the tanh 1e-8 rung's (0.7% for 17%). The residual kick is 1.5x here (2.5x at n = 8: the dose per cell is 4x smaller), the field moves by 0.08% per solve, MINRES takes 64 iterations.
+- Island widths follow the cumulative dose: 3/5 at 0.021 (the ideal state; `h16_p2_g1` has 0.027 at 5000), 0.044 after one solve (dose 3.9e-5; pulse1.5e-7 at 3.4e-5 gave 0.041), 0.059 after two (7.8e-5; between the pulse arms at 3.4e-5 and 1.1e-4), 0.067 at step 8000 after three (1.2e-4; pulse5e-7 at 1.1e-4 gave 0.066), the 1/2 chain still closed. Each stalled equilibrium is an ideal fixed point at its own helicity, which the sections show as nested surfaces with one growing chain: the paper's "pick your equilibrium" series.
+- Between stalls the descent recovers a third of the current the solve removed (0.609 -> 0.618, 0.590 -> 0.599) and about a third of beta, then stalls lower. Cost 1.3 GPU-h.
+- The driver has since moved to the chunked loop (`docs/research/handoff_2026-09-03_chunked_relaxation_loop.md`, b54a0ff): `--chunk 500` is the single cadence, verified against this arm's driver on the same node (0.56 s/step both, chunk means within 1%); the arm itself ran on the per-step driver.
+
+**Nothing stalls: the ideal descent is a power law (2026-09-03, late).** Tobias observed that the log-log slope of the residual looks constant; checked on every ideal gamma = 1 li383 arm (`li383_pub`, `li383_sweep`, the ideal part of this arm; 500-step block means, local exponent between consecutive blocks, fit over steps >= 1000; `outputs/li383_pulse/figures/ideal_slopes_g1.png`, job-scratch `slopes.py`):
+
+| arm | mesh, p | a (fit) | first half | second half |
+|---|---|---|---|---|
+| h8_p2_g1 | (8,16,16) 2 | 0.34 | 0.37 | 0.29 |
+| h12_p2_g1 | (12,24,24) 2 | 0.30 | 0.33 | 0.25 |
+| h16_p2_g1 | (16,32,32) 2 | 0.20 | 0.22 | 0.15 |
+| reconnect_h16_p2_g1, steps < 3948 | (16,32,32) 2 | 0.20 | | 0.21 |
+| h24_p2_g1 | (24,48,48) 2 | 0.22 | 0.23 | 0.23 |
+| h32_p2_g1 | (32,64,64) 2 | 0.23 | 0.31 | 0.10 |
+| h16_p1_g1 | (16,32,32) 1 | 0.66 | 0.78 | 0.46 |
+| h16_p3_g1 | (16,32,32) 3 | 0.15 | 0.20 | 0.07 |
+| r12 / r16 / r24_p3_g1 | (n,2n,n) 3 | 0.50 / 0.38 / 0.27 | | constant |
+
+- `resid ~ t^-a` with a constant local exponent (block-to-block scatter about 0.05) to the end of every run; no plateau. The four blocks before this arm's first "stall" read 0.21, 0.19, 0.21, 0.20: the stall test fired because the drop per 1000 steps of a t^-0.2 law crosses 5% at step 4000 (t = a N / tol), not because anything flattened. A few (n,2n,2n) arms drift to 0.1 in their last 1000 steps, within two block noises. gamma = 0 arms are not power laws at this block length (local exponent between -1 and 2 from block to block).
+- Consequence: a stall test at any tolerance is a step count in disguise, scaling the tolerance with the chunk only fixes that count, and an exponent test would never fire. The interval is now chosen outright: `--reconnect-every K`, rounded to whole chunks, no solve on the last chunk; the launcher's full arm is `--reconnect-every 2000` on 8000 steps (to be rerun for the paper), the smoke `--reconnect-every 600` at `--chunk 100` (job 17458707: reconnections at 600 / 1200 / 1800 / 2400, none on the last chunk, 2.4 / 2.3 / 2.2 / 2.1% of H_0 per solve, the same prices as the per-step smoke at its detector's steps). The series should be described as ideal equilibria sampled along a power-law descent at a chosen interval, not as stalled equilibria.
+- The reconnections still buy time: the first interval's t^-0.2 law would need about 16000 steps to reach the residual this arm had at step 7000 after two solves, at 1.2% of H_0.
+
+**The ladder, `reconnect_ladder_h16_p2_g1` (2026-09-04, job 17461050, `li383_pub.sh reconnect ladder`).** The same rung, `--reconnect-every 2000 --reconnect-eps 0.02 --steps 18000`: eight solves of eps = 7.8e-5 (1.2% of H_0 each) from step 0 at a uniform interval, nine ideal equilibria (eight checkpoints under `reconnect/<k>/` plus the final field), 18000 steps in 10063 s (0.56 s/step). Sections of all ten fields in one call (`poincare/poincare_{ic,reconnect<k>,final}_zeta*.png`, one colour scale); composite `li383_pulse/figures/ladder_zeta0.png`; the run's own trace figure in its directory, `reconnect_ladder_h16_p2_g1/figures/ladder_traces.png` with `figures/pgf/ladder_traces.pgf` (`li383_pub_figures.py ladder_figure`, house style, black / purple / teal: one panel, the residual on the left axis, beta and the relative helicity change in per cent on the right axis; block means with sd, reconnections dotted); `li383_pulse/figures/reconnect_traces.png` has it next to the three-rung arm and the ideal run. Since 2026-09-04 every `.pgf` and its `-img*.png` companions live in a `pgf/` subfolder of the figure or section directory.
+
+| k | step | resid (chunk mean before) | H before -> after (dH / H_0) | J/B before -> after | beta_vol before -> after | (5,1) width | (6,1) width | chaotic |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 2000 | 6.55e-4 | 5.0112e-3 -> 4.9492e-3 (-1.24%) | 0.648 -> 0.586 | 0.0433 -> 0.0383 | 0.020 | 0 | 2 |
+| 2 | 4000 | 4.53e-4 | 4.9493e-3 -> 4.8896e-3 (-1.21%) | 0.601 -> 0.556 | 0.0392 -> 0.0355 | 0.057 | 0.007 | 5 |
+| 3 | 6000 | 4.04e-4 | 4.8895e-3 -> 4.8320e-3 (-1.18%) | 0.570 -> 0.531 | 0.0363 -> 0.0333 | 0.077 | 0.014 | 10 |
+| 4 | 8000 | 3.83e-4 | 4.8319e-3 -> 4.7762e-3 (-1.15%) | 0.543 -> 0.510 | 0.0340 -> 0.0314 | 0.099 | 0.021 | 9 |
+| 5 | 10000 | 3.50e-4 | 4.7761e-3 -> 4.7221e-3 (-1.13%) | 0.519 -> 0.490 | 0.0320 -> 0.0297 | 0.117 | 0.028 | 4 |
+| 6 | 12000 | 3.51e-4 | 4.7220e-3 -> 4.6695e-3 (-1.11%) | 0.499 -> 0.473 | 0.0302 -> 0.0282 | 0.134 | 0.014 | 4 |
+| 7 | 14000 | 3.35e-4 | 4.6694e-3 -> 4.6183e-3 (-1.09%) | 0.481 -> 0.457 | 0.0287 -> 0.0268 | 0.148 | 0.012 | 4 |
+| 8 | 16000 | 3.21e-4 | 4.6182e-3 -> 4.5684e-3 (-1.08%) | 0.464 -> 0.442 | 0.0272 -> 0.0256 | 0.164 | 0 | 8 |
+| final | 18000 | 3.07e-4 | 4.5684e-3 (-8.84% in all) | 0.449 | 0.0260 | 0.180 | 0.023 | 5 |
+
+- The 3/5 chain grows monotonically with the cumulative dose, 0.020 -> 0.164 over the eight rungs and 0.180 at the end (dose 6.25e-4, the tanh 1e-7 arm's); the 1/2 chain opens to 0.028 at rung 5 and the width measure loses it afterwards (the axis iota falls from 0.60 to 0.54 as current leaves, moving the resonance outward into the 3/5 chain's neighbourhood; the sections show small 1/2 ovals at r = 0.5 from rung 4 on). Rung 2 sits at the dose of the three-rung arm's rung 3 (7.8e-5) and gives the same width, 0.057 against 0.059.
+- The residual level before each solve falls with the dose and flattens: 6.55, 4.53, 4.04, 3.83, 3.50, 3.51, 3.35, 3.21 (x1e-4), final 3.07e-4; the kick per solve is 2.1x at this c (1.5x at c = 0.01) and is gone within the first 500-step chunk. The helicity price per rung is exact and shrinks slightly with the current, 1.24% -> 1.08%; J/B goes 0.648 -> 0.449, beta_vol 0.043 -> 0.026, and between solves the descent recovers about a quarter of the current the solve removed.
+- Cost 2.8 GPU-h for the run, 12 min for the ten sections.
+
+### 5i. Three meshes, one 1% reconnection (2026-09-04, `outputs/li383_pulse/reconnect_l5_*`)
+
+Tobias's question: does the mesh matter for the reconnected equilibrium, and does radial refinement around the resonant surfaces buy anything? Three arms, 10000 steps, gamma = 1, one solve at step 5000 at eps = 6.25e-5 (the dose that costs 1% of H_0: the price is linear in eps on this rung, 3.9e-5 -> 0.63%, 7.8e-5 -> 1.24%; `--reconnect-eps` 0.016 at n_r = 16, 0.064 at n_r = 32 since eps = c h^2), `li383_pub.sh reconnect ladder5k`. The refined mesh (`--r-refine 0.47:0.62:6,0.68:0.94:15`, `mrx.geometry.radial_knots`) keeps the n_r = 16 spacing (0.064) outside two windows and puts 6 cells of 0.025 around iota = 1/2 and 15 cells of 0.017 around 3/5, 30 radial cells in all; `figures/mesh/mesh_2d.png` draws the three grids in the mapped geometry with each mesh's final section below the axis, `mesh_3d.png` the boundary. Sections on five planes (the new default).
+
+| arm | mesh | s/step | resid at 5000 (before the solve) | resid final | (5,1) width before / after | (6,1) | chaotic before / after | dH / H_0 | J/B final | beta_vol final |
+|---|---|---|---|---|---|---|---|---|---|---|
+| reconnect_l5_h16_p2_g1 | (16,32,32) | 0.56 | 5.43e-4 | 4.49e-4 | 0.023 / 0.049 | 0 | 3 / 4 | -1.00% | 0.609 | 0.0398 |
+| reconnect_l5_h32u_p2_g1 | (32,32,32) | 1.15 | 5.46e-4 | 4.55e-4 | 0.024 / 0.050 | 0 | 4 / 4 | -1.00% | 0.607 | 0.0396 |
+| reconnect_l5_h32r_p2_g1 | (32,32,32) refined | 0.92 | 5.83e-4 | 4.39e-4 | 0.025 / 0.050 | 0 | 4 / 2 | -1.00% | 0.608 | 0.0397 |
+
+- The reconnected equilibrium is mesh-converged at this resolution: the 3/5 island width after the solve is 0.049 / 0.050 / 0.050, the current ratio 0.609 / 0.607 / 0.608, beta 0.0398 / 0.0396 / 0.0397, all within 1%; the ideal width before the solve 0.023 / 0.024 / 0.025. The 1/2 chain stays closed on every mesh at this dose.
+- The residual level is not a mesh discriminator either: 5.4 / 5.5 / 5.8e-4 before the solve, 4.5 / 4.6 / 4.4e-4 after; the refined mesh ends lowest by 3%, within the run-to-run scatter. The ideal floor is set by the file (section 5c), and doubling n_r does not move it.
+- Cost: the refined mesh runs at 0.92 s/step against 1.15 for the uniform 32^3 (fewer CG iterations on its coarse outer cells), and 0.56 for the 16 mesh. Its one visible price is the shifted resistive solve: 59 CG iterations against 66 on the 16 mesh and 111 on uniform 32^3. 1.6 + 3.2 + 2.6 GPU-h.
+- The helicity price is exactly the 1% aimed for on all three (dH/H_0 = -1.002%, -0.999%, -1.001%): the price of a solve is a property of the field, not the mesh.
+
+### 5j. One-flag departures from the anchor: L-BFGS history and gamma = 0 (2026-09-04, `outputs/li383_pub/h16_p2_g1_m{0,3,5}`, `h16_p2_g0`)
+
+The anchor of every 1-D sweep is `h16_p2_g1`: (16,32,32) p = 2 on the ns = 49 reference, Clebsch IC, gamma = 1 with mu = 2.5e-4, L-BFGS m = 1, exact line search with the CFL cap 0.5, float32, 5000 steps. `li383_pub.sh anchor` runs it with one flag changed at a time, 5000 steps, no floor and no wall cap so every arm ends on the step count: `--method gradient` (m = 0, steepest descent with the same line search; L-BFGS refuses history 0), `--history 3`, `--history 5`, and `--velocity-smoothing-order 0` (gamma = 0). `figures/anchor_traces.png`.
+
+| arm | s/step | resid at 1000 / 2000 / 3000 / 4000 / 5000 (500-step means) | lowest 100-step block | dH / H_0 | J/B | beta_vol | mean line-search cosine |
+|---|---|---|---|---|---|---|---|
+| m = 0 (steepest descent) | 0.54 | 9.7e-4 / 7.3e-4 / 6.6e-4 / 6.1e-4 / 5.85e-4 | 5.81e-4 | -1.8e-5 | 0.648 | 0.0432 | 0.55 |
+| m = 1 (anchor) | 0.58 | 8.0e-4 / 6.6e-4 / 6.0e-4 / 5.6e-4 / 5.42e-4 | 5.39e-4 | -1.7e-5 | 0.645 | 0.0431 | 0.25 |
+| m = 3 | 0.58 | 8.1e-4 / 6.3e-4 / 5.7e-4 / 5.5e-4 / 5.39e-4 | 5.34e-4 | -1.8e-5 | 0.645 | 0.0431 | 0.20 |
+| m = 5 | 0.58 | 7.8e-4 / 6.3e-4 / 5.7e-4 / 5.5e-4 / 5.34e-4 | 5.29e-4 | -2.8e-5 | 0.645 | 0.0431 | 0.11 |
+| gamma = 0 | 0.50 | 1.7e-3 / 9.8e-4 / 1.1e-3 / 5.4e-4 / 5.13e-4 | 4.82e-4 | -1.1e-5 | 0.639 | 0.0428 | 0.15 |
+
+- The L-BFGS history does nothing measurable beyond m = 1: m = 3 and m = 5 end 1 to 2% below the anchor, inside the run-to-run scatter, at the same cost per step; steepest descent ends 8% above it and is 1000 steps behind along the whole descent. The 2026-08-28 decision (m = 1, the PR-CG equivalent) stands. The line-search cosine falls with m (0.55, 0.25, 0.20, 0.11): the longer history gives directions further from the force, without a better floor.
+- gamma = 0 ends lowest (5.13e-4, lowest block 4.82e-4) but is not a descent one can read: 1.7e-3 at 1000, back up to 1.1e-3 at 3000, then 5.4e-4 at 4000, with the 100-step scatter several times the gamma = 1 arms'. It is 14% cheaper per step (no smoothing solve) and its equilibrium (J/B 0.639, beta 0.0428) is within 1% of the anchor's. gamma = 1 remains the default for the reason it was chosen: a monotone, readable residual at a cost of 14% per step and a floor within the scatter of gamma = 0's.
 
 ## 6. Figures for the paper
 
@@ -243,6 +340,7 @@ The comparison at equal dose (the trace's int eta dt; the tanh rungs' is 5.5e-5 
 10. Resistivity (`li383_eta/figures/eta_islands.png` and `eta_traces.png`): island width at 1/2 and 3/5 vs eta_max, seeded and unseeded; traces of residual, J/B, beta, helicity, energy vs step per rung; the zeta = 0.5 section of `eta1e-7`.
 11. Helicity without H: one table row per pair (section 5f).
 11b. Pulses (`li383_pulse/figures/pulse_islands.png`): island width vs dose, pulse vs tanh; one sentence that the dose is what matters.
+11c. Reconnect series (`li383_pulse/figures/reconnect_traces.png` and the stall table): the residual with the stalls marked, one section per stalled equilibrium; the paper's 'pick your equilibrium' figure.
 12. Optional solver row: smoothing solve on li383 p = 3, MINRES 2134 / 8478 / 20362 at (8,16,8) / (12,24,12) / (16,32,16) vs split + shifted-stiffness atom 145 / 249 (`shifted_split_2026-09-02.md`).
 
 Not shown: `r24_p3_g0` (not floored in the step budget), `r16_p4_g0` (worst floor, 7.3e-3).
