@@ -197,19 +197,20 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     # equilibria; the cumulative dose 6.2e-4 after eight is the tanh 1e-7
     # arm's, so the ladder spans ideal to fully reconnected. 18000 steps,
     # about 3 h at 0.57 s/step.
-    # 2026-09-04 ladder5k: three meshes, a solve every 5000 steps, four solves,
-    # the ladder's total dose (6.25e-4 = 4 x 1.5625e-4): eps = c h^2 with
-    # h = 1 / n_r, so c = 0.04 at n_r = 16 and 0.16 at n_r = 32. Meshes:
+    # 2026-09-04 ladder5k: three meshes, 10000 steps with ONE solve at 5000
+    # at the dose that costs 1% of H_0 (the price is linear in eps on this
+    # rung: 3.9e-5 -> 0.63%, 7.8e-5 -> 1.24%, so eps = 6.25e-5); eps = c h^2
+    # with h = 1 / n_r, so c = 0.016 at n_r = 16 and 0.064 at n_r = 32. Meshes:
     # (16,32,32); (32,32,32) uniform; (32,32,32) with the radial cells of the
     # n_r = 16 grid outside two windows and 6 cells of 0.025 + 15 cells of 0.017 inside
-    # [0.47, 0.62] (iota = 1/2) and [0.68, 0.94] (iota = 3/5), the outer chain finer. 25000 steps.
+    # [0.47, 0.62] (iota = 1/2) and [0.68, 0.94] (iota = 3/5), the outer chain finer.
     export EXTRA_ENV="PYTHONPATH=$WT"
-    L5="--floor-tol 0 --steps 25000 --reconnect-every 5000"
+    L5="--floor-tol 0 --steps 10000 --reconnect-every 5000"
     R32="--r-refine 0.47:0.62:6,0.68:0.94:15"
     if [ "${1:-}" = ladder5k ]; then
-        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 $L5 --reconnect-eps 0.04 --out $PUB/reconnect_l5_h16_p2_g1" 600
-        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $L5 --reconnect-eps 0.16 --out $PUB/reconnect_l5_h32u_p2_g1" 1440
-        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --reconnect-eps 0.16 --out $PUB/reconnect_l5_h32r_p2_g1" 1440
+        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 $L5 --reconnect-eps 0.016 --out $PUB/reconnect_l5_h16_p2_g1" 240
+        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $L5 --reconnect-eps 0.064 --out $PUB/reconnect_l5_h32u_p2_g1" 480
+        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --reconnect-eps 0.064 --out $PUB/reconnect_l5_h32r_p2_g1" 540
     elif [ "${1:-}" = refine_smoke ]; then
         # The refined radial grid end to end at n_r = 16: 5 + 5 window cells, 300 steps, one solve.
         submit relax refine_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,16,16 --p 2 $G1_16 --r-refine 0.45:0.65:5,0.68:0.92:5 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-eps 0.04 --out $PUB/refine_smoke" 40
