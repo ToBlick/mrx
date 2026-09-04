@@ -57,7 +57,7 @@ ap.add_argument("--seed", default="6,1,0.544,0.1",
                 help='resonant seed "m,n,rho0,width"; (6,1) is the iota=1/2 surface')
 ap.add_argument("--seed-eps", type=float, default=1e-2,
                 help="resonant normal field |dB^rho|/|B^zeta| at rho0; width ~ sqrt(eps)")
-ap.add_argument("--outer", type=int, default=40, help="outer (recorded) iterations")
+ap.add_argument("--outer", type=int, default=20, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-3,
                 help="stop once ||F|| falls below this")

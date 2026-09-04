@@ -46,7 +46,7 @@ ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
 ap.add_argument("--ns", default="12,24,12")
 ap.add_argument("--p", type=int, default=3)
 ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
-ap.add_argument("--outer", type=int, default=40, help="outer (recorded) iterations")
+ap.add_argument("--outer", type=int, default=20, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-3,
                 help="stop once ||F|| falls below this")

@@ -48,7 +48,7 @@ ap.add_argument("--eta-every", type=int, default=1,
 ap.add_argument("--seed", default="",
                 help='optional resonant seed "m,n,rho0,width" (as in Tutorial 4)')
 ap.add_argument("--seed-eps", type=float, default=0.0)
-ap.add_argument("--outer", type=int, default=100, help="outer (recorded) iterations")
+ap.add_argument("--outer", type=int, default=50, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-4,
                 help="stop once ||F|| falls below this (after eta has ramped down)")
