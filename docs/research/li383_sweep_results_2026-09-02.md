@@ -200,6 +200,7 @@ The production step projects B onto the 1-forms, H = M_1^-1 P B, and forms J x H
 - The B-only term is a tenth of it at p = 2 and the larger term only at p = 1 on the coarse mesh (2.4x). H_0 = 5.0e-3 in every arm.
 - A clean demonstration of "H conserves, B does not" needs either p = 1 or a helicity-conserving time integrator (midpoint in A) as the baseline. Not done. The dt^2 attribution is argued, not measured; a float64 H-form arm with the CFL cap forcing dt down by 4 would confirm it (about 1.3 GPU-h).
 - Cost: 0.8 + 1.3 + 1.3 + 0.1 + 0.1 GPU-h.
+- Follow-up 2026-09-04 (branch implicit-midpoint, `docs/research/implicit_midpoint_2026-09-04.md` section 4.1, `outputs/midpoint_sweep/{ex,mp}_small_f64_bonly`): with the midpoint-implicit induction step on (8,16,16) p = 2 float64 the first-step time error disappears in B-only as well (-2.6e-9 against -2.5e-7 explicit), and what remains, shared by both B-only arms, is the projection error of the pairing int (u x B_mid) . (H_dir - B_mid): a state-dependent excursion to -1.3e-6 that returns to about zero by step 1000, not a monotone leak; Dirichlet-H midpoint holds 5e-12 throughout. The reading above (B-only at or below explicit at p >= 2) was the time error masking the projection error.
 
 ### 5g. Resistive pulses after an ideal phase, and the pulse controller (2026-09-03, `outputs/li383_pulse/`)
 
