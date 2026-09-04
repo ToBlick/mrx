@@ -75,8 +75,7 @@ from mrx.gvec import load_clebsch
 from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
-from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper, compute_force,
-                            relaxation_loop, weak_pressure)
+from mrx.relaxation import TimeStepper, compute_force, relaxation_loop, weak_pressure
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
@@ -97,9 +96,7 @@ print(f"[ic] ||B||_M before normalisation {norm:.4e}, ||div B|| {divergence_norm
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, scale ~ 0.064/n_r^2.
 smoothing_scale = 0.064 / ns[0] ** 2
 print(f"[relax] velocity smoothing order 1, scale {smoothing_scale:.3e}")
-ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                 dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                 eta_every=1, resistive=False, history_size=1,
+ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                  velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
 state, traces = relaxation_loop(B0, ts, num_iters_outer=cli.outer,
                                 num_iters_inner=cli.inner, dt0=1.0,

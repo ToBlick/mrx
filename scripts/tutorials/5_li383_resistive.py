@@ -11,7 +11,7 @@ This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
 relaxed field** if its checkpoint ``outputs/tutorials/li383_relaxation/B.h5`` is
 present (same ``(10, 16, 16) p = 2`` mesh), so the initial descent is not
 repeated; otherwise it builds the equilibrium initial condition itself. It then
-takes a **single resistive step** at ``--eta-max`` -- one reconnection event --
+takes a **single resistive step** at ``--eps`` -- one reconnection event --
 and relaxes ideally for another 500 steps to a clean floor. Finally it draws
 Poincare sections of the field before and after, so the magnetic islands the
 reconnection opens or heals are visible.
@@ -41,8 +41,8 @@ ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation/B.h5",
                 help="Tutorial 3's B.h5; warm-start from its relaxed field if present")
-ap.add_argument("--eta-max", type=float, default=1e-4,
-                help="resistivity of the single reconnection step")
+ap.add_argument("--eps", type=float, default=1e-4,
+                help="resistive dose eps = eta*dt of the single reconnection step")
 ap.add_argument("--seed", default="",
                 help='optional resonant seed "m,n,rho0,width" (used only when building the IC)')
 ap.add_argument("--seed-eps", type=float, default=0.0)
@@ -76,8 +76,8 @@ from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
                           trace_and_classify, section_RZ, surface_label)
-from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper, compute_force,
-                            relaxation_loop, weak_pressure)
+from mrx.relaxation import (TimeStepper, compute_force, relaxation_loop,
+                            resistive_step, weak_pressure)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
@@ -116,28 +116,18 @@ if B0 is None:
           f"||div B|| {divergence_norm(seq, B0):.2e}, wall-normal {wall:.1e}")
 
 # %%
-# Now we do the single reconnection step: one resistive substep at eta = eta-max.
-# Unlike the ideal descent it can change the topology, so helicity drops here.
-smoothing_scale = 0.064 / ns[0] ** 2
-ts_reconnect = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                           dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                           eta_every=1, resistive=True, history_size=1,
-                           velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
-print(f"[reconnect] one resistive step at eta = {cli.eta_max:.1e}")
-state, tr_r = relaxation_loop(B0, ts_reconnect, num_iters_outer=1, num_iters_inner=1,
-                              dt0=1.0, force_tolerance=0.0,
-                              resistivity_schedule=lambda i: cli.eta_max)
-Hr = np.asarray(tr_r["helicity"], dtype=float)
-print(f"[reconnect] helicity {Hr[0]:+.3e} -> {Hr[-1]:+.3e} (dH = {Hr[-1] - Hr[0]:+.2e}): "
-      "the resistive step dissipates helicity, so the topology can change.")
-B_reconnected = state.B_n
+# Now we do the single reconnection step with mrx.relaxation.resistive_step: one
+# backward-Euler resistive substep, eps = eta*dt. Unlike the ideal descent it can
+# change the topology (it dissipates helicity), so field lines reconnect.
+B_reconnected, _, rel = resistive_step(B0, seq, cli.eps)
+print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
+      f"||dB||/||B|| = {rel:.2e} (the reconnection; the ideal descent could not do this)")
 
 # %%
-# Now we relax ideally for another 500 steps (eta = 0) to a clean floor. The
-# ideal tail conserves helicity and just settles the reconnected field.
-ts_ideal = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                       dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                       eta_every=1, resistive=False, history_size=1,
+# Now we relax ideally for another 500 steps to a clean floor. The ideal tail
+# conserves helicity and just settles the reconnected field.
+smoothing_scale = 0.064 / ns[0] ** 2
+ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                        velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
 print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
 state, traces = relaxation_loop(B_reconnected, ts_ideal, num_iters_outer=cli.outer,
@@ -232,7 +222,7 @@ print(f"  -> {path}")
 h5_path = os.path.join(cli.out, "B.h5")
 attrs = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
              nfp="", maxiter=10_000, precision=str(mrx.DTYPE), steps=int(steps[-1]),
-             method="lbfgs", eta_max=cli.eta_max, ic="warmstart",
+             method="lbfgs", eta_max=cli.eps, ic="warmstart",
              seed=cli.seed, seed_eps=cli.seed_eps)
 with h5py.File(h5_path, "w") as fh:
     fh.create_dataset("B_ic", data=np.asarray(B0))
