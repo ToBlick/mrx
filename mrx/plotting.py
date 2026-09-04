@@ -166,7 +166,6 @@ def plot_torus(
     for name in ("x", "y", "z"):
         ax.tick_params(axis=name, labelsize=ticksize, pad=6)
 
-    fig.tight_layout()
     ax.view_init(elev=elev, azim=azim)
     if noaxes:
         ax.set_axis_off()
@@ -338,8 +337,6 @@ def plot_twin_axis(
     ax1.set_xlabel(x_label)
     if grid:
         ax1.grid(True, which="both", linestyle=grid_linestyle, linewidth=grid_linewidth)
-    if ax is None:
-        fig.tight_layout()
     return fig, (ax1, ax2)
 
 
