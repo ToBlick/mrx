@@ -201,11 +201,11 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     # the ladder's total dose (6.25e-4 = 4 x 1.5625e-4): eps = c h^2 with
     # h = 1 / n_r, so c = 0.04 at n_r = 16 and 0.16 at n_r = 32. Meshes:
     # (16,32,32); (32,32,32) uniform; (32,32,32) with the radial cells of the
-    # n_r = 16 grid outside two windows and 10 + 11 cells of 0.02 inside
-    # [0.45, 0.65] (iota = 1/2) and [0.68, 0.92] (iota = 3/5). 25000 steps.
+    # n_r = 16 grid outside two windows and 6 cells of 0.025 + 15 cells of 0.017 inside
+    # [0.47, 0.62] (iota = 1/2) and [0.68, 0.94] (iota = 3/5), the outer chain finer. 25000 steps.
     export EXTRA_ENV="PYTHONPATH=$WT"
     L5="--floor-tol 0 --steps 25000 --reconnect-every 5000"
-    R32="--r-refine 0.45:0.65:10,0.68:0.92:11"
+    R32="--r-refine 0.47:0.62:6,0.68:0.94:15"
     if [ "${1:-}" = ladder5k ]; then
         submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 $L5 --reconnect-eps 0.04 --out $PUB/reconnect_l5_h16_p2_g1" 600
         submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $L5 --reconnect-eps 0.16 --out $PUB/reconnect_l5_h32u_p2_g1" 1440
