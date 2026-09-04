@@ -8,33 +8,33 @@ numbered steps:
 2. **solve a field** -- the vacuum (coil) field as a curl-curl problem
    (`2_qa_vacuum_field.py`),
 3. **relax** an equilibrium field to a nested state (`3_li383_relaxation.py`),
-4. **seed a magnetic island** in an ideal relaxation (`4_li383_island_seed.py`),
-5. **relax with finite resistivity**, so the field can reconnect
+4. **seed a magnetic island** in the initial field (`4_li383_island_seed.py`),
+5. **reconnect** with a resistive step, warm-started from step 3
    (`5_li383_resistive.py`).
 
 Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
 2021). Steps 3-5 run on **li383** (three-field-period NCSX, the project's
-fruit-fly case): step 3 on the coarse reference
-(`data/wout_li383_low_res_reference.nc`, `ns = 16`), steps 4-5 on the
+fruit-fly case): steps 3 and 5 on the coarse reference
+(`data/wout_li383_low_res_reference.nc`, `ns = 16`), step 4 on the
 high-resolution reference (`data/wout_li383_1.4m.nc`, `ns = 49`) -- the seeded
-island and the resistive evolution need an initial condition cleaner than the
-coarse file's own reconstruction residual (see step 4). All are VMEC
+island must clear the coarse file's own reconstruction residual (see step 4). All are VMEC
 `wout_*.nc` files read in closed form by `mrx.vmec`; the same `build_sequence`
 call reads a GVEC `.dat` state instead (see the
 [interface](concepts/gvec_mrx_interface.md)).
 
-Steps 1-2 run in the package's default **float64** -- the vacuum field's
-harmonic-form ratio needs it. The li383 relaxations (3-5) run in **float32**,
-the production precision. On a cluster run them through `slurm/run.sh` like
+All five run in the package default, now **float32**, the production
+precision. Tutorial 2's harmonic-form ratio reaches round-off only in double
+precision -- run it with `MRX_DTYPE=float64` for that. On a cluster run them
+through `slurm/run.sh` like
 every other MRX script:
 
 ```bash
 SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
 ```
 
-They default to `--ns 12,24,12 --p 3` (steps 4-5 use `--ns 12,24,24` and
-`--ns 16,32,32`) and write their figures to `outputs/tutorials/<name>/`.
+Steps 1-2 default to `--ns 12,24,12 --p 3`; steps 3-5 to `--ns 10,16,16 --p 2`.
+They write their figures to `outputs/tutorials/<name>/`.
 
 ## 1. Load the geometry (`1_qa_geometry.py`)
 
@@ -91,13 +91,14 @@ B = get_nullspace(seq.get_operators(), 2, True)[0]
 ```
 
 The script verifies $\|\operatorname{div} B\|$, $\|\operatorname{curl} B\|$
-and the Rayleigh quotient of the Hodge Laplacian (curl and Rayleigh quotient
-at round-off ~$10^{-10}$, the divergence at the Leray solve's tolerance),
-draws $|B|$ on the torus (`Pushforward(..., k=2)` is the Piola map
-$B = DF\,\hat B/\det DF$), and traces a Poincaré section with the rotational
-transform profile through `mrx.poincare.section_figure`. **Run it in float64**
-(the package default): the harmonic-form ratio only reaches round-off in
-double precision. This is the vacuum field *of the bounded domain* -- the wall
+and the Rayleigh quotient of the Hodge Laplacian (both floor near
+single-precision epsilon ~$10^{-3}$ in the default float32, and reach
+round-off ~$10^{-10}$ in float64; the divergence sits at the Leray solve's
+tolerance), draws $|B|$ on the torus (`Pushforward(..., k=2)` is the Piola map
+$B = DF\,\hat B/\det DF$), then traces the field lines once and takes Poincaré
+sections at five toroidal planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$. It runs
+in the default float32; for the harmonic-form ratio at round-off use
+`MRX_DTYPE=float64`. This is the vacuum field *of the bounded domain* -- the wall
 is the equilibrium's last closed flux surface -- so it differs from the coil
 field outside it.
 
@@ -125,7 +126,7 @@ $\text{scale} \approx 0.064 / n_r^2$, run through `relaxation_loop`:
 ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS, history_size=1,
                  dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
                  velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / ns[0] ** 2)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=20, num_iters_inner=50,
+state, traces = relaxation_loop(B0, ts, num_iters_outer=10, num_iters_inner=50,
                                 force_tolerance=1e-3)
 ```
 
@@ -149,17 +150,16 @@ python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation/B.h5 \
 
 ## 4. Seed a magnetic island (`4_li383_island_seed.py`)
 
-The ideal (eta = 0) descent is a frozen-in flow: it moves the field along its
-own streamlines, so it cannot change the field's topology. Add a small
-**resonant perturbation** to the initial condition and the descent can only let
-it breathe -- shrink back if the resonant surface is tearing-stable, or settle
-at an $\varepsilon$-independent width if it is tearing-unstable -- it cannot
-reconnect the island away. The seed rides on the Clebsch potential, so
-$B = dA'$ stays exactly divergence-free and wall-tangent:
+The ideal (eta = 0) descent is a frozen-in flow: it cannot change the field's
+topology, so a seeded island can only breathe, never reconnect (that is
+Tutorial 5's job). Here we skip the descent and just look at the **initial
+field** the seed produces, next to the unseeded control, so the effect of the
+seed is unmistakable. The seed rides on the Clebsch potential, so $B = dA'$
+stays exactly divergence-free and wall-tangent:
 
 ```python
 seed = (6, 1, 0.544, 0.1, 1e-2)                           # (m, n, rho0, width, eps)
-B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+B_seeded, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
 ```
 
 The seed adds $\varepsilon\,|\Phi'(\rho_0)|/m\;g(\rho)\cos(2\pi(m\theta - s n\zeta))$
@@ -169,49 +169,41 @@ $|\iota| = n_{fp}\,n/m$ (`resonant_rho`), and the island has full width about
 $1.6\sqrt{\varepsilon\,n_{fp}/(m|\iota'|)}$ in $\rho$. The default
 $(m, n) = (6, 1)$ lands on li383's $\iota = 1/2$ surface ($\rho \approx 0.54$).
 
-**This step uses the high-resolution reference** `data/wout_li383_1.4m.nc`
-(`ns = 49`). The coarse reference reconstructs the field to a relative residual
-of $0.054$, which sits *on top of* the seeded-island signal -- the seed cannot
-be told from the reconstruction noise, and the unseeded control already carries
-island-scale junk. The high-res file starts at $0.013$ and the seeded chain
-stands clear of it. On $(12, 24, 24)\ p = 3$ the $\varepsilon = 1\text{e-}2$
-chain reaches a full width near $0.15$ in $\rho$, unmistakable in the Poincaré
-section; sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
+The script traces both initial fields once and draws Poincaré sections at five
+toroidal planes: the island at the resonant chain shows in the seeded section,
+not the unseeded one. It uses the **high-resolution reference**
+`data/wout_li383_1.4m.nc` -- on the coarse reference the field's reconstruction
+residual sits on top of the seeded signal, so the seed cannot be told from the
+noise. Sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
 $\sqrt{\varepsilon}$, and `--seed 5,1,0.794,0.1` to move to the $3/5$ surface.
-The run is otherwise Tutorial 3's descent (gamma = 1, float32) and writes the
-same `B.h5`; the island shows in `poincare_relax.py`'s section at the seeded
-chain.
+There is no relaxation and no `B.h5`; this is the cheapest tutorial.
 
-## 5. Relax with finite resistivity (`5_li383_resistive.py`)
+## 5. Reconnect with finite resistivity (`5_li383_resistive.py`)
 
-Turn on a small resistivity and the frozen-in constraint breaks. Each step is
-now the ideal move followed by a backward-Euler diffusion of $B$ (an implicit
-resistive solve), first order in $dt$. Field lines can **reconnect**: nested
-surfaces merge, a seeded island heals or grows past its frozen-in width, and --
-unlike the ideal descent -- helicity is no longer exactly conserved, it decays
-at the resistive rate. The resistivity follows a **tanh schedule** -- $\eta$
-rises to `--eta-max` over the first third of the run, holds, then drops back to
-~0 over the last third, so the tail relaxes ideally to a clean floor once
-reconnection has done its work:
+Turn on a small resistivity and the frozen-in constraint breaks. A step is now
+the ideal move followed by a backward-Euler diffusion of $B$ (an implicit
+resistive solve): field lines can **reconnect**, nested surfaces merge, a
+seeded island heals or grows, and helicity is no longer conserved -- it decays
+at the resistive rate.
+
+This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
+relaxed field** if `outputs/tutorials/li383_relaxation/B.h5` is present (same
+$(10, 16, 16)\ p = 2$ mesh), so the initial descent is not repeated; otherwise
+it builds the equilibrium initial condition itself. It then takes a **single
+resistive step** at `--eta-max` and relaxes ideally for another 500 steps:
 
 ```python
-def eta_schedule(i):                                      # per outer block
-    frac = (i - 0.5) / num_iters_outer
-    return eta_max * 0.5 * (1.0 - np.tanh(4.0 * np.pi * (frac - 0.5)))
-
-ts = TimeStepper(seq=seq, ..., eta_every=1, resistive=True)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=50, num_iters_inner=50,
-                                resistivity_schedule=eta_schedule, force_tolerance=1e-4)
+state, _ = relaxation_loop(B0, ts_reconnect, num_iters_outer=1, num_iters_inner=1,
+                           resistivity_schedule=lambda i: eta_max)       # one reconnection step
+state, traces = relaxation_loop(state.B_n, ts_ideal, num_iters_outer=10,
+                                num_iters_inner=50, force_tolerance=1e-4)  # 500 ideal steps
 ```
 
-The script draws $\|F\|_M$ against $E$ and, on a second twin-axis panel,
-helicity $H$ against $\eta$ -- the helicity drop lines up with where the
-resistivity is on. It runs on the high-resolution reference at
-$(16, 32, 32)\ p = 2$ with `--eta-max 1e-4`, the settings of the `li383_eta`
-resistive sweep. Combine with `--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the
-Tutorial 4 syntax) to watch a seeded island reconnect instead of merely
-breathing: the ideal run freezes the chain, the resistive one lets the resonant
-surface tear or heal. It writes the same `B.h5` for `poincare_relax.py`.
+The helicity drop across the resistive step is the reconnection; the ideal tail
+conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
+pressure on the torus, and writes a `B.h5` for `poincare_relax.py`. Pass
+`--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 4 syntax) when it falls
+back to building the IC, to watch a seeded island reconnect.
 
 ---
 

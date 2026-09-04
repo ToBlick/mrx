@@ -13,15 +13,18 @@ MRX builds it by a direct Hodge decomposition of a seed field
 iteration -- and stores it on the sequence's operators, where the Leray
 projection and the helicity of the relaxation are deflated against it.
 
-The harmonic-form ratio ``||curl B|| / ||B||`` and the Rayleigh quotient of
-the Hodge Laplacian must reach round-off (~1e-10), which needs float64: run
-this script with ``MRX_DTYPE=float64`` (the package default), never float32.
+It runs in the package default, float32; the harmonic-form ratio
+``||curl B|| / ||B||`` and the Rayleigh quotient of the Hodge Laplacian then
+floor near single-precision epsilon (~1e-3), which is fine for looking at the
+field. For those residuals at round-off (~1e-10) run it in double precision,
+``MRX_DTYPE=float64``.
 
 This script builds the field, verifies ``div``, ``curl`` and the Rayleigh
 quotient, draws ``|B|`` on the torus (the 2-form pushed forward by Piola),
-and traces a Poincare section with its rotational transform.
+and takes Poincare sections at five toroidal planes with the rotational
+transform.
 
-    MRX_DTYPE=float64 python -u scripts/tutorials/2_qa_vacuum_field.py
+    python -u scripts/tutorials/2_qa_vacuum_field.py
 """
 
 # %%
@@ -59,8 +62,9 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.geometry import build_sequence, geometry_nfp
 from mrx.initial_conditions import divergence_norm
 from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
-from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
-from mrx.poincare import section_figure
+from mrx.plotting import get_2d_grids, plot_torus, render_section
+from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
+                          trace_and_classify, section_RZ, surface_label)
 from mrx.relaxation import compute_force
 
 nfp = geometry_nfp(cli.geometry)
@@ -77,9 +81,6 @@ rayleigh = float(harmonic_rayleigh(seq, B, 2))
 print(f"[vacuum] ||div B|| = {divergence_norm(seq, B):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
       f"Rayleigh quotient of the Hodge Laplacian = {rayleigh:.2e}")
-if ratio > 1e-8 or rayleigh > 1e-8:
-    print("[vacuum] WARNING: harmonic-form residual is not at round-off -- "
-          "run in float64 (MRX_DTYPE=float64)")
 
 # %%
 # --- |B| on the torus -----------------------------------------------------
@@ -104,29 +105,47 @@ fig, _ = plot_torus(B_mag, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3
                     elev=25, azim=40, cbar_label=r"$|B|$")
 path = os.path.join(cli.out, "torus_Bmag.png")
 fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
-print(f"  -> {path}")
-fig, _ = plot_crossections_separate(B_mag, grids_pol, zetas)
-path = os.path.join(cli.out, "crossections_Bmag.png")
-fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
+if _INTERACTIVE:
+    plt.show()
+else:
+    plt.close(fig)
 print(f"  -> {path}")
 
 # %%
-# --- field lines --------------------------------------------------------------
-fig, res = section_figure(seq, B, nfp, plane=0.0, n_seeds=cli.seeds,
-                          n_periods=cli.periods,
-                          title=f"vacuum field of {os.path.basename(cli.geometry)} {ns} p={cli.p}")
-path = os.path.join(cli.out, "poincare_zeta0.png")
-fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
-keep = ~(res["escaped"] | ~res["ok"] | res["chaotic"])
-r, iota = res["seeds"][:, 0][keep], res["iota"][keep]
-print(f"[vacuum] {int(keep.sum())}/{keep.size} regular lines, iota from "
-      f"{float(iota[np.argmin(r)]):.4f} (r = {float(r.min()):.2f}) to "
-      f"{float(iota[np.argmax(r)]):.4f} (r = {float(r.max()):.2f}); h/2 drift {res['drift']:.1e}")
-print(f"  -> {path}")
+# --- field lines: trace once, section at several toroidal planes ----------
+# A Poincare section integrates the field lines once; each toroidal plane is a
+# different cut through the same trajectories. section_figure does one plane --
+# here we reuse its pieces to cut five planes over half a field period.
+saves_per_period, steps_per_period = 8, 32
+field = logical_field(seq, jnp.asarray(B), 2, True)
+info = require_zeta_parameterisation(field, name="B")
+seeds = seed_from_axis(field, cli.seeds, saves_per_period, n_rays=4,
+                       steps_per_period=steps_per_period)
+res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+                         steps_per_period=steps_per_period, saves_per_period=saves_per_period)
+render_keep = ~(res["escaped"] | ~res["ok"])
+for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
+    R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], saves_per_period, plane)
+    a_eff, xlabel = surface_label(R, Z, aR, aZ)
+    fig, _ = render_section(
+        R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
+        title=f"vacuum field {ns} p={cli.p}  |  $\\zeta = {plane:g}$ -- {R.shape[1]} crossings/line",
+        subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
+                  f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"),
+        axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
+        logical=(lr, lth), iota_scatter=res["iota_scatter"])
+    path = os.path.join(cli.out, f"poincare_zeta{plane:g}.png")
+    fig.savefig(path, dpi=200)
+    if _INTERACTIVE:
+        plt.show()
+    else:
+        plt.close(fig)
+    print(f"  -> {path}")
+
+regular = ~(res["escaped"] | ~res["ok"] | res["chaotic"])
+r_reg, iota_reg = res["seeds"][:, 0][regular], res["iota"][regular]
+print(f"[vacuum] {int(regular.sum())}/{regular.size} regular lines, iota from "
+      f"{float(iota_reg[np.argmin(r_reg)]):.4f} (r = {float(r_reg.min()):.2f}) to "
+      f"{float(iota_reg[np.argmax(r_reg)]):.4f} (r = {float(r_reg.max()):.2f}); "
+      f"h/2 drift {res['drift']:.1e}")
 

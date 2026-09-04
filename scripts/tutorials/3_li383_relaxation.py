@@ -26,7 +26,7 @@ and relaxed fields at planes 0, 0.25, 0.5 (see the tutorials page).
 ``scripts/relax.py`` is the production driver (archives, QoIs, snapshots,
 resistivity, seeds).
 
-    MRX_DTYPE=float32 python -u scripts/tutorials/3_li383_relaxation.py
+    python -u scripts/tutorials/3_li383_relaxation.py
 """
 
 # %%
@@ -43,10 +43,9 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat)")
-ap.add_argument("--ns", default="12,24,12")
-ap.add_argument("--p", type=int, default=3)
-ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
-ap.add_argument("--outer", type=int, default=20, help="outer (recorded) iterations")
+ap.add_argument("--ns", default="10,16,16")
+ap.add_argument("--p", type=int, default=2)
+ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-3,
                 help="stop once ||F|| falls below this")
@@ -56,8 +55,6 @@ cli = ap.parse_args([] if _INTERACTIVE else None)
 ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
-# Precision is chosen from the environment before mrx is imported.
-os.environ.setdefault("MRX_DTYPE", cli.precision)
 
 # %%
 import h5py
@@ -77,9 +74,6 @@ from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
 from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper, compute_force,
                             relaxation_loop, weak_pressure)
 
-if cli.precision != str(mrx.DTYPE):
-    raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
-                     "(MRX_DTYPE was already set)")
 print(f"[env] mrx precision {mrx.DTYPE}")
 
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
@@ -117,8 +111,10 @@ fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
                         num_iters_inner=cli.inner, left_marker="o", right_marker="s")
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
+if _INTERACTIVE:
+    plt.show()
+else:
+    plt.close(fig)
 print(f"  -> {path}")
 
 # %%
@@ -147,8 +143,10 @@ fig, _ = plot_torus(p_h, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3,
                     elev=25, azim=40, cbar_label=r"$p_w$")
 path = os.path.join(cli.out, "torus_pw.png")
 fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
+if _INTERACTIVE:
+    plt.show()
+else:
+    plt.close(fig)
 print(f"  -> {path}")
 
 # %%

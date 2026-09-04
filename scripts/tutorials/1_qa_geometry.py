@@ -117,13 +117,17 @@ fig, _ = plot_torus(detDF, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3
                     elev=25, azim=40, cbar_label=r"$\det DF$")
 path = os.path.join(cli.out, "torus_jacobian.png")
 fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
+if _INTERACTIVE:
+    plt.show()
+else:
+    plt.close(fig)
 print(f"  -> {path}")
 fig, _ = plot_crossections_separate(detDF, grids_pol, zetas)
 path = os.path.join(cli.out, "crossections_jacobian.png")
 fig.savefig(path, dpi=200)
-if not _INTERACTIVE:
-    plt.close(fig)  # keep the figure open in a notebook so it renders inline
+if _INTERACTIVE:
+    plt.show()
+else:
+    plt.close(fig)
 print(f"  -> {path}")
 
