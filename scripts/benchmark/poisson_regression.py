@@ -15,8 +15,8 @@ We therefore verify the setting took effect and compare the resulting errors
 against a CPU float32 reference measured on this same commit.
 
 Usage:
-    MRX_DTYPE=float32 python mrx_tpu_report.py
-    MRX_DTYPE=float32 python mrx_tpu_report.py --n 6 8 --p 2
+    MRX_DTYPE=float32 python scripts/benchmark/poisson_regression.py
+    MRX_DTYPE=float32 python scripts/benchmark/poisson_regression.py --n 6 8 --p 2
 """
 from __future__ import annotations
 

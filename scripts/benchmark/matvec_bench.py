@@ -35,7 +35,7 @@ What is timed is every apply that appears in a saddle MINRES iteration:
 ``apply_inverse_mass_matrix``, so it is 20-27 CG iterations rather than an
 apply, and listing it beside these overstates the cost of an apply by ~150x.
 
-    python -u matvec_bench.py --ns 12,24,12 --p 3 --out matvec.json
+    python -u scripts/benchmark/matvec_bench.py --ns 12,24,12 --p 3 --out matvec.json
 """
 from __future__ import annotations
 

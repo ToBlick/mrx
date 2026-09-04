@@ -64,8 +64,6 @@ def parse_args():
                          "singularity overlay on NYU Torch needs a positive "
                          "value. It batches the quadrature loop, so it changes "
                          "setup memory and not the primitives below")
-    ap.add_argument("--profile", default=None,
-                    help="write a jax.profiler trace to this directory")
     ap.add_argument("--cache-dir", default=None,
                     help="enable the persistent XLA compilation cache here; "
                          "the point is to see whether repeated compilation of "
@@ -658,30 +656,19 @@ def main():
     dtype = str(mrx.DTYPE)
     bench = Bench()
 
-    profile_ctx = None
-    if args.profile:
-        os.makedirs(args.profile, exist_ok=True)
-        profile_ctx = jax.profiler.trace(args.profile)
-        profile_ctx.__enter__()
+    # Primitives first: they are seconds each and they alone can settle the
+    # scatter question, so they must not be gated behind a phase that may run
+    # for half an hour.
+    bench_structured_scatter(bench, dtype=dtype)
+    bench_structured_gather(bench, dtype=dtype)
 
-    try:
-        # Primitives first: they are seconds each and they alone can settle the
-        # scatter question, so they must not be gated behind a phase that may
-        # run for half an hour.
-        bench_structured_scatter(bench, dtype=dtype)
-        bench_structured_gather(bench, dtype=dtype)
-
-        if not args.skip_phases:
-            seq, ops = bench_phases(bench, args, dtype)
-            bench_extraction(bench, seq, dtype)
-            bench_mass(bench, seq, dtype)
-            bench_operators(bench, seq, ops, dtype)
-            if not args.skip_relax:
-                bench_relaxation(bench, seq, args, dtype)
-    finally:
-        if profile_ctx is not None:
-            profile_ctx.__exit__(None, None, None)
-            print(f"\nprofile trace written to {args.profile}")
+    if not args.skip_phases:
+        seq, ops = bench_phases(bench, args, dtype)
+        bench_extraction(bench, seq, dtype)
+        bench_mass(bench, seq, dtype)
+        bench_operators(bench, seq, ops, dtype)
+        if not args.skip_relax:
+            bench_relaxation(bench, seq, args, dtype)
 
     result = {"backend": info, "mrx_dtype": dtype, "args": vars(args),
               "rows": bench.rows}

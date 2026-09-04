@@ -9,8 +9,8 @@ something deletes it -- which is why `tpu/idle_reaper.sh` runs on every node.
 | script | role |
 |---|---|
 | `zones.sh` | shared config: the candidate ladder, failure classification |
-| `check_quota.sh` | read-only preflight; `--probe` spot-tests real capacity |
-| `acquire_tpu.sh` | acquire a node and run on it; `--park`, `--watch`, `--gc` |
+| `check_quota.sh` | read-only quota preflight |
+| `acquire_tpu.sh` | acquire a node and run on it; `--once`, `--acquire-only` |
 | `run_on_tpu.sh` | drive one session on a node you already hold |
 | `startup.sh` | builds the environment on the node (runs there, not here) |
 | `idle_reaper.sh` | deletes the node when it goes idle (runs there, not here) |
@@ -23,31 +23,31 @@ Benchmarks live in `scripts/benchmark/` and are not TPU-specific.
 ```bash
 gcloud auth login
 gcloud config set project <project>
-cd tpu && ./check_quota.sh          # read-only preflight, ~40 s
+cd tpu && ./check_quota.sh          # read-only quota preflight, ~10 s
 ```
 
-`check_quota.sh` reports quota, subnets and accelerator availability per
-zone without creating anything. Add `--probe` to follow it with a real Spot
-create per surviving candidate, deleted immediately; that is the only way to
-tell a stockout from a quota problem, and the only mode here that bills.
+Quota is the one thing worth checking before a sweep, because it is the only
+failure retrying cannot fix: a region with a hard 0 never produces a node.
+Everything else the ladder discovers in seconds per candidate by trying, and
+`zones.sh` names the reason. Quota is also only a ceiling, never an allocation,
+so an `OK` means a create is permitted, not that hardware is free.
 
-Quota is not permission. This project holds 512 chips of v5e quota and
+Quota is also not permission. This project holds 512 chips of v5e quota and
 Compute Engine still refuses the machine type with
 `403 ... not allowed to use the machine type [ct5lp-hightpu-4t]`. v5e is
-reachable only through the Cloud TPU API (`gcloud compute tpus tpu-vm`),
-which the scripts use; v6e goes through Compute Engine. `zones.sh` records
-which candidate takes which API, so the ladder is walked correctly.
+reachable only through the Cloud TPU API (`gcloud compute tpus tpu-vm`); v5p
+goes through Compute Engine. `zones.sh` records which candidate takes which
+API, so the ladder is walked correctly.
 
-The first thing that will confuse you is a create that appears to hang.
-It is not hung: `FLEX_START` is Dynamic Workload Scheduler, and if no capacity
-is free the instance is created `PENDING` while the scheduler waits up to
+The first thing that will confuse you is a create that appears to hang. It is
+not hung: `FLEX_START` is Dynamic Workload Scheduler, and if no capacity is free
+the instance is created `PENDING` while the scheduler waits up to
 `--request-valid-for-duration` for hardware. `gcloud` blocks for that whole
 window, so `2h` blocks for two hours. Ctrl-C does not cancel it -- the request
-lives server-side -- and cancelling a `PENDING` flex-start is slow, one took
-39 minutes to delete. Every attempt `acquire_tpu.sh` makes therefore passes
-`--request-valid-for-duration=0`, so a zone fails in seconds instead. Google
-exposes no queue position and no global capacity view; `./acquire_tpu.sh
---watch` shows everything that is observable.
+lives server-side -- and cancelling a `PENDING` flex-start is slow, one took 39
+minutes to delete. `acquire_tpu.sh` therefore never queues: every attempt fails
+fast, and a success is always a real VM. Google exposes no queue position and no
+global capacity view, so a sweep-and-sleep loop is the only strategy available.
 
 ## Getting a node and running on it
 
@@ -60,7 +60,7 @@ SCRIPT=scripts/tutorials/li383_relaxation.py \
   ./run_on_tpu.sh --ns 12,24,24 --p 3
 
 # The reaper will do this after 20 idle minutes; this is how to do it now.
-# v5e is a TPU API node, v5p/v6e are GCE instances.
+# v5e is a TPU API node, v5p is a GCE instance.
 gcloud compute tpus tpu-vm delete mrx-tpu --zone=<zone>
 gcloud compute instances delete mrx-tpu --zone=<zone>
 ```
@@ -73,8 +73,6 @@ gcloud compute instances delete mrx-tpu --zone=<zone>
 | `RUN_PLATFORM` | `tpu` or `cpu`, to run a stage on the host | `tpu` |
 | `RUN_DTYPE` | `float32` or `float64` | `float32` |
 | `RUN_TIMEOUT` | seconds | 7200 |
-| `PUSH_FILES` | local files to copy into the checkout on the VM | |
-| `SYNC_LOCAL_MRX` | rsync a local working tree over the VM's checkout | |
 | `MRX_BRANCH` | branch to measure; checked out before the run | `static-dynamic-refactor` |
 
 Everything after `run_on_tpu.sh` is passed to the script. Jobs are launched
@@ -83,8 +81,8 @@ detached under `setsid` into a log that is streamed back, because a dropped
 same chip fails with `The TPU is already in use`.
 
 Capacity is scarce and a request can fail for reasons that are not capacity;
-`acquire_tpu.sh` retries the ladder, re-parks expired requests and stops on
-the classifications that will never succeed. `zones.sh` names them:
+`acquire_tpu.sh` walks the ladder, sleeps and walks it again. `zones.sh` names
+the failures:
 `STOCKOUT` (no hardware, nothing you can fix), `NOT_ALLOWLISTED` (wrong API,
 quota is irrelevant), `QUOTA`, `NO_SUBNET` and `POLICY` (the location org
 policy, usually), `DISK_INCOMPATIBLE` (v5p rejects hyperdisk-balanced; the
@@ -219,6 +217,6 @@ gcloud compute instances list
 gcloud compute disks list
 ```
 
-`zones.sh` caps persistent data disks at `MAX_DATA_DISKS` (2) because
-sweeping zones otherwise leaves one behind in each; `./acquire_tpu.sh --gc`
-removes the surplus.
+`zones.sh` caps persistent data disks at `MAX_DATA_DISKS` (2) because sweeping
+zones otherwise leaves one behind in each. Delete the surplus with
+`gcloud compute disks delete my-data-disk --zone=<zone>`.
