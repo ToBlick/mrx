@@ -23,6 +23,7 @@ from typing import Any, Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
@@ -343,7 +344,51 @@ def geometry_nfp(geometry, nfp=None):
     raise _unknown(geometry)
 
 
-def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
+def parse_r_refine(spec):
+    """``"a:b:m,a:b:m"`` -> ``[(a, b, m), ...]``: radial windows ``[a, b]``
+    that get ``m`` uniform cells each (:func:`radial_knots`); ``""`` -> ``[]``."""
+    windows = []
+    for w in filter(None, spec.split(",")):
+        a, b, m = w.split(":")
+        windows.append((float(a), float(b), int(m)))
+    return windows
+
+
+def radial_knots(n_r, p, windows):
+    """The clamped radial knot vector of ``n_r`` degree-``p`` splines with
+    ``n_r - p`` cells: ``m`` uniform cells inside every window ``(a, b, m)``,
+    and the remaining cells spread over the gaps between and outside the
+    windows in proportion to their length (largest-remainder rounding, at
+    least one cell per gap). Without windows this is the uniform grid the
+    sequence builds itself."""
+    windows = sorted(windows)
+    n_cells = n_r - p
+    inside = sum(m for _, _, m in windows)
+    gaps = []
+    lo = 0.0
+    for a, b, _ in windows:
+        gaps.append((lo, a))
+        lo = b
+    gaps.append((lo, 1.0))
+    gaps = [(a, b) for a, b in gaps if b > a]
+    free = n_cells - inside
+    if free < len(gaps):
+        raise ValueError(f"{inside} window cells leave {free} for {len(gaps)} gaps of n_r - p = {n_cells}")
+    length = sum(b - a for a, b in gaps)
+    raw = [free * (b - a) / length for a, b in gaps]
+    counts = [max(1, int(r)) for r in raw]
+    order = sorted(range(len(gaps)), key=lambda i: raw[i] - int(raw[i]), reverse=True)
+    for i in order[: free - sum(counts)]:
+        counts[i] += 1
+    for i in reversed(order):    # a gap forced up to one cell may have overshot
+        if sum(counts) > free and counts[i] > 1:
+            counts[i] -= 1
+    segments = sorted([(a, b, m) for a, b, m in windows] + [(a, b, c) for (a, b), c in zip(gaps, counts)])
+    bp = np.concatenate([np.linspace(a, b, m, endpoint=False) for a, b, m in segments] + [[1.0]])
+    return np.concatenate([np.zeros(p), bp, np.ones(p)])
+
+
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_windows=()):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
@@ -357,6 +402,8 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
         tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
         nfp: overrides the file's ``nfp`` (see ``mrx.gvec``); ignored for
             the analytic names.
+        r_windows: radial refinement windows ``[(a, b, m), ...]`` for
+            :func:`radial_knots`; empty for the uniform radial grid.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -371,8 +418,9 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
     from mrx.gvec import build_gvec_map  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
+    knots = (radial_knots(ns[0], p, r_windows), None, None) if r_windows else None
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
-                         polar=True, tol=tol, maxiter=maxiter,
+                         polar=True, tol=tol, maxiter=maxiter, knots=knots,
                          betti_numbers=(1, 1, 0, 0))
     if os.path.isfile(geometry):
         map_func, info = build_gvec_map(geometry, seq, nfp=nfp)

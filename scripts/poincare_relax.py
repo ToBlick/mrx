@@ -176,7 +176,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, geometry_nfp
+    from mrx.geometry import build_sequence, parse_r_refine, geometry_nfp
     from mrx.geometry import map_jacobian_at
     from mrx.plotting import render_section
     from mrx.poincare import (logical_field, seed_from_axis,
@@ -281,7 +281,8 @@ def main():
                 plt.close(fig)
         return
 
-    seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override)
+    seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override,
+                            r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
 
     def physical_pressure(name, lr, lth, zeta):
         """The selected pressure at logical ``(lr, lth, zeta)``, or None without it.

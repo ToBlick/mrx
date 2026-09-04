@@ -21,6 +21,10 @@ Flags, defaults in brackets:
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
       --ns R,T,Z [8,16,16]         spline resolution (also the map's)
+      --r-refine a:b:m,... [""]    radial refinement: m uniform cells in each
+                                   window [a, b] of the logical radius, the
+                                   remaining n_r - p cells spread over the
+                                   gaps (mrx.geometry.radial_knots)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --maxiter N [2000]           iteration budget of every inner solve
       --tol TOL [sqrt(eps)]        inner solve tolerance
@@ -219,6 +223,8 @@ def parse_args(argv=None):
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
     ap.add_argument("--ns", default="8,16,16")
+    ap.add_argument("--r-refine", default="",
+                    help='radial refinement windows "a:b:m,..." (m cells in [a, b]); "" = uniform')
     ap.add_argument("--p", type=int, default=2)
     ap.add_argument("--maxiter", type=int, default=2000)
     ap.add_argument("--tol", type=float, default=None)
@@ -326,7 +332,7 @@ def main(cli):
     import jax
 
     import mrx
-    from mrx.geometry import build_sequence
+    from mrx.geometry import build_sequence, parse_r_refine
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import (analytic_profile_form,
                                         clebsch_potential_form, divergence_norm,
@@ -360,7 +366,8 @@ def main(cli):
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
-    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol, nfp=cli.nfp)
+    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol, nfp=cli.nfp,
+                              r_windows=parse_r_refine(cli.r_refine))
     ops = seq.set_operators(compute_nullspaces(seq, ops))
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n(2, True)}  operators+nullspaces "

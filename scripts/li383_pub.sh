@@ -10,7 +10,7 @@
 #   bash scripts/li383_pub.sh eta [ETA|ARM...]  # tanh resistivity sweep, outputs/li383_eta (about 8 GPU-h)
 #   bash scripts/li383_pub.sh bonly [smoke|pairs]  # B-only step (no H), outputs/li383_bonly
 #   bash scripts/li383_pub.sh pulse      # resistive pulse after an ideal phase, outputs/li383_pulse
-#   bash scripts/li383_pub.sh reconnect [smoke|ladder]  # reconnection series (--reconnect-every), outputs/li383_pulse; ladder = nine equilibria at c = 0.02
+#   bash scripts/li383_pub.sh reconnect [smoke|ladder|ladder5k|refine_smoke]  # reconnection series (--reconnect-every), outputs/li383_pulse; ladder = nine equilibria at c = 0.02
 #   bash scripts/li383_pub.sh sections NAME [TIMEOUT_MIN]
 #   bash scripts/li383_pub.sh movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
 #
@@ -35,6 +35,7 @@ GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 COMMON="--ic clebsch --floor-tol 1e-4 --steps 6000"
 G1_12="--velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4"   # mu = 0.064 / n_r^2
 G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
+G1_32="--velocity-smoothing-order 1 --velocity-smoothing-scale 6.25e-5"
 
 submit() {  # submit KIND NAME SCRIPT ARGS TIMEOUT_MIN
     local kind=$1 name=$2 script=$3 args=$4 tmin=$5
@@ -184,7 +185,7 @@ pulse() {
     submit relax pulse5e-7_cyc "$WT/scripts/relax.py" "$common --eta-max 5e-7 --eta-pulse 2000,100,1000 --out $PUB/pulse5e-7_cyc" 300
 }
 
-reconnect() {  # reconnect [smoke|ladder]
+reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     # 2026-09-03: the ideal descent, checkpointed and reconnected with one
     # resistive solve every K steps (--reconnect-every; the descent is a
     # power law, there is no stall to wait for); the outcome is the series
@@ -196,8 +197,23 @@ reconnect() {  # reconnect [smoke|ladder]
     # equilibria; the cumulative dose 6.2e-4 after eight is the tanh 1e-7
     # arm's, so the ladder spans ideal to fully reconnected. 18000 steps,
     # about 3 h at 0.57 s/step.
+    # 2026-09-04 ladder5k: three meshes, a solve every 5000 steps, four solves,
+    # the ladder's total dose (6.25e-4 = 4 x 1.5625e-4): eps = c h^2 with
+    # h = 1 / n_r, so c = 0.04 at n_r = 16 and 0.16 at n_r = 32. Meshes:
+    # (16,32,32); (32,32,32) uniform; (32,32,32) with the radial cells of the
+    # n_r = 16 grid outside two windows and 10 + 11 cells of 0.02 inside
+    # [0.45, 0.65] (iota = 1/2) and [0.68, 0.92] (iota = 3/5). 25000 steps.
     export EXTRA_ENV="PYTHONPATH=$WT"
-    if [ "${1:-}" = ladder ]; then
+    L5="--floor-tol 0 --steps 25000 --reconnect-every 5000"
+    R32="--r-refine 0.45:0.65:10,0.68:0.92:11"
+    if [ "${1:-}" = ladder5k ]; then
+        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 $L5 --reconnect-eps 0.04 --out $PUB/reconnect_l5_h16_p2_g1" 600
+        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $L5 --reconnect-eps 0.16 --out $PUB/reconnect_l5_h32u_p2_g1" 1440
+        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --reconnect-eps 0.16 --out $PUB/reconnect_l5_h32r_p2_g1" 1440
+    elif [ "${1:-}" = refine_smoke ]; then
+        # The refined radial grid end to end at n_r = 16: 5 + 5 window cells, 300 steps, one solve.
+        submit relax refine_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,16,16 --p 2 $G1_16 --r-refine 0.45:0.65:5,0.68:0.92:5 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-eps 0.04 --out $PUB/refine_smoke" 40
+    elif [ "${1:-}" = ladder ]; then
         submit relax reconnect_ladder_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 18000 --reconnect-every 2000 --reconnect-eps 0.02 --out $PUB/reconnect_ladder_h16_p2_g1" 420
     elif [ "${1:-}" = smoke ]; then
         submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ic clebsch --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
@@ -233,5 +249,5 @@ case ${1:-} in
     bonly) SUB=li383_bonly; PUB=$ROOT/outputs/$SUB; LEDGER=$PUB/jobs.tsv; mkdir -p "$PUB"; bonly "${2:-}" ;;
     sections) sections "$2" "${3:-30}" ;;
     movie) movie "$2" "$3" "$4" "${5:-120}" ;;
-    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | reconnect [smoke|ladder] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
+    *) echo "usage: $0 reader | seeded | deep | hsweep_p2 | psweep_p16 | eta | pulse | reconnect [smoke|ladder|ladder5k|refine_smoke] | bonly [smoke] | sections NAME [TMIN] | movie NAME PLANES STEPSPEC [TMIN]" >&2; exit 2 ;;
 esac
