@@ -213,6 +213,33 @@ projection errors (a few 1e-7), the midpoint correction is inside the
 solver tolerance (one sweep converges), and the "energy increases" count
 (130-180 of 1000) is the float32 resolution of `E ~ 0.5` again.
 
+### 4.5 The same eight on (16,32,32) p=2 (post-prune, branch `midpoint-r16`)
+
+Rerun on the merged head f812290 with the pruned driver (`--auxiliary-B-field
+true` is the Dirichlet H, the default step reads B itself; `--chunk 100`
+samples the helicity), `bash scripts/midpoint_sweep.sh r16`, 1000 L-BFGS
+steps, `H_0 = 5.0e-3`:
+
+| arm | s/step | eval/step | ||F|| final | drift at 100 | 500 | 1000 |
+|---|---|---|---|---|---|---|
+| explicit, H, float64 | 2.04 | 1 | 6.8e-3 | -1.1e-7 | -1.0e-7 | -9.9e-8 |
+| **midpoint, H, float64** | 2.07 | 3.80 | 6.8e-3 | +7.4e-13 | +1.9e-12 | **-4.6e-13** |
+| explicit, B, float64 | 2.01 | 1 | 7.3e-3 | -3.3e-7 | -3.7e-7 | -3.6e-7 |
+| midpoint, B, float64 | 2.03 | 3.95 | 8.5e-3 | +2.0e-8 | -2.4e-8 | -7.9e-9 |
+| explicit, H, float32 | 0.58 | 1 | 6.9e-3 | -2.4e-7 | -2.1e-7 | -1.5e-7 |
+| midpoint, H, float32 | 0.59 | 2.10 | 1.1e-2 | -1.6e-7 | -1.6e-7 | -1.0e-7 |
+| explicit, B, float32 | 0.56 | 1 | 9.4e-3 | -3.9e-7 | -4.0e-7 | -4.2e-7 |
+| midpoint, B, float32 | 0.58 | 2.02 | 7.5e-3 | -4.7e-8 | -6.3e-8 | -9.3e-8 |
+
+* In float64 the split is clean: midpoint + H at `1e-12`, explicit + H at
+  `1e-7`, explicit + B at `4e-7`, midpoint + B at `1e-8`. The B projection
+  error is 50x smaller than on (8,16,16) (`1e-6` there), the `O(h^p)`
+  behaviour of a grid error, while the explicit time error barely moves.
+* In float32 all four sit between `1e-7` and `4e-7`, the diagnostic floor.
+* Picard defect `9e-17` (H) and `1.5e-7` (B, at the tolerance) at most,
+  no unconverged step, no halving; 3.8-4.0 evaluations per step in float64
+  for 1-3% more wall-clock; energy monotone in float64.
+
 ## 5. Verdict
 
 * **Implemented, on the branch, tested**: `--scheme midpoint`, the
@@ -239,7 +266,8 @@ solver tolerance (one sweep converges), and the "energy increases" count
 
 ## 6. GPU time
 
-5.9 h of the 10 h budget (`sacct`, gpu-h100, 2026-09-04 10:25-14:15):
+9.7 h of the 10 h budget (`sacct`, gpu-h100, 2026-09-04 10:25-18:00;
+the (16,32,32) eight of 4.5 took 3.3 h, the float32 twins 0.5 h):
 1.4 h finding out that the nonlinear midpoint does not converge (two smoke
 runs, four probes, one Anderson and one preconditioner probe, two
 per-sweep traces), 0.5 h tests and smoke runs of the scheme that works,
