@@ -174,6 +174,9 @@ tpu_running_zone() {
 #   QUOTA      permitted machine type, but the quota bucket is exhausted or 0
 #   NO_SUBNET  the default VPC has no subnet in this region
 #   POLICY     an org policy forbids the location outright
+#   AUTH       the gcloud credential expired; no zone can succeed until it is
+#              renewed, and a daemon left alone will otherwise sweep for hours
+#              reporting "no capacity" when nothing was ever asked
 #   PERMISSION IAM or API enablement
 #   UNSUPPORTED the machine type or image genuinely is not offered here
 #   NOT_ALLOWLISTED  the machine type exists and quota exists, but this project
@@ -203,6 +206,8 @@ classify_failure() {
         echo "NO_SUBNET"
     elif rg -q "resourceLocations|violates constraint|Constraint .* violated|orgpolicy" "${log}"; then
         echo "POLICY"
+    elif rg -q "problem refreshing your current auth|Reauthentication failed|credentials.*expired|invalid_grant" "${log}"; then
+        echo "AUTH"
     elif rg -q "Internal error|backend error|Try again later|deadline exceeded" "${log}"; then
         echo "TRANSIENT"
     elif rg -q "PERMISSION_DENIED|Required .* permission|403" "${log}"; then
@@ -233,6 +238,7 @@ explain_failure() {
             # target for a quota increase than a stockout zone.
             echo "${detail:-quota exhausted} (capacity likely present)"
             ;;
+        AUTH)        echo "gcloud credential expired; run 'gcloud auth login'" ;;
         NO_SUBNET)   echo "default VPC has no subnet in this region" ;;
         POLICY)      echo "blocked by org policy (gcp.resourceLocations)" ;;
         TRANSIENT)   echo "google-side internal error" ;;

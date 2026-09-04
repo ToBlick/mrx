@@ -278,6 +278,15 @@ walk_ladder() {
 
         kind="$(classify_failure "${log}")"
 
+        # An expired credential fails every zone identically and instantly, so
+        # walking the rest of the ladder learns nothing. Returning 2 stops the
+        # daemon rather than letting it sweep all night reporting "no capacity"
+        # when nothing was ever asked. It swept for four hours that way once.
+        if [[ "${kind}" == "AUTH" ]]; then
+            explain_failure "${kind}" "${log}"
+            return 2
+        fi
+
         # A transient Google-side blip says nothing about capacity; a disk-type
         # rejection is worth retrying without the disk, since losing persistence
         # beats losing the zone. v5p rejects hyperdisk-balanced outright.
@@ -364,7 +373,16 @@ while true; do
     fi
 
     log "Sweeping the ladder..."
-    if ( walk_ladder ) >>"${ACQUIRE_LOG}" 2>&1; then
+    ( walk_ladder ) >>"${ACQUIRE_LOG}" 2>&1
+    sweep_status=$?
+
+    if (( sweep_status == 2 )); then
+        log "gcloud credential expired. Run 'gcloud auth login' and start again."
+        notify "TPU daemon stopped" "gcloud credential expired"
+        exit 1
+    fi
+
+    if (( sweep_status == 0 )); then
         zone="$(running_zone)"
         if [[ -z "${zone}" ]]; then
             zone="$(tpu_running_zone "${VM_NAME}" 12)"
