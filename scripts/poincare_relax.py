@@ -105,7 +105,8 @@ def save_section(fig, png_path, *, want_pgf):
     raw, not escaped, so without it the ``.pgf`` fails to compile with a
     "Missing $ inserted". We inject ``\\usepackage[strings]{underscore}`` into
     the pgf preamble so it is listed in the file's own "required packages"
-    header; a document that \\input's the ``.pgf`` still needs that line.
+    header; a document that \\input's the ``.pgf`` still needs that line, and
+    ``\\providecommand{\\mathdefault}[1]{#1}`` for any log-axis tick label.
     """
     fig.savefig(png_path, dpi=200)
     print(f"  -> {png_path}", flush=True)
@@ -116,7 +117,7 @@ def save_section(fig, png_path, *, want_pgf):
     os.makedirs(pgf_dir, exist_ok=True)
     pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
     try:
-        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
             fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
         print(f"  -> {pgf_path}", flush=True)
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact

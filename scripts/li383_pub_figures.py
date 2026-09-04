@@ -712,8 +712,9 @@ def reconnect_rows(j):
 def save_figure(fig, png_path, pgf=True):
     """PNG at the house dpi and, with ``pgf``, the same figure through the
     pgf backend under ``pgf/`` beside it (vector LaTeX, needs xelatex on PATH; the
-    including document must ``\\usepackage[strings]{underscore}``, as for
-    the section pages of scripts/poincare_relax.py)."""
+    including document must ``\\usepackage[strings]{underscore}`` and
+    ``\\providecommand{\\mathdefault}[1]{#1}`` for the log-axis tick labels,
+    as for the section pages of scripts/poincare_relax.py)."""
     fig.savefig(png_path)
     if not pgf:
         return
@@ -721,7 +722,7 @@ def save_figure(fig, png_path, pgf=True):
     os.makedirs(pgf_dir, exist_ok=True)
     pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
     try:
-        with matplotlib.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+        with matplotlib.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
             fig.savefig(pgf_path, backend="pgf")
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
         if os.path.exists(pgf_path):
