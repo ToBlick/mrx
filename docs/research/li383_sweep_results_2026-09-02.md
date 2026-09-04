@@ -296,6 +296,21 @@ Full arm `reconnect_h16_p2_g1`, (16,32,32) p = 2 gamma = 1, 8000 steps (4544 s, 
 - The residual level before each solve falls with the dose and flattens: 6.55, 4.53, 4.04, 3.83, 3.50, 3.51, 3.35, 3.21 (x1e-4), final 3.07e-4; the kick per solve is 2.1x at this c (1.5x at c = 0.01) and is gone within the first 500-step chunk. The helicity price per rung is exact and shrinks slightly with the current, 1.24% -> 1.08%; J/B goes 0.648 -> 0.449, beta_vol 0.043 -> 0.026, and between solves the descent recovers about a quarter of the current the solve removed.
 - Cost 2.8 GPU-h for the run, 12 min for the ten sections.
 
+### 5i. Three meshes, one 1% reconnection (2026-09-04, `outputs/li383_pulse/reconnect_l5_*`)
+
+Tobias's question: does the mesh matter for the reconnected equilibrium, and does radial refinement around the resonant surfaces buy anything? Three arms, 10000 steps, gamma = 1, one solve at step 5000 at eps = 6.25e-5 (the dose that costs 1% of H_0: the price is linear in eps on this rung, 3.9e-5 -> 0.63%, 7.8e-5 -> 1.24%; `--reconnect-eps` 0.016 at n_r = 16, 0.064 at n_r = 32 since eps = c h^2), `li383_pub.sh reconnect ladder5k`. The refined mesh (`--r-refine 0.47:0.62:6,0.68:0.94:15`, `mrx.geometry.radial_knots`) keeps the n_r = 16 spacing (0.064) outside two windows and puts 6 cells of 0.025 around iota = 1/2 and 15 cells of 0.017 around 3/5, 30 radial cells in all; `figures/mesh/mesh_2d.png` draws the three grids in the mapped geometry with each mesh's final section below the axis, `mesh_3d.png` the boundary. Sections on five planes (the new default).
+
+| arm | mesh | s/step | resid at 5000 (before the solve) | resid final | (5,1) width before / after | (6,1) | chaotic before / after | dH / H_0 | J/B final | beta_vol final |
+|---|---|---|---|---|---|---|---|---|---|---|
+| reconnect_l5_h16_p2_g1 | (16,32,32) | 0.56 | 5.43e-4 | 4.49e-4 | 0.023 / 0.049 | 0 | 3 / 4 | -1.00% | 0.609 | 0.0398 |
+| reconnect_l5_h32u_p2_g1 | (32,32,32) | 1.15 | 5.46e-4 | 4.55e-4 | 0.024 / 0.050 | 0 | 4 / 4 | -1.00% | 0.607 | 0.0396 |
+| reconnect_l5_h32r_p2_g1 | (32,32,32) refined | 0.92 | 5.83e-4 | 4.39e-4 | 0.025 / 0.050 | 0 | 4 / 2 | -1.00% | 0.608 | 0.0397 |
+
+- The reconnected equilibrium is mesh-converged at this resolution: the 3/5 island width after the solve is 0.049 / 0.050 / 0.050, the current ratio 0.609 / 0.607 / 0.608, beta 0.0398 / 0.0396 / 0.0397, all within 1%; the ideal width before the solve 0.023 / 0.024 / 0.025. The 1/2 chain stays closed on every mesh at this dose.
+- The residual level is not a mesh discriminator either: 5.4 / 5.5 / 5.8e-4 before the solve, 4.5 / 4.6 / 4.4e-4 after; the refined mesh ends lowest by 3%, within the run-to-run scatter. The ideal floor is set by the file (section 5c), and doubling n_r does not move it.
+- Cost: the refined mesh runs at 0.92 s/step against 1.15 for the uniform 32^3 (fewer CG iterations on its coarse outer cells), and 0.56 for the 16 mesh. Its one visible price is the shifted resistive solve: 59 CG iterations against 66 on the 16 mesh and 111 on uniform 32^3. 1.6 + 3.2 + 2.6 GPU-h.
+- The helicity price is exactly the 1% aimed for on all three (dH/H_0 = -1.002%, -0.999%, -1.001%): the price of a solve is a property of the field, not the mesh.
+
 ## 6. Figures for the paper
 
 1. Case and IC: three Poincaré planes of the wout IC with the iota / p_w panel (`hi_r12_p3_g0/poincare/poincare_ic_*`).
