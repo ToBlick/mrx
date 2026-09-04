@@ -46,6 +46,7 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 
+from mrx.precision import DTYPE
 from mrx.differential_forms import DiscreteFunction
 from mrx.projectors import _conforming_restriction
 from mrx.spline_bases import SplineBasis
@@ -151,8 +152,8 @@ class StateField:
         self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
                                  T=jnp.asarray(block_knots(block, sp)))
         self.C = jnp.asarray(block["coef"])                              # (n_modes, n_base)
-        self.m = jnp.asarray(block["m"], dtype=jnp.float64)
-        self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp    # per field period
+        self.m = jnp.asarray(block["m"], dtype=DTYPE)
+        self.n_per = jnp.asarray(block["n"], dtype=DTYPE) / nfp    # per field period
         self.cos = block["sin_cos"] == 2
         self.vector = vector
 

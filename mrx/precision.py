@@ -1,7 +1,7 @@
 """Working precision of the package.
 
 The precision is chosen once, from the environment variable ``MRX_DTYPE``
-(``float64``, the default, or ``float32``), before any array is created.
+(``float32``, the default, or ``float64``), before any array is created.
 Importing :mod:`mrx` applies it; scripts and tests do not touch
 ``jax_enable_x64`` themselves.
 
@@ -17,7 +17,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-_NAME = os.environ.get("MRX_DTYPE", "float64")
+_NAME = os.environ.get("MRX_DTYPE", "float32")
 if _NAME not in ("float32", "float64"):
     raise ValueError(
         f"MRX_DTYPE={_NAME!r}; expected 'float32' or 'float64'")

@@ -19,6 +19,11 @@ loop body, so the cost of a test is the number of distinct solves it makes,
 not the mesh. Keep it that way -- a new test is the production configuration
 plus at most one contrasting case.
 """
+import os
+
+# The suite verifies at double precision, whatever the package default is.
+os.environ.setdefault("MRX_DTYPE", "float64")
+
 import time
 
 import pytest
