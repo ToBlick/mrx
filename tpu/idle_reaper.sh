@@ -5,7 +5,7 @@
 # WHY THIS EXISTS
 #
 # The GCE path takes --max-run-duration with --instance-termination-action=DELETE,
-# so a v5p or v6e instance bounds its own life at MAX_RUN_DURATION (zones.sh, 4h)
+# so a v5p instance bounds its own life at MAX_RUN_DURATION (zones.sh, 4h)
 # even if every client disappears. The Cloud TPU API has no equivalent, and on
 # this project the API is the ONLY way to reach v5e: the GCE machine type
 # ct5lp-hightpu-4t returns 403 regardless of quota. So the machine that is
@@ -70,7 +70,6 @@ md() {
     curl -sf -H "Metadata-Flavor: Google" --max-time 5 "${METADATA}/$1" 2>/dev/null
 }
 
-# ------------------------------------------------------------- who am I ---
 # A TPU API node and a GCE instance are deleted through different APIs, and a
 # TPU VM's hostname is not its node name (it is t1v-n-<uuid>-w-0), so the node
 # name has to come from the tpu-env attribute rather than from `hostname`.
@@ -95,7 +94,6 @@ identify() {
     [[ -n "${PROJECT}" ]] || PROJECT="$(md project/project-id)"
 }
 
-# ---------------------------------------------------------------- busy? ---
 # Each probe returns 0 for busy. Note the inversion on pgrep/fuser: a failed
 # probe must not read as idle, so anything other than a clean "no match" is
 # treated as busy by the caller through the `|| return 0` pattern.
@@ -123,7 +121,6 @@ busy_reason() {
     return 1
 }
 
-# --------------------------------------------------------------- delete ---
 # gcloud ships in the TPU VM image, but the reaper must not depend on that: if
 # it is missing or broken, fall back to the REST API with the metadata server's
 # own token. The node's service account needs tpu.nodes.delete (roles/editor
@@ -156,7 +153,6 @@ delete_self() {
     curl -sf -X DELETE -H "Authorization: Bearer ${token}" "${url}" >/dev/null
 }
 
-# ----------------------------------------------------------------- main ---
 identify
 
 if (( CHECK_ONLY )); then

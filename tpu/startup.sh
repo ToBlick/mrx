@@ -12,7 +12,6 @@
 
 set -uo pipefail
 
-# ---------------------------------------------------------------- data disk ---
 # Everything downstream uses /mnt/data. Normally that is the persistent
 # my-data-disk, but not every machine type can take it: ct5p-hightpu-4t (v5p)
 # rejects hyperdisk-balanced outright with "hyperdisk-balanced disk type cannot
@@ -86,7 +85,6 @@ fi
 
 sudo chmod a+w /mnt/data
 
-# ------------------------------------------------------------------ logging ---
 SETUP_LOG=/mnt/data/setup.log
 SENTINEL=/mnt/data/.mrx_env_ready
 exec > >(sudo tee -a "${SETUP_LOG}") 2>&1
@@ -107,7 +105,6 @@ REPO_DIR=/mnt/data/mrx
 # `mrx-branch` metadata key, because the default is the development branch and
 # a node measuring a feature branch would otherwise silently benchmark the
 # wrong tree -- a failure that reads as a performance result, not as an error.
-# Irrelevant under SYNC_LOCAL_MRX=1, which overwrites the checkout wholesale.
 MRX_BRANCH="$(curl -sf -H 'Metadata-Flavor: Google' \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/mrx-branch \
     || echo static-dynamic-refactor)"
@@ -124,7 +121,6 @@ GEOM=data/wout_li383_low_res_reference.nc
 sudo mkdir -p /tmp/tpu_logs
 sudo chmod 1777 /tmp/tpu_logs
 
-# ------------------------------------------------------------- idle reaper ---
 # Installed here, above the warm-disk early exit below, so that a node which
 # skips the build still gets a reaper. It arrives as a second metadata file
 # rather than being embedded in this script, so there is one copy of it and
@@ -156,16 +152,13 @@ install_idle_reaper() {
     # at the one moment nobody is watching, which is the whole failure mode.
     # roles/editor carries both of these.
     #
-    # Three outcomes, not two. An earlier version had two and printed the alarm
-    # whenever the query did not come back with a permission, which meant it
-    # cried wolf on a node whose service account held roles/editor all along:
-    # the query needs cloudresourcemanager.googleapis.com, that API is not on
-    # by default, and a disabled API returns an error rather than an empty
-    # list. A watchdog that reports failure when it cannot see is worse than
-    # one that says it cannot see, because the false alarm is indistinguishable
-    # from the real one and teaches you to ignore both. There is no cheaper
-    # place to ask: the TPU API has no nodes.testIamPermissions (404), and the
-    # only alternative check is to attempt the delete itself.
+    # Three outcomes, not two: the query needs
+    # cloudresourcemanager.googleapis.com, which is off by default, and a
+    # disabled API returns an error rather than an empty permission list. An
+    # earlier two-outcome version read that as "no permission" and cried wolf
+    # on a node holding roles/editor all along. There is no cheaper place to
+    # ask -- the TPU API has no nodes.testIamPermissions (404), and the only
+    # other check is to attempt the delete.
     local token proj resp held
     token="$(curl -sf -H "${hdr}" "${md}/instance/service-accounts/default/token" |
              python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])' 2>/dev/null)"
@@ -243,7 +236,6 @@ if [ -f "${SENTINEL}" ]; then
     exit 0
 fi
 
-# ----------------------------------------------------------------- miniforge ---
 if [ ! -x "${FORGE_DIR}/bin/conda" ]; then
     echo "--- installing Miniforge to ${FORGE_DIR} ---"
     curl -fsSL -o /tmp/miniforge.sh \
@@ -256,7 +248,6 @@ fi
 
 export PATH="${FORGE_DIR}/bin:${PATH}"
 
-# ----------------------------------------------------------------- conda env ---
 if [ ! -x "${ENV_DIR}/bin/python" ]; then
     echo "--- creating conda env at ${ENV_DIR} (python ${PY_VERSION}) ---"
     "${FORGE_DIR}/bin/conda" create -y -p "${ENV_DIR}" "python=${PY_VERSION}"
@@ -266,7 +257,6 @@ fi
 
 PY="${ENV_DIR}/bin/python"
 
-# ------------------------------------------------------------------- jax/tpu ---
 # The documented install path for Cloud TPU. This pulls jax, jaxlib and libtpu
 # matched to each other; it works inside a conda env as long as this is the only
 # process holding the TPU.
@@ -282,7 +272,6 @@ echo "--- installing jax[tpu] ---"
 # the cache silently does not exist and the only symptom is a slow run.
 "${PY}" -m pip install "etils[epath,epath-gcs]"
 
-# ----------------------------------------------------------------------- mrx ---
 # The branch matters. `main` is ten months stale and its Laplacian assembly path
 # raises a reshape TypeError inside the k=0 tensor Hodge preconditioner;
 # static-dynamic-refactor passes its full suite and is the only branch where
@@ -315,10 +304,9 @@ fi
 sudo chmod -R a+rwX "${REPO_DIR}"
 
 echo "--- installing mrx (editable) ---"
-cd "${REPO_DIR}"
+cd "${REPO_DIR}" || exit 1
 "${PY}" -m pip install -e .
 
-# ------------------------------------------------------------------- env vars ---
 # MRX reads MRX_DTYPE at import to pick its working precision; float32 is the
 # only sane choice on TPU, which has no native 64-bit path. Agg because the VM
 # is headless and the tutorials save figures.
@@ -330,7 +318,6 @@ export MRX_REPO=/mnt/data/mrx
 PROFILE
 sudo chmod 0644 /etc/profile.d/mrx.sh
 
-# ------------------------------------------------------------------ smoke test ---
 echo "--- smoke test: jax devices + mrx precision ---"
 MRX_DTYPE=float32 "${PY}" -c "
 import jax, mrx

@@ -6,13 +6,9 @@
 # building miniforge, jax[tpu] and mrx; every later session finds
 # /mnt/data/.mrx_env_ready already present and starts computing within a minute.
 #
-# Two modes:
-#
-#   default        run scripts/benchmark/poisson_regression.py, the toroidal
-#                  Poisson driver that checks TPU results against the CPU
-#                  float32 reference
-#   SCRIPT=...     run an arbitrary script from the mrx repo and pull back the
-#                  directory named by OUTDIR
+# SCRIPT defaults to the toroidal Poisson driver, which checks TPU results
+# against a CPU float32 reference. Set it to run anything else in the repo, and
+# set OUTDIR to the directory that script writes.
 #
 # Usage:
 #   ZONE=us-east5-b ./run_on_tpu.sh --n 6 8 --p 2
@@ -26,7 +22,7 @@
 #
 set -uo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 # For tpu_running_zone: a v5e is a Cloud TPU API node, which is invisible to
 # `compute instances list`, so the zone lookup below needs both surfaces.
 # shellcheck source=zones.sh
@@ -44,29 +40,14 @@ RUN_TIMEOUT="${RUN_TIMEOUT:-7200}"
 MRX_DIR=/mnt/data/mrx
 PYBIN=/mnt/data/envs/mrx/bin/python
 
-# SCRIPT is relative to the mrx repo; OUTDIR is where it writes.
-SCRIPT="${SCRIPT:-}"
-OUTDIR="${OUTDIR:-}"
-# Overlay a local mrx working tree onto the VM's checkout, so a fix can be
-# measured on real hardware before it is committed to anything.
-SYNC_LOCAL_MRX="${SYNC_LOCAL_MRX:-0}"
-LOCAL_MRX="${LOCAL_MRX:-${HOME}/mrx}"
-# Space-separated local files copied into the repo directory before the run, so
-# a driver that is not yet committed can be used as SCRIPT and still resolve the
-# repo's relative data paths.
-PUSH_FILES="${PUSH_FILES:-}"
-# Persistent XLA compilation cache. On the data disk when there is one, so it
-# survives the VM; set to empty to disable.
-#
-# A gs:// path also works and is the only way to carry compiled kernels to a
-# node that has no data disk, which is every node in a zone where the disk cap
-# has been reached. Two warnings. Put the bucket in the node's own region or
-# every miss pays a cross-region round trip, and check the bucket is non-empty
-# after the first run: JAX retries an unreachable cache rather than raising, so
-# a wrong path or a missing scope looks like a hang inside compilation rather
-# than like an error. Measured here, a warm gs:// cache in the same region was not
-# meaningfully slower than the local disk, because the entries are small and
-# the reads happen once per program.
+# SCRIPT is relative to the mrx repo; OUTDIR is where it writes, absolute or
+# relative to the checkout.
+SCRIPT="${SCRIPT:-scripts/benchmark/poisson_regression.py}"
+OUTDIR="${OUTDIR:-/mnt/data/mrx_tpu_results}"
+
+# Persistent XLA compilation cache, on the data disk so it survives the VM. A
+# gs:// path also works and is the only way to carry compiled kernels to a node
+# with no data disk; see docs/source/tpu.md for the caveats.
 JAX_CACHE_DIR="${JAX_CACHE_DIR:-/mnt/data/jax_cache}"
 # Which JAX backend the remote command should use. JAX_PLATFORMS=cpu lets a
 # float64 stage run on the host CPU, since TPUs have no usable float64.
@@ -111,20 +92,9 @@ if [[ "${TPU_API}" == "auto" ]]; then
 fi
 (( TPU_API )) && echo "  (Cloud TPU API node)"
 
-# $2="keep-stderr" surfaces stderr; the default hides gcloud's SSH banner noise
-# during polling. Hiding it during the actual run would discard the traceback.
+# stderr is dropped: gcloud's SSH banner noise would otherwise repeat on every
+# poll. The run's own output comes back through the log file, not through here.
 ssh_vm() {
-    if [[ "${2:-}" == "keep-stderr" ]]; then
-        if (( TPU_API )); then
-            gcloud compute tpus tpu-vm ssh "${VM_NAME}" --zone="${ZONE}" \
-                --command="$1" -- -o ConnectTimeout=15 -o StrictHostKeyChecking=no 2>&1 \
-                | rg -v "Could not open|log file|batch size|SSH: Attempting|Warning: Permanently"
-            return "${PIPESTATUS[0]}"
-        fi
-        gcloud compute ssh "${VM_NAME}" --zone="${ZONE}" --tunnel-through-iap=false \
-            --command="$1" -- -o ConnectTimeout=15 -o StrictHostKeyChecking=no 2>&1
-        return $?
-    fi
     if (( TPU_API )); then
         gcloud compute tpus tpu-vm ssh "${VM_NAME}" --zone="${ZONE}" \
             --command="$1" -- -o ConnectTimeout=15 -o StrictHostKeyChecking=no 2>/dev/null
@@ -164,8 +134,8 @@ run_detached() {
     cat >"${runner}" <<EOF
 #!/usr/bin/env bash
 # Record the process group leader so the poller can kill the whole job on
-# timeout. Matching on the command line instead does not work: the report mode
-# has no distinguishing SCRIPT string, so a pattern kill either matches nothing
+# timeout. Matching on the command line instead does not work: two runs of the
+# same script are indistinguishable, so a pattern kill either matches nothing
 # or matches every python on the box.
 echo \$\$ >"${pidf}"
 {
@@ -207,8 +177,8 @@ EOF
     while true; do
         batch="$(ssh_vm "tail -n +$(( seen + 1 )) '${logf}' 2>/dev/null; \
                          echo '${marker}'; cat '${donef}' 2>/dev/null")"
-        chunk="${batch%%${marker}*}"
-        status="$(printf '%s' "${batch#*${marker}}" | tr -d '[:space:]')"
+        chunk="${batch%%"${marker}"*}"
+        status="$(printf '%s' "${batch#*"${marker}"}" | tr -d '[:space:]')"
 
         if [[ -n "${chunk}" ]]; then
             printf '%s' "${chunk}"
@@ -254,7 +224,6 @@ vm_status() {
     fi
 }
 
-# ------------------------------------------------------- wait for RUNNING ---
 echo ""
 echo "Waiting for ${VM_NAME} to reach RUNNING..."
 while true; do
@@ -262,14 +231,13 @@ while true; do
     case "${status}" in
         RUNNING|READY) echo "  ${status}"; break ;;
         PENDING) echo "  still PENDING (queued for capacity); sleeping ${POLL_SECONDS}s" ;;
-        "")      echo "ERROR: instance is gone. Its flex-start wait time probably expired." >&2
+        "")      echo "ERROR: the node is gone." >&2
                  exit 1 ;;
         *)       echo "  status=${status}; sleeping ${POLL_SECONDS}s" ;;
     esac
     sleep "${POLL_SECONDS}"
 done
 
-# ------------------------------------------------- report session lifetime ---
 print_remaining() {
     local created max_secs
     # Cloud TPU API nodes have no max-run-duration to report against. Their
@@ -291,6 +259,7 @@ print_remaining() {
         --format="value(scheduling.maxRunDuration.seconds)" 2>/dev/null)"
     [[ -z "${created}" || -z "${max_secs}" ]] && return
     local start_epoch now_epoch used left
+    # BSD date on macOS, GNU date elsewhere.
     start_epoch="$(date -j -f "%Y-%m-%dT%H:%M:%S" "${created:0:19}" +%s 2>/dev/null \
         || date -d "${created}" +%s 2>/dev/null || echo 0)"
     [[ "${start_epoch}" == "0" ]] && return
@@ -303,7 +272,6 @@ print_remaining() {
 
 print_remaining
 
-# --------------------------------------------------- wait for the sentinel ---
 echo ""
 echo "Waiting for the environment (${SENTINEL})..."
 waited=0
@@ -318,117 +286,46 @@ while true; do
         ssh_vm "sudo tail -n 40 ${SETUP_LOG}" >&2
         exit 1
     fi
-    # Show progress so a stalled pip is visible rather than silent.
     tail_line="$(ssh_vm "sudo tail -n 1 ${SETUP_LOG} 2>/dev/null")"
     printf '  [%4ds] %s\n' "${waited}" "${tail_line:-(waiting for startup-script)}"
     sleep "${POLL_SECONDS}"
     waited=$(( waited + POLL_SECONDS ))
 done
 
-# ------------------------------------------------------- sync local mrx ---
-# Overlay the local working tree onto /mnt/data/mrx. Only git-tracked files are
-# sent: the full directory is 568 MB because of untracked HDF5 output and
-# notebooks, while the 170 tracked files are 1.7 MB, so this stays a few-second
-# operation you can repeat every iteration.
-#
-# The tree is overlaid, not swapped in, so the VM keeps its editable install and
-# its data/ files. The local git SHA and dirty-file count go into the log,
-# because a measurement taken against an unrecorded working tree is not a
-# measurement of anything.
 # The branch is baked into instance metadata at create time and read by
 # startup.sh, so a node acquired with the default and then driven with
 # MRX_BRANCH=<feature> would run the default checkout and report the numbers as
 # if they were the feature branch's. That is the failure startup.sh warns about,
 # and it is silent, so honour MRX_BRANCH here as well.
-if [[ -n "${MRX_BRANCH:-}" ]]; then
-    echo ""
-    echo "Checking out ${MRX_BRANCH} in ${MRX_DIR}..."
-    # startup.sh clones as root, so the login user hits git's "dubious
-    # ownership" refusal on every command. The exception is per-user and
-    # idempotent, and a node is single-tenant, so it costs nothing to assert it.
-    # Checked out from FETCH_HEAD rather than origin/<branch>, because
-    # startup.sh clones shallow and single-branch: remote.origin.fetch names
-    # only the branch it cloned, so no other origin/* ref can ever exist and
-    # `checkout --track` fails with "not a branch".
-    VM_SHA="$(ssh_vm "git config --global --add safe.directory ${MRX_DIR} 2>/dev/null; \
-            git -C ${MRX_DIR} fetch --quiet origin ${MRX_BRANCH} && \
-            git -C ${MRX_DIR} checkout --quiet -B ${MRX_BRANCH} FETCH_HEAD && \
-            git -C ${MRX_DIR} rev-parse --short HEAD" \
-        | tr -d '\r' | rg -o '^[0-9a-f]{7,40}$' | tail -n 1)"
-    if [[ -z "${VM_SHA}" ]]; then
-        echo "ERROR: could not check out ${MRX_BRANCH} on the VM." >&2
-        exit 1
-    fi
-    echo "  at ${VM_SHA}"
+echo ""
+echo "Checking out ${MRX_BRANCH} in ${MRX_DIR}..."
+# startup.sh clones as root, so the login user hits git's "dubious ownership"
+# refusal on every command. The exception is per-user and idempotent, and a node
+# is single-tenant, so it costs nothing to assert it.
+#
+# Checked out from FETCH_HEAD rather than origin/<branch>, because startup.sh
+# clones shallow and single-branch: remote.origin.fetch names only the branch it
+# cloned, so no other origin/* ref can ever exist and `checkout --track` fails
+# with "not a branch".
+VM_SHA="$(ssh_vm "git config --global --add safe.directory ${MRX_DIR} 2>/dev/null; \
+        git -C ${MRX_DIR} fetch --quiet origin ${MRX_BRANCH} && \
+        git -C ${MRX_DIR} checkout --quiet -B ${MRX_BRANCH} FETCH_HEAD && \
+        git -C ${MRX_DIR} rev-parse --short HEAD" \
+    | tr -d '\r' | rg -o '^[0-9a-f]{7,40}$' | tail -n 1)"
+if [[ -z "${VM_SHA}" ]]; then
+    echo "ERROR: could not check out ${MRX_BRANCH} on the VM." >&2
+    exit 1
 fi
+echo "  at ${VM_SHA}"
 
-if [[ "${SYNC_LOCAL_MRX}" == "1" ]]; then
-    echo ""
-    echo "Syncing ${LOCAL_MRX} -> ${MRX_DIR} (tracked files only)..."
-    # `-d .git` rejects a git worktree, where .git is a FILE pointing at the
-    # real directory. Worktrees are the natural way to measure a second branch
-    # without disturbing the first, which is exactly what this flag is for, so
-    # ask git rather than the filesystem.
-    if ! git -C "${LOCAL_MRX}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: ${LOCAL_MRX} is not a git checkout." >&2
-        exit 1
-    fi
-    sync_sha="$(git -C "${LOCAL_MRX}" rev-parse --short HEAD)"
-    sync_dirty="$(git -C "${LOCAL_MRX}" status --porcelain --untracked-files=no \
-        | grep -c '' | tr -d ' ')"
-    sync_tar="$(mktemp -t mrxsync).tgz"
-    ( cd "${LOCAL_MRX}" && git ls-files -z | tar czf "${sync_tar}" --null -T - ) || {
-        echo "ERROR: could not build the source tarball." >&2; exit 1; }
-    echo "  ${sync_sha} (+${sync_dirty} modified tracked file(s)), $(du -h "${sync_tar}" | cut -f1)"
-
-    if ! scp_to_vm "${sync_tar}" "/mnt/data/mrx_sync.tgz"; then
-        rm -f "${sync_tar}"
-        echo "ERROR: could not copy the source tarball to the VM." >&2
-        exit 1
-    fi
-    rm -f "${sync_tar}"
-
-    ssh_vm "cd ${MRX_DIR} && tar xzf /mnt/data/mrx_sync.tgz && \
-            rm -f /mnt/data/mrx_sync.tgz && \
-            find . -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null; \
-            echo synced" | rg -q synced \
-        || { echo "ERROR: unpacking the tarball on the VM failed." >&2; exit 1; }
-    echo "  synced (pycache cleared)"
-    SYNC_TAG="local ${sync_sha}+${sync_dirty}"
-else
-    SYNC_TAG="VM checkout${VM_SHA:+ ${VM_SHA}}"
-fi
-
-# --------------------------------------------------- push extra scripts ---
-if [[ -n "${PUSH_FILES}" ]]; then
-    echo ""
-    echo "Pushing extra files into ${MRX_DIR}..."
-    for f in ${PUSH_FILES}; do
-        if [[ ! -f "${f}" ]]; then
-            echo "ERROR: PUSH_FILES entry '${f}' is not a file." >&2
-            exit 1
-        fi
-        scp_to_vm "${f}" "${MRX_DIR}/$(basename "${f}")" \
-            || { echo "ERROR: could not push ${f}" >&2; exit 1; }
-        echo "  ${f}"
-    done
-fi
-
-# ------------------------------------------------------------ push + run ---
 RUN_ARGS="$*"
 
-# TPU_STDERR_LOG_LEVEL silences the libtpu driver chatter, which otherwise emits
-# a "Could not open the log file ... Permission denied" pair several times a
-# second and buries the actual results.
-#
-# The compilation cache is not a minor tuning knob here. MRX's inner solves run
-# as eager lax.while_loops, so each call traces a fresh program and XLA compiles
-# it again; on a v5e one apply_laplacian k=1 call costs ~10 s of compilation
-# against ~20 ms of actual work. Turning the cache on takes that call from
-# 9854 ms to 105 ms, a 93x difference, and it is the single largest effect
-# measured on this hardware. The two thresholds are lowered because their
-# defaults are tuned for a handful of large training programs and would skip
-# the many small kernels this workload compiles.
+# TPU_STDERR_LOG_LEVEL silences libtpu driver chatter that would otherwise bury
+# the results. The compilation cache is not a minor tuning knob: MRX's inner
+# solves run as eager lax.while_loops, so each call traces a fresh program and
+# XLA compiles it again, and turning the cache on took one apply_laplacian k=1
+# call from 9854 ms to 105 ms. The two thresholds are lowered because their
+# defaults would skip nearly every kernel this workload compiles.
 COMMON_ENV="export PATH=/mnt/data/envs/mrx/bin:\$PATH; \
     export MPLBACKEND=Agg MRX_REPO=${MRX_DIR}; \
     export TPU_STDERR_LOG_LEVEL=3 TPU_MIN_LOG_LEVEL=3; \
@@ -437,49 +334,26 @@ COMMON_ENV="export PATH=/mnt/data/envs/mrx/bin:\$PATH; \
     export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0.1;"
 [[ -n "${RUN_PLATFORM}" ]] && COMMON_ENV="${COMMON_ENV} export JAX_PLATFORMS=${RUN_PLATFORM};"
 
-if [[ -n "${SCRIPT}" ]]; then
-    if [[ -z "${OUTDIR}" ]]; then
-        echo "ERROR: SCRIPT requires OUTDIR (the directory the script writes)." >&2
-        exit 1
-    fi
-    echo ""
-    print_remaining
-    echo ""
-    echo "Running ${SCRIPT} with MRX_DTYPE=${RUN_DTYPE}${RUN_PLATFORM:+ on ${RUN_PLATFORM}} [${SYNC_TAG}]..."
-    echo "=================================================================="
+case "${OUTDIR}" in
+    /*) REMOTE_OUT="${OUTDIR}" ;;
+    *)  REMOTE_OUT="${MRX_DIR}/${OUTDIR}" ;;
+esac
 
-    # cd into the repo: scripts such as li383_relaxation.py default to a
-    # relative geometry path (data/wout_li383_low_res_reference.nc), which does
-    # not resolve from the login shell's home directory.
-    run_detached "$(basename "${SCRIPT}" .py)" \
-        "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE}; \
-         ${PYBIN} -u ${SCRIPT} ${RUN_ARGS}"
-    RUN_STATUS=$?
-    REMOTE_OUT="${MRX_DIR}/${OUTDIR}"
-else
-    print_remaining
-    echo ""
-    echo "Running MRX with MRX_DTYPE=${RUN_DTYPE}..."
-    echo "=================================================================="
+echo ""
+echo "Running ${SCRIPT} with MRX_DTYPE=${RUN_DTYPE}${RUN_PLATFORM:+ on ${RUN_PLATFORM}} [VM checkout ${VM_SHA}]..."
+echo "=================================================================="
 
-    # Detached here too. This mode is short, but it ran foreground until now and
-    # so carried the same double-launch exposure that run_detached exists to
-    # remove; there is no reason to keep two code paths with different failure
-    # modes.
-    #
-    # Run from the repo checkout rather than copied in: the driver lives in
-    # mrx now, so the clone on the VM already has it at the branch under test.
-    run_detached "poisson_regression" \
-        "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE}; \
-         ${PYBIN} -u scripts/benchmark/poisson_regression.py ${RUN_ARGS}"
-    RUN_STATUS=$?
-    REMOTE_OUT=/mnt/data/mrx_tpu_results
-fi
+# cd into the repo: scripts such as li383_relaxation.py default to a relative
+# geometry path (data/wout_li383_low_res_reference.nc), which does not resolve
+# from the login shell's home directory.
+run_detached "$(basename "${SCRIPT}" .py)" \
+    "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE}; \
+     ${PYBIN} -u ${SCRIPT} ${RUN_ARGS}"
+RUN_STATUS=$?
 
 echo "=================================================================="
 echo ""
 
-# --------------------------------------------------------- pull results ---
 mkdir -p "${OUT_ROOT}"
 echo "Pulling results into ${OUT_ROOT}/..."
 scp_from_vm "${REMOTE_OUT}" "${OUT_ROOT}/" \
@@ -490,14 +364,11 @@ print_remaining
 
 if (( RUN_STATUS != 0 )); then
     echo ""
-    if [[ -n "${SCRIPT}" ]]; then
-        # No CPU reference is computed in this mode, so do not send the reader
-        # looking for a summary.md that was never written.
-        echo "The run exited ${RUN_STATUS}. That is ${SCRIPT}'s own exit code;"
-        echo "the pulled-back ${OUTDIR:-output} and the log above are the evidence."
-    else
-        echo "The run exited ${RUN_STATUS}. A non-zero exit here usually means the"
-        echo "TPU results deviated from the CPU float32 reference; check summary.md."
+    echo "The run exited ${RUN_STATUS}. That is ${SCRIPT}'s own exit code;"
+    echo "the pulled-back ${OUTDIR} and the log above are the evidence."
+    if [[ "${SCRIPT}" == *poisson_regression.py ]]; then
+        echo "For that driver a non-zero exit usually means the TPU results"
+        echo "deviated from the CPU float32 reference; check summary.md."
     fi
 fi
 exit "${RUN_STATUS}"
