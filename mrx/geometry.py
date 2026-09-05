@@ -383,7 +383,10 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
-        preconditioner built (``seq.operators is ops``); the parsed file is
+        preconditioner built (``seq.operators is ops``); the harmonic forms
+        are a separate, explicit step, ``compute_nullspaces(seq)``
+        (:func:`mrx.nullspace.compute_nullspaces`: a chain of solves, only
+        where a run deflates against them); the parsed file is
         ``seq.equilibrium`` (the state dict of :func:`mrx.gvec.read_equilibrium`
         with ``kind``, or the analytic file's dict with ``kind`` the map's
         name), read once, for :func:`mrx.initial_conditions.initial_field`.

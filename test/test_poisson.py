@@ -17,7 +17,8 @@ import numpy as np
 import pytest
 
 import mrx
-from mrx.precision import eps
+from mrx import operators as op
+from mrx.precision import RESIDUAL_DTYPE, eps
 from test.conftest import TORUS_EPSILON
 from test.manufactured import CASES, case_specs, case_tag, relative_l2_error
 
@@ -54,8 +55,16 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
     seq = toroid
     case = specs[(k, dirichlet)]
     b = seq.load(case["src_ref"], k, dirichlet=dirichlet, frame='ref')
-    u, info = seq.apply_inverse_laplacian(b, k, dirichlet=dirichlet, return_info=True)
-    residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - b
+    # The solution in the residual precision, the one the outer loop
+    # accumulated: its residual is the solve's own criterion. The float32
+    # copy is what a run stores, and its rounding alone carries a residual
+    # of 1e-6 to 3e-4 relative here (measured 2026-09-05), so the error band
+    # below is checked on that copy.
+    u, info = seq.apply_inverse_laplacian(b, k, dirichlet=dirichlet, return_info=True,
+                                          dtype=RESIDUAL_DTYPE)
+    on = seq if seq.residual is None else seq.residual
+    residual = op.apply_laplacian(on, seq.operators, u, k, dirichlet=dirichlet) - b.astype(RESIDUAL_DTYPE)
+    u = u.astype(mrx.DTYPE)
 
     def norm(v):   # the stopping criterion's norm: the mass atom of the dual k-forms
         return float(jnp.sqrt(v @ seq.apply_mass_matrix_preconditioner(v, k, dirichlet)))
@@ -64,23 +73,13 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
     err = relative_l2_error(seq, k, dirichlet, u, case["exact"])
     print(f"\n  {case_tag(k, dirichlet)}: relative L2 error {err:.3e}, "
           f"{-int(info)} iterations, residual {rel_res:.2e} in the mass-atom norm")
-    # apply_laplacian's nested mass solve is formed in the working precision,
-    # so the measured residual cannot resolve seq.tol at float32: k3_dbc lands
-    # at 1.97e-4 refined and 2.77e-4 plain (2026-09-05), ~2e3 eps. The L2
-    # error below is the one that fails if a solve is actually wrong; it
-    # matches the float64 table to all printed digits in both float32
-    # configurations. A plain solve at 1e-6 then reports maxiter with that
-    # same residual (info > 0), because refine cannot drive a float32 true
-    # residual below the floor. Require declared convergence -- and the
-    # iteration band -- only when the tolerance itself is the looser bound.
-    band = max(1e2 * seq.tol, eps(3e3))
-    assert rel_res <= band, (
-        f"{case_tag(k, dirichlet)} residual {rel_res:.2e} > band {band:.2e}")
-    if 1e2 * seq.tol >= eps(3e3):
-        assert int(info) < 0, (
-            f"{case_tag(k, dirichlet)} did not converge (info={int(info)})")
-        assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
+    assert int(info) < 0, f"{case_tag(k, dirichlet)} did not converge (info={int(info)})"
+    # The solve stops when the true residual in the mass-atom norm is below
+    # seq.tol; it is measured here through apply_laplacian's own nested mass
+    # solve at seq.tol, which adds noise of that size.
+    assert rel_res <= 1e2 * seq.tol
     assert err < 1.25 * ERROR_MEASURED[(k, dirichlet)]
+    assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
 
 
 @pytest.mark.parametrize("k", (2, 1))
@@ -106,9 +105,9 @@ def test_leray_projection(toroid, k):
     e_Pv = float(seq.l2_norm_sq(Pv, k, dirichlet=dbc))
     print(f"\n  Leray k={k}: ||div P v|| {div_norm:.2e}, ||P P v - P v|| {moved:.2e}, "
           f"energy {e_v:.4f} -> {e_Pv:.4f}")
-    # Both are formed in the working precision, so like the dual residual in
-    # the solve test they cannot be resolved below roundoff however tight
-    # seq.tol is; the eps floor is inert at float64.
-    assert div_norm <= max(10 * seq.tol, eps(10))
-    assert moved <= max(10 * seq.tol, eps(10))
+    # The projection is stored in the working dtype: the divergence of the
+    # rounding alone is a few eps (3 eps at k=2, 1.5 at k=1, measured
+    # 2026-09-05 in float32), on top of the solve's tolerance.
+    assert div_norm <= 10 * seq.tol + eps(10)
+    assert moved <= 10 * seq.tol + eps(10)
     assert e_Pv < e_v

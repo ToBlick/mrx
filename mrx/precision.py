@@ -23,7 +23,7 @@ float32 solve reaches :data:`SOLVE_TOL` in a few passes, and the force is
 formed in float64 before it is stored. 64-bit mode is therefore always
 on; Python scalars stay weakly typed and do not promote.
 ``MRX_RESIDUAL_DTYPE=float32`` is the configuration of a machine without
-float64 (a TPU): plain float32 solves, default tolerance 1e-6.
+float64 (a TPU): plain float32 solves, default tolerance ``sqrt(eps)``.
 
 Every tolerance in the package that depends on roundoff is expressed
 through :func:`eps` so it scales with the working precision. Tolerances
@@ -82,14 +82,19 @@ EPS = float(np.finfo(DTYPE).eps)
 def default_tol(dtype, refine) -> float:
     """The default relative residual of a solve on a sequence of ``dtype``
     that refines or not: 1e-8 for a refined float32 solve, 1e-10 for a
-    plain float64 one, 1e-6 for a plain float32 one (its iteration reaches
-    1e-7 on the production systems). The float64 view of a float32
+    plain float64 one, sqrt(eps) = 3.5e-4 for a plain float32 one: the true
+    residual float32 arithmetic attains on the composite solves (the k=2
+    Hodge split 2.4e-4, the k=3 saddle 4.2e-4 on the (8,12,12) p=2 test
+    mesh, 2026-09-05; the scalar solves reach 1e-6 to 1e-5 and stop early).
+    A plain float32 solve at 1e-6, the default until 2026-09-05, burned its
+    passes on five of the eight Poisson cases. The float64 view of a float32
     sequence solves plainly at 1e-10: the harmonic-form construction on it
     needs that (its k=1 solve's true residual at 1e-8 was 2e-6, and the
     k=2 form's Rayleigh quotient that residual squared)."""
     if refine:
         return 1e-8
-    return 1e-10 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-6
+    dtype = jnp.dtype(dtype)
+    return 1e-10 if dtype == jnp.dtype("float64") else float(np.sqrt(np.finfo(dtype).eps))
 
 
 #: Default relative residual of a solve through a sequence, in the residual

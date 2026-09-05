@@ -764,7 +764,7 @@ class DeRhamSequence():
 
     def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
                                 operators=None, tol=None, maxiter=None,
-                                return_info=False):
+                                return_info=False, dtype=None):
         """Solve ``L_k x = rhs`` for the k-form ``x``.
 
         ``k = 0``: ``L_0 = S_0`` is SPD up to its harmonic forms; deflated
@@ -792,7 +792,7 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            return_info=return_info)
+            return_info=return_info, dtype=dtype)
 
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
@@ -872,9 +872,8 @@ class DeRhamSequence():
         ``betti_numbers`` defaults to ``self.betti_numbers``.
         """
         if direct:
-            self.operators = compute_nullspaces(
-                self, self._require_operators(), betti_numbers=betti_numbers,
-                **kwargs)
+            compute_nullspaces(self, self._require_operators(), betti_numbers=betti_numbers,
+                               **kwargs)
             return None
         operators, info = compute_nullspaces_iterative(
             self, self._require_operators(), betti_numbers=betti_numbers, **kwargs)

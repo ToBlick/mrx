@@ -1058,7 +1058,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
-                                  return_info: bool = False):
+                                  return_info: bool = False, dtype=None):
     """``L_k^{-1} rhs`` for ``k >= 1`` by Hodge splitting (TB, 2026-09-02).
 
     ``L_k = S_k + M_k D_{k-1} M_{k-1}^{-1} D_{k-1}^T M_k`` and
@@ -1135,7 +1135,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
                          lambda r: split(r.astype(seq.dtype)), rhs, guess,
                          _nullspace_vectors(operators, k, d))
-    x = _out(seq, x)
+    x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 
 
@@ -1164,7 +1164,7 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
-                                  return_info: bool = False):
+                                  return_info: bool = False, dtype=None):
     """Solve with the inverse of the unshifted Hodge Laplacian ``L_k``.
 
     ``k = 0``: the deflated scalar PCG below.  ``k = 1, 2``: the Hodge-split
@@ -1173,7 +1173,9 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     (``S_3 = 0``, nothing to split; see the split's docstring), which is
     also the solver of the SHIFTED Laplacian at every k
     (:func:`apply_inverse_shifted_laplacian`).  Every solve is
-    preconditioned by the metric-lumped atoms of the bundle.
+    preconditioned by the metric-lumped atoms of the bundle. The result is
+    in the working dtype unless ``dtype`` names the residual precision (the
+    solution the outer loop accumulated, before its rounding to float32).
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
@@ -1184,18 +1186,18 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         on, inner = _outer(seq, tol)
         u, info = _k0_solve(seq, operators, rhs, dirichlet, tol=tol, maxiter=maxiter,
                             guess=guess, on=on, inner=inner)
-        u = _out(seq, u)
+        u = _out(seq, u, dtype)
         return (u, info) if return_info else u
 
     if k == 3:
         u, _, info = apply_inverse_laplacian_saddle(
             seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
             tol=tol, maxiter=maxiter)
-        u = _out(seq, u)
+        u = _out(seq, u, dtype)
         return (u, info) if return_info else u
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
-        tol=tol, maxiter=maxiter, return_info=return_info)
+        tol=tol, maxiter=maxiter, return_info=return_info, dtype=dtype)
 
 
 def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: int,

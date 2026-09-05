@@ -13,7 +13,8 @@ until ``J x B = grad p`` in the weak sense; ``p`` is not prescribed, it is
 the Lagrange multiplier the descent finds.
 
 This run turns on **velocity smoothing** of order 1 (gamma = 1): the descent
-direction is ``(I - scale L)^-1 F`` with ``scale ~ 0.064 / n_r^2``. On li383
+direction is ``(I - scale L)^-1 F`` with ``scale = 0.02 / n_r^2``
+(``mrx.relaxation.SMOOTHING_C``, the stepper's default). On li383
 this reaches a clean nested floor in ~1000 steps where the unsmoothed descent
 (gamma = 0) grinds for ~6000; the force residual need not fall monotonically,
 what matters is the floor it settles at. It runs in float32 -- the descent is
@@ -81,7 +82,7 @@ from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, we
 print(f"[env] mrx precision {mrx.DTYPE}")
 
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we set the initial condition: li383's own equilibrium field as B = dA'
@@ -93,11 +94,10 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 # %%
 # Now we relax: the energy descent of mrx.relaxation with scripts/relax.py's
 # defaults plus velocity smoothing, run toward a nested floor (~500 steps).
-# gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, scale ~ 0.064/n_r^2.
-smoothing_scale = 0.064 / ns[0] ** 2
-print(f"[relax] velocity smoothing order 1, scale {smoothing_scale:.3e}")
-ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                 velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
+# gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, the stepper's default
+# scale 0.02 / n_r^2 (mrx.relaxation.SMOOTHING_C).
+ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
 res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
             floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)

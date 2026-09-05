@@ -268,7 +268,13 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     Built on the float64 view of the sequence (:func:`_builder`), the
     forms stored in the working dtype.
 
-    Returns the updated ``SequenceOperators`` bundle.
+    Installs the bundle on the sequence (and on its float64 view) as each
+    form lands, so that the next form's solve deflates against it, and
+    returns it: ``seq.operators`` is the result, nothing to set afterwards.
+    An explicit step after :func:`mrx.geometry.build_sequence`, taken where
+    a run deflates against the forms (the relaxation: the k=2 Dirichlet
+    form, one k=1 Hodge solve on the float64 view; the vacuum problems:
+    the k=1 free form).
     """
     if operators is None:
         operators = seq._require_operators()

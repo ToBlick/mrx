@@ -58,7 +58,7 @@ Flags, defaults in brackets:
                                    blow-up; mrx.relaxation.PICARD_*)
       --history M [1]              L-BFGS secant pairs: 0 is steepest
                                    descent, 1 memoryless BFGS (= CG)
-      --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.0]
+      --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.02 / n_r^2]
                                    descent direction v = (I - MU L)^-G F
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
@@ -145,8 +145,8 @@ def parse_args(argv=None):
                     help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
     ap.add_argument("--velocity-smoothing-order", type=int, default=0,
                     help="descent direction v = (I - scale L)^-order F; 0 is off")
-    ap.add_argument("--velocity-smoothing-scale", type=float, default=0.0,
-                    help="length scale of the velocity smoothing")
+    ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
+                    help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
@@ -201,7 +201,7 @@ def main(cli):
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
                               nfp=cli.nfp, r_windows=parse_r_refine(cli.r_refine))
-    seq.set_operators(compute_nullspaces(seq, ops))
+    compute_nullspaces(seq)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)
@@ -233,8 +233,9 @@ def main(cli):
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
+    params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     print(f"\n=== L-BFGS m={cli.history}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
+          f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",

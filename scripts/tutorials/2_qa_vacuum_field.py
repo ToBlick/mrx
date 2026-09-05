@@ -76,7 +76,7 @@ from mrx.relaxation import compute_force
 
 nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we build the vacuum field: the harmonic 2-form of the Dirichlet complex,

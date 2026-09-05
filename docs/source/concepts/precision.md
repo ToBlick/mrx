@@ -28,7 +28,7 @@ The module exports:
 | `DTYPE` | the working dtype (`mrx.DTYPE`) |
 | `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: the float32-only configuration of a machine without float64 (a TPU), plain float32 solves |
 | `REFINE` | `DTYPE != RESIDUAL_DTYPE`: the solves refine |
-| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, 1e-6 for plain float32 |
+| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, sqrt(eps) = 3.5e-4 for plain float32 |
 | `inner_tol(tol)` | the relative tolerance of one working-precision pass: the square root of the tolerance, two passes per solve; derived, not a second hyperparameter |
 | `MAX_PASSES` | 6 |
 | `EPS`, `eps(c)`, `sqrt_eps(c)`, `solve_tol(c)` | the machine epsilon of the working dtype and its multiples |
@@ -132,7 +132,7 @@ Measured on li383 (16,32,32) p=3, 2000 relaxation steps
 (`docs/research/velocity_leray_ab_2026-09-04.md`): the production step
 runs at 1.02 s/step in float32 refined (tol 1e-8), 1.44 s/step in
 float64 (tol 1e-10; 0.95 at 1.5e-8) and 0.33 s/step in plain float32
-(`MRX_RESIDUAL_DTYPE=float32`, tol 1e-6), all three reaching the same
+(`MRX_RESIDUAL_DTYPE=float32`, tol 1e-6 then), all three reaching the same
 residual over 2000 steps (4.0e-4 to 4.5e-4), while float32 with the old
 tolerance sat at 8.4e-4. Plain float32 is the configuration for runs
 that stop near a residual of 5e-4: below that the gradient-part term of
@@ -160,8 +160,12 @@ importing `mrx`.
 
 The tolerance is the one number of a solve: its defaults follow the
 configuration (1e-8 refined float32, where the returned float32 vector
-rounds at 6e-8 anyway; 1e-10 float64; 1e-6 plain float32, what a float32
-iteration attains), the per-pass inner tolerance is its square root, and
+rounds at 6e-8 anyway; 1e-10 float64; sqrt(eps) = 3.5e-4 plain float32,
+the true residual float32 arithmetic attains on the composite solves: the
+k=2 Hodge split 2.4e-4 and the k=3 saddle 4.2e-4 on the test mesh, while
+the scalar solves reach 1e-6 to 1e-5 and stop early; at 1e-6 five of the
+eight Poisson solves burned their passes), the per-pass inner tolerance is
+its square root, and
 the pass and cut-off constants are guards, not tolerances. The relaxation
 ties it to its floor: the force `F = J x B - grad p` carries the pressure
 solve's residual, relative to `|J x B|` while `F` is `resid` times that,
@@ -173,5 +177,6 @@ sqrt(tol)`: a run to 1e-4 wants 1e-8, a run to 1e-5 wants 1e-10, float64.
 `relax` prints that residual at the start and enforces nothing: a loose
 tolerance with a step cap is a legitimate run.
 
-Every test tolerance is expressed through `eps()` or the solver tolerance;
-the suite passes in both precisions.
+Every test tolerance is expressed through `eps()` or the solver tolerance,
+a quantity stored in the working dtype carrying both; the suite runs in
+the three configurations (`slurm/suite.sh`, `testing_strategy.md`).

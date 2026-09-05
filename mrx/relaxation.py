@@ -385,15 +385,12 @@ PICARD_MAX = 20
 #: unconverged, ``state.picard_residual`` above the tolerance.
 PICARD_RESTARTS = 4
 #: The Picard tolerance in units of ``seq.tol``: the inner solves define the
-#: map, so a tighter fixed point means nothing (and in float32 is unreachable).
+#: map, so a tighter fixed point means nothing.
 PICARD_TOL_FACTOR = 10.0
-#: The same tolerance's floor in units of roundoff, which is what
-#: "unreachable" above means and what this factor makes true rather than only
-#: documented. The defect is formed in the working precision, so at float32 it
-#: bottoms out a few eps up -- 6.4e-7, about 5 eps, on li383 (2026-09-05) --
-#: while refinement takes ``PICARD_TOL_FACTOR * seq.tol`` down to 1e-7. Inert
-#: at float64, where the floor is 2e-15 against a tolerance of 1e-9.
-PICARD_TOL_EPS_FACTOR = 10.0
+#: ... plus this many roundoffs of the working dtype: the defect is formed in
+#: the stored precision and floors there (11 eps measured on li383 (8,12,12)
+#: p=2 in float32, 2026-09-05; 4e-15 in float64, inert).
+PICARD_EPS_FACTOR = 20.0
 
 
 class IntegrationScheme(Enum):
@@ -433,6 +430,26 @@ class Increment(NamedTuple):
     My_history: jnp.ndarray
 
 
+#: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
+#: logical): ``mu = SMOOTHING_C / n_r^2`` damps a mode of wavenumber ``k``
+#: by ``1 / (1 + mu k^2)``, the two-cell mode by 1/1.2 and a four-cell mode
+#: by 1/1.05 -- the edge of the last octave, no resolved physics. Swept
+#: 2026-09-05 on li383 (16,32,32) p=2 in mixed precision, 5000 steps,
+#: ``SMOOTHING_C`` in {0.0064, 0.02, 0.064, 0.2, 0.64} against no
+#: smoothing (``outputs/mu_sweep``): the residual per step has a flat
+#: optimum over 0.02-0.064, per wall second 0.02 is the cheapest of them
+#: (the shifted solve's cost grows with the scale), the helicity drift is
+#: the same for every smoothed arm (it is the time discretisation's, not
+#: the smoother's), and the unsmoothed descent is a factor 2 behind at
+#: equal wall time. 0.064 before, from one sweep at 8^3 p=3.
+SMOOTHING_C = 0.02
+
+
+def smoothing_scale(seq) -> float:
+    """``SMOOTHING_C / n_r^2``: the smoothing scale of the sequence's mesh."""
+    return SMOOTHING_C / seq.ns[0] ** 2
+
+
 class TimeStepper(eqx.Module):
     """One step of the energy descent, ``B_{n+1} = B_n + dt curl(u x X)``.
 
@@ -454,7 +471,8 @@ class TimeStepper(eqx.Module):
             descent direction, ``v = (I - scale * Laplacian)^-order F``.
             0 (the default) leaves the direction as it is.
         velocity_smoothing_scale: Length scale of the smoothing,
-            the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``.
+            the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
+            is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
         history_size: Stored secant pairs of the L-BFGS direction. 0 is
             steepest descent, ``u = F``; 1 (the default) is memoryless
             BFGS, which under the exact line search IS Polak-Ribiere CG
@@ -470,14 +488,14 @@ class TimeStepper(eqx.Module):
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
-            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``,
-            set by ``__post_init__``.
+            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
+            plus ``PICARD_EPS_FACTOR`` roundoffs, set by ``__post_init__``.
         cfl_weights: ``logical_cfl_weights(seq)``, built by ``__post_init__``.
     """
     seq: DeRhamSequence
     auxiliary_B_field: bool = False
     velocity_smoothing_order: int = 0
-    velocity_smoothing_scale: float = 0.0
+    velocity_smoothing_scale: float = None
     history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
@@ -487,8 +505,9 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         if self.history_size < 0:
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
-        self.picard_tol = max(PICARD_TOL_FACTOR * self.seq.tol,
-                              eps(PICARD_TOL_EPS_FACTOR))
+        if self.velocity_smoothing_scale is None:
+            self.velocity_smoothing_scale = smoothing_scale(self.seq)
+        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,

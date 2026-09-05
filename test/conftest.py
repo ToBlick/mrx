@@ -19,11 +19,6 @@ loop body, so the cost of a test is the number of distinct solves it makes,
 not the mesh. Keep it that way -- a new test is the production configuration
 plus at most one contrasting case.
 """
-import os
-
-# The suite verifies at double precision, whatever the package default is.
-os.environ.setdefault("MRX_DTYPE", "float64")
-
 import time
 
 import pytest
@@ -49,7 +44,7 @@ def seq():
     t0 = time.perf_counter()
     s, ops = build_sequence(GEOMETRY, NS, P)
     t1 = time.perf_counter()
-    s.set_operators(compute_nullspaces(s, ops))
+    compute_nullspaces(s)
     t2 = time.perf_counter()
     print(f"\n  li383 {NS} p={P}: build_sequence {t1 - t0:.0f} s, "
           f"nullspaces {t2 - t1:.0f} s", flush=True)

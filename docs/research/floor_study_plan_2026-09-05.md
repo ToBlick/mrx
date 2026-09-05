@@ -16,7 +16,7 @@ sqrt(tol)`, the whole descent at `sqrt(0.1 tol)`:
 
 | configuration | tol | term = descent near | float32 storage cap |
 |---|---|---|---|
-| plain float32 (`MRX_RESIDUAL_DTYPE=float32`) | 1e-6 | 3e-4 | 1e-5 |
+| plain float32 (`MRX_RESIDUAL_DTYPE=float32`) | sqrt(eps) = 3.5e-4 (was 1e-6, unattainable on the composite solves; 2026-09-05) | 6e-3 | 1e-5 |
 | mixed (float32 work, float64 residual) | 1e-8 | 3e-5 | ~1e-6 (rounding of the stored `F`: a discrete divergence of ~1e-6 relative to `|F|`) |
 | float64 | 1e-10 | 3e-6 | none |
 
@@ -45,11 +45,11 @@ condition, `--history 1` (L-BFGS m=1), `--cfl 0.5`, `--chunk 500`,
 | arm | precision | env | smoothing |
 |---|---|---|---|
 | f32_g0 | `--precision float32` | `MRX_RESIDUAL_DTYPE=float32` | `--velocity-smoothing-order 0` |
-| f32_g1 | same | same | `--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4` (0.064 / 16^2) |
+| f32_g1 | same | same | `--velocity-smoothing-order 1` (the default scale, 0.02 / 16^2 = 7.8e-5 since 2026-09-05) |
 | mixed_g0 | `--precision float32` | (default) | order 0 |
-| mixed_g1 | same | | order 1, 2.5e-4 |
+| mixed_g1 | same | | order 1 |
 | f64_g0 | `--precision float64` | | order 0 |
-| f64_g1 | same | | order 1, 2.5e-4 |
+| f64_g1 | same | | order 1 |
 
 Output `outputs/floor_study/<arm>/`; `slurm/run.sh` with
 `SCRIPT=scripts/relax.py`, `EXTRA_ENV` for the residual dtype,

@@ -23,14 +23,12 @@ _EPS = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}
 
 
 def test_dtype_follows_mrx_dtype():
+    """The working dtype is the environment's (float32 by default), 64-bit
+    mode is on whatever it is (the float64 residual of a refined solve needs
+    it), and the caster pins arrays to the working dtype: a fresh JAX array
+    is float64 under 64-bit mode and says nothing about the working dtype."""
     assert mrx.DTYPE == jnp.dtype(_NAME)
     assert mrx.EPS == _EPS[_NAME]
-    # 64-bit mode is on whatever the working dtype is, and this asserted the
-    # opposite until 2026-09-05. A float32 run solves by iterative refinement
-    # against a float64 residual, so the wider dtype has to exist at all times
-    # (see mrx.precision's module docstring). A fresh array is therefore
-    # float64 here and says nothing about the working dtype; what pins the
-    # package's arrays to it is cast_arrays, at build time.
     assert jax.config.jax_enable_x64
     assert cast_arrays(jnp.zeros(1, dtype=jnp.float64)).dtype == mrx.DTYPE
     assert cast_arrays(np.zeros(1)).dtype == mrx.DTYPE
