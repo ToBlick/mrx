@@ -11,7 +11,8 @@ The RESIDUAL precision is float64 whatever the working one: a Krylov solve
 in float32 runs as iterative refinement, the residual of the outer
 equation evaluated in float64 on a float64 view of the operator
 (:attr:`mrx.derham_sequence.DeRhamSequence.residual`), the correction by
-the float32 solve to :data:`INNER_TOL`, the solution accumulated in
+the float32 solve to the square root of the tolerance (:func:`inner_tol`,
+two passes), the solution accumulated in
 float64 (:func:`mrx.solvers.refine`). That is what makes a float32 run's
 forces accurate beyond the float32 tolerance: the Leray projection's
 gradient part is the size of ``J x B`` while the force is a thousandth of
@@ -96,10 +97,15 @@ def default_tol(dtype, refine) -> float:
 #: 2026-09-04 it was sqrt(eps) of the working dtype, 3.5e-4 at float32.
 SOLVE_TOL = default_tol(DTYPE, REFINE)
 
-#: Relative tolerance of one float32 pass of a refined solve: each pass
-#: takes the residual down by this factor, so a warm start with a 1% defect
-#: reaches SOLVE_TOL in two passes.
-INNER_TOL = 1e-4
+
+def inner_tol(tol) -> float:
+    """The relative tolerance of one working-precision pass of a refined
+    solve at ``tol``: its square root, so that a solve takes two passes
+    (each pass solves for the correction from zero, so its reduction is
+    relative to the residual it starts from; a warm start with a 1% defect
+    takes two as well). Derived, not a second hyperparameter: the
+    tolerance is the one number of a solve."""
+    return float(tol) ** 0.5
 
 #: Passes a refined solve may take before it reports non-convergence.
 MAX_PASSES = 6

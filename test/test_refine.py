@@ -23,8 +23,12 @@ def test_refined_mass_solve_residual(seq, b0):
     assert seq.apply_inverse_mass_matrix(b, 2).dtype == DTYPE
     on = seq.residual if seq.residual is not None else seq
     r = b.astype(RESIDUAL_DTYPE) - seq.__class__.apply_mass_matrix(on, x, 2, True)
-    rel = float(jnp.linalg.norm(r) / jnp.linalg.norm(b))
-    print(f"\n  refined M_2 solve: residual {rel:.2e} (tol {SOLVE_TOL:.0e})")
+
+    def norm(v):   # the criterion's norm: the mass atom of the dual 2-forms
+        return float(jnp.sqrt(v @ seq.apply_mass_matrix_preconditioner(v, 2, True)))
+
+    rel = norm(r) / norm(b.astype(RESIDUAL_DTYPE))
+    print(f"\n  refined M_2 solve: residual {rel:.2e} in the mass-atom norm (tol {SOLVE_TOL:.0e})")
     assert rel <= 10 * SOLVE_TOL, rel
 
 
@@ -33,7 +37,11 @@ def test_leray_projection_is_divergence_free_to_tolerance(seq, b0):
     assert F.dtype == DTYPE and p.dtype == DTYPE and JxX.dtype == DTYPE
     div_F = seq.apply_derivative_matrix(F, 2, dirichlet_in=True, dirichlet_out=True)
     div_v = seq.apply_derivative_matrix(JxX, 2, dirichlet_in=True, dirichlet_out=True)
-    rel = float(jnp.linalg.norm(div_F) / jnp.linalg.norm(div_v))
+
+    def norm(v):   # the criterion's norm: the mass atom of the dual 3-forms
+        return float(jnp.sqrt(v @ seq.apply_mass_matrix_preconditioner(v, 3, True)))
+
+    rel = norm(div_F) / norm(div_v)
     print(f"  Leray: |div F| / |div JxB| = {rel:.2e}, |F| / |JxB| = "
           f"{float(seq.l2_norm(F, 2) / seq.l2_norm(JxX, 2)):.2e}")
     # F is stored in the working dtype: its rounding alone leaves eps |JxB| / h.

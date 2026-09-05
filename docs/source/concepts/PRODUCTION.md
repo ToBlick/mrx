@@ -63,8 +63,10 @@ HX transfers, dense outer-ring probes, the Fourier coarse correction
 - Solver tolerance `tol=None` is `mrx.sqrt_eps()` (`1.5e-8` in float64)
   everywhere (`DeRhamSequence(tol=...)`); `scripts/poisson_study.py --tol`
   defaults to `1e-9`, the tolerance of the archived convergence numbers.
-- Cut-offs are multiples of `mrx.eps`: `CORE_TOL`, `PSEUDOINVERSE_TOL`,
-  `PROJECTOR_SVD_TOL`, `PROJECTOR_PLANE_TOL`, `BLOCK_DIAGONAL_TOL`.
+- Cut-offs are multiples of `mrx.eps`: `PSEUDOINVERSE_TOL`,
+  `PROJECTOR_SVD_TOL`, `PROJECTOR_PLANE_TOL`, `BLOCK_DIAGONAL_TOL`;
+  `CORE_TOL` is 4096 epsilons of the residual dtype (the cores are probed
+  and inverted in that precision).
 - `maxiter = 10_000` per solve.
 
 ## Quadrature

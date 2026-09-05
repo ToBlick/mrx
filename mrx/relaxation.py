@@ -1132,9 +1132,17 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     h0 = scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
+        # The force's gradient-part remnant is the pressure solve's residual,
+        # relative to |J x B| while the force is resid times that: its
+        # energy term is 0.1 tol / resid^2 of the descent (li383, float64,
+        # docs/research/velocity_leray_ab_2026-09-04.md), a tenth of it at
+        # resid = sqrt(tol). Reported, not enforced: the tolerance and the
+        # floor are the caller's choices.
         print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
               f"resid={float(state.F_norm / scale(state.B_n)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
-              f"        {pressure_line(scalars)}", flush=True)
+              f"        {pressure_line(scalars)}\n"
+              f"        solve tol {seq.tol:.1e}: the force's gradient-part term is a tenth of the "
+              f"descent at resid {seq.tol ** 0.5:.1e} (0.1 tol / resid^2)", flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"

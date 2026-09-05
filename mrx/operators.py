@@ -11,7 +11,8 @@ from mrx.mass import sumfact_apply
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
-from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
+from mrx.precision import RESIDUAL_DTYPE, inner_tol
+from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
 import mrx
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
     """Return the stacked nullspace array for ``(k, dirichlet)``."""
@@ -715,9 +716,9 @@ def apply_derivative_matrix(seq, v, k: int,
 
 def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: int,
                                      dirichlet: bool = True):
-    """Apply the metric-lumped mass atom of the bundle for ``(k, dirichlet)`` to ``v``."""
-    del seq
-    return _mass_atom(operators, k, dirichlet).apply(v)
+    """Apply the metric-lumped mass atom of the bundle for ``(k, dirichlet)``
+    to ``v``, in the sequence's precision."""
+    return _mass_atom(operators, k, dirichlet).apply_in(seq.dtype)(v)
 
 
 def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
@@ -732,22 +733,120 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess = _plain(seq, rhs, guess)
-    precond_apply = _mass_atom(operators, k, dirichlet).apply
-    res = seq.residual
+    on, inner = _outer(seq, tol)
     x, info = solve_singular_cg(
         lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         rhs,
         jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
         mass_matvec=lambda x: apply_mass_matrix(
             seq, x, k, dirichlet=dirichlet),
-        precond_matvec=precond_apply,
+        precond_matvec=_mass_atom(operators, k, dirichlet).apply,
         x0=guess,
         tol=tol,
         maxiter=maxiter,
-        A_res=None if res is None else (lambda x: apply_mass_matrix(res, x, k, dirichlet=dirichlet)),
+        A_res=lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet),
+        norm=_dual_norm(operators, k, dirichlet),
+        inner_tol=inner, inner_dtype=seq.dtype,
     )
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
+
+
+def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, guess, vs):
+    """The outer loop of a composite solve of ``(eps M_k + L_k) x = b``,
+    on the pair ``(x, w)`` the split produces (``w = M_{k-1}^-1 D^T M x``:
+    the Hodge split's first unknown ``g``, the shifted split's lower-level
+    unknown ``z``), with the saddle residual
+
+        upper = b - S x - eps M x - M D w,   lower = D^T M x - M_{k-1} w
+
+    -- two applies, no nested inverse, the same criterion as the k=3
+    saddle solve, in the block mass-atom norm of the two residual spaces
+    -- and the correction that drives BOTH blocks: eliminating ``dw`` from
+    the saddle correction gives ``(eps M + L) dx = upper - M D y`` and
+    ``dw = dg + y`` with ``y = M_{k-1}^-1 lower``, a mass solve at the
+    tolerance on a residual. ``split(rhs) -> (dx, dg, info)`` is the
+    inner solve from zero, its own solves stopping on their own criteria at
+    the inner tolerance. ``vs`` is the kernel of the operator, deflated
+    from the upper residual: the harmonic forms of level ``k`` for the
+    Laplacian, none for the shifted operator. Returns ``(x, info)``, ``x``
+    in the residual precision.
+    """
+    n_k, n_l = seq.n(k, dirichlet), seq.n(k - 1, dirichlet)
+    nu, nl = _dual_norm(operators, k, dirichlet), _dual_norm(operators, k - 1, dirichlet)
+    b64 = b.astype(RESIDUAL_DTYPE)
+
+    def M(s, v, j):
+        return apply_mass_matrix(s, v, j, dirichlet=dirichlet)
+
+    # The kernel is deflated from the upper residual (a singular L_k: the
+    # solution is harmonic-orthogonal and b's harmonic component is not
+    # reducible); the lower block has none to remove.
+    _, project_dual_k = deflation_projectors(jnp.asarray(vs, dtype=RESIDUAL_DTYPE),
+                                             lambda v: M(on, v, k))
+
+    def project_dual(r):
+        return jnp.concatenate([project_dual_k(r[:n_k]), r[n_k:]])
+
+    def D(s, v):
+        return apply_incidence_matrix(s, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
+
+    def DT(s, v):
+        return apply_incidence_matrix(s, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet,
+                                      transpose=True)
+
+    def residual(p):
+        x, w = p[:n_k], p[n_k:]
+        Mx = M(on, x, k)
+        upper = b64 - apply_stiffness(on, x, k, dirichlet=dirichlet) - eps * Mx - M(on, D(on, w), k)
+        lower = DT(on, Mx) - M(on, w, k - 1)
+        return project_dual(jnp.concatenate([upper, lower]))
+
+    def norm(r):
+        return jnp.sqrt(nu(r[:n_k]) ** 2 + nl(r[n_k:]) ** 2)
+
+    def solve(r):
+        r_u, r_l = r[:n_k], r[n_k:]
+        y = apply_inverse_mass_matrix(seq, operators, r_l, k - 1, dirichlet=dirichlet,
+                                      tol=tol, maxiter=maxiter)
+        # The saddle residual's lower block is -(D^T M x - M w) = -lower, so
+        # eliminating dw gives (eps M + L) dx = upper - M D y, dw = dg + y.
+        dx, dg, info = split(r_u - M(seq, D(seq, y), k))
+        return jnp.concatenate([dx, dg + y]), info
+
+    x0 = jnp.zeros(n_k, dtype=seq.dtype) if guess is None else guess
+    p0 = jnp.concatenate([x0, jnp.zeros(n_l, dtype=seq.dtype)])
+    b_packed = jnp.concatenate([b64, jnp.zeros(n_l, dtype=RESIDUAL_DTYPE)])
+    p, info = refine(None, solve, b_packed, x0=p0, tol=tol, norm=norm, inner_dtype=seq.dtype,
+                     residual=residual, project_dual=project_dual)
+    return p[:n_k], info
+
+
+def _outer(seq, tol):
+    """``(on, inner_tol)`` of a solve through ``seq``: the sequence whose
+    operators the outer loop of :func:`~mrx.solvers.refine` measures the
+    true residual with (the float64 view, or ``seq`` itself when it is in
+    the residual precision) and the inner solve's tolerance per pass
+    (the square root of ``tol`` under refinement,
+    :func:`~mrx.precision.inner_tol`; ``tol`` itself when the inner solve
+    is the whole solve and the loop only checks it)."""
+    res = seq.residual
+    return (res, inner_tol(tol)) if res is not None else (seq, tol)
+
+
+def _dual_norm(operators, k: int, dirichlet: bool):
+    """The norm every solve's stopping criterion uses on a dual k-form:
+    ``sqrt(r^T P r)`` with ``P`` the metric-lumped mass atom of the space,
+    an approximation of ``M_k^-1`` that is spectrally equivalent to it
+    independently of ``h``, so the criterion is the L2 norm of the
+    residual's Riesz representative up to a mesh-independent factor. A
+    mass solve would be exact and cost a solve per check; the atom is the
+    measured middle ground."""
+    P = _mass_atom(operators, k, dirichlet).apply
+
+    def norm(r):
+        return jnp.sqrt(r @ P(r))
+    return norm
 
 
 def _out(seq, x, dtype=None):
@@ -902,9 +1001,11 @@ def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
     return _laplacian_atom(operators, k, dirichlet).apply(v)
 
 
-def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
-               guess=None):
-    """PCG on ``L^_k = S_k + M_k D_{k-1} W D_{k-1}^T M_k``, ``W`` the mass atom.
+def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter):
+    """PCG on ``L^_k = S_k + M_k D_{k-1} W D_{k-1}^T M_k``, ``W`` the mass atom:
+    an inner solve of the Hodge split, stopping on its own preconditioned
+    criterion at ``tol`` (the split's outer loop is the pair loop of
+    :func:`apply_inverse_laplacian_hodge`).
 
     The strong stiffness ``S_k`` is singular on the exact forms, and PCG on
     it is NOT viable: the right-hand sides of the Hodge split are consistent
@@ -921,9 +1022,11 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     level ``k-1`` puts the exact-form eigenvalues at the same ``h^-2`` scale
     as ``S_k`` on its range, which is what the componentwise-Laplacian atom
     expects; those modes are barely excited by a right-hand side of the
-    split anyway.  Harmonic forms deflated.
+    split anyway.  Harmonic forms deflated. ``W`` is part of the OPERATOR
+    and is applied in the sequence's precision (``apply_in``): on the
+    float64 view its float32 payload would perturb ``L^_k`` at 1e-7.
     """
-    b, guess = _plain(seq, b, guess)
+    b, = _plain(seq, b)
 
     def D(v):
         return apply_incidence_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
@@ -936,31 +1039,18 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     def M(v):
         return apply_mass_matrix(seq, v, k, dirichlet=dirichlet)
 
-    W = _mass_atom(operators, k - 1, dirichlet).apply
+    W = _mass_atom(operators, k - 1, dirichlet).apply_in(seq.dtype)
 
     def L_hat(x):
         return apply_stiffness(seq, x, k, dirichlet=dirichlet) + M(D(W(DT(M(x)))))
-
-    res = seq.residual
-
-    def L_hat_res(x):
-        Mx = apply_mass_matrix(res, x, k, dirichlet=dirichlet)
-        DTMx = apply_incidence_matrix(res, Mx, k - 1, dirichlet_in=dirichlet,
-                                      dirichlet_out=dirichlet, transpose=True)
-        DWDTMx = apply_incidence_matrix(res, W(DTMx), k - 1, dirichlet_in=dirichlet,
-                                        dirichlet_out=dirichlet)
-        return (apply_stiffness(res, x, k, dirichlet=dirichlet)
-                + apply_mass_matrix(res, DWDTMx, k, dirichlet=dirichlet))
 
     return solve_singular_cg(
         L_hat, b,
         mass_matvec=M,
         precond_matvec=_laplacian_atom(operators, k, dirichlet).apply,
-        x0=guess,
         vs=_nullspace_vectors(operators, k, dirichlet),
         tol=tol,
         maxiter=maxiter,
-        A_res=None if res is None else L_hat_res,
     )
 
 
@@ -1023,18 +1113,51 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     def M(v, j):
         return apply_mass_matrix(seq, v, j, dirichlet=d)
 
-    def solve(b, j, guess=None):
-        if j == 0:
-            return apply_inverse_laplacian(seq, operators, b, 0, dirichlet=d,
-                                           guess=guess, tol=tol, maxiter=maxiter,
-                                           return_info=True)
-        return _hat_solve(seq, operators, b, j, d, tol=tol, maxiter=maxiter, guess=guess)
+    # The split's three solves are inner solves: each stops on its own
+    # operator's preconditioned criterion at the inner tolerance, and the
+    # outer loop is on the pair (x, g) with the saddle residual
+    # (:func:`_pair_loop`).
+    on, inner = _outer(seq, tol)
 
-    g, _ = solve(DT(rhs, k - 1), k - 1)
-    x_perp, info = solve(rhs - M(D(g, k - 1), k), k, guess=guess)
-    a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
-    x = _out(seq, x_perp + D(a, k - 1))
+    def solve(b, j):
+        if j == 0:
+            return _k0_solve(seq, operators, b, d, tol=inner, maxiter=maxiter)
+        return _hat_solve(seq, operators, b, j, d, tol=inner, maxiter=maxiter)
+
+    def split(b):
+        # g IS M_{k-1}^-1 D^T M x of the returned x (the closing solve says
+        # S a = M g - D^T M x_perp): the pair the outer loop carries.
+        g, _ = solve(DT(b, k - 1), k - 1)
+        x_perp, info = solve(b - M(D(g, k - 1), k), k)
+        a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
+        return x_perp + D(a, k - 1), g, info
+
+    x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
+                         lambda r: split(r.astype(seq.dtype)), rhs, guess,
+                         _nullspace_vectors(operators, k, d))
+    x = _out(seq, x)
     return (x, info) if return_info else x
+
+
+def _k0_solve(seq, operators, b, dirichlet, *, tol, maxiter, guess=None, on=None, inner=None):
+    """The deflated PCG on ``S_0`` with the k=0 Laplacian atom, under the
+    outer loop of :func:`~mrx.solvers.refine` measuring on ``on`` with the
+    inner tolerance ``inner``; on its own preconditioned criterion at
+    ``tol`` when ``on`` is None -- the closing solve of the k=1 Hodge
+    split, whose outer loop is the split's pair loop."""
+    return solve_singular_cg(
+        lambda x: apply_stiffness(seq, x, 0, dirichlet=dirichlet),
+        b,
+        mass_matvec=lambda x: apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
+        precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
+        x0=guess,
+        vs=_nullspace_vectors(operators, 0, dirichlet),
+        tol=tol,
+        maxiter=maxiter,
+        A_res=None if on is None else (lambda x: apply_stiffness(on, x, 0, dirichlet=dirichlet)),
+        norm=_dual_norm(operators, 0, dirichlet),
+        inner_tol=inner, inner_dtype=seq.dtype,
+    )
 
 
 def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
@@ -1058,19 +1181,9 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     rhs, guess = _plain(seq, rhs, guess)
 
     if k == 0:
-        res = seq.residual
-        u, info = solve_singular_cg(
-            lambda x: apply_stiffness(seq, x, 0, dirichlet=dirichlet),
-            rhs,
-            mass_matvec=lambda x: apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
-            precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
-            x0=guess,
-            vs=_nullspace_vectors(operators, 0, dirichlet),
-            tol=tol,
-            maxiter=maxiter,
-            A_res=None if res is None else (
-                lambda x: apply_stiffness(res, x, 0, dirichlet=dirichlet)),
-        )
+        on, inner = _outer(seq, tol)
+        u, info = _k0_solve(seq, operators, rhs, dirichlet, tol=tol, maxiter=maxiter,
+                            guess=guess, on=on, inner=inner)
         u = _out(seq, u)
         return (u, info) if return_info else u
 
@@ -1114,7 +1227,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess, sigma_guess = _plain(seq, rhs, guess, sigma_guess)
-    res = seq.residual
+    res, inner = _outer(seq, tol)
 
     def stiffness_on(s, x):
         if eps == 0:
@@ -1153,7 +1266,10 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
         x0_lower=sigma_guess,
         tol=tol,
         maxiter=maxiter,
-        saddle_res=None if res is None else saddle_res,
+        saddle_res=saddle_res,
+        norm_upper=_dual_norm(operators, k, dirichlet),
+        norm_lower=_dual_norm(operators, k - 1, dirichlet),
+        inner_tol=inner, inner_dtype=seq.dtype,
     )
 
 
@@ -1176,7 +1292,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     rhs, guess = _plain(seq, rhs, guess)
 
     if k == 0:
-        res = seq.residual
+        res, inner = _outer(seq, tol)
 
         def A_on(s, x):
             if eps == 0:
@@ -1196,7 +1312,8 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             lambda x: A_on(seq, x), rhs, mass_matvec=mass_matvec,
             precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
             x0=guess, vs=vs, tol=tol, maxiter=maxiter,
-            A_res=None if res is None else (lambda x: A_on(res, x)))
+            A_res=lambda x: A_on(res, x),
+            norm=_dual_norm(operators, 0, dirichlet), inner_tol=inner, inner_dtype=seq.dtype)
         u = _out(seq, u)
         return (u, info) if return_info else u
 
@@ -1248,14 +1365,16 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess = _plain(seq, rhs, guess)
-    res = seq.residual
-    on = seq if res is None else res      # the level-(k-1) coupling in the residual precision
+    on, inner = _outer(seq, tol)
 
     def A_on(s, j, x):
         return (apply_mass_matrix(s, x, j, dirichlet=dirichlet)
                 + eps * apply_stiffness(s, x, j, dirichlet=dirichlet))
 
-    def shifted_solve(j, b, x0):
+    def shifted_cg(j, b, tol, x0=None, on=None):
+        # PCG on M_j + eps S_j with the shifted atom: under the outer loop
+        # measuring on ``on``, or on its own criterion at ``tol`` (an inner
+        # solve of the split, whose outer loop is the pair loop).
         return solve_singular_cg(
             lambda x: A_on(seq, j, x),
             b,
@@ -1264,21 +1383,35 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
             x0=x0,
             tol=tol,
             maxiter=maxiter,
-            A_res=None if res is None else (lambda x: A_on(res, j, x)),
+            A_res=None if on is None else (lambda x: A_on(on, j, x)),
+            norm=_dual_norm(operators, j, dirichlet),
+            inner_tol=inner, inner_dtype=seq.dtype,
         )
 
-    x, info = shifted_solve(k, rhs, guess)
     if k == 0:
+        x, info = shifted_cg(0, rhs, tol, x0=guess, on=on)
         x = _out(seq, x)
         return (x, info) if return_info else x
 
-    z, info_lower = shifted_solve(
-        k - 1,
-        apply_incidence_matrix(seq, rhs, k - 1, dirichlet, dirichlet, transpose=True),
-        None)
-    x = _out(seq, x - eps * apply_incidence_matrix(on, z, k - 1, dirichlet, dirichlet))
-    total = jnp.abs(info) + jnp.abs(info_lower)
-    info = jnp.where((info <= 0) & (info_lower <= 0), -total, total)
+    def split(b):
+        # z IS M_{k-1}^-1 D^T M x of the returned x (D^T M x_1 = D^T b since
+        # D^T S_k = 0, and (M + eps S) z = D^T b): the pair the outer loop carries.
+        x, info = shifted_cg(k, b, inner)
+        z, info_lower = shifted_cg(
+            k - 1,
+            apply_incidence_matrix(seq, b, k - 1, dirichlet, dirichlet, transpose=True),
+            inner)
+        x = x - eps * apply_incidence_matrix(seq, z, k - 1, dirichlet, dirichlet)
+        total = jnp.abs(info) + jnp.abs(info_lower)
+        return x, z, jnp.where((info <= 0) & (info_lower <= 0), -total, total)
+
+    # The composite under the outer loop on the pair (x, z) of
+    # (M_k + eps L_k) x = b, i.e. (1/eps) M x + L x = b / eps (:func:`_pair_loop`);
+    # M_k + eps L_k is SPD, there is no kernel to deflate.
+    x, info = _pair_loop(seq, operators, on, k, dirichlet, 1.0 / eps, tol, maxiter,
+                         lambda r: split(eps * r.astype(seq.dtype)), rhs / eps, guess,
+                         jnp.zeros((0, seq.n(k, dirichlet))))
+    x = _out(seq, x)
     return (x, info) if return_info else x
 
 
