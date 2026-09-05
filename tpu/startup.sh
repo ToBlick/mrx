@@ -308,23 +308,27 @@ cd "${REPO_DIR}" || exit 1
 "${PY}" -m pip install -e .
 
 # MRX reads MRX_DTYPE at import to pick its working precision; float32 is the
-# only sane choice on TPU, which has no native 64-bit path. Agg because the VM
-# is headless and the tutorials save figures.
+# only sane choice on TPU, which has no native 64-bit path. Residual
+# refinement defaults to float64 and is refused here -- a TPU has no
+# float64 -- so MRX_RESIDUAL_DTYPE must match. Agg because the VM is
+# headless and the tutorials save figures.
 cat <<'PROFILE' | sudo tee /etc/profile.d/mrx.sh >/dev/null
 export PATH="/mnt/data/envs/mrx/bin:/mnt/data/miniforge3/bin:${PATH}"
 export MRX_DTYPE=float32
+export MRX_RESIDUAL_DTYPE=float32
 export MPLBACKEND=Agg
 export MRX_REPO=/mnt/data/mrx
 PROFILE
 sudo chmod 0644 /etc/profile.d/mrx.sh
 
 echo "--- smoke test: jax devices + mrx precision ---"
-MRX_DTYPE=float32 "${PY}" -c "
+MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float32 "${PY}" -c "
 import jax, mrx
+from mrx.precision import RESIDUAL_DTYPE
 print('jax', jax.__version__)
 print('devices', jax.devices())
 print('device_count', jax.device_count())
-print('mrx DTYPE', mrx.DTYPE, 'EPS', mrx.EPS)
+print('mrx DTYPE', mrx.DTYPE, 'RESIDUAL', RESIDUAL_DTYPE, 'EPS', mrx.EPS)
 print('matmul precision', jax.config.jax_default_matmul_precision)
 "
 SMOKE=$?

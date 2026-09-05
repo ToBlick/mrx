@@ -7,7 +7,8 @@ One page. Every identifier exists in `mrx/` or `scripts/`. The reasoning is in
 ## Sequence and operators
 
 `build_sequence(geometry, ns, p)` in `mrx/geometry.py` is the production
-build (`geometry` is `toroid`, `cylinder`, `rot-ellipse`, or the path of a
+build (`geometry` is a GVEC state, a VMEC wout or an analytic geometry
+file, `data/torus.json` and its siblings; the path of a
 GVEC export): `DeRhamSequence(ns, (p,)*3, p + 1, ("clamped", "periodic", "periodic"),
 polar=True, betti_numbers=(1, 1, 0, 0))`, `set_map`, then
 `build_preconditioners()`: the Jacobi and metric-lumped mass and Laplacian
@@ -20,17 +21,14 @@ bundle. Mass matrices are never stored; every operator is a matrix-free apply
 
 | solve | preconditioner | code |
 |---|---|---|
-| mass, all k | `kind='metric_lumping'`: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
-| Laplacian, k = 0..3, free and Dirichlet | `kind='metric_lumping'`: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
+| mass, all k | the metric-lumped mass atom: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
+| Laplacian, k = 0..3, free and Dirichlet | the metric-lumped Laplacian atom: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
 
-Kinds: `none`, `jacobi`, `metric_lumping`, `auto`. `auto` resolves to
-`metric_lumping` for the mass, always; for a Laplacian it uses the atom when
-`build_preconditioners` has built it for that `(k, BC)` and `none` otherwise.
-`jacobi` is the probed diagonal, built only by
-`build_preconditioners(jacobi=True)`; it is never substituted.
-
-Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
-`coupled = False`.
+The atoms are the only preconditioners (since 2026-09-04; the probed
+Jacobi diagonals and the preconditioner specs are gone). Every solve uses
+the atom of its `(k, BC)`; a missing atom raises, nothing is substituted.
+Saddle solves (k >= 1): the Laplacian atom of level `k` on the upper
+block, the mass atom of level `k - 1` on the lower block, block-diagonal.
 
 `PRODUCTION_BC_SCALE = 3.0` in `mrx/metric_lumping_laplacian.py` multiplies
 the natural-BC coefficient; `build_preconditioners(bc_scale=...)` is the only
@@ -91,13 +89,13 @@ of those, memoised per degree in the element layout. `DF` is not stored --
 
 ## Relaxation
 
-`scripts/relax.py --geometry <GVEC state or VMEC wout>`: `--ns 8,16,16`, `--p 2`,
-`--maxiter 2000`, `--precision float32`, `--ic clebsch`, `--method lbfgs --history 1`,
-`--history 3`, `--dt-mode linesearch`, `--cfl 0.5`; stops when the mean of
-the relative force residual over `--floor-steps 100` steps is below
-`--floor-tol 1e-3`; one method per run; output `relax.json` and `B.h5`.
-Each step is operator-split (Lie): ideal transport, then implicit resistive
-diffusion. Details in [relaxation.md](relaxation.md).
+`scripts/relax.py --geometry <GVEC state, VMEC wout or analytic .json>`:
+`--ns 8,16,16`, `--p 2`, `--solve-maxiter 2000`, `--precision float32`,
+`--auxiliary-B-field false`, `--scheme explicit`, `--history 1`, `--cfl 0.5`;
+stops when the mean of the relative force residual over the last chunk
+(`--chunk 500` steps) is below `--floor-tol 1e-3`; output `relax.json` and
+`checkpoints/state_<step>.h5`. The descent is ideal; `--reconnect-every K` adds one resistive solve
+every `K` steps. Details in [relaxation.md](relaxation.md).
 
 ## Traps
 

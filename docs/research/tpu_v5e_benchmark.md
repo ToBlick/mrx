@@ -70,19 +70,19 @@ Every relaxation per-step number this note originally reported was compile time
 divided by a step count. Two separate faults produced it, found by Tobi Blickhan
 in review:
 
-`relaxation_loop` built its jitted scan **inside its own body**. `jax.jit` keys
-its cache on function identity, so each call made a new object and retraced. The
-benchmark timed two identical calls and divided the second by the step count,
-on the assumption that the second was compile-free. It was not: it was a second
-compile. Separately, dividing a whole call by its step count also charges the
-steps for work outside the scan -- `initial_state` runs a `compute_force`, and
-each `record` runs three probes -- which does not scale with the step count at
-all.
+The loop that this branch first measured built its jitted scan **inside its
+own body**. `jax.jit` keys its cache on function identity, so each call made
+a new object and retraced. The benchmark timed two identical calls and
+divided the second by the step count, on the assumption that the second was
+compile-free. It was not: it was a second compile. Separately, dividing a
+whole call by its step count also charges the steps for work that does not
+scale with them.
 
-Both are fixed. The scan and the probes are now built once and cached
-(`mrx/relaxation.py`), and the benchmark reads the per-step cost off the slope
-between two step counts, reporting compile, per-step and per-call overhead as
-separate rows.
+Both are fixed. The library now exposes `chunk_runner`, which builds the
+jitted scan once and returns it; `relax` reuses that runner across chunks.
+The benchmark times the returned callable twice and reads the per-step cost
+off the slope between two step counts, reporting compile, per-step and
+per-call overhead as separate rows.
 
 Re-measured on the H200 at `(12,24,24)` p=3 float32, the same configuration the
 withdrawn table used, with the corrected code. What one timed call is actually

@@ -51,8 +51,7 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
     seq = toroid
     case = specs[(k, dirichlet)]
     b = seq.load(case["src_ref"], k, dirichlet=dirichlet, frame='ref')
-    u, info = seq.apply_inverse_laplacian(
-        b, k, dirichlet=dirichlet, preconditioner='auto', return_info=True)
+    u, info = seq.apply_inverse_laplacian(b, k, dirichlet=dirichlet, return_info=True)
     residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - b
     rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(b))
     err = relative_l2_error(seq, k, dirichlet, u, case["exact"])

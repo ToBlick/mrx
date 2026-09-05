@@ -63,7 +63,5 @@ The suite runs on the tracked `data/wout_li383_low_res_reference.nc`.
 
 ## Next steps
 
-- [Solve a Poisson problem](poisson.md) builds a sequence, installs a map,
-  and solves the Hodge Laplacians.
 - [Solve a relaxation problem](relaxation.md) runs `scripts/relax.py`.
 - [Concepts](concepts.md) orients you in the code.

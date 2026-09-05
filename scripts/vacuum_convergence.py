@@ -37,7 +37,7 @@ unconverged Hodge solve returns a non-harmonic vector silently).
 Usage (one process = one rung; always a GPU job through ``slurm/run.sh``)::
 
     python -u scripts/vacuum_convergence.py --geometry data/wout_X.nc \
-        --ns 16,32,16 --p 3 --out outputs/qa_vacuum [--trace] [--h5 run/B.h5]
+        --ns 16,32,16 --p 3 --out outputs/qa_vacuum [--trace] [--run outputs/run]
     python -u scripts/vacuum_convergence.py --plot outputs/qa_vacuum
 
 ``--precision`` is exported as ``MRX_DTYPE`` before ``mrx`` is imported.
@@ -68,8 +68,9 @@ def parse_args(argv=None):
     ap.add_argument("--precision", default="float64", choices=("float32", "float64"))
     ap.add_argument("--grid", default="48,96,48",
                     help="common evaluation grid: Gauss nodes in rho, midpoints in theta, zeta")
-    ap.add_argument("--h5", default=None,
-                    help="a relax.py B.h5 at this rung: check B_ic against B_w, report B_final")
+    ap.add_argument("--run", default=None,
+                    help="a relax.py run directory at this rung: check its initial field "
+                         "against B_w, report the final one")
     ap.add_argument("--trace", action="store_true",
                     help="field-line iota of B_w and h against the file's iotaf")
     ap.add_argument("--trace-seeds", type=int, default=40)
@@ -187,8 +188,7 @@ def run_rung(cli):
         mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.gvec import load_clebsch
-    from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
-                                        potential_two_form)
+    from mrx.initial_conditions import (clebsch_potential_form, potential_two_form)
     from mrx.nullspace import compute_nullspaces, estimate_spectral_gap, harmonic_rayleigh
     from mrx.relaxation import compute_force
     from mrx.vmec import read_wout
@@ -247,9 +247,10 @@ def run_rung(cli):
 
     # --- the wout field in V_2^h --------------------------------------------
     t3 = time.perf_counter()
+    from mrx.relaxation import compute_divergence_norm  # noqa: PLC0415
     cb = load_clebsch(cli.geometry)
     Bw_hat, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
-    div_w = divergence_norm(seq, Bw_hat)
+    div_w = float(compute_divergence_norm(Bw_hat, seq))
     Bw = Bw_hat * norm                                           # Tesla, one field period
     t4 = time.perf_counter()
     res.update(t_ic=t4 - t3, B_norm=norm, div_B_w=div_w, wall_discarded=wall)
@@ -358,16 +359,19 @@ def run_rung(cli):
                         x=X, J=J, w=w, pts=pts, **axes)
 
     # --- the relaxation run's fields at this rung ---------------------------
-    if cli.h5:
-        with h5py.File(cli.h5, "r") as f:
-            B_ic, B_fin = jnp.asarray(f["B_ic"][()]), jnp.asarray(f["B_final"][()])
+    if cli.run:
+        ckpts = sorted(glob.glob(os.path.join(cli.run, "checkpoints", "state_*.h5")))
+        with h5py.File(ckpts[0], "r") as f:
+            B_ic = jnp.asarray(f["B_n"][()])
+        with h5py.File(ckpts[-1], "r") as f:
+            B_fin = jnp.asarray(f["B_n"][()])
         if B_ic.shape[0] != seq.n(2, True):
-            raise ValueError(f"{cli.h5}: {B_ic.shape[0]} DoFs, this rung has {seq.n(2, True)}")
+            raise ValueError(f"{cli.run}: {B_ic.shape[0]} DoFs, this rung has {seq.n(2, True)}")
         d_ic = float(seq.l2_norm(B_ic - Bw_hat, 2))
         F_fin, _, _, _, _ = compute_force(B_fin, seq)
         c_fin = float(B_fin @ Mh) / float(h @ Mh)
         D_fin = float(seq.l2_norm(B_fin - c_fin * h, 2)) / float(seq.l2_norm(B_fin, 2))
-        res["h5"] = dict(path=os.path.abspath(cli.h5), ic_minus_B_w=d_ic,
+        res["h5"] = dict(path=os.path.abspath(cli.run), ic_minus_B_w=d_ic,
                          final_D=D_fin, final_F=float(seq.l2_norm(F_fin, 2)),
                          final_norm=float(seq.l2_norm(B_fin, 2)))
         _log(f"h5: ||B_ic - B_w_hat||_M {d_ic:.2e}; B_final: D {D_fin:.4e}, ||F||_M {res['h5']['final_F']:.4e}")

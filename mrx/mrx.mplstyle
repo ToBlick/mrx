@@ -1,0 +1,53 @@
+# MRX house style: the matplotlib rcParams behind mrx.plotstyle.house_style().
+# Loaded by house_style() (do not plt.style.use() it directly in library code,
+# so importing mrx never mutates a caller's global state). The named choices
+# (palette, colormaps, figure widths) live in mrx/plotstyle.py; this file is
+# what matplotlib reads.
+
+# --- fonts: a serif face that matches LaTeX math; the pgf backend ignores it
+#     (pgf.rcfonts False) and takes the including document's fonts instead
+font.family: serif
+font.serif: STIXGeneral, DejaVu Serif
+font.size: 11
+mathtext.fontset: stix
+axes.formatter.use_mathtext: True
+
+# --- sizes (mrx.plotstyle.FontScale: title 11, label 11, tick 9, annot 7.5)
+axes.titlesize: 11
+axes.labelsize: 11
+xtick.labelsize: 9
+ytick.labelsize: 9
+legend.fontsize: 7.5
+legend.framealpha: 0.85
+legend.frameon: True
+
+# --- lines: black, teal, purple, grey, each with its own dash so a figure
+#     printed in greyscale still separates the arms; no default colour cycle
+#     (hex colours carry no # here: it would start a comment)
+axes.prop_cycle: cycler('color', ['black', 'teal', '6a3d9a', '0.5']) + cycler('linestyle', ['-', '--', '-.', ':'])
+lines.linewidth: 1.0
+lines.markersize: 4
+errorbar.capsize: 2
+
+# --- axes
+axes.grid: False
+grid.alpha: 0.3
+grid.linestyle: --
+grid.linewidth: 0.5
+xtick.direction: in
+ytick.direction: in
+xtick.top: True
+ytick.right: True
+
+# --- figure and output
+figure.dpi: 110
+figure.constrained_layout.use: True
+savefig.dpi: 200
+image.cmap: plasma
+
+# --- pgf: xelatex, fonts from the document; the preamble lines every
+#     including document also needs (underscore for raw names in labels,
+#     \mathdefault for log-axis tick labels) are added by the one writer,
+#     mrx.plotting.save_figure
+pgf.texsystem: xelatex
+pgf.rcfonts: False

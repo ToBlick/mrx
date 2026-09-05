@@ -55,8 +55,7 @@ def test_mass_apply_matches_quadrature_oracle(seq, k):
 @pytest.mark.parametrize(("pair", "partner"), (((2, 1), (1, 2)), ((0, 3), (3, 0))))
 def test_projection_pairs_are_transposes(seq, pair, partner):
     """``<P_12 x, y> = <x, P_21 y>`` on the extracted Dirichlet spaces."""
-    k_in = {(2, 1): 2, (0, 3): 3}[pair]
-    k_out = {(2, 1): 1, (0, 3): 0}[pair]
+    k_in, k_out = pair
     rng = np.random.default_rng(7)
     x = jnp.asarray(rng.standard_normal(seq.n(k_in, True)), dtype=mrx.DTYPE)
     y = jnp.asarray(rng.standard_normal(seq.n(k_out, True)), dtype=mrx.DTYPE)

@@ -490,8 +490,7 @@ def bench_relaxation(bench, seq, args, dtype):
     """Time the relaxation loop: compile cost, then cost per step."""
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import clebsch_potential_form, potential_two_form
-    from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
-                                relaxation_loop)
+    from mrx.relaxation import TimeStepper, chunk_runner, initial_state
 
     ns = tuple(int(v) for v in args.ns.split(","))
     print("\n[phase] relaxation", flush=True)
@@ -499,36 +498,34 @@ def bench_relaxation(bench, seq, args, dtype):
     cb = load_clebsch(args.geometry)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                     eta_every=1, resistive=False, history_size=1,
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                      velocity_smoothing_order=1,
                      velocity_smoothing_scale=0.064 / ns[0] ** 2)
+    state0 = initial_state(B0, ts, 1.0)
+    _sync(state0.B_n)
 
     inner = args.relax_steps
 
-    def run(n_steps):
+    def time_calls(n_steps):
+        """First and second call of one compiled chunk. ``chunk_runner``
+        builds the jit once; the second call is compile-free."""
+        run = chunk_runner(ts, n_steps)
         t0 = time.perf_counter()
-        state, _ = relaxation_loop(B0, ts, num_iters_outer=1,
-                                   num_iters_inner=n_steps, dt0=1.0,
-                                   force_tolerance=0.0)
+        state, _ = run(state0, 0)
         _sync(state.B_n)
-        return time.perf_counter() - t0
+        first = time.perf_counter() - t0
+        t0 = time.perf_counter()
+        state, _ = run(state0, 0)
+        _sync(state.B_n)
+        return first, time.perf_counter() - t0
 
-    # The first call at a given length compiles the scan and relaxation_loop
-    # caches it, so the second does not. That caching is the whole reason this
-    # measurement means anything: until it existed, every call rebuilt the jit
-    # and the "steady" number was a second compile.
-    first_s = run(inner)
-    steady_s = run(inner)
+    first_s, steady_s = time_calls(inner)
 
     # Per step from the slope between two lengths, not from steady / inner.
-    # Each call also pays a fixed cost outside the scan -- initial_state runs a
-    # compute_force, and record() runs three probes -- and dividing by the step
+    # Each call still pays a fixed launch cost, and dividing by the step
     # count would charge all of that to the steps. Differencing cancels it.
     # The doubled length compiles its own scan, so take its second call too.
-    run(2 * inner)
-    long_s = run(2 * inner)
+    _, long_s = time_calls(2 * inner)
     per_step = (long_s - steady_s) / inner
     overhead_s = steady_s - inner * per_step
 

@@ -1,104 +1,19 @@
-"""Preconditioner specifications and the Kronecker mass model behind the metric-lumping atoms.
+"""The Kronecker mass model and the generalised eigensolve behind the metric-lumping atoms.
 
-:class:`MassPreconditionerSpec`, :class:`SchurPreconditionerSpec` and
-:class:`SaddlePointPreconditionerSpec` name what a solve is preconditioned
-with: kinds ``'none'``, ``'jacobi'`` (the probed diagonal,
-``DeRhamSequence.build_preconditioners(jacobi=True)``) and
-``'metric_lumping'`` (:func:`default_mass_preconditioner`, production).
 :func:`_kron_mass_model_1d` is the separable Kronecker model
 ``Lam (x)_a A_a Lam`` of the mass matrices that
 :class:`~mrx.metric_lumping_laplacian.MetricLumpingMass` inverts on the bulk
 DoFs, and :func:`_simultaneous_diagonalize_pair` the generalised eigensolve
-the Laplacian atoms' fast diagonalisation is built from.
+the Laplacian atoms' fast diagonalisation is built from. The atoms are the
+only preconditioners (``docs/source/concepts/preconditioning.md``).
 """
 from __future__ import annotations
-
-from dataclasses import dataclass, field as dataclass_field
-
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from mrx.precision import DTYPE
-
-
-@dataclass(frozen=True)
-class MassPreconditionerSpec:
-    """A mass preconditioner, named by ``kind``.
-
-    ``'none'`` is the identity and ``'metric_lumping'`` the production one: a separable Kronecker bulk with
-    the polar core probed and inverted DENSELY, scaled by the metric-lumped
-    diagonal. The field default is the production kind so that a bare spec
-    and :func:`default_mass_preconditioner` agree.
-    """
-    kind: str = 'metric_lumping'
-
-
-@dataclass(frozen=True)
-class SchurPreconditionerSpec:
-    inner: MassPreconditionerSpec = dataclass_field(
-        default_factory=MassPreconditionerSpec)
-    #: A bare spec must not silently mean SOME preconditioner. 'none' rather
-    #: than 'metric_lumping' on purpose: 'none' fails VISIBLY at the first
-    #: solve, where 'metric_lumping' would quietly work with something the
-    #: caller never asked for. The authoritative answer is
-    #: ``operators._materialize_default_saddle_preconditioner``, which needs a
-    #: sequence and so cannot live in a field default at all. Every
-    #: construction site in mrx/, test/ and scripts/ passes ``outer=``
-    #: explicitly.
-    outer: MassPreconditionerSpec = dataclass_field(
-        default_factory=lambda: MassPreconditionerSpec(kind='none'))
-
-
-@dataclass(frozen=True)
-class SaddlePointPreconditionerSpec:
-    mass: MassPreconditionerSpec = dataclass_field(
-        default_factory=MassPreconditionerSpec)
-    schur: SchurPreconditionerSpec = dataclass_field(
-        default_factory=SchurPreconditionerSpec)
-    coupled: bool = False
-
-
-def default_mass_preconditioner() -> MassPreconditionerSpec:
-    """The production mass preconditioner: metric_lumping.
-
-    A separable Kronecker bulk with the polar core rows PROBED AND INVERTED
-    DENSELY, scaled by the metric-lumped diagonal. The only mass preconditioner
-    besides 'none'.
-
-    MEASURED against its predecessor, the plain Kronecker model
-    (docs/research/production_simplification_plan.md §10), 224 cells over
-    four geometries, n = 8..20, p = 2..5:
-
-    * the mass solve itself: median **0.83x** the iterations, and
-      **0.70-0.77x** at k=1,2 where the cost is. The advantage HOLDS OR GROWS
-      with h and is flat in p. Build time was equal (2.0 vs 2.2 s median).
-    * the effect on ``L_k`` -- the mass preconditioner is the weak term's inner
-      inverse, so this changes the OPERATOR at k >= 1, not just the solve:
-      **median 0.91x, better in 12 of 16 cells**, up to 0.79x on the Dirichlet
-      rows. Only regression was cylinder k=1 (1.07x).
-    * the natural-BC scale SURVIVES: worst-case penalty against each cell's
-      own optimum moves 1.14 -> 1.22, and only on the toroid, where the basin
-      is flat. The shaped geometries are unchanged (1.01-1.04).
-
-    Only regression anywhere was ~5% at k=0, on mass solves that take 7-17
-    iterations either way.
-
-    As the Schur-Jacobi probe backing it was measured separately -- six
-    converged cells, five favouring it by 2.4-16.6%, one at +0.6% inside
-    measured noise: docs/research/result_2026-08-25_schur_probe_ab.md.
-
-    THE BUILD IS NOT JIT-SAFE, AND DOES NOT NEED TO BE. Its sparsity
-    bookkeeping is host-side numpy and its core probe runs the matrix-free
-    apply on concrete vectors. It runs once, in ``build_preconditioners``,
-    outside every trace; only the apply is jit-safe.
-
-    CAVEAT ON THE EVIDENCE: the mass A/B covers h = 8..20 and p = 2..5, but the
-    effect on ``L_k`` was measured at n=12, p=3 only. The overnight sweep in
-    ``outputs/diag_newstack/`` extends that to n = 8..32 and p = 2..5.
-    """
-    return MassPreconditionerSpec(kind='metric_lumping')
 
 
 def _symmetrize(matrix: jnp.ndarray) -> jnp.ndarray:

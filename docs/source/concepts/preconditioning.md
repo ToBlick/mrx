@@ -38,39 +38,25 @@ There is no Krylov solve inside a Krylov solve. The weak term
 The mass preconditioner is therefore part of the operator at k >= 1, not
 only part of the solve, and changing it changes `L_k`.
 
-## 2. Kinds
+## 2. One preconditioner per solve
 
-`MassPreconditionerSpec(kind=...)` in `mrx/preconditioners.py` names a
-preconditioner. The live kinds are:
-
-| kind | mass | Laplacian |
-|---|---|---|
-| `'none'` | identity | identity |
-| `'jacobi'` | `1/diag(E M_k E^T)`, probed | `1/diag(L_k)`, probed through `apply_laplacian_approx` |
-| `'metric_lumping'` | `MetricLumpingMass` | `MetricLumpingLaplacian` |
-| `'auto'` | `'metric_lumping'` | the atom when the bundle has it for this `(k, BC)`, otherwise `'none'` |
-
-`'auto'` never substitutes. Nothing is built on demand: `build_preconditioners`
-builds both atoms for every requested `(k, BC)` onto the bundle, a missing
-mass atom raises at the solve, and a missing Laplacian atom makes the
-default specs (`_materialize_default_saddle_preconditioner`,
-`_materialize_default_scalar_hodge_preconditioner`) pick `'none'`, so an
-unbuilt preconditioner runs unpreconditioned -- visibly slow -- instead of
-on a different one. `apply_laplacian_preconditioner(kind='auto')`, the bare
-apply, warns and applies the identity in that case. The Jacobi option is
-built only on request, `build_preconditioners(jacobi=True)`: one-hot probes
-of the applies themselves -- `O(n_k)` applies per `(k, BC)` -- store
-`1/diag(E M_k E^T)`, `1/diag(L_k)` and, for the saddle solves, `1/diag` of
-the approximate Schur operator `S_k + D B D^T` on the bundle
-(`operators.mass_jacobi`, `laplacian_jacobi`, `schur_jacobi`).
-
-A saddle solve is specified by `SaddlePointPreconditionerSpec(mass, schur,
-coupled)` with `schur = SchurPreconditionerSpec(inner, outer)`: `mass` is the
-lower block, `inner` stands in for `M_{k-1}^{-1}` inside the weak term, and
-`outer` preconditions `L_k`. Production is `mass = inner = 'metric_lumping'`,
-`outer = 'metric_lumping'`, `coupled = False`. `outer = 'jacobi'` applies the
-probed Schur diagonal; `outer = 'none'` is the default of the spec object so
-that a missing build fails visibly.
+There are no kinds. `build_preconditioners` builds the mass atom
+(`MetricLumpingMass`) and the Laplacian atom (`MetricLumpingLaplacian`) for
+every requested `(k, BC)` onto the bundle, and every solve through the
+sequence uses the atom of its own `(k, BC)`: the mass solve the mass atom,
+the k=0 Laplacian and the Hodge-split solves the Laplacian atom, the
+shifted solve `(M_k + eps S_k)` its shifted-stiffness form
+(`shifted_stiffness_apply`), and a saddle solve (`k >= 1` shifted, and
+`k = 3`) the Laplacian atom of level `k` on the upper block with the mass
+atom of level `k - 1` on the lower block, block-diagonal, never coupled
+through a Schur complement; the harmonic forms are deflated from the upper
+block only, since a harmonic `v` has `D^T v = 0` and the saddle matrix's
+nullspace is `(v, 0)`. The saddle solve returns its lower unknown too
+(`apply_inverse_laplacian_saddle`), the weak codifferential of the
+solution, which the Leray projection uses as its gradient part. A missing atom raises at the solve; nothing is
+built on demand and nothing is substituted. (Until 2026-09-04 the same
+mechanism was spread over kind strings, three spec dataclasses and a probed
+Jacobi option that nothing used.)
 
 ## 3. The Laplacian atom: `MetricLumpingLaplacian`
 
@@ -102,8 +88,14 @@ pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
 are not tensor-product functions. `core_rows` lists them; `probe_core_block`
 forms `L_k` on those rows by one operator apply per row;
 `_dense_symmetric_inverse` inverts the block on device by `eigh`, dropping
-eigenvalues below `CORE_TOL` relative to the largest. Bulk and core are
-applied independently; they are not coupled through a Schur complement.
+eigenvalues below `CORE_TOL` relative to the largest. The shifted-stiffness
+form of the atom needs `(M_k + eps S_k)^{-1}` on the same rows for an `eps`
+known only at the solve: the pair `(M_k, S_k)` on the core is diagonalised
+once at build (`_simultaneous_diagonalize_pair`, `V^T M V = I`, `V^T S V =
+diag(mu)`) and the block is `V diag(1 / (1 + eps mu)) V^T`, two small
+matmuls per solve (until 2026-09-04 an `eigh` of `M + eps S` per solve,
+twice per relaxation step inside the scan). Bulk and core are applied
+independently; they are not coupled through a Schur complement.
 
 **Natural boundary term.** Under a free condition at `r = 1` the weak block's
 integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗ M_z` with
@@ -214,7 +206,7 @@ verdicts are in `docs/research/preconditioner_lessons.md`.
 ## 8. Measuring
 
 - `scripts/poisson_study.py`: all eight `(k, BC)` Hodge-Laplacian solves on
-  the toroid through the production `'auto'` dispatch, with the nullspace
+  the toroid through the production solves, with the nullspace
   iteration counts, the true residuals and the solve iteration counts per
   resolution. `n=[8] p=3` is the smoke run.
 - `test/test_poisson.py` pins the iteration counts of the production

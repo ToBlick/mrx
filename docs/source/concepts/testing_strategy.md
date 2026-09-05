@@ -39,7 +39,7 @@ cores run the suite as fast as thirty-two. Two consequences:
 | `test_poisson.py` | the eight Hodge Laplacians, `k = 0..3` free and Dirichlet, on `toroid` against the manufactured solutions with the production `'auto'` preconditioner; the Leray projections at k=2 and k=1 are div-free, idempotent and non-expansive | measured error bands 1.25x and iteration bands 2x; `10 seq.tol` |
 | `test_relaxation.py` | 50 production steps on `b0`: energy monotone at every recorded point, the force norm drops by the measured factor, helicity conserved to `25 seq.tol`, `div B` at roundoff | measured band; `seq.tol` |
 | `test_readers.py` | the GVEC parser reproduces the closed-form synthetic state; the VMEC reader reads li383 with the expected layout | roundoff; exact |
-| `test_spline_bases.py`, `test_quadrature.py`, `test_precision.py`, `test_preconditioner_kind_dispatch.py` | partition of unity and the histopolation de Rham identity; quadrature exactness; the working dtype and matmul precision; every accepted preconditioner kind is dispatched | roundoff; AST |
+| `test_spline_bases.py`, `test_quadrature.py`, `test_precision.py` | partition of unity and the histopolation de Rham identity; quadrature exactness; the working dtype and matmul precision | roundoff |
 
 The manufactured solutions are closed-form on the toroid for every degree and
 both boundary families (they pair up under the Hodge star), which no
@@ -55,7 +55,7 @@ wrong and not when an implementation detail moves:
 
 - exact identities to a multiple of `mrx.eps()`, so the same assertion is
   meaningful in both precisions;
-- solver-based quantities to a multiple of `seq.tol` (`mrx.sqrt_eps()`);
+- solver-based quantities to a multiple of `seq.tol` (`mrx.precision.SOLVE_TOL`);
 - measured bands, 1.25x a measured error, stated next to the value, the date
   and the fixture. A wrong metric factor or a broken preconditioner moves
   these by a factor, precision and run-to-run noise by a few percent.

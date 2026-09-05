@@ -104,10 +104,13 @@ second, burying real tracebacks.
 
 ## Precision
 
-A TPU has no float64. Set `MRX_DTYPE=float32`, which `run_on_tpu.sh` does;
-`mrx.precision` also sets `jax_default_matmul_precision=highest` so the MXU
-does not silently drop to bfloat16. On the toroidal Poisson problem the
-float32 TPU result matches the float32 CPU reference exactly.
+A TPU has no float64. Set `MRX_DTYPE=float32` and `MRX_RESIDUAL_DTYPE=float32`,
+which `run_on_tpu.sh` and `startup.sh` both do. The package default residual
+is float64 (iterative refinement of a float32 Krylov solve); that path is
+the one a TPU cannot take. `mrx.precision` also sets
+`jax_default_matmul_precision=highest` so the MXU does not silently drop to
+bfloat16. On the toroidal Poisson problem the float32 TPU result matches the
+float32 CPU reference exactly.
 
 That setting is the one precision knob that costs a TPU and not a GPU: the MXU
 multiplies bfloat16 natively, so float32 at `highest` is six passes, `high` is
@@ -176,15 +179,17 @@ CPU, and on the structured forms 2.8x and 5x faster. Identical work, identical
 answers. **If a kernel is slow on this hardware, look for an index tensor
 first.**
 
-Two things that surprised us and are worth knowing before you profile. The cost
-was never compilation -- `relaxation_loop` is already `@jax.jit` around a
-`lax.scan`, so the time was pure device execution, and the per-apply arithmetic
-was right while the apply *count* was not. And apply count is a
-backend-independent property, so the preconditioner work it led to helps CPU and
-GPU by the same factor; a TPU only made it visible. A `v5litepod-4` is also four
-chips where MRX uses one, so a parameter sweep takes all four through `jax.pmap`
-with no library change, measured at 3.99x (`scripts/pmap_sweep.py`, which needs
-only two devices and so works on a multi-GPU node too).
+Two things that surprised us and are worth knowing before you profile. The
+per-apply arithmetic was right while the apply *count* was not, and apply
+count is a backend-independent property, so the preconditioner work it led to
+helps CPU and GPU by the same factor; a TPU only made it visible. The
+per-step timings that used to sit next to that claim were compile time
+divided by a step count -- `chunk_runner` now builds the jitted scan once
+and the benchmark reports compile and steady state separately. A
+`v5litepod-4` is also four chips where MRX uses one, so a parameter sweep
+takes all four through `jax.pmap` with no library change, measured at 3.99x
+(`scripts/pmap_sweep.py`, which needs only two devices and so works on a
+multi-GPU node too).
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at

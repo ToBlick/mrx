@@ -23,6 +23,7 @@ data/*
 !data/wout_li383_low_res_reference.nc
 !data/wout_li383_1.4m.nc
 !data/wout_LandremanPaul2021_QA_lowres.nc
+!data/*.json
 outputs
 out
 logs

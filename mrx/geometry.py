@@ -17,12 +17,14 @@ map onto the spline basis of a sequence.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Callable
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
@@ -67,25 +69,6 @@ def map_jacobian_at(map: Callable, x: jnp.ndarray) -> jnp.ndarray:
         ``(N, 3, 3)`` with ``DF[q, i, j] = dF_i/dx_j``.
     """
     return jax.lax.map(jax.jacfwd(map), x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-
-
-def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
-    """Compute metric and Jacobian terms for an arbitrary map.
-
-    Args:
-        map: Differentiable logical-to-physical map ``F: R^3 -> R^3``.
-        quad_x: Quadrature points, shape ``(N_q, 3)``.
-
-    Returns:
-        Tuple ``(metric_jkl, metric_inv_jkl, jacobian_j)``:
-
-        - ``metric_jkl``: ``(N_q, 3, 3)`` — metric tensor ``DF^T DF`` at each
-          quadrature point.
-        - ``metric_inv_jkl``: ``(N_q, 3, 3)`` — inverse metric.
-        - ``jacobian_j``: ``(N_q,)`` — Jacobian determinant ``det(DF)``.
-    """
-    geometry = SequenceGeometry.from_map(map, quad_x)
-    return geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
 
 
 # ---------------------------------------------------------------------------
@@ -150,51 +133,23 @@ class SequenceGeometry(eqx.Module):
     def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
         """Sum-factorized geometry builder for tensor-product spline maps.
 
-        Uses ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` and needs
-        ``spline_map.extraction_T`` set.
+        Uses ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` on the
+        map's raw coefficient grid.
 
         Args:
-            spline_map: A :class:`~mrx.mappings.SplineMap` with
-                ``coefficients`` and ``extraction_T`` populated.
+            spline_map: A :class:`~mrx.mappings.SplineMap`.
             seq: A :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
         Returns:
             A fully populated :class:`SequenceGeometry`.
         """
-        if spline_map.extraction_T is None:
-            raise ValueError(
-                "SplineMap.extraction_T must be set for the sum-factorized "
-                "geometry path; construct the map via "
-                "seq.build_spline_map(coefficients) or pass seq.E(0).T.")
-        _, DF_jkl = spline_map_F_DF_at_quad(
-            spline_map.coefficients, spline_map.extraction_T, seq)
+        DF_jkl = spline_map_DF_at_quad(spline_map, seq)
         return cls.from_DF(spline_map, DF_jkl)
 
 
 # ---------------------------------------------------------------------------
 # Sum-factorized spline fast path
 # ---------------------------------------------------------------------------
-
-def _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz):
-    """Undo the extraction operator and reshape to the raw TP grid.
-
-    Args:
-        coefficients: ``(3, n_dof)`` Cartesian spline coefficients in the
-            extracted basis.
-        extraction_T: :class:`~mrx.extraction_operators.MatrixFreeExtraction`
-            of shape ``(n_raw, n_dof)`` — the transpose of the extraction
-            operator ``E`` (usually ``seq.E(0).T``).
-        nr: Raw tensor-product size in the r direction.
-        nt: Raw tensor-product size in the t direction.
-        nz: Raw tensor-product size in the z direction.
-
-    Returns:
-        ``(3, nr, nt, nz)`` array of coefficients in the raw TP spline basis.
-    """
-    # C_raw = coefficients @ E   (shape (3, n_raw)), written via E^T.
-    C_raw_flat = (extraction_T @ coefficients.T).T
-    return C_raw_flat.reshape(3, nr, nt, nz)
-
 
 def _tp_evaluate(C_raw, M1, M2, M3):
     """Sum-factorized evaluation of a tensor-product spline.
@@ -217,27 +172,12 @@ def _tp_evaluate(C_raw, M1, M2, M3):
     return jnp.einsum("iIJc,cK->iIJK", T2, M3)
 
 
-def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
-    """Evaluate ``F`` and ``DF`` at the sequence's quadrature grid.
-
-    Uses the precomputed 1D basis / derivative values
-    ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk`` (built by the
-    sequence).
-
-    Args:
-        coefficients: ``(3, n_dof)`` spline coefficients of the map.
-        extraction_T: Transpose of the extraction operator, shape
-            ``(n_raw, n_dof)``.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
-
-    Returns:
-        Tuple ``(F_q, DF_q)``:
-
-        - ``F_q``: ``(N_q, 3)`` physical position at each quadrature point.
-        - ``DF_q``: ``(N_q, 3, 3)`` Jacobian of F; axis 1 = Cartesian
-          component, axis 2 = logical direction.
+def spline_map_DF_at_quad(spline_map, seq):
+    """``DF`` at the sequence's quadrature grid, ``(N_q, 3, 3)`` (axis 1 the
+    Cartesian component, axis 2 the logical direction), by sum factorisation
+    of ``spline_map.raw`` against the precomputed 1D basis / derivative
+    values ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk``.
     """
-    nr, nt, nz = seq.basis_0.shape[0]
     Br, Bt, Bz = seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk
     # The stored d_basis_*_jk live in the (p-1)-degree derived space and
     # have a different leading dimension than basis_*_jk; grad_1d lifts
@@ -248,20 +188,17 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     Dt = grad_1d(seq.d_basis_t_jk, types[1])
     Dz = grad_1d(seq.d_basis_z_jk, types[2])
 
-    C_raw = _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz)
+    C_raw = spline_map.raw
 
-    F = _tp_evaluate(C_raw, Br, Bt, Bz)         # (3, nqr, nqt, nqz)
     dF_dx1 = _tp_evaluate(C_raw, Dr, Bt, Bz)
     dF_dx2 = _tp_evaluate(C_raw, Br, Dt, Bz)
     dF_dx3 = _tp_evaluate(C_raw, Br, Bt, Dz)
 
     # (3, nqr, nqt, nqz) flattens straight into the r-major seq.quad.x order.
-    F_q = F.reshape(3, -1).T                               # (N_q, 3)
-    DF_q = jnp.stack(
+    return jnp.stack(
         [dF_dx1.reshape(3, -1), dF_dx2.reshape(3, -1), dF_dx3.reshape(3, -1)],
         axis=-1,
     ).transpose(1, 0, 2)                                   # (N_q, 3, 3)
-    return F_q, DF_q
 
 
 # ---------------------------------------------------------------------------
@@ -301,91 +238,167 @@ def greville_interpolate_map(F_analytic: Callable, seq) -> jnp.ndarray:
 # Solve geometries for the driver scripts, by analytic name or by file path
 # ---------------------------------------------------------------------------
 #
-# A geometry is either an analytic name (``toroid``, ``cylinder``,
-# ``rot-ellipse``) or the path of an equilibrium file -- a GVEC state
-# (``.dat``, :mod:`mrx.gvec`) or a VMEC wout (``.nc``, :mod:`mrx.vmec`), both
-# read in closed form; ``os.path.isfile`` decides. :func:`build_sequence` turns it into a polar sequence with the map
-# installed and the preconditioners built; nullspaces are left to the caller.
+# A geometry is a file: a GVEC state (``.dat``, :mod:`mrx.gvec`) or a VMEC
+# wout (``.nc``, :mod:`mrx.vmec`), both read in closed form, or an analytic
+# geometry (``.json``): a map of :mod:`mrx.mappings` with its parameters and
+# the profiles of the analytic initial condition (``scripts/relax.py``).
+# ``data/torus.json``, ``data/cylinder.json`` and ``data/rot_ellipse.json``
+# are the shipped ones. :func:`build_sequence` turns a geometry into a polar
+# sequence with the map installed and the preconditioners built; nullspaces
+# are left to the caller.
 
-#: Field periods spanned by logical zeta in [0, 1] for the analytic maps.
-ANALYTIC_NFP = {"toroid": 1, "cylinder": 1, "rot-ellipse": 3}
+#: The maps an analytic geometry file may name.
+ANALYTIC_MAPS = ("torus", "cylinder", "rot-ellipse")
 
 
-def _unknown(geometry):
-    return ValueError(
-        f"geometry {geometry!r} is neither an analytic name "
-        f"({', '.join(ANALYTIC_NFP)}) nor an existing file")
+def read_analytic(path):
+    """The analytic geometry file ``path``::
+
+        {"map": "torus" | "cylinder" | "rot-ellipse",
+         "map_params": {...},                       # keyword arguments of the map
+         "profile": {"iota": [i0, i1], "iota_exp": e, "flux_exp": q,
+                     "lambda": [[m, n, amp], ...]}}  # the logical-grid field
+
+    ``map_params`` are ``toroid_map``'s ``epsilon, kappa, R0``,
+    ``cylinder_map``'s ``a, h`` or ``rotating_ellipse_map``'s ``eps, kappa,
+    R0, nfp``; the profile is ``iota = i0 + (i1 - i0) rho^e``, ``Phi' =
+    rho^q`` and ``lambda = sum amp rho^|m| sin(2 pi (m theta - n zeta))``
+    (``mrx.initial_conditions``).
+    """
+    with open(path) as fh:
+        spec = json.load(fh)
+    if spec.get("map") not in ANALYTIC_MAPS:
+        raise ValueError(f"{path}: 'map' must be one of {', '.join(ANALYTIC_MAPS)}, "
+                         f"got {spec.get('map')!r}")
+    return spec
+
+
+def geometry_kind(geometry):
+    """``"gvec"`` for a state file, ``"vmec"`` for a wout, the map's name for
+    an analytic geometry file; anything else raises."""
+    if not os.path.isfile(geometry):
+        raise ValueError(f"geometry {geometry!r} is not a file; MRX reads GVEC state files "
+                         "(.dat), VMEC wout files (.nc) and analytic geometry files (.json)")
+    if geometry.endswith(".dat"):
+        return "gvec"
+    if geometry.endswith(".nc"):
+        return "vmec"
+    if geometry.endswith(".json"):
+        return read_analytic(geometry)["map"]
+    raise ValueError(f"{geometry}: not a geometry file; MRX reads GVEC state files (.dat), "
+                     "VMEC wout files (.nc) and analytic geometry files (.json)")
 
 
 def geometry_nfp(geometry, nfp=None):
     """Field periods of a geometry.
 
     Args:
-        geometry: an analytic name or the path of an equilibrium file.
-        nfp: overrides the file's ``nfp``; ignored for the analytic names.
+        geometry: the path of an equilibrium or analytic geometry file.
+        nfp: overrides an equilibrium file's ``nfp``; ignored for an
+            analytic geometry, whose map fixes it.
 
     Returns:
         The number of field periods spanned by logical zeta in [0, 1].
     """
-    if os.path.isfile(geometry):
+    kind = geometry_kind(geometry)
+    if kind == "gvec":
         if nfp is not None:
             return int(nfp)
-        if geometry.endswith(".dat"):
-            from mrx.gvec import read_state  # noqa: PLC0415  (imports this module)
-            return read_state(geometry)["nfp"]
-        if geometry.endswith(".nc"):
-            from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
-            return read_nfp(geometry)
-        raise ValueError(f"{geometry}: not an equilibrium file; MRX reads GVEC "
-                         "state files (.dat) and VMEC wout files (.nc)")
-    if geometry in ANALYTIC_NFP:
-        return ANALYTIC_NFP[geometry]
-    raise _unknown(geometry)
+        from mrx.gvec import read_state  # noqa: PLC0415  (imports this module)
+        return read_state(geometry)["nfp"]
+    if kind == "vmec":
+        if nfp is not None:
+            return int(nfp)
+        from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
+        return read_nfp(geometry)
+    return int(read_analytic(geometry)["map_params"].get("nfp", 1))
 
 
-def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None):
+def parse_r_refine(spec):
+    """``"a:b:m,a:b:m"`` -> ``[(a, b, m), ...]``: radial windows ``[a, b]``
+    that get ``m`` uniform cells each (:func:`radial_knots`); ``""`` -> ``[]``."""
+    windows = []
+    for w in filter(None, spec.split(",")):
+        a, b, m = w.split(":")
+        windows.append((float(a), float(b), int(m)))
+    return windows
+
+
+def radial_knots(n_r, p, windows):
+    """The clamped radial knot vector of ``n_r`` degree-``p`` splines with
+    ``n_r - p`` cells: ``m`` uniform cells inside every window ``(a, b, m)``,
+    and the remaining cells spread over the gaps between and outside the
+    windows in proportion to their length (largest-remainder rounding, at
+    least one cell per gap). Without windows this is the uniform grid the
+    sequence builds itself."""
+    windows = sorted(windows)
+    n_cells = n_r - p
+    inside = sum(m for _, _, m in windows)
+    gaps = []
+    lo = 0.0
+    for a, b, _ in windows:
+        gaps.append((lo, a))
+        lo = b
+    gaps.append((lo, 1.0))
+    gaps = [(a, b) for a, b in gaps if b > a]
+    free = n_cells - inside
+    if free < len(gaps):
+        raise ValueError(f"{inside} window cells leave {free} for {len(gaps)} gaps of n_r - p = {n_cells}")
+    length = sum(b - a for a, b in gaps)
+    raw = [free * (b - a) / length for a, b in gaps]
+    counts = [max(1, int(r)) for r in raw]
+    order = sorted(range(len(gaps)), key=lambda i: raw[i] - int(raw[i]), reverse=True)
+    for i in order[: free - sum(counts)]:
+        counts[i] += 1
+    for i in reversed(order):    # a gap forced up to one cell may have overshot
+        if sum(counts) > free and counts[i] > 1:
+            counts[i] -= 1
+    segments = sorted([(a, b, m) for a, b, m in windows] + [(a, b, c) for (a, b), c in zip(gaps, counts)])
+    bp = np.concatenate([np.linspace(a, b, m, endpoint=False) for a, b, m in segments] + [[1.0]])
+    return np.concatenate([np.zeros(p), bp, np.ones(p)])
+
+
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_windows=()):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
         geometry:
-            an analytic name (``toroid``, ``cylinder``, ``rot-ellipse``),
             a GVEC state file (``.dat``, read in closed form, ``mrx.gvec``),
-            or a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``).
+            a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``),
+            or an analytic geometry file (``.json``, :func:`read_analytic`).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
         tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
-        nfp: overrides the file's ``nfp`` (see ``mrx.gvec``); ignored for
-            the analytic names.
+        nfp: overrides an equilibrium file's ``nfp`` (see ``mrx.gvec``);
+            ignored for an analytic geometry.
+        r_windows: radial refinement windows ``[(a, b, m), ...]`` for
+            :func:`radial_knots`; empty for the uniform radial grid.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
         preconditioner built (``seq.operators is ops``).
 
     Raises:
-        ValueError: if ``geometry`` is neither an analytic name nor a file,
-            if the file is neither a ``.dat`` nor a ``.nc``, or (from
-            ``set_geometry``) if the map folds.
+        ValueError: if ``geometry`` is not a file, is of another kind, or
+            (from ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
+    knots = (radial_knots(ns[0], p, r_windows), None, None) if r_windows else None
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
-                         polar=True, tol=tol, maxiter=maxiter,
+                         polar=True, tol=tol, maxiter=maxiter, knots=knots,
                          betti_numbers=(1, 1, 0, 0))
-    if os.path.isfile(geometry):
+    kind = geometry_kind(geometry)
+    if kind in ("gvec", "vmec"):
         map_func, info = build_gvec_map(geometry, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
         seq.set_map(map_func)
-    elif geometry == "toroid":
-        seq.set_map(toroid_map(epsilon=1/3, R0=1.0))
-    elif geometry == "cylinder":
-        seq.set_map(cylinder_map(a=1/3, h=1.0))
-    elif geometry == "rot-ellipse":
-        seq.set_map(rotating_ellipse_map(eps=1/3, kappa=1.3, nfp=3))
     else:
-        raise _unknown(geometry)
+        maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
+        seq.set_map(maps[kind](**read_analytic(geometry)["map_params"]))
     return seq, seq.build_preconditioners()

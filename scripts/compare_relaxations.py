@@ -43,7 +43,7 @@ def load(path):
     t_of = np.concatenate([[0.0], t])                   # relaxation time after step k
     it = np.asarray(q["it"], dtype=int)
     tq = t_of[np.minimum(it, len(t))]
-    E = np.asarray(tr["E"], dtype=float)
+    dE = np.asarray(tr["dE"], dtype=float)
     wall_q = np.asarray(q["wall"], dtype=float)
     k = np.arange(1, len(dt) + 1)
     wall_of = np.interp(k, it, wall_q)                                   # seconds after step k
@@ -51,7 +51,7 @@ def load(path):
         rate = (wall_q[-1] - wall_q[-2]) / (it[-1] - it[-2])
         wall_of = np.where(k > it[-1], wall_q[-1] + rate * (k - it[-1]), wall_of)
     wall_of = wall_of / 3600.0
-    return dict(dt=dt, t=t, t_of=t_of, it=it, tq=tq, E=E, wall_of=wall_of, F=np.asarray(tr["F"], dtype=float),
+    return dict(dt=dt, t=t, t_of=t_of, it=it, tq=tq, dE=dE, wall_of=wall_of, F=np.asarray(tr["F"], dtype=float),
                 cfl=np.asarray(tr["cfl"], dtype=float), cos=np.asarray(tr["cos"], dtype=float),
                 H=np.asarray(q["helicity"], dtype=float), JB=np.asarray(q["JoverB"], dtype=float),
                 beta=np.asarray(q["beta_vol"], dtype=float), wall_q=wall_q,
@@ -121,8 +121,8 @@ def main():
             lab = f"{label} ({r['steps']} steps, t={r['t'][-1]:.1f})"
             Fs, i = running_mean(r["F"], cli.smooth)
             aF.semilogy(x_step[i], Fs, color=c, label=lab, **st)
-            aE.semilogy(x_step, r["E"][0] - r["E"], color=c, **st)
-            dEdt = -np.gradient(r["E"], x_step) if xkind != "step" else -np.gradient(r["E"])
+            aE.semilogy(x_step, np.cumsum(-r["dE"]), color=c, **st)
+            dEdt = -r["dE"] / r["dt"] if xkind == "time" else -r["dE"]
             ds, i = running_mean(dEdt, cli.smooth)
             adE.semilogy(x_step[i], np.maximum(ds, 1e-300), color=c, **st)
             aH.plot(x_q, (r["H"] - r["H"][0]) / r["H"][0], marker="o", ms=2.5, color=c, **st)

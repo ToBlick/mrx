@@ -60,8 +60,7 @@ def main() -> None:
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import clebsch_potential_form, potential_two_form
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (DescentMethod, TimeStepChoice, TimeStepper,
-                                initial_state)
+    from mrx.relaxation import TimeStepper, initial_state
 
     devices = jax.devices()
     n_dev = len(devices)
@@ -81,9 +80,7 @@ def main() -> None:
         load_clebsch(cli.geometry)))
     print(f"[setup] ns={ns} p={cli.p}  {time.perf_counter() - t0:.1f}s")
 
-    ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS,
-                     dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
-                     eta_every=1, resistive=False, history_size=1,
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                      velocity_smoothing_order=1, velocity_smoothing_scale=scale)
 
     # A sweep of n_dev nearby initial fields: same geometry, perturbed IC. Any

@@ -26,12 +26,11 @@ the ``+ B_harm`` being what cancels the harmonic terms.
 Three sources of the profiles:
 
 * :func:`analytic_profile_form`: prescribed power laws, no external data;
-  the ``analytic`` initial condition of ``scripts/relax.py``.
-* :func:`clebsch_form`: GVEC's own ``dPhi_dr``, ``dchi_dr`` and ``lambda``
-  from a file read by :func:`mrx.gvec.load_clebsch`; the equilibrium field
-  rebuilt from three scalars instead of resampled as a vector.
-* :func:`dzeta_form`: the constant 2-form ``(0, 0, 1)``, whose relaxation has
-  an exactly known target, the harmonic field.
+  the initial condition of an analytic geometry file (``scripts/relax.py``,
+  ``mrx.geometry.read_analytic``).
+* :func:`clebsch_potential_form` with :func:`potential_two_form`: an
+  equilibrium file's own field, ``B = dA'`` from its Clebsch data
+  (:func:`mrx.gvec.load_clebsch`), the production route.
 
 :func:`project_reference_two_form` turns any of them into DoFs. It pushes the
 form forward and uses ``load(frame='phys')``: ``load(frame='ref')`` wants
@@ -41,6 +40,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from mrx.relaxation import compute_divergence_norm
 import numpy as np
 
 
@@ -63,17 +63,6 @@ def make_profiles(iota0, iota1, iota_exp, flux_exp):
         return r ** flux_exp
 
     return iota, dPhi
-
-
-def parse_lambda(spec):
-    """``"m,n,amp;m,n,amp;..."`` -> list of ``(m, n, amp)``. Empty string -> []."""
-    if not spec:
-        return []
-    modes = []
-    for term in spec.split(";"):
-        m, n, amp = term.split(",")
-        modes.append((int(m), int(n), float(amp)))
-    return modes
 
 
 def make_lambda(modes):
@@ -123,41 +112,14 @@ def lambda_dirichlet_energy(lam_h, seq) -> tuple[float, float]:
             float(dof @ seq.apply_laplacian(dof, 0, dirichlet=False)))
 
 
-def clebsch_form(cb):
-    """Reference 2-form of the Clebsch data ``cb`` from
-    :func:`mrx.gvec.load_clebsch`.
-
-    Units: the file's derivatives are with respect to radian angles and MRX's
-    zeta spans one field period, so ``Phi' = 2 pi dPhi_dr``,
-    ``iota = dchi_dr / (nfp dPhi_dr)`` and ``lambda = LA / 2 pi``. The 2 pi on
-    ``Phi'`` divides out of the normalised field.
-    """
-    rho_g = jnp.asarray(cb["rho"])
-    dPhi_g = jnp.asarray(cb["dPhi"])
-    dchi_g = jnp.asarray(cb["dchi"])
-    grad_lam = jax.grad(cb["lam_h"])
-    nfp = cb["nfp"]
-    two_pi = 2.0 * jnp.pi
-
-    def omega_ref(x):
-        r = jnp.clip(x[0], rho_g[0], rho_g[-1])
-        f_phi = jnp.interp(r, rho_g, dPhi_g)
-        f_chi = jnp.interp(r, rho_g, dchi_g) / nfp
-        g = grad_lam(jnp.array([r, x[1] % 1.0, x[2] % 1.0])) / two_pi
-        lam_t, lam_z = g[1], g[2]
-        return jnp.array([0.0, f_chi - f_phi * lam_z, f_phi * (1.0 + lam_t)])
-
-    return omega_ref
-
-
 def clebsch_potential_form(cb, seed=None):
     """Reference 1-form ``A'`` whose exterior derivative is the Clebsch 2-form
-    of :func:`clebsch_form`, from the same ``cb``.
+    of the data ``cb`` (:func:`mrx.gvec.load_clebsch`).
 
     With the GVEC potential ``A = Phi dtheta_G - chi dzeta_G + Phi dLA`` and
     the gauge term ``d(Phi LA)`` dropped,
     ``A' = (-LA dPhi_dr, 2 pi Phi, -(2 pi / nfp) chi)`` in MRX's logical
-    ``(rho, theta, zeta)`` -- ``dA'`` is exactly ``clebsch_form``'s
+    ``(rho, theta, zeta)`` -- ``dA'`` is exactly the pointwise Clebsch 2-form
     ``(0, (chi' - Phi' LA_zeta) / nfp, Phi' (1 + LA_theta))`` up to the
     common ``2 pi``. It needs only VALUES of lambda: the derivatives that
     make the field, and the second derivatives that make the current, are
@@ -257,20 +219,6 @@ def potential_two_form(seq, A_ref):
     return B / norm, norm, wall
 
 
-def dzeta_form():
-    """The constant reference 2-form ``(0, 0, 1)``.
-
-    Zero shear; minimising the energy at fixed
-    toroidal flux lands on the harmonic 2-form of the Dirichlet complex, which
-    is curl-free, so the target field, J = 0 and a flat pressure are all known
-    in advance.
-    """
-    def omega_ref(x):
-        return jnp.array([0.0, 0.0, 1.0])
-
-    return omega_ref
-
-
 def project_reference_two_form(seq, omega_ref):
     """L2-project a reference 2-form onto the Dirichlet k=2 space.
 
@@ -292,10 +240,6 @@ def project_reference_two_form(seq, omega_ref):
     return B_raw / norm, norm
 
 
-def divergence_norm(seq, B):
-    """``||div B||_L2`` through the incidence operator (exact ``d``, no solve)."""
-    return float(seq.l2_norm(seq.apply_incidence_matrix(
-        B, 2, dirichlet_in=True, dirichlet_out=True), 3))
 
 
 def leray_clean(seq, B):
@@ -309,3 +253,56 @@ def leray_clean(seq, B):
     B_leray, _ = seq.apply_leray_projection(B, k=2)
     diff_B = float(seq.l2_norm(B_leray - B, 2))
     return B_leray / float(seq.l2_norm(B_leray, 2)), diff_B
+
+
+# ---------------------------------------------------------------------------
+# The initial field of a run
+# ---------------------------------------------------------------------------
+
+def initial_field(seq, geometry, seed=None):
+    """The initial field of a relaxation run and what was measured on the way.
+
+    The geometry file decides (:func:`mrx.geometry.geometry_kind`): an
+    equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
+    through the histopolated Clebsch potential, exactly divergence-free,
+    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
+    analytic geometry file gives the logical-grid field of its ``profile``
+    block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
+
+    Returns ``(B, info)`` with ``B`` the Dirichlet 2-form DoFs and ``info``
+    the numbers a driver prints and records: ``kind``, ``B_norm_raw``,
+    ``div_raw``, ``div``, ``leray_moved``, and for an equilibrium file
+    ``nfp``, ``iota_axis``, ``iota_edge`` (per full turn), ``wall_discarded``,
+    ``lambda_norm_sq``, ``lambda_dirichlet_energy`` and, with a seed,
+    ``seed_rho`` (the file's resonant surface).
+    """
+    from mrx.geometry import geometry_kind, read_analytic  # noqa: PLC0415  (imports this module)
+    from mrx.gvec import load_clebsch  # noqa: PLC0415
+
+    kind = geometry_kind(geometry)
+    if kind in ("gvec", "vmec"):
+        cb = load_clebsch(geometry)
+        lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
+        info = dict(kind=kind, nfp=int(cb["nfp"]),
+                    iota_axis=float(cb["dchi"][1] / cb["dPhi"][1]),
+                    iota_edge=float(cb["dchi"][-1] / cb["dPhi"][-1]),
+                    lambda_norm_sq=float(lam_norm), lambda_dirichlet_energy=float(lam_energy))
+        if seed is not None:
+            info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
+        B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+        div = float(compute_divergence_norm(B, seq))
+        info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
+                    div_raw=div, div=div, leray_moved=0.0)
+        return B, info
+    if seed is not None:
+        raise ValueError("a resonant seed needs an equilibrium file")
+    prof = read_analytic(geometry)["profile"]
+    iota, dPhi = make_profiles(prof["iota"][0], prof["iota"][1], prof["iota_exp"], prof["flux_exp"])
+    modes = [(int(m), int(n), float(a)) for m, n, a in prof.get("lambda", [])]
+    B, norm = project_reference_two_form(seq, analytic_profile_form(iota, dPhi, make_lambda(modes)))
+    div_raw = float(compute_divergence_norm(B, seq))
+    B, moved = leray_clean(seq, B)
+    return B, dict(kind=kind, iota=[float(v) for v in prof["iota"]], iota_exp=float(prof["iota_exp"]),
+                   flux_exp=float(prof["flux_exp"]), lambda_modes=len(modes),
+                   B_norm_raw=float(norm), div_raw=div_raw, div=float(compute_divergence_norm(B, seq)),
+                   leray_moved=float(moved))

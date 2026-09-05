@@ -206,7 +206,7 @@ def cross_section_rhs(field):
 # ---------------------------------------------------------------------------
 
 def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
-          batch_size=None, adaptive=False, rtol=1e-8, atol=1e-10):
+          batch_size=None):
     """Integrate ``seeds`` for ``n_periods`` units of logical zeta.
 
     Args:
@@ -223,8 +223,6 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
             section itself; more are needed to unwrap the poloidal angle
             without aliasing (``saves_per_period`` must exceed twice the
             poloidal turns per period).
-        adaptive: use a PID controller instead of the prescribed schedule.
-            Only for measuring what the prescribed schedule buys.
 
     Returns:
         ``(ys, ok)`` with ``ys`` of shape
@@ -247,12 +245,8 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
                      r * jnp.sin(TWO_PI * theta)], axis=1)
 
     term = dfx.ODETerm(cross_section_rhs(field))
-    if adaptive:
-        controller = dfx.PIDController(rtol=rtol, atol=atol)
-        dt0, max_steps = 1.0 / steps_per_period, 100 * n_steps + 1000
-    else:
-        controller = dfx.StepTo(ts=step_ts)
-        dt0, max_steps = None, n_steps + 1
+    controller = dfx.StepTo(ts=step_ts)
+    dt0, max_steps = None, n_steps + 1
 
     def one(y0):
         sol = dfx.diffeqsolve(
@@ -266,8 +260,7 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
 
     # Full vmap by default.  With a prescribed schedule every lane executes the
     # same steps, so there is nothing to gain from chunking and the batch size
-    # is purely a memory knob -- the opposite of the adaptive case, where the
-    # chunk exists to stop one bad seed from setting the step for the rest.
+    # is purely a memory knob.
     if batch_size is None:
         return jax.vmap(one)(y0s)
     return jax.lax.map(one, y0s, batch_size=batch_size)
@@ -317,6 +310,24 @@ def axis_track(ys, saves_per_period):
     return jnp.tile(center, (reps, 1))[:n_saves]
 
 
+def _winding(ys, saves_per_period, center):
+    """The unwrapped poloidal angle (in turns) of every line about ``center``
+    and the logical zeta of every save: ``(angle (n_seeds, n_saves), zeta (n_saves,))``."""
+    d = ys - center
+    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
+    return angle, jnp.arange(ys.shape[1]) / saves_per_period
+
+
+def _slope(angle, zeta):
+    """Least-squares slope of ``angle`` (rows) against ``zeta``, and the RMS
+    deviation of the rows from their fitted lines."""
+    zc = zeta - jnp.mean(zeta)
+    ac = angle - jnp.mean(angle, axis=-1, keepdims=True)
+    slope = (ac @ zc) / (zc @ zc)
+    resid = jnp.sqrt(jnp.mean((ac - slope[:, None] * zc) ** 2, axis=-1))
+    return slope, resid
+
+
 def rotational_transform(ys, saves_per_period, nfp, center=None):
     """Iota (poloidal turns per *toroidal* turn) by least squares on the angle.
 
@@ -333,14 +344,7 @@ def rotational_transform(ys, saves_per_period, nfp, center=None):
     """
     if center is None:
         center = axis_track(ys, saves_per_period)
-    d = ys - center
-    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
-    zeta = jnp.arange(ys.shape[1]) / saves_per_period
-
-    zc = zeta - jnp.mean(zeta)
-    ac = angle - jnp.mean(angle, axis=-1, keepdims=True)
-    slope = (ac @ zc) / (zc @ zc)
-    resid = jnp.sqrt(jnp.mean((ac - slope[:, None] * zc) ** 2, axis=-1))
+    slope, resid = _slope(*_winding(ys, saves_per_period, center))
     return jnp.abs(slope) * nfp, resid
 
 
@@ -378,18 +382,10 @@ def _iota_convergence(ys, saves_per_period, nfp, center=None):
     """
     if center is None:
         center = axis_track(ys, saves_per_period)
-    d = ys - center
-    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
-    zeta = jnp.arange(ys.shape[1]) / saves_per_period
+    angle, zeta = _winding(ys, saves_per_period, center)
     half = ys.shape[1] // 2
-
-    def slope(a, z):
-        zc = z - jnp.mean(z)
-        ac = a - jnp.mean(a, axis=-1, keepdims=True)
-        return (ac @ zc) / (zc @ zc)
-
-    i1 = jnp.abs(slope(angle[:, :half], zeta[:half])) * nfp
-    i2 = jnp.abs(slope(angle[:, half:], zeta[half:])) * nfp
+    i1 = jnp.abs(_slope(angle[:, :half], zeta[:half])[0]) * nfp
+    i2 = jnp.abs(_slope(angle[:, half:], zeta[half:])[0]) * nfp
     return jnp.abs(i1 - i2)
 
 
@@ -417,19 +413,10 @@ def _iota_window_scatter(ys, saves_per_period, nfp, n_windows=N_IOTA_WINDOWS,
     """
     if center is None:
         center = axis_track(ys, saves_per_period)
-    d = ys - center
-    angle = jnp.unwrap(jnp.arctan2(d[..., 1], d[..., 0]), axis=-1) / TWO_PI
-    zeta = jnp.arange(ys.shape[1]) / saves_per_period
+    angle, zeta = _winding(ys, saves_per_period, center)
     edges = jnp.linspace(0, ys.shape[1], n_windows + 1).astype(int)
-
-    def win_iota(lo, hi):
-        a, z = angle[:, lo:hi], zeta[lo:hi]
-        zc = z - jnp.mean(z)
-        ac = a - jnp.mean(a, axis=-1, keepdims=True)
-        return jnp.abs((ac @ zc) / (zc @ zc)) * nfp
-
-    iotas = jnp.stack([win_iota(int(edges[k]), int(edges[k + 1]))
-                       for k in range(n_windows)], axis=-1)
+    iotas = jnp.stack([jnp.abs(_slope(angle[:, lo:hi], zeta[lo:hi])[0]) * nfp
+                       for lo, hi in zip(edges[:-1].tolist(), edges[1:].tolist())], axis=-1)
     return jnp.std(iotas, axis=-1)
 
 
@@ -691,7 +678,7 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
 
     The driver glue of ``scripts/poincare_relax.py`` for a single field and
     plane -- seed from the magnetic axis, trace, classify, render -- for
-    callers that hold a DoF vector and no ``B.h5``. Returns ``(fig, res)``
+    callers that hold a DoF vector and no run directory. Returns ``(fig, res)``
     with ``res`` the :func:`trace_and_classify` dict (``iota`` per seed,
     ``chaotic``, ``drift``); the seeds' logical radii are ``res["seeds"][:, 0]``.
     """

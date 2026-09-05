@@ -18,6 +18,10 @@ import argparse
 import os
 import time
 
+# A study of the map projection error: float64 unless asked otherwise (the
+# package default is float32 since 2026-09-04).
+os.environ.setdefault("MRX_DTYPE", "float64")
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,9 +30,9 @@ import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
 from mrx.gvec import StateField, _det_DF, _map_with_sign, load_clebsch, read_state, series_spline_dofs
-from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
+from mrx.initial_conditions import clebsch_potential_form, potential_two_form
 from mrx.nullspace import compute_nullspaces
-from mrx.relaxation import compute_force
+from mrx.relaxation import compute_divergence_norm, compute_force
 from mrx.vmec import read_wout
 
 TYPES = ("clamped", "periodic", "periodic")
@@ -151,7 +155,7 @@ def main():
         print(f"[study] compute_nullspaces {t3 - t2:.1f} s", flush=True)
         cb = load_clebsch(path)
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
-        div = divergence_norm(seq, B)
+        div = float(compute_divergence_norm(B, seq))
         Fv, _, _, _, _ = compute_force(B, seq)
         F_norm = float(seq.l2_norm(Fv, 2))
         t4 = time.time()

@@ -2,7 +2,7 @@
 # Launch one MRX script as a single-GPU slurm job.
 #
 # Usage:
-#   SCRIPT=scripts/tutorials/toroid_poisson.py ARGS="--p 3" bash slurm/run.sh
+#   SCRIPT=scripts/tutorials/1_qa_geometry.py bash slurm/run.sh
 #   SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 #
 # Site settings come from the environment, never from this file. Put them in

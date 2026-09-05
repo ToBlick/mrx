@@ -1,0 +1,5 @@
+{
+  "map": "torus",
+  "map_params": {"epsilon": 0.3333333333333333, "kappa": 1.0, "R0": 1.0},
+  "profile": {"iota": [0.4, 0.9], "iota_exp": 2.0, "flux_exp": 1.0, "lambda": []}
+}

@@ -1,20 +1,27 @@
 r"""Poincare sections of a ``scripts/relax.py`` run.
 
-Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
-run parameters as root attributes), rebuilds the sequence with
-:func:`mrx.geometry.build_sequence` from the ``geometry_path`` attribute
-(the resolved path of the GVEC export, or the analytic name) and the ``nfp``
-override the run used, traces both fields with :mod:`mrx.poincare`, and
-renders one section per requested plane.
+Reads a run directory: ``relax.json`` for the parameters (geometry path,
+mesh, degree, the ``nfp`` override, radial refinement) and
+``checkpoints/state_<step>.h5`` for the fields (:func:`mrx.relaxation.read_checkpoint`
+layout: the state's ``B_n`` and its strong pressure ``p``), rebuilds the
+sequence with :func:`mrx.geometry.build_sequence`, traces the requested
+fields with :mod:`mrx.poincare`, and renders one section per requested plane.
 
 Usage:
-    python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs/run/poincare
+    python -u scripts/poincare_relax.py outputs/run --periods 400 --out outputs/run/poincare
 
 Flags (defaults in brackets):
-    state                  path to B.h5 (positional)
-    --fields F             comma-separated subset of ic,final [ic,final]
-                           or `snapshots`: one frame per stored step (relax.py
-                           --save-every) with every axis held fixed, written as
+    run                    the run directory (positional)
+    --fields F             comma-separated subset of ic,final [ic,final]:
+                           ic is checkpoints/state_000000.h5, final the
+                           highest step; `reconnect` expands to one field
+                           reconnect<k> per record of relax.json's
+                           ``reconnect`` list, the checkpoint at its step
+                           (the field before the solve), traced in the same
+                           call as ic and final so all of them share one
+                           iota and one p colour scale; or `snapshots`: one
+                           frame per checkpoint (relax.py --chunk) with every
+                           axis held fixed, written as
                            frame_zeta<plane>_<i>.png for ffmpeg
     --snapshot-steps S     subset of the stored steps to render, ranges
                            start:stop:stride separated by commas [all]
@@ -27,30 +34,31 @@ Flags (defaults in brackets):
     --r-max R              outermost seed radius [0.97]
     --batch-size N         lines integrated per batch [all]
     --precision P          tracing precision float64|float32 [float64]
-    --pressure {weak,strong}  which pressure of the state file to draw [weak]
-    --out DIR              output directory [<state dir>/poincare]
+    --pressure {weak,strong}  which pressure to draw [weak]
+    --out DIR              output directory [<run>/poincare]
     --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
-If the state file carries the pressures ``scripts/relax.py`` writes, the
-selected one is evaluated at every crossing and drawn below the axis in the
-section and as a profile on the right axis of the iota-profile panel; on a
-flux surface it is constant, so the width of each stripe is the diagnostic. ``--pressure weak`` (the default) reads
-``pw_ic`` / ``pw_final``, the weak pressure: a 0-form, so its physical value
-is the spline evaluation itself (no ``det DF``), and it is zero on the wall by
-construction (Dirichlet 0-form space), so no gauge shift is applied.
-``--pressure strong`` reads ``p_ic`` / ``p_final``, the Leray multiplier of
-the relaxation: a 3-form, evaluated as ``p / det DF``, and defined up to an
+The selected pressure is evaluated at every crossing and drawn below the axis
+in the section and as a profile on the right axis of the iota-profile panel;
+on a flux surface it is constant, so the width of each stripe is the
+diagnostic. ``--pressure weak`` (the default) computes the weak pressure of
+each field (:func:`mrx.relaxation.weak_pressure`, two solves per field): a
+0-form, so its physical value is the spline evaluation itself (no ``det
+DF``), and it is zero on the wall by construction (Dirichlet 0-form space),
+so no gauge shift is applied. ``--pressure strong`` reads the checkpoint's
+``p``, the Leray multiplier of the relaxation: a 3-form, evaluated as ``p /
+det DF``, and defined up to an
 additive constant, so the displayed value is ``p - min p``, the minimum taken
 over the crossings of the kept lines of that field on every requested plane:
 the profile is >= 0 and its lowest surface reads zero. See "Two pressures" in
 docs/source/concepts/relaxation.md.
 
 Output: ``poincare_<field>_zeta<plane>.png`` per field and plane -- and, unless
-``--no-pgf``, a presentation-ready ``poincare_<field>_zeta<plane>.pgf`` beside
-each: the same figure through matplotlib's ``pgf`` backend, so every line, axis
-and label is vector LaTeX (the labels are editable in the ``.pgf`` without
+``--no-pgf``, a presentation-ready ``pgf/poincare_<field>_zeta<plane>.pgf``
+for each: the same figure through matplotlib's ``pgf`` backend, so every line,
+axis and label is vector LaTeX (the labels are editable in the ``.pgf`` without
 re-tracing) while the scatter layers are embedded as a high-dpi
-``poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
+``pgf/poincare_<field>_zeta<plane>-img*.png``. The ``.pgf`` needs ``xelatex`` on
 PATH (``module load texlive`` is NOT enough on this cluster -- its binaries are
 in the ``bin/x86_64-linux`` subdir the module does not add); without it the PNG
 is still written and the PGF is skipped with a message. The document that
@@ -65,6 +73,7 @@ Runtime: ~5 min per field at (8,16,8) p=3 on one H100 (sequence setup
 dominates; the trace is ~1 min).
 """
 import argparse
+import glob
 import os
 import sys
 import numpy as np
@@ -87,7 +96,9 @@ def save_section(fig, png_path, *, want_pgf):
     the ``.pgf`` (or its preamble) without re-tracing -- while the rasterized
     layers (the scatter of ~10^4 crossings, ``rasterized=True`` in
     :func:`mrx.plotting.render_section`) are written as a high-dpi PNG beside
-    it and pulled in with ``\\includegraphics``. It needs ``xelatex`` on PATH;
+    it and pulled in with ``\\includegraphics``. Both go under ``pgf/`` next
+    to the PNG pages, so the output directory holds one file per page. It
+    needs ``xelatex`` on PATH;
     without one the PNG is still written and the PGF is skipped with a message
     rather than aborting the run (the trace is the expensive half).
 
@@ -96,16 +107,19 @@ def save_section(fig, png_path, *, want_pgf):
     raw, not escaped, so without it the ``.pgf`` fails to compile with a
     "Missing $ inserted". We inject ``\\usepackage[strings]{underscore}`` into
     the pgf preamble so it is listed in the file's own "required packages"
-    header; a document that \\input's the ``.pgf`` still needs that line.
+    header; a document that \\input's the ``.pgf`` still needs that line, and
+    ``\\providecommand{\\mathdefault}[1]{#1}`` for any log-axis tick label.
     """
     fig.savefig(png_path, dpi=200)
     print(f"  -> {png_path}", flush=True)
     if not want_pgf:
         return
     import matplotlib as mpl
-    pgf_path = os.path.splitext(png_path)[0] + ".pgf"
+    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
+    os.makedirs(pgf_dir, exist_ok=True)
+    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
     try:
-        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}"}):
+        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
             fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
         print(f"  -> {pgf_path}", flush=True)
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
@@ -127,7 +141,7 @@ def pressure_gauge(kind, presses, keep):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("state")
+    ap.add_argument("run", help="a scripts/relax.py run directory (relax.json + checkpoints/)")
     ap.add_argument("--fields", default="ic,final")
     ap.add_argument("--snapshot-steps", default=None,
                     help="with --fields snapshots: which stored steps to render, as "
@@ -158,26 +172,43 @@ def main():
     os.environ["MRX_DTYPE"] = cli.precision
 
     import h5py
+    import json
     import jax
     import jax.numpy as jnp
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, geometry_nfp
+    from mrx.geometry import build_sequence, parse_r_refine, geometry_nfp
     from mrx.geometry import map_jacobian_at
     from mrx.plotting import render_section
+    from mrx.plotstyle import SectionLimits
     from mrx.poincare import (logical_field, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify,
                               require_zeta_parameterisation)
 
-    with h5py.File(cli.state, "r") as fh:
-        attrs = dict(fh.attrs)
-        dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
-    movie = cli.fields.strip() == "snapshots"
+    run_dir = os.path.abspath(cli.run)
+    with open(os.path.join(run_dir, "relax.json")) as fh:
+        results = json.load(fh)
+    attrs = results["params"]
+    ckpts = {int(os.path.basename(f)[6:12]): f
+             for f in glob.glob(os.path.join(run_dir, "checkpoints", "state_*.h5"))}
+    fields = [w.strip() for w in cli.fields.split(",")]
+    labels = {"ic": f"initial condition ({attrs.get('ic', '?')})", "final": "relaxed field"}
+    steps_of = {"ic": min(ckpts), "final": max(ckpts)}
+    if "reconnect" in fields:
+        # The field before each reconnection: the checkpoint at the record's step.
+        ks = []
+        for ev in results.get("reconnect", []):
+            k = int(ev["k"])
+            ks.append(k)
+            steps_of[f"reconnect{k}"] = int(ev["it"])
+            labels[f"reconnect{k}"] = f"before reconnection {k} (step {int(ev['it'])})"
+        fields = [n for w in fields for n in ([f"reconnect{k}" for k in ks] if w == "reconnect" else [w])]
+    movie = fields == ["snapshots"]
     if movie:
-        # One frame per stored snapshot (relax.py --save-every), named by step.
-        steps = [int(v) for v in dofs["snapshot_steps"]]
+        # One frame per checkpoint (relax.py --chunk), named by step.
+        steps = sorted(ckpts)
         if cli.snapshot_steps:
             wanted = set()
             for rng in cli.snapshot_steps.split(","):
@@ -186,34 +217,37 @@ def main():
             keep_steps = [k for k in steps if k in wanted or k == steps[-1]]
         else:
             keep_steps = steps
-        cli.fields = ",".join(f"step{k:05d}" for k in keep_steps)
-        for i, k in enumerate(steps):
-            dofs[f"B_step{k:05d}"] = dofs["B_snapshots"][i]
-            dofs[f"pw_step{k:05d}"] = dofs["pw_snapshots"][i]
+        fields = [f"step{k:05d}" for k in keep_steps]
+        for k in keep_steps:
+            steps_of[f"step{k:05d}"] = k
+            labels[f"step{k:05d}"] = f"step {k}"
+    dofs = {}
+    for name in fields:
+        with h5py.File(ckpts[steps_of[name]], "r") as fh:
+            dofs["B_" + name] = np.asarray(fh["B_n"], dtype=np.float64)
+            dofs["p_" + name] = np.asarray(fh["p"], dtype=np.float64)
     geometry = str(attrs["geometry_path"])
     label = os.path.basename(geometry)
     ns = tuple(int(v) for v in attrs["ns"])
     p = int(attrs["p"])
-    nfp_override = None if str(attrs["nfp"]) == "" else int(attrs["nfp"])
+    nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
     nfp = geometry_nfp(geometry, nfp_override)
-    out = cli.out or os.path.join(os.path.dirname(os.path.abspath(cli.state)), "poincare")
+    out = cli.out or os.path.join(run_dir, "poincare")
     os.makedirs(out, exist_ok=True)
     planes = [float(v) for v in cli.planes.split(",")]
-    which = [w.strip() for w in cli.fields.split(",")]
-    print(f"[state] {cli.state}: {geometry} ns={ns} p={p} nfp={nfp} "
+    which = fields
+    print(f"[run] {run_dir}: {geometry} ns={ns} p={p} nfp={nfp} "
           f"relaxed in {attrs.get('precision')} for {attrs.get('steps')} steps "
-          f"({attrs.get('method')}, eta_max={attrs.get('eta_max')}); tracing in {cli.precision}",
+          f"({attrs.get('scheme')}, auxiliary B field {attrs.get('auxiliary_B_field')}); "
+          f"tracing in {cli.precision}",
           flush=True)
 
-    labels = {"ic": f"initial condition (--ic {attrs.get('ic', '?')})",
-              **{n: f"step {int(n[4:])}" for n in cli.fields.split(",") if n.startswith("step")},
-              "final": "relaxed field"}
     if cli.from_npz:
         z = np.load(os.path.join(out, "sections.npz"))
         lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
         hi = max(float(z[f"{n}_iota"][z[f"{n}_shown"]].max()) for n in which)
         # Per-field pressure gauge, then the global p range: pin the pressure
-        # ordinate across fields and planes exactly like iota_lim above, so a
+        # ordinate across fields and planes exactly like the iota limits, so a
         # re-render is comparable frame to frame.
         presses_by, pmin_by, all_p = {}, {}, []
         for name in which:
@@ -250,8 +284,8 @@ def main():
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
-                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi),
-                    limits=None if p_lim is None else {"p": p_lim},
+                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])],
+                    limits=SectionLimits(iota=(lo, hi), p=p_lim),
                     iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None,
                     profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
@@ -259,16 +293,22 @@ def main():
                 plt.close(fig)
         return
 
-    seq, _ = build_sequence(geometry, ns, p, int(attrs["maxiter"]), nfp=nfp_override)
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
+                            r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
+    if cli.pressure == "weak":
+        # The weak pressure is a diagnostic of the field, not state: two solves per field.
+        from mrx.relaxation import compute_force, weak_pressure
+        aux = bool(attrs.get("auxiliary_B_field", False))
+        for name in fields:
+            _, _, J, X, _ = compute_force(jnp.asarray(dofs["B_" + name]), seq, aux)
+            dofs["pw_" + name] = np.asarray(weak_pressure(J, X, seq, aux)[0], dtype=np.float64)
 
     def physical_pressure(name, lr, lth, zeta):
-        """The selected pressure at logical ``(lr, lth, zeta)``, or None without it.
+        """The selected pressure at logical ``(lr, lth, zeta)``.
 
         Weak: the 0-form's value. Strong: the 3-form's ``p / det DF``.
         """
         key = ("pw_" if cli.pressure == "weak" else "p_") + name
-        if key not in dofs:
-            return None
         pd = jnp.asarray(dofs[key])
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
@@ -314,21 +354,21 @@ def main():
                                                       all_cuts[name][plane][7], plane)
                              for plane in planes}
         all_pmin[name] = pressure_gauge(cli.pressure, all_presses[name], keep)
-    # The pressure ordinate is pinned across every rendered field and plane,
-    # for the same reason iota_lim is: ic and final (or a plane scan) are then
-    # comparable at a glance and the p axis does not move from frame to frame.
+    # ONE pressure scale across every rendered field and every plane, for the
+    # same reason the iota limits are one: ic, final, the reconnection series and the
+    # planes are then comparable at a glance.
     limits = {}
-    for plane in planes:
-        ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]] for n in traced
-              if all_presses[n][plane] is not None]
-        if ps:
-            lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
-            limits[plane] = {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
+    ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]]
+          for n in traced for plane in planes if all_presses[n][plane] is not None]
+    if ps:
+        lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
+        limits = {plane: {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
+                  for plane in planes}
     # A movie holds EVERY other axis fixed across frames too: the section
     # window, the split line (the FIRST frame's axis) and the profile abscissa,
-    # all from the union over frames; iota_lim already is.
+    # all from the union over frames; the iota limits already are.
     if movie:
-        first = cli.fields.split(",")[0]
+        first = which[0]
         for plane in planes:
             Rs = np.concatenate([np.asarray(all_cuts[n][plane][0])[traced[n][1]].ravel() for n in traced])
             Zs = np.concatenate([np.asarray(all_cuts[n][plane][1])[traced[n][1]].ravel() for n in traced])
@@ -356,7 +396,7 @@ def main():
                          f"traced in {cli.precision}",
                 axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                iota_lim=(lo, hi), limits=limits.get(plane),
+                limits=SectionLimits(iota=(lo, hi), **limits.get(plane, {})),
                 iota_scatter=res["iota_scatter"],
                 profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie

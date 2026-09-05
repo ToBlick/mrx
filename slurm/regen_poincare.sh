@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # Regenerate every Poincare section under the given output roots -- one GPU
-# job per B.h5 -- in float32, with the presentation .pgf next to each PNG.
+# job per run (relax.json + checkpoints/) -- in float32, with the presentation .pgf next to each PNG.
 #
 #   bash slurm/regen_poincare.sh                 # submit all
 #   DRYRUN=1 bash slurm/regen_poincare.sh        # list what it would submit
@@ -29,7 +29,7 @@ VENV=${VENV:-$REPO/.venv}              # main checkout's venv
 
 ROOTS=${ROOTS:-"outputs/li383_eta outputs/li383_sweep"}
 NAME_GLOB=${NAME_GLOB:-}              # if set, only state dirs matching it, e.g. "*_g1"
-PLANES=${PLANES:-0,0.25,0.5}          # the standard three planes
+PLANES=${PLANES:-0,0.125,0.25,0.375,0.5}   # the standard five planes (half a period)
 PERIODS=${PERIODS:-400}
 FIELDS=${FIELDS:-ic,final}
 TEXBIN=${TEXBIN:-$HOME/texlive/2026/bin/x86_64-linux}
@@ -57,7 +57,7 @@ for root in $ROOTS; do
     fromnpz=""; [ "$FROMNPZ" = "1" ] && fromnpz="--from-npz"   # re-render only
     CMD="set -euo pipefail; source $VENV/bin/activate; \
 export PYTHONPATH=$CODE; export PATH=$TEXBIN:\$PATH; export PYTHONUNBUFFERED=1; \
-python -u $CODE/scripts/poincare_relax.py $bh5 $fromnpz --precision float32 \
+python -u $CODE/scripts/poincare_relax.py $dir $fromnpz --precision float32 \
 --fields $FIELDS --planes $PLANES --periods $PERIODS --out $dir/poincare"
     if [ "$DRYRUN" = "1" ]; then
       echo "[dryrun] $name  <-  ${bh5#"$REPO"/}  ->  ${dir#"$REPO"/}/poincare  (planes $PLANES, f32, pgf$([ "$FROMNPZ" = "1" ] && echo ', from-npz re-render'))"
@@ -70,7 +70,7 @@ python -u $CODE/scripts/poincare_relax.py $bh5 $fromnpz --precision float32 \
       --time="${TIMEOUT_MIN}" --mem="${MEM_GB}G" \
       --job-name="${name}" --output="$dir/poincare_regen.log" \
       --wrap="${CMD}"
-  done < <(find "$REPO/$root" -name B.h5 | sort)
+  done < <(find "$REPO/$root" -name relax.json | sort)
 done
 echo
 echo "$([ "$DRYRUN" = "1" ] && echo would submit || echo submitted) $n job(s)."

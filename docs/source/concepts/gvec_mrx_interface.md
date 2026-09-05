@@ -121,7 +121,7 @@ survives a spot-check.
 
 ### 4.3 Handedness and `nfp`
 
-`mrx.mappings.stellarator_map` uses `Y = -R sin(2 pi zeta/nfp)`, which
+`mrx.gvec._map_with_sign` uses `Y = -R sin(2 pi zeta/nfp)`, which
 mirrors raw GVEC data; `build_gvec_map` measures the sign that gives
 `det DF > 0` instead of assuming it. `nfp` enters the map as the angle
 `2 pi zeta / nfp`, so a wrong value wraps one field period through the
@@ -145,7 +145,7 @@ should be put through them before it is used for anything.
 5. Helicity — unchanged when lambda is switched off, since lambda is a
    pure gauge transformation.
 
-`scripts/relax.py --ic clebsch` runs 1, 2 and 4 on a state file; the
+`scripts/relax.py --geometry <state file>` runs 1, 2 and 4; the
 synthetic state below is where the answers are known in closed form.
 
 ## 6. Traps, all of them already paid for
@@ -169,7 +169,7 @@ synthetic state below is where the answers are known in closed form.
 
 `test/synthetic_gvec.py` (`write_synthetic_state`) writes a state file in
 this layout from closed formulas, so the whole route -- `read_state`,
-`build_gvec_map`, `load_clebsch`, `clebsch_form`, the projection -- is
+`build_gvec_map`, `load_clebsch`, the potential, the projection -- is
 checked against known answers with no data file (the parser by
 `test/test_readers.py`; `test/synthetic_gvec.py` writes the state):
 

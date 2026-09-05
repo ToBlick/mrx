@@ -12,8 +12,8 @@
 #
 # Usage:
 #   ZONE=us-east5-b ./run_on_tpu.sh --n 6 8 --p 2
-#   SCRIPT=scripts/tutorials/li383_relaxation.py \
-#     OUTDIR=outputs/tutorials/li383_relaxation \
+#   SCRIPT=scripts/tutorials/3_li383_relaxation.py \
+#     OUTDIR=outputs/tutorials/3_li383_relaxation \
 #     ZONE=us-south1-a ./run_on_tpu.sh --ns 12,24,12 --p 3
 #
 # RUN_TIMEOUT bounds the remote command. It defaulted to 1500s when this only
@@ -343,11 +343,11 @@ echo ""
 echo "Running ${SCRIPT} with MRX_DTYPE=${RUN_DTYPE}${RUN_PLATFORM:+ on ${RUN_PLATFORM}} [VM checkout ${VM_SHA}]..."
 echo "=================================================================="
 
-# cd into the repo: scripts such as li383_relaxation.py default to a relative
-# geometry path (data/wout_li383_low_res_reference.nc), which does not resolve
-# from the login shell's home directory.
+# A TPU has no float64. The package now refines float32 Krylov solves
+# against a float64 residual by default; that path is the one that must
+# not run here, so residual and working precision stay the same.
 run_detached "$(basename "${SCRIPT}" .py)" \
-    "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE}; \
+    "cd ${MRX_DIR} && ${COMMON_ENV} export MRX_DTYPE=${RUN_DTYPE} MRX_RESIDUAL_DTYPE=${RUN_DTYPE}; \
      ${PYBIN} -u ${SCRIPT} ${RUN_ARGS}"
 RUN_STATUS=$?
 

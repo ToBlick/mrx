@@ -63,7 +63,7 @@ def main():
             f"| {name} | {','.join(map(str, P['ns']))} | {P['p']} | {P['velocity_smoothing_order']} | "
             f"{P['velocity_smoothing_scale']:.1e} | {P['precision'][-2:]} | {n} | {s.get('stop', 'RUNNING')} | "
             f"{sps:.2f} | {sum(tr['dt']):.3g} | {tr['F'][0]:.2e} -> {tr['F'][-1]:.2e} | {win:.2e} | "
-            f"{tr['E'][0] - tr['E'][-1]:.2e} | {H1 - H0:+.1e} | {(H1 - H0) / H0:+.1e} | "
+            f"{-sum(tr['dE']):.2e} | {H1 - H0:+.1e} | {(H1 - H0) / H0:+.1e} | "
             f"{q['beta_vol'][-1]:.4f} | {q['JoverB'][-1]:.3f} | {hours.get(name, 0.0):.2f} |")
     print("\n".join(rows))
     print()

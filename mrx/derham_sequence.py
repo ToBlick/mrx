@@ -20,8 +20,8 @@ derivatives, stiffness and Laplacian applies need nothing else.
 **Preconditioners and harmonic forms (on** ``seq.operators`` **, a**
 :class:`~mrx.operators.SequenceOperators` **pytree, built by**
 :meth:`~DeRhamSequence.build_preconditioners` **):** every factorisation of
-the installed metric -- mass and Laplacian atoms, Jacobi diagonals, probed
-Schur diagonals -- and the nullspace vectors. Nothing on the bundle is built
+the installed metric -- the mass and Laplacian atoms -- and the nullspace
+vectors. Nothing on the bundle is built
 on first use: it is built by that one call, against the geometry installed
 at that moment, and a new geometry means calling it again. That is the
 contract for an outer loop over geometries (stellarator optimisation:
@@ -36,8 +36,11 @@ The ``apply_*`` methods are forwarders to the free functions in
 import jax.numpy as jnp
 import numpy as np
 
+import copy
+
 import mrx
 from mrx.differential_forms import DifferentialForm
+from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, solve_tol
 from mrx.extraction_operators import (PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
@@ -147,9 +150,10 @@ class DeRhamSequence():
             non-polar tensor-product sequence is not supported.
         tol : float, optional
             Relative residual tolerance of every iterative solve that goes
-            through the sequence. ``None`` (default) selects
-            :func:`mrx.precision.sqrt_eps` for the working precision
-            (1.5e-8 in float64, 3.5e-4 in float32); an explicit value is used
+            through the sequence, in the residual precision
+            (:mod:`mrx.precision`: refined solves at a float32 working
+            dtype). ``None`` (default) is :data:`mrx.precision.SOLVE_TOL`
+            (1e-8 at float32, 1e-10 at float64); an explicit value is used
             as given.
         maxiter : int, optional
             Maximum iteration count for iterative solvers.
@@ -189,7 +193,7 @@ class DeRhamSequence():
                 "its own selection extraction; nothing in the code base uses one.")
         self.ns = tuple(ns)
         self.ps = tuple(ps)
-        self.tol = mrx.sqrt_eps() if tol is None else tol
+        self.tol = solve_tol() if tol is None else tol
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
@@ -257,6 +261,10 @@ class DeRhamSequence():
         pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
         self.g0_grad = {pr: op.build_grad_stencil_g0(self, self.xi, *pr) for pr in pairs}
         self.g1_curl = {pr: op.build_curl_stencil_g1(self, self.xi, *pr) for pr in pairs}
+        # Every stored floating array in the working dtype (64-bit mode is
+        # always on, so NumPy-built arrays would otherwise be float64).
+        cast_arrays(self)
+        self._residual = None
 
     def load(self, f, k: int, dirichlet: bool = False, bc: bool = False,
              frame: str = 'phys'):
@@ -339,27 +347,50 @@ class DeRhamSequence():
             raise ValueError(
                 f"the map folds: det DF at the quadrature points spans "
                 f"[{jac.min():.3e}, {jac.max():.3e}] and must be positive")
+        geometry = cast_arrays(geometry)
         self.geometry = geometry
         self.mass_apply = {k: build_matrixfree_mass_apply(self, k, geometry)
                            for k in range(4)}
         self.projection_apply = {pair: build_matrixfree_projection_apply(self, *pair)
                                  for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
         self.operators = None
+        self._residual = None
+
+    @property
+    def residual(self):
+        """The sequence in the residual precision, for the residual of a
+        refined solve (:mod:`mrx.precision`, :func:`mrx.solvers.refine`):
+        the geometry, quadrature, extraction and polar stencils cast to
+        float64 and the mass applies rebuilt on them (the 1-D basis tables
+        re-evaluated in float64; the bases, incidence and preconditioners
+        are shared). ``None`` at a float64 working dtype, where the solves
+        are plain. Built once per geometry, on first use."""
+        if not REFINE:
+            return None
+        if self._residual is None:
+            self._require_geometry()
+            view = copy.copy(self)
+            view._residual = None
+            view.geometry = cast_arrays(self.geometry, RESIDUAL_DTYPE)
+            view.quad = cast_arrays(copy.copy(self.quad), RESIDUAL_DTYPE)
+            for name in ("extraction", "boundary_extraction", "g0_grad", "g1_curl"):
+                setattr(view, name, cast_arrays(dict(getattr(self, name)), RESIDUAL_DTYPE))
+            view.mass_apply = {k: build_matrixfree_mass_apply(view, k, view.geometry)
+                               for k in range(4)}
+            view.projection_apply = None
+            self._residual = view
+        return self._residual
 
     def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                              jacobi=False, bc_scale=None):
+                              bc_scale=None):
         """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
         ``k`` in ``ks`` and each BC in ``dirichlets``, the metric-lumped mass
         atom and the metric-lumped Laplacian atom -- the preconditioners of
-        every solve through the sequence (``kind='auto'`` resolves to them
-        everywhere: mass, Laplacian, saddle, diffusion and the shifted solves
-        of the nullspace iteration) -- and zero nullspaces. ``jacobi=True``
-        also probes the Jacobi option onto the bundle -- ``1/diag`` of
-        ``E M_k E^T``, of ``L_k`` and of the saddle solves' approximate Schur
-        operator, ``O(n_k)`` applies each -- for ``kind='jacobi'`` and
-        ``schur.outer='jacobi'``.
+        every solve through the sequence: mass, Laplacian, saddle, diffusion
+        and the shifted solves of the nullspace iteration -- and zero
+        nullspaces.
 
         Nothing on the bundle is built anywhere else, and nothing on it
         survives a geometry change: after :meth:`set_map` call this again, and
@@ -386,16 +417,14 @@ class DeRhamSequence():
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets,
             **({} if bc_scale is None else {"bc_scale": bc_scale}))
-        if jacobi:
-            ops = op.assemble_jacobi_preconditioners(self, ops, ks=ks, dirichlets=dirichlets)
+        ops = cast_arrays(ops)
         self.operators = ops
         return ops
 
-    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                                    jacobi=False):
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
         """:meth:`set_map` followed by :meth:`build_preconditioners`, nothing else."""
         self.set_map(map)
-        return self.build_preconditioners(ks=ks, dirichlets=dirichlets, jacobi=jacobi)
+        return self.build_preconditioners(ks=ks, dirichlets=dirichlets)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -432,12 +461,7 @@ class DeRhamSequence():
         """A :class:`~mrx.mappings.SplineMap` in the sequence's scalar spline basis."""
         from mrx.mappings import SplineMap
 
-        return SplineMap(
-            coefficients=coefficients,
-            extraction=self.E(0),
-            extraction_T=self.E(0).T,
-            basis_0=self.basis_0,
-        )
+        return SplineMap(coefficients=coefficients, extraction=self.E(0), basis_0=self.basis_0)
 
     def geometry_from_spline_map(self, coefficients):
         """Geometry data from spline map coefficients, by the sum-factorised path."""
@@ -574,46 +598,46 @@ class DeRhamSequence():
         return self.apply_incidence_matrix(v, 2, dirichlet_in=dirichlet_in,
                                            dirichlet_out=dirichlet_out)
 
-    def apply_weak_grad(self, v, dirichlet=True):
+    def apply_weak_grad(self, v, dirichlet=True, guess=None):
         """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential;
-        one mass solve). A codifferential stays within one complex, so it carries a
-        single BC class ``dirichlet`` -- used for both the derivative's spaces and
-        the mass inverse (mixed classes are not a well-defined codifferential)."""
+        one mass solve, ``guess`` warm-starts it). A codifferential stays within
+        one complex, so it carries a single BC class ``dirichlet`` -- used for
+        both the derivative's spaces and the mass inverse (mixed classes are not
+        a well-defined codifferential)."""
         dv_dual = -self.apply_derivative_matrix(
             v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet, guess=guess)
 
-    def apply_weak_curl(self, v, dirichlet=True):
+    def apply_weak_curl(self, v, dirichlet=True, guess=None):
         """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one
-        mass solve). ``dirichlet`` is the single BC class of the operator."""
+        mass solve, ``guess`` warm-starts it). ``dirichlet`` is the single BC
+        class of the operator."""
         dv_dual = self.apply_derivative_matrix(
             v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet, guess=guess)
 
-    def apply_weak_div(self, v, dirichlet=True):
+    def apply_weak_div(self, v, dirichlet=True, guess=None):
         """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential;
-        one mass solve). ``dirichlet`` is the single BC class of the operator."""
+        one mass solve, ``guess`` warm-starts it). ``dirichlet`` is the single BC
+        class of the operator."""
         dv_dual = -self.apply_derivative_matrix(
             v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet, guess=guess)
 
-    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
-                                         operators=None, kind='auto'):
-        """
-        Apply a configured mass-matrix preconditioner for Mk to a vector v.
-        """
+    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True, operators=None):
+        """Apply the metric-lumped mass atom for ``M_k`` to a vector ``v``."""
         operators = self._require_operators(operators)
         return op.apply_mass_matrix_preconditioner(
-            self, operators, v, k, dirichlet=dirichlet, kind=kind)
+            self, operators, v, k, dirichlet=dirichlet)
 
     def apply_inverse_mass_matrix(self, rhs, k, dirichlet=True, guess=None,
                                   operators=None, tol=None, maxiter=None,
-                                  preconditioner='auto',
-                                  return_info=False):
+                                  return_info=False, dtype=None):
         """
         Apply the inverse mass matrix Mk⁻¹ for k-forms to a right-hand side,
-        solved via CG with a structured mass preconditioner. An optional initial
-        guess can be provided to warm-start the solver.
+        solved via CG with the metric-lumped mass atom, refined against the
+        residual view. An optional initial guess warm-starts the solver;
+        ``dtype`` asks for the result in the residual precision.
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_matrix(
@@ -621,8 +645,7 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
-            return_info=return_info)
+            return_info=return_info, dtype=dtype)
 
     def apply_mass_matrix(self, v, k, dirichlet=True):
         """
@@ -718,7 +741,6 @@ class DeRhamSequence():
 
     def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
                                 operators=None, tol=None, maxiter=None,
-                                preconditioner='auto',
                                 return_info=False):
         """Solve ``L_k x = rhs`` for the k-form ``x``.
 
@@ -735,9 +757,9 @@ class DeRhamSequence():
         saddle system, no mass inverse, no Krylov solve inside another.
 
         ``k = 3``: the symmetric saddle system in ``(x, sigma)`` by MINRES
-        (:func:`~mrx.solvers.solve_saddle_point_minres`) with the block
-        preconditioner ``'auto'`` (metric-lumped atoms, harmonic forms
-        deflated) -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
+        (:func:`~mrx.solvers.solve_saddle_point_minres`) with the
+        block-diagonal preconditioner of the metric-lumped atoms, harmonic
+        forms deflated -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
         is the solver of the SHIFTED Laplacian at every ``k``
         (:meth:`apply_inverse_shifted_laplacian`).
         """
@@ -747,12 +769,10 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
-                                        preconditioner='auto',
                                         return_info=False):
         """
         Solve (L_k + eps * M_k) x = rhs for the k-form x.
@@ -782,12 +802,10 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
     def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,
                                                    operators=None, tol=None, maxiter=None,
-                                                   preconditioner='auto',
                                                    return_info=False):
         """
         Solve (M_k + eps * L_k) x = rhs for the k-form x.
@@ -797,8 +815,8 @@ class DeRhamSequence():
         - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T``, exact because
         ``D_k D_{k-1} = 0``; see
         :func:`mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`.
-        ``'auto'`` is the shifted-stiffness atom ``(M^ + eps S^)^-1`` of
-        each level, from the metric-lumped Laplacian atom on the bundle.
+        The shifted-stiffness atom ``(M^ + eps S^)^-1`` of each level, from
+        the metric-lumped Laplacian atom on the bundle, preconditions.
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_plus_eps_laplace_matrix(
@@ -806,23 +824,14 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
-    def apply_laplacian_preconditioner(self, v, k, dirichlet=True,
-                                       operators=None, kind='auto'):
-        """
-        Apply a preconditioner for the k-form Laplacian to a vector ``v``.
-
-        ``kind``: ``'metric_lumping'`` (the metric-lumped atom, k = 0..3, free
-        and Dirichlet -- the production preconditioner, built by
-        :meth:`build_preconditioners`), ``'none'`` (identity), or ``'auto'``
-        (the default): the atom when the bundle has it for this ``(k, BC)``,
-        otherwise a warning and the identity.
-        """
+    def apply_laplacian_preconditioner(self, v, k, dirichlet=True, operators=None):
+        """Apply the metric-lumped Laplacian atom for ``L_k`` (k = 0..3, free
+        and Dirichlet, built by :meth:`build_preconditioners`) to ``v``."""
         operators = self._require_operators(operators)
         return op.apply_laplacian_preconditioner(
-            self, operators, v, k, dirichlet=dirichlet, kind=kind)
+            self, operators, v, k, dirichlet=dirichlet)
 
     def compute_nullspaces(self, betti_numbers=None, *, direct=True, **kwargs):
         """Compute the harmonic forms and store them on ``self.operators``.
@@ -918,6 +927,22 @@ class DeRhamSequence():
     def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
         """Integrate ``Λⁿ_i · (w × u)`` from quadrature values of ``w`` and ``u``.
 
+        The physical cross product is formed in the reference representation
+        that pairs metric-free with the output basis (covariant for ``n =
+        2``, contravariant density for ``n = 1``, :meth:`_vector_load_values`),
+        so at most one metric contraction is spent on the inputs. With ``G =
+        DF^T DF``, ``J^2 = det G`` and ``(A a) x (A b) = det(A) A^-T (a x b)``:
+        two 1-forms cross to the density ``w x u`` (the wedge product,
+        metric-free; the 2-form pairing then brings ``G / J``), two 2-forms
+        to the covariant ``(w x u) / J`` or the density ``G^-1 (w x u)``, a
+        1-form and a 2-form to the covariant vector with ``G^-1`` on the
+        1-form factor or the density with ``G`` on the 2-form factor over
+        ``J``. The production kernels (the force ``J x B`` onto the 2-forms,
+        the induction ``u x B`` onto the 1-forms) are the same expressions
+        as the eight explicit cases this replaced on 2026-09-04; the two
+        density cases with a 1-form factor associate ``1 / J`` with the
+        product instead of the weight (round-off only).
+
         Args:
             w_jk: Reference components of the m-form at the quadrature points,
                 shape ``(n_q, 3)`` (see :meth:`evaluate_at_quadrature`).
@@ -931,44 +956,145 @@ class DeRhamSequence():
         Returns:
             The n-form dual DOF vector.
         """
+        if n not in (1, 2) or m not in (1, 2) or k not in (1, 2):
+            raise ValueError("n, m and k must be 1 or 2")
+
+        def contract(A, x):
+            return jnp.einsum('jkl,jk->jl', A, x)
+
+        G, G_inv, J = self.metric_jkl, self.metric_inv_jkl, self.jacobian_j[:, None]
+        if m == 1 and k == 1:
+            c, rep = jnp.cross(w_jk, u_jk, axis=1), 2
+        elif m == 2 and k == 2:
+            wxu = jnp.cross(w_jk, u_jk, axis=1)
+            c, rep = (wxu / J, 1) if n == 2 else (contract(G_inv, wxu), 2)
+        elif n == 2:      # covariant: G^-1 on the 1-form factor
+            c = (jnp.cross(contract(G_inv, w_jk), u_jk, axis=1) if m == 1
+                 else jnp.cross(w_jk, contract(G_inv, u_jk), axis=1))
+            rep = 1
+        else:             # density: G on the 2-form factor, over J
+            c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
+                 else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
+            rep = 2
+        return self._vector_load_values(c, rep, n, dirichlet_n)
+
+    # --- the other quadratic operators ------------------------------------
+    #
+    # Every product below is an L2 load: the pointwise product of two
+    # discrete forms, evaluated at the quadrature points from their
+    # reference components, integrated against the basis of the output
+    # space (``M_n^-1`` of the result is the L2 projection). In reference
+    # components a vector is either COVARIANT (a 1-form, ``a_i = DF^T
+    # a_phys``) or a CONTRAVARIANT DENSITY (a 2-form, ``b^i = J DF^-1
+    # b_phys``), a scalar either a value (0-form) or a density (3-form, ``J``
+    # times the value), with ``G = DF^T DF`` and ``J = det DF``. The products
+    # that are wedge products or contractions of differential forms are
+    # metric-free in these components: ``a x b`` of two 1-forms is the
+    # 2-form ``a ^ b`` with components ``a x b``, ``a . b`` of a 1-form and a
+    # 2-form is the 3-form ``a ^ b`` with the value ``a . b``, a 0-form
+    # times any form is the pointwise product (``f ^ omega``), and ``u x B``
+    # of a velocity and a 2-form ``B`` is the contraction ``-i_u B``, the
+    # 1-form ``(B x u) / J``. The metric enters where a Hodge star does
+    # (two 1-forms dotted, two 2-forms crossed, a 3-form as a value) and in
+    # the pairing with the output basis: a 1-form against the 1-form basis
+    # carries ``G^-1 J``, a 2-form against the 2-form basis ``G / J``, a
+    # 1-form against the 2-form basis or a 2-form against the 1-form basis
+    # nothing (the ``P_12`` pairing), a value against the 0-form basis
+    # ``J``, against the 3-form basis nothing.
+
+    def _scalar_load_values(self, s_jk, n, dirichlet_n=True):
+        """Load a physical scalar (values at the quadrature points, shape
+        ``(n_q,)``) onto the n-form space: ``int Λ⁰_i s J dx`` for n = 0,
+        ``int Λ³_i s dx`` for n = 3."""
+        from mrx.quadrature import integrate_against
+        if n not in (0, 3):
+            raise ValueError("n must be 0 or 3")
+        weight = self.quad.w * self.jacobian_j if n == 0 else self.quad.w
+        comp_info, comp_shapes = self._form_comp_info(n)
+        return self.E(n, dirichlet_n) @ integrate_against(
+            (s_jk * weight)[:, None], comp_info, comp_shapes, self.quad.shape)
+
+    def _vector_load_values(self, c_jk, rep, n, dirichlet_n=True):
+        """Load a physical vector, given in covariant (``rep = 1``) or
+        contravariant-density (``rep = 2``) reference components, onto the
+        n-form space, n = 1 or 2; the pairing is metric-free when ``rep``
+        and ``n`` differ."""
         from mrx.quadrature import integrate_against
         if n not in (1, 2):
             raise ValueError("n must be 1 or 2")
-        en = self.E(n, dirichlet_n)
-        comp_info_n, comp_shapes_n = self._form_comp_info(n)
-
-        if n == 1 and m == 2 and k == 1:
-            Gw_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_jk)
-            Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
-            f_jk = Gw_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
-        elif n == 1 and m == 1 and k == 1:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.quad.w)[:, None]
-        elif n == 2 and m == 1 and k == 1:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            G_wxu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_x_u_jk)
-            f_jk = G_wxu_jk * (self.quad.w / self.jacobian_j)[:, None]
-        elif n == 2 and m == 2 and k == 1:
-            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, u_jk)
-            w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
-            f_jk = w_x_Ginvu_jk * (self.quad.w)[:, None]
-        elif n == 1 and m == 2 and k == 2:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            Ginv_wxu_jk = jnp.einsum(
-                'jkl,jk->jl', self.metric_inv_jkl, w_x_u_jk)
-            f_jk = Ginv_wxu_jk * (self.quad.w)[:, None]
-        elif n == 2 and m == 1 and k == 2:
-            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, w_jk)
-            Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
-            f_jk = Ginvw_x_u_jk * (self.quad.w)[:, None]
-        elif n == 2 and m == 2 and k == 2:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
+        if n == 1 and rep == 1:
+            f_jk = (jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, c_jk)
+                    * (self.quad.w * self.jacobian_j)[:, None])
+        elif n == 2 and rep == 2:
+            f_jk = (jnp.einsum('jkl,jk->jl', self.metric_jkl, c_jk)
+                    * (self.quad.w / self.jacobian_j)[:, None])
         else:
-            raise ValueError("Not yet implemented")
+            f_jk = c_jk * self.quad.w[:, None]
+        comp_info, comp_shapes = self._form_comp_info(n)
+        return self.E(n, dirichlet_n) @ integrate_against(
+            f_jk, comp_info, comp_shapes, self.quad.shape)
 
-        return en @ integrate_against(
-            f_jk, comp_info_n, comp_shapes_n, self.quad.shape)
+    def _physical_scalar(self, s_jk, k):
+        """The value of a 0-form (``k = 0``) or a 3-form (``k = 3``) from its
+        reference component at the quadrature points, shape ``(n_q,)``."""
+        if k not in (0, 3):
+            raise ValueError("a scalar form has degree 0 or 3")
+        return s_jk[:, 0] if k == 0 else s_jk[:, 0] / self.jacobian_j
+
+    def dot_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i (w . u)`` from quadrature values of the m-form
+        ``w`` and the k-form ``u`` (m, k in {1, 2}) onto the 0-forms
+        (``n = 0``, weight ``J``) or the 3-forms (``n = 3``). A 1-form
+        dotted with a 2-form is the wedge product ``w ^ u``, metric-free;
+        two 1-forms need ``G^-1``, two 2-forms ``G / J^2``."""
+        if m not in (1, 2) or k not in (1, 2):
+            raise ValueError("m and k must be 1 or 2")
+        if m == 1 and k == 1:
+            s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_inv_jkl, u_jk)
+        elif m == 2 and k == 2:
+            s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_jkl, u_jk) / self.jacobian_j ** 2
+        else:
+            s_jk = jnp.sum(w_jk * u_jk, axis=1) / self.jacobian_j
+        return self._scalar_load_values(s_jk, n, dirichlet_n)
+
+    def dot_product_load(self, w, u, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of ``w . u`` (``n`` 0 or 3; ``w`` an
+        m-form, ``u`` a k-form, both 1 or 2): :meth:`evaluate_at_quadrature`
+        on both inputs followed by :meth:`dot_product_load_values`."""
+        w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
+        u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
+        return self.dot_product_load_values(w_jk, u_jk, n, m, k, dirichlet_n)
+
+    def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i f g`` from quadrature values of the scalar
+        m-form ``f`` and k-form ``g`` (m, k, n in {0, 3}): the pointwise
+        product of the two values, a 3-form counting as its value ``rho / J``."""
+        s_jk = self._physical_scalar(f_jk, m) * self._physical_scalar(g_jk, k)
+        return self._scalar_load_values(s_jk, n, dirichlet_n)
+
+    def scalar_product_load(self, f, g, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of the product of two scalar forms
+        (``n``, ``m``, ``k`` in {0, 3}); see :meth:`scalar_product_load_values`."""
+        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
+        g_jk = self.evaluate_at_quadrature(g, k, dirichlet_k)
+        return self.scalar_product_load_values(f_jk, g_jk, n, m, k, dirichlet_n)
+
+    def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True):
+        """Integrate ``Λⁿ_i . (f v)`` from quadrature values of the scalar
+        m-form ``f`` (0 or 3) and the vector k-form ``v`` (1 or 2) onto the
+        n-forms (1 or 2): ``f ^ v``, the pointwise product, metric-free up
+        to the pairing with the output basis."""
+        if k not in (1, 2):
+            raise ValueError("k must be 1 or 2")
+        c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
+        return self._vector_load_values(c_jk, k, n, dirichlet_n)
+
+    def scalar_vector_load(self, f, v, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
+        """The n-form dual DOF vector of a scalar m-form times a vector
+        k-form; see :meth:`scalar_vector_load_values`."""
+        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
+        v_jk = self.evaluate_at_quadrature(v, k, dirichlet_k)
+        return self.scalar_vector_load_values(f_jk, v_jk, n, m, k, dirichlet_n)
 
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.
@@ -977,14 +1103,10 @@ class DeRhamSequence():
         ``Λ⁰_i B^T G B / J``. ``M_0^{-1} v`` is the L2 projection of the
         energy density ``|B|^2`` onto the 0-forms (free space).
         """
-        from mrx.quadrature import integrate_against
         B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
-        GB_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, B_jk)
-        f_jk = (jnp.sum(B_jk * GB_jk, axis=1) * self.quad.w / self.jacobian_j)[:, None]
-        comp_info, comp_shapes = self._form_comp_info(0)
-        return self.E(0) @ integrate_against(f_jk, comp_info, comp_shapes, self.quad.shape)
+        return self.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False)
 
-    def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
+    def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False, sigma_guess=None):
         """
         Apply the Leray projection to a 1 or 2-form v.
 
@@ -1014,8 +1136,14 @@ class DeRhamSequence():
             The vector form DoFs
         k : int
             The degree of the vector form
-        p_guess : jnp.ndarray 
+        p_guess : jnp.ndarray
             Guess for pressure form DoFs
+        sigma_guess : jnp.ndarray
+            k = 2 only: guess for the gradient part ``v - v_out`` the
+            saddle solve returns in its lower block, i.e. the previous
+            call's ``v - v_out``. Warm-starts that block alongside
+            ``p_guess`` (a guess on ``p`` alone leaves ``D^T p_guess`` in
+            the initial residual's lower block).
         dirichlet_p : bool
             k = 1 only: solve the multiplier in the Dirichlet k=0 space.
             k = 2 raises: its multiplier is the 3-form of the Dirichlet
@@ -1042,19 +1170,24 @@ class DeRhamSequence():
             if dirichlet_p:
                 raise ValueError("dirichlet_p selects the k=1 scalar space; "
                                  "the k=2 multiplier is always the Dirichlet 3-form")
-            p_guess = jnp.zeros(self.n(3, True)) if p_guess is None else p_guess
-            # Assumes dirichlet == True on all spaces.
-            div_v = self.apply_derivative_matrix(
-                v, 2, dirichlet_in=True, dirichlet_out=True)
-            q = self.apply_inverse_laplacian(
-                div_v, 3, dirichlet=True, guess=-p_guess)
-            σ = -self.apply_weak_grad(q, True)
-            return v - σ, -q
+            p_guess = jnp.zeros(self.n(3, True), dtype=mrx.DTYPE) if p_guess is None else p_guess
+            # Assumes dirichlet == True on all spaces. A ``v`` in the residual
+            # precision is kept there: the force ``v - sigma`` is the small
+            # difference of two large fields and is rounded once, at the end.
+            on = self.residual if (self.residual is not None and v.dtype == RESIDUAL_DTYPE) else self
+            div_v = op.apply_derivative_matrix(on, v, 2, dirichlet_in=True, dirichlet_out=True)
+            # The saddle solve's lower unknown IS the gradient part
+            # sigma = M_2^-1 D_2^T q (its second block row); it used to be
+            # discarded and recomputed by a mass solve.
+            q, σ, _ = op.apply_inverse_laplacian_saddle(
+                self, self._require_operators(None), div_v, 3, 0.0, dirichlet=True,
+                guess=-p_guess, sigma_guess=sigma_guess, tol=self.tol, maxiter=self.maxiter)
+            return (v - σ).astype(mrx.DTYPE), (-q).astype(mrx.DTYPE)
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space
             # (test functions AND multiplier) carries the boundary condition.
             n_p = self.n(0, True) if dirichlet_p else self.n(0)
-            p_guess = jnp.zeros(n_p) if p_guess is None else p_guess
+            p_guess = jnp.zeros(n_p, dtype=mrx.DTYPE) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
                 v, 0, dirichlet_in=dirichlet_p, dirichlet_out=False, transpose=True)
             q = self.apply_inverse_laplacian(
