@@ -339,9 +339,10 @@ residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
 1000-3000. In float32 the residual floors at the solve-tolerance level
 (`~2e-3` at tol `1e-5`), so a `--floor-tol` below that never fires.
 
-Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
-`resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,
-`res_delta`, `dE_meas`, `dE_pred`), the sampled quantities of interest
+Output: `relax.json` with the parameters, the per-step trace (`dE` the
+exact energy change of the step, `dE_ls` the line search's prediction,
+`F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`,
+`picard_resid`), the sampled quantities of interest
 `qoi` (`it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB`, and the
 pressure diagnostics of section 3: `gradp_cmp`, `p_cmp`, `weak_resid`,
 `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`), the initial field's

@@ -101,14 +101,14 @@ ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
 res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
             floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)
-E = np.asarray(res.trace["E"], dtype=float)
+dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
 print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
-      f"E_0 - E = {E[0] - E[-1]:.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
+      f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
       f"||div B|| {float(res.trace['div'][-1]):.1e}")
 B = res.state.B_n
 
-fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
+fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
                         left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)

@@ -894,10 +894,14 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     The state (B, the L-BFGS pair, the warm-start guesses) is the carry and
     comes out once; the per-step scalars are the scan's stacked output,
     ``trace[name]`` an array of length ``n_chunk`` over the steps
-    ``it0 + 1 .. it0 + n_chunk``: ``E`` (``||B||_M^2 / 2``), ``F``
-    (``||F||_M``), ``v`` (``||u||_M``), ``dt``, ``dt_star``, ``cfl`` (the
-    velocity's largest logical CFL number), ``div`` (``||div B||``), ``Fu``
-    (``<F_prev, u>_M``: the line search predicts ``dE = -dt Fu / 2``),
+    ``it0 + 1 .. it0 + n_chunk``: ``dE`` (the step's change of the energy
+    ``||B||_M^2 / 2``, exactly: ``<B_{n+1} - B_n, M (B_{n+1} + B_n)> / 2``,
+    a small increment against an O(1) field at the increment's own
+    precision -- the energy itself has none at the level of one step in
+    float32), ``F`` (``||F||_M``), ``v`` (``||u||_M``), ``dt``,
+    ``dt_star``, ``cfl`` (the velocity's largest logical CFL number),
+    ``div`` (``||div B||``), ``Fu`` (``<F_prev, u>_M``: the line search
+    predicts ``dE = -dt Fu (1 - dt / 2 dt_star)``),
     ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
     evaluations and final defect; 1 and 0 for the explicit step), plus
     ``extra[name](state)`` for every extra probe.
@@ -911,9 +915,11 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
 
     def body(state, it):
         state = ts.relaxation_step(state)
-        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
+        B_n, B_new = state.B_n, state.B_nplus1
+        dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
+        state = eqx.tree_at(lambda s: s.B_n, state, B_new)
         trace = dict(
-            E=0.5 * seq.l2_norm_sq(state.B_n, 2), F=state.F_norm, v=state.v_norm,
+            dE=dE, F=state.F_norm, v=state.v_norm,
             dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
@@ -1030,9 +1036,13 @@ class RelaxResult(NamedTuple):
     (``it0 + steps`` is the absolute step), ``stop`` why it ended (``steps``,
     ``floor``, ``seconds``, or ``running``), ``wall`` the seconds in the
     compiled steps (sampling and callbacks excluded), ``trace`` the per-step
-    scalars (``E``, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``,
-    ``cos``, ``gain``, ``picard_it``, ``picard_resid``, ``dE_meas``,
-    ``dE_pred``), ``qoi`` the per-chunk samples (``it``, ``wall``,
+    scalars (``dE`` the exact energy change of the step, ``dE_ls`` the line
+    search's prediction ``-dt <F, u>_M (1 - dt / 2 dt_star)`` -- the two
+    differ by ``-dt <u, grad p>_M``, zero for a divergence-free velocity
+    --, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``, ``cos``,
+    ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
+    start of the run (``E0 + cumsum(dE)`` is the energy after every step),
+    ``qoi`` the per-chunk samples (``it``, ``wall``,
     ``F``, ``resid``, ``helicity``, ``JoverB``, ``JB`` and the pressure
     diagnostics; the first entry is the start of the run, a reconnection
     adds a second sample at its step), ``reconnect`` one record per
@@ -1048,6 +1058,7 @@ class RelaxResult(NamedTuple):
     reconnect: list
     reconnect_every: int
     chunk: int
+    E0: float
 
 
 def pressure_line(d: dict) -> str:
@@ -1090,13 +1101,13 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     sample = make_sampler(seq, ts)
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
-    trace = {k: [] for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "dE_meas", "dE_pred")}
+    trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
+                             "gain", "picard_it", "picard_resid")}
     qoi: dict = {}
     events: list = []
 
     def result(n_done, stop, wall):
-        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk)
+        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk, E0)
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
@@ -1106,14 +1117,15 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
-    E_prev = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
+    E0 = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
+    E_removed = 0.0
     pw = jnp.zeros(seq.n(0, True))
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
     h0 = scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
-        print(f"[start] it {it0}  E={E_prev:.8e}  |F|={float(state.F_norm):.4e}  "
+        print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
               f"resid={float(state.F_norm / scale(state.B_n)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
               f"        {pressure_line(scalars)}", flush=True)
     t_out += time.perf_counter() - tq
@@ -1128,11 +1140,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             cos = ch["Fu"] / (ch["F"] * ch["v"])
             trace["cos"].extend(cos.tolist())
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
-        trace["dE_meas"].extend(np.diff(ch["E"], prepend=E_prev).tolist())
-        trace["dE_pred"].extend((-0.5 * ch["dt"] * ch["Fu"]).tolist())
-        for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
+            trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
+        for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
             trace[k].extend(ch[k].tolist())
-        E_prev = float(ch["E"][-1])
+        E_removed -= float(ch["dE"].sum())
         resid_now = float(ch["resid"].mean())
 
         tq = time.perf_counter()
@@ -1140,7 +1151,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         state, pw, scalars = sample(state, pw)
         record(it, wall, scalars)
         if verbose:
-            print(f"  it {it:>5d}  E={E_prev:.8e}  |F|={ch['F'][-1]:.4e}  "
+            print(f"  it {it:>5d}  E_0-E={E_removed:.4e}  |F|={ch['F'][-1]:.4e}  "
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
@@ -1192,18 +1203,20 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     midpoint solve."""
     tr, q = res.trace, res.qoi
     n = res.steps
-    E0, E1 = tr["E"][0] - tr["dE_meas"][0], tr["E"][-1]
-    dEm, dEp = np.array(tr["dE_meas"]), np.array(tr["dE_pred"])
-    ident = np.abs(dEm - dEp) / E0
+    E0 = res.E0
+    dE, dE_ls = np.array(tr["dE"]), np.array(tr["dE_ls"])
+    removed = -dE.sum()
+    ident = np.abs(dE - dE_ls) / E0
     resid = np.array(tr["resid"])
     print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
-    print(f"    E {E0:.8e} -> {E1:.8e}  ({(E0 - E1) / E0:.4%} of the initial energy removed)")
+    print(f"    E_0 {E0:.8e}, E_0 - E {removed:.4e}  ({removed / E0:.4%} of the initial energy removed)")
     print(f"    residual {resid[0]:.4e} -> {resid[-1]:.4e}  (mean over the last chunk of "
           f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
-    print(f"    linesearch identity |dE_meas - dE_pred| / E0: median {np.median(ident):.3e}  max {ident.max():.3e}"
+    print(f"    |dE - dE_ls| / E0 (the velocity's gradient part against grad p): median {np.median(ident):.3e}"
+          f"  max {ident.max():.3e}"
           + ("  (not an identity under the midpoint scheme)"
              if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT else ""))
-    print(f"    energy increases on {int((dEm > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
+    print(f"    energy increases on {int((dE > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
           f"||J||/||B|| {q['JoverB'][0]:.4e} -> {q['JoverB'][-1]:.4e}")
     h = np.array(q["helicity"])
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"

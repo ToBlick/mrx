@@ -249,7 +249,7 @@ def main(cli):
             trace=res.trace, qoi=res.qoi, reconnect=res.reconnect,
             summary=dict(steps=res.steps, stop=res.stop, wall=res.wall,
                          reconnect_every=res.reconnect_every,
-                         E_final=res.trace["E"][-1], F_final=res.trace["F"][-1],
+                         E0=res.E0, E_removed=-float(sum(res.trace["dE"])), F_final=res.trace["F"][-1],
                          resid_final=res.trace["resid"][-1],
                          resid_window_mean=float(sum(res.trace["resid"][-res.chunk:]) / res.chunk),
                          **last))

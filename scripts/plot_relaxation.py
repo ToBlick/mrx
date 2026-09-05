@@ -104,8 +104,9 @@ def main():
 
     with open(os.path.join(run, "relax.json")) as fh:
         trace = json.load(fh)["trace"]
-    fig, _ = plot_twin_axis(trace["F"], trace["E"], left_label=r"$\|F\|_{M}$",
-                            right_label=r"$E$", left_plot_kwargs=dict(marker=""),
+    fig, _ = plot_twin_axis(trace["F"], np.cumsum(-np.asarray(trace["dE"], dtype=float)),
+                            left_label=r"$\|F\|_{M}$",
+                            right_label=r"$E_0 - E$", left_plot_kwargs=dict(marker=""),
                             right_plot_kwargs=dict(marker=""))
     path = os.path.join(out, "trace.png")
     fig.savefig(path, dpi=200)

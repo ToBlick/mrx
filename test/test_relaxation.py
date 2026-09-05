@@ -33,19 +33,19 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 on_chunk=lambda r: saved.append(r.steps))
-    E = np.asarray(res.trace["E"], dtype=float)
+    dE = np.asarray(res.trace["dE"], dtype=float)
     F = np.asarray(res.trace["F"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
     div = float(res.trace["div"][-1])
-    E0 = E[0] - res.trace["dE_meas"][0]
-    print(f"\n  {STEPS} steps: E {E0:.6e} -> {E[-1]:.6e}, ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
+    E0, E1 = res.E0, res.E0 + dE.sum()
+    print(f"\n  {STEPS} steps: E {E0:.6e} -> {E1:.6e}, ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
           f"({F[-1] / F[0]:.3f}), dH/2E0 {abs(H[-1] - H[0]) / (2 * E0):.2e}, ||div B|| {div:.1e}")
     assert res.stop == "steps" and res.steps == STEPS and saved == [CHUNK, STEPS]
-    assert np.all(np.diff(E) < 0.0), f"energy not monotone: {E}"
+    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
     assert F[-1] < FORCE_DROP * F[0], f"||F|| {F[0]:.3e} -> {F[-1]:.3e}"
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
-    assert div < 1e3 * seq.tol * np.sqrt(2 * E[-1]), f"||div B|| {div:.2e}"
+    assert div < 1e3 * seq.tol * np.sqrt(2 * E1), f"||div B|| {div:.2e}"
 
     # A checkpoint round-trips leaf for leaf, and a restart continues the count.
     path = os.path.join(tmp_path, "state.h5")
@@ -81,13 +81,13 @@ def test_midpoint_conserves_helicity(seq, b0):
     ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5, history_size=1,
                      scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
     res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
-    E = np.asarray(res.trace["E"], dtype=float)
+    dE = np.asarray(res.trace["dE"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
-    E0 = E[0] - res.trace["dE_meas"][0]
+    E0 = res.E0
     it, resid = res.trace["picard_it"], res.trace["picard_resid"]
-    print(f"\n  20 midpoint steps: E {E0:.6e} -> {E[-1]:.6e}, dH/2E0 "
+    print(f"\n  20 midpoint steps: E {E0:.6e} -> {E0 + dE.sum():.6e}, dH/2E0 "
           f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, increment evaluations max {max(it)}, defect max {max(resid):.2e}")
-    assert np.all(np.diff(E) < 0.0), f"energy not monotone: {E}"
+    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
     assert max(resid) < ts.picard_tol, f"Picard did not converge: {max(resid)}"
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

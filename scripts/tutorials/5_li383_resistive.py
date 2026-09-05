@@ -135,16 +135,16 @@ print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
 res = relax(initial_state(B_reconnected, ts_ideal), ts_ideal, steps=cli.outer * cli.inner,
             chunk=cli.inner, floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)
-E = np.asarray(res.trace["E"], dtype=float)
+dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
 print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
-      f"E_0 - E = {E[0] - E[-1]:.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
+      f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
       f"||div B|| {float(res.trace['div'][-1]):.1e}")
 B = res.state.B_n
 
 # %%
-# Now we plot the force residual against the energy over the ideal tail.
-fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
+# Now we plot the force residual against the energy removed over the ideal tail.
+fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
                         left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)

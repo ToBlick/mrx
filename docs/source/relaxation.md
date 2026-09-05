@@ -147,7 +147,7 @@ solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
 
 | file | content |
 |---|---|
-| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`, `dE_meas`, `dE_pred`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
+| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `dE` (the exact energy change of the step), `dE_ls` (the line search's prediction), `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
 | `checkpoints/state_<step>.h5` | the descent state at that step, one file per chunk plus step 0 (the initial field): every leaf of `mrx.relaxation.State` as a dataset named by its field (`B_n`, `p` the strong pressure, the warm starts, the L-BFGS pairs, `dt`, ...) and the step as an attribute. `--restart` continues from one; the plotters read the field and the strong pressure from them and compute the weak pressure on demand |
 
 `relax.json` and the newest checkpoint are written at every chunk, so a
@@ -160,15 +160,18 @@ Read the trace with the standard library:
 ```python
 import json
 run = json.load(open("outputs/relax/<date>/<time>/relax.json"))
-E = run["trace"]["E"]                     # energy after every step
+dE = run["trace"]["dE"]                   # the exact energy change of every step
 resid = run["trace"]["resid"]             # ||F|| / ||grad(B²/2)|| after every step
 H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 
 Three checks of a healthy run (`--scheme explicit`, no reconnection):
 
-- `E` decreases at every step, and `dE_meas` matches `dE_pred` to
-  roundoff. The prediction is an operator identity.
+- `dE` is negative at every step and matches the line search's `dE_ls`
+  to roundoff: their difference is `-dt <u, grad p>`, the velocity's
+  gradient part, zero for a divergence-free velocity. `E_0 - E` is
+  `-cumsum(dE)` (`E_0` is `summary["E0"]`); the energy itself is not in
+  the trace, a step changes it by less than a float32 ulp of `E`.
 - `helicity` is constant to the solver tolerance.
 - `div` stays at roundoff.
 

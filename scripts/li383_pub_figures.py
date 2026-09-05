@@ -328,8 +328,8 @@ def hsweep_figure(arms, figdir):
     ax[1, 0].legend(fontsize=8)
     ax[1, 0].set_title("rotational transform after relaxation")
     for j in arms:
-        E = np.asarray(j["trace"]["E"])
-        plot_trace(ax[1, 1], E[0] - E, lw=1.0, label=f"n={j['params']['ns'][0]}")
+        plot_trace(ax[1, 1], np.cumsum(-np.asarray(j["trace"]["dE"])), lw=1.0,
+                   label=f"n={j['params']['ns'][0]}")
     ax[1, 1].set_xscale("log")
     ax[1, 1].set_yscale("log")
     ax[1, 1].set_xlabel("step")
@@ -503,7 +503,6 @@ def eta_traces(
         if j is None:
             continue
         q = j["qoi"]
-        E = np.asarray(j["trace"]["E"])
         h = np.asarray(q["helicity"])
         plot_trace(ax[0], F(j), color=c, ls=ls, lw=0.9, label=lab)
         ax[1].plot(q["it"], q["JoverB"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
@@ -511,7 +510,7 @@ def eta_traces(
             q["it"], q["beta_vol"], ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab
         )
         ax[3].plot(q["it"], h, ".-", ms=2, color=c, ls=ls, lw=0.9, label=lab)
-        plot_trace(ax[4], E[0] - E, color=c, ls=ls, lw=0.9, label=lab)
+        plot_trace(ax[4], np.cumsum(-np.asarray(j["trace"]["dE"])), color=c, ls=ls, lw=0.9, label=lab)
         if j["params"]["eta_max"] > 0:
             ax[5].plot(
                 it(j), np.asarray(j["trace"]["eta"]), color=c, ls=ls, lw=0.9, label=lab
@@ -647,8 +646,8 @@ def psweep_figure(arms, figdir):
     ax[1, 0].legend(fontsize=8)
     ax[1, 0].set_title("rotational transform after relaxation")
     for j in arms:
-        E = np.asarray(j["trace"]["E"])
-        plot_trace(ax[1, 1], E[0] - E, lw=1.0, label=f"p={j['params']['p']}")
+        plot_trace(ax[1, 1], np.cumsum(-np.asarray(j["trace"]["dE"])), lw=1.0,
+                   label=f"p={j['params']['p']}")
     ax[1, 1].set_xscale("log")
     ax[1, 1].set_yscale("log")
     ax[1, 1].set_xlabel("step")
@@ -1067,8 +1066,8 @@ def main():
     ]:
         if j is None:
             continue
-        E = np.asarray(j["trace"]["E"])
-        plot_trace(ax[0], (E[0] - E) / E[0], lw=1.0, label=j["arm"])
+        plot_trace(ax[0], np.cumsum(-np.asarray(j["trace"]["dE"])) / j["summary"]["E0"], lw=1.0,
+                   label=j["arm"])
         h = np.asarray(j["qoi"]["helicity"])
         ax[1].plot(
             np.asarray(j["qoi"]["it"]),
