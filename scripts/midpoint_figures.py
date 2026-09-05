@@ -4,9 +4,11 @@
 
 Reads ``<root>/<arm>/relax.json`` and writes ``<root>/figures/*.png`` plus
 ``<root>/summary.md``. House style (:mod:`mrx.plotstyle`): colour encodes
-the H space (black natural, teal Dirichlet, purple B-only), dash the scheme
-(solid explicit, dashed midpoint); per-step traces are 100-step block means
-with a +-1 sd ribbon (``scripts/li383_pub_figures.blocked``).
+the route (teal the Dirichlet H, purple B only), dash the scheme (solid
+explicit, dashed midpoint); per-step traces are 100-step block means with
+a +-1 sd ribbon (``scripts/li383_pub_figures.blocked``). The natural-H
+arms are not plotted: with E Dirichlet and H natural the helicity pairing
+is not the conserved one (see the note); they stay in the summary table.
 """
 import argparse
 import json
@@ -17,36 +19,45 @@ import numpy as np
 from li383_pub_figures import plot_trace, plt  # scripts/ is sys.path[0]; sets the Agg backend
 from mrx.plotstyle import arm_style, figsize, house_style
 
-#: arm -> (panel, colour index, dash index, label)
+#: plotted arm -> (panel, colour index, dash index, label)
 ARMS = {
-    "ex_lbfgs":           ("f32", 0, 0, "explicit"),
-    "mp_lbfgs":           ("f32", 0, 1, "midpoint"),
-    "ex_lbfgs_f64_Hd":    ("f64", 1, 0, "explicit, Dirichlet H"),
-    "mp_lbfgs_f64_Hd":    ("f64", 1, 1, "midpoint, Dirichlet H"),
-    "ex_small_f64":       ("small", 0, 0, "explicit, natural H"),
-    "mp_small_f64":       ("small", 0, 1, "midpoint, natural H"),
-    "ex_small_f64_Hd":    ("small", 1, 0, "explicit, Dirichlet H"),
-    "mp_small_f64_Hd":    ("small", 1, 1, "midpoint, Dirichlet H"),
+    "ex_lbfgs_f64_Hd":    ("f64", 1, 0, "explicit, H"),
+    "mp_lbfgs_f64_Hd":    ("f64", 1, 1, "midpoint, H"),
+    "ex_small_f64_Hd":    ("small", 1, 0, "explicit, H"),
+    "mp_small_f64_Hd":    ("small", 1, 1, "midpoint, H"),
     "ex_small_f64_bonly": ("small", 2, 0, "explicit, B only"),
     "mp_small_f64_bonly": ("small", 2, 1, "midpoint, B only"),
-    "ex_small_f32":       ("small32", 0, 0, "explicit, natural H"),
-    "mp_small_f32":       ("small32", 0, 1, "midpoint, natural H"),
+    "ex_small_f32_Hd":    ("small32", 1, 0, "explicit, H"),
+    "mp_small_f32_Hd":    ("small32", 1, 1, "midpoint, H"),
     "ex_small_f32_bonly": ("small32", 2, 0, "explicit, B only"),
     "mp_small_f32_bonly": ("small32", 2, 1, "midpoint, B only"),
+    "ex_r16_f64_Hd":      ("r16", 1, 0, "explicit, H"),
+    "mp_r16_f64_Hd":      ("r16", 1, 1, "midpoint, H"),
+    "ex_r16_f64_bonly":   ("r16", 2, 0, "explicit, B only"),
+    "mp_r16_f64_bonly":   ("r16", 2, 1, "midpoint, B only"),
+    "ex_r16_f32_Hd":      ("r16_32", 1, 0, "explicit, H"),
+    "mp_r16_f32_Hd":      ("r16_32", 1, 1, "midpoint, H"),
+    "ex_r16_f32_bonly":   ("r16_32", 2, 0, "explicit, B only"),
+    "mp_r16_f32_bonly":   ("r16_32", 2, 1, "midpoint, B only"),
 }
+#: every arm of the study, for the summary table
+ALL_ARMS = ("ex_lbfgs", "mp_lbfgs", "ex_small_f64", "mp_small_f64",
+            "ex_small_f32", "mp_small_f32") + tuple(ARMS)
 PANELS = {
-    "f32": "(12,24,24) p=3, float32, natural H",
     "f64": "(12,24,24) p=3, float64",
     "small": "(8,16,16) p=2, float64",
     "small32": "(8,16,16) p=2, float32",
+    "r16": "(16,32,32) p=2, float64",
+    "r16_32": "(16,32,32) p=2, float32",
 }
-#: The 2 x 2 x 2 comparison: (precision, route) -> (explicit arm, midpoint arm)
+#: The 2 x 2 x 2 comparison on (16,32,32) p=2: (precision, route) -> (explicit arm, midpoint arm)
 EIGHT = {
-    ("float32", "H"): ("ex_small_f32", "mp_small_f32"),
-    ("float32", "B"): ("ex_small_f32_bonly", "mp_small_f32_bonly"),
-    ("float64", "H"): ("ex_small_f64", "mp_small_f64"),
-    ("float64", "B"): ("ex_small_f64_bonly", "mp_small_f64_bonly"),
+    ("float32", "H"): ("ex_r16_f32_Hd", "mp_r16_f32_Hd"),
+    ("float32", "B"): ("ex_r16_f32_bonly", "mp_r16_f32_bonly"),
+    ("float64", "H"): ("ex_r16_f64_Hd", "mp_r16_f64_Hd"),
+    ("float64", "B"): ("ex_r16_f64_bonly", "mp_r16_f64_bonly"),
 }
+EIGHT_MESH = "(16,32,32) p=2"
 
 
 def load(root, arm):
@@ -135,13 +146,13 @@ def picard_figure(arms, figdir):
 
 @house_style()
 def eight_figure(arms, figdir):
-    """Helicity and force traces of (route H / B only) x (float32 / float64) x
-    (explicit / midpoint) on the (8,16,16) p=2 mesh: rows the quantity,
+    """Helicity and force traces of (H / B only) x (float32 / float64) x
+    (explicit / midpoint) on the ``EIGHT_MESH`` mesh: rows the quantity,
     columns the precision, colour the route, dash the scheme."""
     d = dict(arms)
     fig, axes = plt.subplots(2, 2, figsize=figsize("text", rows=2, cols=2, aspect=0.7))
     for col, prec in enumerate(("float32", "float64")):
-        for route, colour in (("H", 0), ("B", 2)):
+        for route, colour in (("H", 1), ("B", 2)):
             for dash, arm in enumerate(EIGHT[(prec, route)]):
                 if arm not in d:
                     continue
@@ -153,7 +164,7 @@ def eight_figure(arms, figdir):
                 plot_trace(axes[1, col], j["trace"]["resid"], log=True, **st)
         axes[0, col].axhline(0, color="0.7", lw=0.6, zorder=0)
         axes[0, col].set_yscale("symlog", linthresh=1e-12)
-        axes[0, col].set(title=f"(8,16,16) p=2, {prec}", xlabel="step")
+        axes[0, col].set(title=f"{EIGHT_MESH}, {prec}", xlabel="step")
         axes[1, col].set(xscale="log", yscale="log", xlabel="step")
         axes[0, col].legend()
     axes[0, 0].set_ylabel(r"$H - H_0$  ($\|B\|_M = 1$)")
@@ -186,17 +197,17 @@ def summary(arms):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="outputs/midpoint_sweep")
-    ap.add_argument("--arms", default=",".join(ARMS))
     cli = ap.parse_args()
-    arms = [(a, load(cli.root, a)) for a in cli.arms.split(",")]
-    arms = [(a, j) for a, j in arms if j is not None and j.get("trace")]
+    every = [(a, load(cli.root, a)) for a in ALL_ARMS]
+    every = [(a, j) for a, j in every if j is not None and j.get("trace")]
+    arms = [(a, j) for a, j in every if a in ARMS]
     figdir = os.path.join(cli.root, "figures")
     os.makedirs(figdir, exist_ok=True)
     helicity_figure(arms, figdir)
     descent_figure(arms, figdir)
     picard_figure(arms, figdir)
     eight_figure(arms, figdir)
-    table = summary(arms)
+    table = summary(every)
     with open(os.path.join(cli.root, "summary.md"), "w") as fh:
         fh.write(table + "\n")
     print(table)
