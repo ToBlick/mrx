@@ -119,13 +119,23 @@ The H200 takes the step by **5.1x**. The withdrawn v5e figure of 6.15 s was
 measured the contaminated way, so the direction it implied was right by
 accident; the size was not.
 
-Two bounds on how far to read this. The node was a single-chip `v5litepod-1`,
-the only shape capacity would give, and the solve is single-device, so the other
-three chips of a `v5litepod-4` would have sat idle without a `pmap` that does not
-exist here. And it ran with a cold JAX cache in `us-east1-c`, which has no
-persistent data disk: `build_sequence` 115.0 s and `compute_nullspaces` 35.3 s
-there against 36.8 s and 34.5 s on a warm node. That is a cache artefact, not a
-hardware result, and the per-step figure is immune to it by construction.
+**Four chips buy nothing, measured rather than assumed.** The same benchmark on
+a `v5litepod-4` (`device_count` 4) and on a `v5litepod-1`:
+
+| | `v5litepod-1` | `v5litepod-4` |
+|---|---|---|
+| per step | 1.7998 s | 1.7999 s |
+| compile, once | 42.66 s | 41.56 s |
+
+0.1 ms apart. The solve is single-device, so three of the four chips are idle
+and the slice size is not the variable; a `pmap` MRX does not have would be. This
+closes the obvious objection to the row above rather than leaving it open.
+
+One caveat does remain, and it does not touch the per-step figure. Both nodes ran
+with a cold JAX cache, in zones with no persistent data disk: `build_sequence`
+115.0 s and `compute_nullspaces` 35.3 s against 36.8 s and 34.5 s on a warm node.
+That is the cache, not the hardware. The per-step number is a slope between two
+step counts and is immune to it by construction.
 
 **The matvec and primitive numbers above are unaffected.** `matvec_bench.py`
 hoists its jit and reuses it across repeats, which is why those rows -- the
