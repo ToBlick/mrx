@@ -469,7 +469,14 @@ class TimeStepper(eqx.Module):
             per force evaluation and ``H_t = 0`` on the wall.
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``.
-            0 (the default) leaves the direction as it is.
+            0 (the default) leaves the direction as it is -- and is fragile:
+            the explicit step with the unsmoothed velocity stops conserving
+            helicity after ~1e4 steps at (16,32,32) p=2 on li383 (the drift
+            grows a hundredfold, the field reconnects numerically, the
+            energy release accelerates and the force residual climbs), in
+            float64 as in float32; order 1 holds the drift at 5e-8 over the
+            same run (docs/research/floor_study_2026-09-05.md). Use order 1
+            for any long ideal run; order 0 only for short smoke runs.
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
             is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
@@ -890,6 +897,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
     ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
     first step's secant ``y = F_prev - F`` sees the true previous gradient.
+    Every leaf is an array of the working dtype, the scalars included: the
+    state is the carry of :func:`chunk_runner`'s scan, and a Python-float
+    leaf here against a float32 array out of the scan gave the scan two
+    carry signatures, i.e. a second compile at the second chunk of every run
+    (30-55 s, measured 2026-09-05).
     """
     seq = ts.seq
     n = seq.n(2, True)
@@ -898,8 +910,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
         B_n=B_dof,
-        dt=dt,
-        dt_star=dt,
+        dt=jnp.asarray(dt, dtype=DTYPE),
+        dt_star=jnp.asarray(dt, dtype=DTYPE),
+        cfl_max=jnp.zeros((), dtype=DTYPE),
+        v_norm=jnp.zeros((), dtype=DTYPE),
+        lbfgs_sy=jnp.zeros((), dtype=DTYPE),
         v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
@@ -1120,9 +1135,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count, on ``floor_tol`` (the last chunk's mean of the
-    relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
-    residual is not monotone, the window mean is the quantity) or on
+    Stops on the step count, on ``floor_tol`` (the last
+    chunk's mean of the relative force residual ``||F||_M / ||grad(B^2/2)||``
+    below it; the residual is not monotone, the window mean is the quantity)
+    or on
     ``seconds`` of wall time in the steps. ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of

@@ -144,7 +144,9 @@ def parse_args(argv=None):
     ap.add_argument("--history", type=int, default=1,
                     help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
     ap.add_argument("--velocity-smoothing-order", type=int, default=0,
-                    help="descent direction v = (I - scale L)^-order F; 0 is off")
+                    help="descent direction v = (I - scale L)^-order F; 0 is off and fragile: the "
+                         "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
+                         "reconnection), use 1 for any long ideal run")
     ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
                     help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
     ap.add_argument("--cfl", type=float, default=0.5)

@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.precision import DTYPE, sqrt_eps
+from mrx.precision import DTYPE, eps, sqrt_eps
 
 from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                             relax, write_checkpoint)
@@ -49,7 +49,11 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
               if jnp.issubdtype(jnp.asarray(leaf).dtype, jnp.floating)
               and jnp.asarray(leaf).dtype != DTYPE}
     assert not leaked, f"state leaves not in the working dtype: {leaked}"
-    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
+    # The per-step dE is formed in the stored precision: once the true change
+    # per step is below an epsilon of the energy (6e-8 in float32, after ~45
+    # of these steps in the plain float32 configuration) a step can read
+    # +5e-9; the descent is monotone to that roundoff, strictly in float64.
+    assert np.all(dE < eps() * E0), f"energy not monotone: {dE}"
     assert F[-1] < FORCE_DROP * F[0], f"||F|| {F[0]:.3e} -> {F[-1]:.3e}"
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

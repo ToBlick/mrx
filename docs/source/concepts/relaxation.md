@@ -185,7 +185,8 @@ Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 runs one `compute_force` so the first secant and CG coefficient see a true
 previous gradient. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
-once per chunk (`make_sampler`: helicity, the two pressures, beta), applies
+once per chunk (`make_sampler`: the energy of the stored field in the
+residual precision, helicity, the two pressures, beta), applies
 the floor, wall-budget and reconnection rules and returns a `RelaxResult`
 (the state, the per-step trace, the per-chunk samples, the reconnection
 records); `write_checkpoint` / `read_checkpoint` store and restore a state.
