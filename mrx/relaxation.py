@@ -1000,12 +1000,17 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     ``F_prev`` are the step's values at the previous one; they warm-start it
     and are refreshed from it), the weak pressure and its diagnostics
     (:func:`pressure_diagnostics`), the helicity (``state.A`` refreshed),
-    ``||J|| / ||B||`` and the pairing ``int J . B`` that sets a
-    reconnection dose. ``scalars`` are Python floats. The first call of a
+    ``||J|| / ||B||``, the pairing ``int J . B`` that sets a reconnection
+    dose, and the energy ``E = <B, M B> / 2`` of the stored field in the
+    residual precision (exact to the field's own rounding, 3e-8 on E = 0.5
+    in float32 storage; the trace's per-step ``dE`` is formed in the
+    working precision and its sum over 1e4 steps drifts by that much).
+    ``scalars`` are Python floats. The first call of a
     run goes ``eager`` (the 1->2 projection builds a host-side core on
     first use); the loop uses the compiled one.
     """
     aux = ts.auxiliary_B_field
+    on = seq if seq.residual is None else seq.residual      # the energy, in the residual precision
 
     def probe(B, p, H, JxH, J, F_prev, pw_guess, A):
         F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
@@ -1024,7 +1029,8 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
         p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
             state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
         state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
-        scalars = dict(helicity=float(h), JoverB=float(JoverB), JB=float(JB),
+        E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
+        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB),
                        **{k: float(v) for k, v in diag.items()})
         return state, p_w, scalars
 
@@ -1075,9 +1081,11 @@ class RelaxResult(NamedTuple):
     differ by ``-dt <u, grad p>_M``, zero for a divergence-free velocity
     --, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``, ``cos``,
     ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
-    start of the run (``E0 + cumsum(dE)`` is the energy after every step),
-    ``qoi`` the per-chunk samples (``it``, ``wall``,
-    ``F``, ``resid``, ``helicity``, ``JoverB``, ``JB`` and the pressure
+    start of the run (``E0 + cumsum(dE)`` is the trace's energy after every
+    step, to the working precision's rounding per step), ``qoi`` the
+    per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
+    field in the residual precision, ``F``, ``resid``, ``helicity``,
+    ``JoverB``, ``JB`` and the pressure
     diagnostics; the first entry is the start of the run, a reconnection
     adds a second sample at its step), ``reconnect`` one record per
     reconnection, ``reconnect_every`` the interval actually used (rounded to
@@ -1151,12 +1159,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
-    E0 = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
-    E_removed = 0.0
     pw = jnp.zeros(seq.n(0, True), dtype=DTYPE)
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
-    h0 = scalars["helicity"]
+    E0, h0 = scalars["E"], scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
         # The force's gradient-part remnant is the pressure solve's residual,
@@ -1185,7 +1191,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
             trace[k].extend(ch[k].tolist())
-        E_removed -= float(ch["dE"].sum())
         resid_now = float(ch["resid"].mean())
 
         tq = time.perf_counter()
@@ -1193,7 +1198,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         state, pw, scalars = sample(state, pw)
         record(it, wall, scalars)
         if verbose:
-            print(f"  it {it:>5d}  E_0-E={E_removed:.4e}  |F|={ch['F'][-1]:.4e}  "
+            print(f"  it {it:>5d}  E_0-E={E0 - scalars['E']:.4e}  |F|={ch['F'][-1]:.4e}  "
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
@@ -1247,7 +1252,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     n = res.steps
     E0 = res.E0
     dE, dE_ls = np.array(tr["dE"]), np.array(tr["dE_ls"])
-    removed = -dE.sum()
+    removed = E0 - q["E"][-1]
     ident = np.abs(dE - dE_ls) / E0
     resid = np.array(tr["resid"])
     print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
