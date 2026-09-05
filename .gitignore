@@ -33,6 +33,12 @@ multirun*
 jax-caches/
 .jax_cache
 slurm/job_*
+tpu/script_outputs/
+tpu/tpu_access_kit.zip
+# Runtime scratch of the acquisition daemon: the single-instance lock and the
+# quota cache it rebuilds on a TTL. Both appear the moment the daemon runs.
+tpu/.acquire.lock
+tpu/.quota_cache.json
 
 # Site-specific slurm settings (account, partition, paths)
 slurm/site.env
