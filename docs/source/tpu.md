@@ -89,6 +89,27 @@ policy, usually), `DISK_INCOMPATIBLE` (v5p rejects hyperdisk-balanced; the
 sweep retries once without the data disk, since losing persistence beats
 losing the zone) and `TRANSIENT` (a Google-side blip, retried once).
 
+`--queue` adds standing requests through the Queued Resources API, which wait
+in Google's own admission queue while the sweep goes on asking. It is worth
+turning on in a stockout and it needs one guarantee, because a request is
+filled whether or not anyone is watching and a node bills from the moment it
+exists: **the first request granted wins, and every other one is cancelled
+then and there**. On 2026-09-05, before that was true, one `--queue` run left
+four nodes billing at once across `us-west4-a`, `us-west1-c`, `us-east1-d` and
+`us-east1-b`.
+
+The claim fires on the request's state, not on its node: anything past
+`WAITING_FOR_RESOURCES` is a commitment, and cancelling at `ACCEPTED` is what
+stops the node existing at all. `QUEUE_POLL_S` (15 s) is how often the sleep
+between sweeps looks, and so is the width of the window a second node could
+appear in; it is not `SWEEP_INTERVAL` (180 s), since a poll is one `describe`
+per zone in parallel rather than a create attempt per rung. A sweep that wins
+a node outright cancels the standing requests too.
+
+Requests are also cancelled when the daemon exits, so nothing it filed can be
+fulfilled after nobody is left watching for it. If you kill it with `kill -9`,
+check `gcloud compute tpus queued-resources list` yourself.
+
 `startup.sh` builds the environment on the node and is idempotent: it mounts
 the data disk at `/mnt/data` when one is attached and otherwise falls back to
 the boot disk, installs Miniforge and `jax[tpu]`, clones `MRX_BRANCH`, and

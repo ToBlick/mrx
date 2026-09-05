@@ -34,6 +34,13 @@ cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source ./zones.sh
 
 SWEEP_INTERVAL="${SWEEP_INTERVAL:-180}"
+# How often the sleep between sweeps looks at the standing requests. A request
+# that has left the admission queue creates its node within a minute or two,
+# and every request still standing when that happens can create one of its own,
+# so the interval is the width of the window in which a second node can start
+# billing. It is not the sweep interval: a sweep costs a create attempt per
+# rung, while this is one describe per zone in parallel.
+QUEUE_POLL_S="${QUEUE_POLL_S:-15}"
 MAX_HOURS="${MAX_HOURS:-12}"
 MAX_SESSIONS="${MAX_SESSIONS:-3}"
 LOCK_FILE="${LOCK_FILE:-.acquire.lock}"
@@ -303,15 +310,22 @@ file_queued_requests() {
     log "queued requests: ${filed} filed, ${already} already standing, ${refused} refused"
 }
 
-# Delete every request we filed. Deliberately without --force: the API refuses
-# to delete a request that holds a node, so a request that has just been
-# fulfilled survives this untouched and cannot be cancelled out from under the
-# node it won.
+# Delete every request we filed, except one in ${1} if given.
+#
+# Deliberately without --force: the API refuses to delete a request that holds
+# a node, so a request already fulfilled survives this untouched and cannot be
+# cancelled out from under the node it won. That is not enough on its own any
+# more. claim_first_node now fires as soon as a request is GRANTED, which can
+# be before its node exists, and a request in ACCEPTED or PROVISIONING holds
+# nothing for the API to refuse on -- so the winner's zone is skipped by name
+# rather than left to that rule.
 cancel_queued_requests() {
+    local keep="${1:-}"
     local entry gen mt zone model api name
     for entry in "${CANDIDATES[@]}"; do
         IFS=':' read -r gen mt zone model api <<<"${entry}"
         [[ "${api}" == "tpuapi" ]] || continue
+        [[ -n "${keep}" && "${zone}" == "${keep}" ]] && continue
         name="$(queue_request_name "${mt}" "${model}")"
         gcloud compute tpus queued-resources delete "${name}" --zone="${zone}" \
             --quiet >/dev/null 2>&1 &
@@ -319,23 +333,131 @@ cancel_queued_requests() {
     wait
 }
 
+# The zone whose request sleep_watching_the_queue claimed, for the caller that
+# has to wait for its node. A global rather than a return value because these
+# functions log, and a log line on stdout would land in the substitution.
+CLAIMED_ZONE=""
+
+# "${zone}:${state}" of the first standing request that has left the admission
+# queue, or nothing. Echoes at most one: the caller acts on it immediately, and
+# the point of the call is to act before there is a second.
+#
+# A request is a commitment as soon as it stops waiting for resources. That is
+# earlier than the node being READY, which is what the main loop watches, and
+# the gap between the two is where a second request can be granted and start
+# billing. So every state but WAITING_FOR_RESOURCES and the terminal ones
+# counts as won here, deliberately including ACCEPTED and PROVISIONING, where
+# no node exists yet: cancelling then is exactly what stops one appearing.
+#
+# One describe per queued zone, all in flight at once, so a pass costs about
+# as long as the slowest single call rather than the sum of thirteen.
+queued_request_filled() {
+    local entry gen mt zone model api name seen="" tmp
+    tmp="$(mktemp -d)"
+
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        case " ${seen} " in *" ${zone} "*) continue ;; esac
+        seen="${seen} ${zone}"
+        name="$(queue_request_name "${mt}" "${model}")"
+        (
+            state="$(gcloud compute tpus queued-resources describe "${name}" \
+                --zone="${zone}" --format="value(state.state)" 2>/dev/null)"
+            case "${state}" in
+                ACCEPTED|PROVISIONING|CREATING|ACTIVE|SUCCEEDED)
+                    echo "${state}" >"${tmp}/${zone}" ;;
+            esac
+        ) &
+    done
+    wait
+
+    # CANDIDATES is ordered best-first, so scanning it again rather than the
+    # directory returns the best zone when two were granted in the same pass.
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        if [[ -f "${tmp}/${zone}" ]]; then
+            echo "${zone}:$(cat "${tmp}/${zone}")"
+            rm -rf "${tmp}"
+            return 0
+        fi
+    done
+
+    rm -rf "${tmp}"
+    return 1
+}
+
+# Sleep, but wake up for the first request that is granted, and claim it.
+#
+# The plain sleep between sweeps is the whole exposure: SWEEP_INTERVAL is 180 s
+# by default and a ladder walk takes minutes on top, which is long enough for
+# several requests to be granted before anything looks at them. Sets
+# CLAIMED_ZONE and returns 0 on a claim, returns 1 having slept the full time.
+sleep_watching_the_queue() {
+    local remaining="$1" step hit
+    CLAIMED_ZONE=""
+    while (( remaining > 0 )); do
+        step=$(( remaining < QUEUE_POLL_S ? remaining : QUEUE_POLL_S ))
+        sleep "${step}"
+        remaining=$(( remaining - step ))
+        hit="$(queued_request_filled)" || continue
+        CLAIMED_ZONE="${hit%%:*}"
+        log "Queued request in ${CLAIMED_ZONE} is ${hit##*:}: claiming it and" \
+            "cancelling every other request"
+        claim_first_node "${CLAIMED_ZONE}"
+        return 0
+    done
+    return 1
+}
+
+# Wait for the claimed node to exist and reach READY, in its zone only.
+#
+# Claiming at ACCEPTED or PROVISIONING means the node is not there yet, and the
+# caller must not fall through to another ladder sweep in the meantime -- that
+# sweep would create the second node this whole path exists to prevent. Google
+# grants and boots within a few minutes; the default budget is 20.
+wait_for_claimed_node() {
+    local zone="$1" tries="${2:-60}" i state
+    for (( i = 0; i < tries; i++ )); do
+        state="$(gcloud compute tpus tpu-vm describe "${VM_NAME}" --zone="${zone}" \
+            --format="value(state)" 2>/dev/null)"
+        case "${state}" in
+            READY)  return 0 ;;
+            # A request can be granted and then fail to boot. Nothing is
+            # billing in that case, so say so and let the ladder resume.
+            PREEMPTED|TERMINATED|FAILED)
+                log "Node in ${zone} is ${state}; not usable"
+                return 1 ;;
+        esac
+        sleep 20
+    done
+    log "Node in ${zone} did not reach READY within $(( tries * 20 ))s"
+    return 1
+}
+
 # First fulfilment wins; everything else is torn down at once.
 #
-# Requests are only cancelled by the EXIT trap, so between a fulfilment and the
-# daemon exiting every other request is still standing and can be filled too.
-# That window is not theoretical: on 2026-09-05 a v5litepod-1 came up in
-# us-east1-c while another request was coming up in us-west1-c, and two
-# nodes billed at once. Cancelling on the spot closes it.
+# Requests used to be cancelled only by the EXIT trap, so between a fulfilment
+# and the daemon exiting every other request was still standing and could be
+# filled too. That window is not theoretical: on 2026-09-05 four nodes billed
+# at once, in us-west4-a, us-west1-c, us-east1-d and us-east1-b, from one
+# --queue run. Cancelling on the spot closes it, and
+# sleep_watching_the_queue is what gets here fast enough to matter.
 #
-# The winner's own request is left alone. cancel_queued_requests deletes
-# without --force and the API refuses to delete a request holding a node, so
-# the winner survives that call; the losers are deleted here by name, since a
-# request that has already produced a node cannot be cancelled out of it.
+# The winner's own request is skipped by zone, because by the time this runs
+# the winner may hold nothing yet for the API's own refusal to protect (see
+# cancel_queued_requests). The losers are deleted here by name as well as
+# cancelled, since a request that has already produced a node cannot be
+# cancelled out of it and the node has to go explicitly.
+#
+# Idempotent: a node already gone and a request already cancelled both fail
+# quietly, so calling this on every path that acquires costs nothing.
 claim_first_node() {
     local winner="$1"
     local entry gen mt zone model api seen=""
 
-    cancel_queued_requests
+    cancel_queued_requests "${winner}"
 
     for entry in "${CANDIDATES[@]}"; do
         IFS=':' read -r gen mt zone model api <<<"${entry}"
@@ -554,6 +676,10 @@ while true; do
         fi
         if [[ -n "${zone}" ]]; then
             log "Acquired in ${zone}"
+            # A sweep win is a fulfilment like any other: every standing
+            # request is still able to produce a node of its own behind it,
+            # and until 2026-09-05 this path never said so.
+            (( QUEUE )) && claim_first_node "${zone}"
             run_session "${zone}"
             (( ONCE )) && exit 0
             continue
@@ -573,6 +699,22 @@ while true; do
     # cancelled Google-side.
     (( QUEUE )) && file_queued_requests
 
-    log "Sleeping ${SWEEP_INTERVAL}s before the next attempt"
-    sleep "${SWEEP_INTERVAL}"
+    if (( QUEUE )); then
+        log "Sleeping ${SWEEP_INTERVAL}s, checking the queue every ${QUEUE_POLL_S}s"
+        # The claim happens inside the sleep rather than at the top of the
+        # loop because the sleep is the exposure: the loop checks once per
+        # sweep, and a granted request creates its node long before that.
+        if sleep_watching_the_queue "${SWEEP_INTERVAL}"; then
+            export TPU_API=1
+            log "Waiting for ${VM_NAME} in ${CLAIMED_ZONE} to come up"
+            if wait_for_claimed_node "${CLAIMED_ZONE}"; then
+                run_session "${CLAIMED_ZONE}"
+                (( ONCE )) && exit 0
+            fi
+            continue
+        fi
+    else
+        log "Sleeping ${SWEEP_INTERVAL}s before the next attempt"
+        sleep "${SWEEP_INTERVAL}"
+    fi
 done
