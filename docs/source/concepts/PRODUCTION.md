@@ -97,7 +97,7 @@ of those, memoised per degree in the element layout. `DF` is not stored --
 `--auxiliary-B-field false`, `--scheme explicit`, `--history 1`, `--cfl 0.5`;
 stops when the mean of the relative force residual over the last chunk
 (`--chunk 500` steps) is below `--floor-tol 1e-3`; output `relax.json` and
-`B.h5`. The descent is ideal; `--reconnect-every K` adds one resistive solve
+`checkpoints/state_<step>.h5`. The descent is ideal; `--reconnect-every K` adds one resistive solve
 every `K` steps. Details in [relaxation.md](relaxation.md).
 
 ## Traps

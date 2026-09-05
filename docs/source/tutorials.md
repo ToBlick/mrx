@@ -120,14 +120,12 @@ The descent is `mrx.relaxation` with `scripts/relax.py`'s defaults -- L-BFGS
 with history 1 (equivalent to conjugate gradient), analytic line search under
 a CFL cap of 0.5, no resistivity -- plus **velocity smoothing of order 1**
 (gamma = 1), the descent direction $(I - \text{scale}\,L)^{-1} F$ with
-$\text{scale} \approx 0.064 / n_r^2$, run through `relaxation_loop`:
+$\text{scale} \approx 0.064 / n_r^2$, run through `relax`:
 
 ```python
-ts = TimeStepper(seq=seq, descent_method=DescentMethod.LBFGS, history_size=1,
-                 dt_mode=TimeStepChoice.ANALYTIC_LINESEARCH, cfl=0.5,
+ts = TimeStepper(seq=seq, history_size=1, cfl=0.5,
                  velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / ns[0] ** 2)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=10, num_iters_inner=50,
-                                force_tolerance=1e-3)
+res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=1e-3)
 ```
 
 On li383 gamma = 1 reaches a clean nested floor in ~1000 steps where the
@@ -138,13 +136,13 @@ in the weak sense; $p$ is not prescribed, it is the multiplier the descent
 finds (`weak_pressure`). It runs in float32, the production precision.
 
 The script prints the traces, draws $\|F\|_M$ against $E$ on twin axes
-(`plot_twin_axis`) and the weak pressure on the torus, and writes a `B.h5` in
-`scripts/relax.py`'s format. `scripts/poincare_relax.py` then draws the
+(`plot_twin_axis`) and the weak pressure on the torus, and writes the run in
+`scripts/relax.py`'s layout (`relax.json` and two checkpoints). `scripts/poincare_relax.py` then draws the
 Poincaré sections of the initial and relaxed fields at the standing three
 planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$ (half a field period; the other half follows by stellarator symmetry):
 
 ```bash
-python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation/B.h5 \
+python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation \
     --planes 0,0.125,0.25,0.375,0.5 --out outputs/tutorials/li383_relaxation
 ```
 
@@ -176,7 +174,7 @@ not the unseeded one. It uses the **high-resolution reference**
 residual sits on top of the seeded signal, so the seed cannot be told from the
 noise. Sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
 $\sqrt{\varepsilon}$, and `--seed 5,1,0.794,0.1` to move to the $3/5$ surface.
-There is no relaxation and no `B.h5`; this is the cheapest tutorial.
+There is no relaxation and no run directory; this is the cheapest tutorial.
 
 ## 5. Reconnect with finite resistivity (`5_li383_resistive.py`)
 
@@ -187,27 +185,27 @@ seeded island heals or grows, and helicity is no longer conserved -- it decays
 at the resistive rate.
 
 This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
-relaxed field** if `outputs/tutorials/li383_relaxation/B.h5` is present (same
+relaxed field** if the run `outputs/tutorials/li383_relaxation` is present (same
 $(10, 16, 16)\ p = 2$ mesh), so the initial descent is not repeated; otherwise
 it builds the equilibrium initial condition itself. It then takes a **single
 resistive step** at `--eta-max` and relaxes ideally for another 500 steps:
 
 ```python
-state, _ = relaxation_loop(B0, ts_reconnect, num_iters_outer=1, num_iters_inner=1,
-                           resistivity_schedule=lambda i: eta_max)       # one reconnection step
-state, traces = relaxation_loop(state.B_n, ts_ideal, num_iters_outer=10,
-                                num_iters_inner=50, force_tolerance=1e-4)  # 500 ideal steps
+B_reconnected, _, rel = resistive_step(B0, seq, eps)                    # one reconnection step
+res = relax(initial_state(B_reconnected, ts), ts, steps=500, chunk=50,
+            floor_tol=1e-4)                                             # 500 ideal steps
 ```
 
 The helicity drop across the resistive step is the reconnection; the ideal tail
 conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
-pressure on the torus, and writes a `B.h5` for `poincare_relax.py`. Pass
+pressure on the torus, and writes the run for `poincare_relax.py`. Pass
 `--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 4 syntax) when it falls
 back to building the IC, to watch a seeded island reconnect.
 
 ---
 
-The production driver `scripts/relax.py` adds the archive, the QoIs, snapshots
-for movies, the resistive pre-smoothing, and the island seeds as first-class
-options; `scripts/poincare_relax.py` and `scripts/plot_relaxation.py` draw from
-its `B.h5`.
+The production driver `scripts/relax.py` is the command line of the same
+`mrx.relaxation.relax`: the checkpoints at every chunk (movies, restarts),
+the reconnection series and the island seeds as flags;
+`scripts/poincare_relax.py` and `scripts/plot_relaxation.py` draw from its
+run directory.

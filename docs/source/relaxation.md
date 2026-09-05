@@ -114,11 +114,15 @@ Flags, defaults in brackets:
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
-| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
+| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
-| `--checkpoint PATH [<out>/state.eqx]`, `--restart PATH` | the descent state at every save; continue from one |
+| `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
 
-`python scripts/relax.py --help` prints the same list.
+`python scripts/relax.py --help` prints the same list. The script is the
+command line of `mrx.relaxation.relax`, the chunked loop with the floor,
+wall-budget and reconnection rules, which the tutorials and the tests call
+directly; `mrx.initial_conditions.initial_field` builds the field and
+`mrx.relaxation.write_checkpoint` / `read_checkpoint` the files below.
 
 ## Stopping criterion
 
@@ -139,15 +143,15 @@ solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
 
 ## Output
 
-`--out` receives two files:
+`--out` receives:
 
 | file | content |
 |---|---|
-| `relax.json` | `params`; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`, `dE_meas`, `dE_pred`; `qoi` with `it`, `helicity`, `JoverB`, `wall` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`; `reconnect`, one record per reconnection; the `ic` summary and the `summary` with the stopping reason, both with the same pressure diagnostics |
-| `B.h5` | datasets `B_ic`, `B_final` (Dirichlet k=2 DoFs), `p_ic`, `p_final` (the strong pressures, 3-form DoFs), `pw_ic`, `pw_final` (the weak pressures, Dirichlet 0-form DoFs), the snapshots of every chunk, with the run parameters as attributes; `geometry` as given, `geometry_path` resolved, `ic` the kind of initial condition |
+| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `E`, `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`, `dE_meas`, `dE_pred`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
+| `checkpoints/state_<step>.h5` | the descent state at that step, one file per chunk plus step 0 (the initial field): every leaf of `mrx.relaxation.State` as a dataset named by its field (`B_n`, `p` the strong pressure, the warm starts, the L-BFGS pairs, `dt`, ...) and the step as an attribute. `--restart` continues from one; the plotters read the field and the strong pressure from them and compute the weak pressure on demand |
 
-`relax.json` is rewritten at every chunk, so a run that runs out of
-time still leaves its trace.
+`relax.json` and the newest checkpoint are written at every chunk, so a
+run that runs out of time still leaves its trace and its last state.
 
 ## Inspect
 
@@ -201,17 +205,18 @@ k=0 solve). Every qoi sample records, and `ic` / `summary` repeat:
 either pressure on the sections. The details are in
 [Relaxation](concepts/relaxation.md), section 3.
 
-To rebuild the field and evaluate it, load the DoFs and the same
+To rebuild the field and evaluate it, load a checkpoint and the run's
 geometry:
 
 ```python
-import h5py
+import h5py, json
 from mrx.differential_forms import DiscreteFunction, Pushforward
 
-with h5py.File("outputs/relax/<date>/<time>/B.h5") as fh:
-    B = fh["B_final"][...]
-    geometry, ns, p = str(fh.attrs["geometry_path"]), tuple(fh.attrs["ns"]), int(fh.attrs["p"])
-seq, ops = build_sequence(geometry, ns=ns, p=p)
+run = "outputs/relax/<date>/<time>"
+prm = json.load(open(f"{run}/relax.json"))["params"]
+with h5py.File(f"{run}/checkpoints/state_003000.h5") as fh:
+    B = fh["B_n"][...]
+seq, ops = build_sequence(prm["geometry_path"], ns=tuple(prm["ns"]), p=prm["p"])
 B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 ```
 
@@ -225,17 +230,19 @@ an integration time and nothing is interpolated. The building blocks are
 integration, and `rotational_transform` and `to_RZ` for the section.
 `step_convergence` justifies the fixed step count by refinement. The module
 docstring explains the three design choices. `scripts/poincare_relax.py`
-is the driver: it reads the `B.h5` a relaxation wrote, traces `B_ic` and
-`B_final`, and renders one section per requested plane:
+is the driver: it reads a run directory, traces the initial and the final
+checkpoint (`--fields ic,final,reconnect` adds the field before every
+reconnection, all on one colour scale), and renders one section per
+requested plane:
 
 ```bash
-python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs/run/poincare
+python -u scripts/poincare_relax.py outputs/run --periods 400 --out outputs/run/poincare
 ```
 
 Its module docstring lists the flags.
 
-A relaxation run stores a field snapshot at every chunk boundary (`--chunk`); `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
-section per snapshot with every axis held fixed, ready for `ffmpeg`.
+A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
+section per checkpoint with every axis held fixed, ready for `ffmpeg`.
 
 ## Figures
 
@@ -249,7 +256,7 @@ $p_w$ on the torus and in the cuts, and $\|F\|_M$ against $E$ from
 `relax.json`:
 
 ```bash
-python -u scripts/plot_relaxation.py outputs/run/B.h5 --cuts 6 --fields ic,final
+python -u scripts/plot_relaxation.py outputs/run --cuts 6 --fields ic,final
 ```
 
 `scripts/compare_relaxations.py OUT label=run ...` overlays the traces of

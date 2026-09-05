@@ -170,10 +170,12 @@ Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`, `picard_iterations`,
 `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first secant and CG coefficient see a true
-previous gradient. `relaxation_loop(B_dof, ts, num_iters_outer,
-num_iters_inner, ...)` runs `num_iters_inner` steps in a `jax.lax.scan` per
-outer iteration and records energy, force norm, helicity, divergence, and
-step size.
+previous gradient. `relax(state, ts, steps, chunk, ...)` runs the steps in
+`jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
+once per chunk (`make_sampler`: helicity, the two pressures, beta), applies
+the floor, wall-budget and reconnection rules and returns a `RelaxResult`
+(the state, the per-step trace, the per-chunk samples, the reconnection
+records); `write_checkpoint` / `read_checkpoint` store and restore a state.
 
 ## 3. Diagnostics
 
@@ -232,10 +234,11 @@ every qoi sample, in `qoi`, `ic` and `summary` of `relax.json`:
 | `beta_vol` | `⟨p_w, 1⟩_{M_0} / E` with `E = ½ B^T M_2 B = ∫ B²/2 dV`. Code units: the magnetic pressure is `B²/2`, so `β = ∫ p dV / ∫ B²/2 dV` |
 | `beta_axis` | `⟨p_w⟩ / ⟨|B|²/2⟩` on the COORDINATE axis, logical `r = 0`: both averaged (quadrature weights) over the innermost radial quadrature layer, `r = x_r[0]`, a few percent of the first knot span, all `θ` and `ζ`. The 2-form's magnitude `B_ref^T G B_ref / J²` is 0/0 on the polar axis itself, and the polar 2-form space does not pin `B_ref(0)` to zero, so a limit `r → 0` reads the solver's residual there (measured: 50% off at `r = sqrt(eps)`) |
 
-`B.h5` stores `pw_ic` and `pw_final` (Dirichlet 0-form DoFs) next to
-`p_ic` and `p_final`, every pressure evaluated at the field it sits next
-to. `scripts/poincare_relax.py --pressure weak|strong` (default `weak`)
-draws either one: `p_w` is a 0-form, its value is the spline evaluation
+The strong pressure `p` is state (a field of `State`, so it is in every
+checkpoint); the weak pressure is a diagnostic, computed by the sampler at
+every chunk and by the plotters on demand (two solves per field).
+`scripts/poincare_relax.py --pressure weak|strong` (default `weak`) draws
+either one: `p_w` is a 0-form, its value is the spline evaluation
 and it is not shifted; `p` is a 3-form, `p / det DF`, shifted so the
 outermost kept line reads zero. `scripts/plot_relaxation.py` draws `p_w`
 on the torus and in poloidal cuts (`mrx.plotting.plot_torus`,
@@ -316,12 +319,12 @@ method per run. Flags, defaults in brackets:
 | `--history M [1]` | L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
-| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), `B` and `p_w` are stored in `B.h5` (`B_snapshots`, `pw_snapshots`, `snapshot_steps`), the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The snapshots serve `scripts/poincare_relax.py --fields snapshots`, which traces every stored step at the chosen plane and writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
+| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_relax.py --fields snapshots`, which traces every stored step at the chosen plane and writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
-| `--checkpoint PATH [<out>/state.eqx]`, `--restart PATH` | the descent state at every save; continue from one |
+| `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |
 
 The initial condition is always Leray-projected. The run stops when the
 mean over the last `W` steps of the relative force residual
@@ -336,14 +339,18 @@ residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
 Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
 `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,
 `res_delta`, `dE_meas`, `dE_pred`), the sampled quantities of interest
-`qoi` (`it`, `helicity`, `JoverB`, `wall`, and the pressure diagnostics of
-section 3: `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`,
-`beta_vol`, `beta_axis`), the initial-condition summary and the `summary`
-with the stopping reason, both carrying the same pressure diagnostics; and
-`B.h5` with `B_ic`, `B_final`, the strong pressures `p_ic`, `p_final`
-(3-form DoFs), the weak pressures `pw_ic`, `pw_final` (Dirichlet 0-form
-DoFs) and the parameters as attributes (`geometry` as given,
-`geometry_path` resolved).
+`qoi` (`it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB`, and the
+pressure diagnostics of section 3: `gradp_cmp`, `p_cmp`, `weak_resid`,
+`dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`), the initial field's
+numbers `ic` and the `summary` with the stopping reason; and
+`checkpoints/state_<step>.h5`, the `State` at every chunk boundary and at
+step 0 (`write_checkpoint` / `read_checkpoint`), from which the plotters
+read the field and the strong pressure. The loop itself is
+`mrx.relaxation.relax(state, ts, steps, chunk, ...)`: `chunk_runner` for
+the steps, `make_sampler` for the diagnostics, the floor, wall-budget and
+reconnection rules, and an `on_chunk` callback the driver uses to write;
+the script is its command line plus `build_sequence`, `initial_field` and
+the JSON writer.
 
 At the reference resolution (W7-X FMM002, `(8,16,8)`,
 `p = 3`, float64, one H100): setup about 330 s, first step about 90 s of
