@@ -1,18 +1,17 @@
 """Analytic logical-to-physical maps and the :class:`SplineMap` wrapper for fitted ones."""
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 import equinox as eqx
 import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
-from mrx.differential_forms import DifferentialForm, DiscreteFunction
+from mrx.differential_forms import DifferentialForm
 
 
 class SplineMap(eqx.Module):
     """A logical-to-physical map represented in the scalar spline basis.
 
-    ``coefficients``, ``extraction``, ``extraction_T`` and ``raw`` are dynamic
-    pytree children, so ``SplineMap`` can be passed through ``jit`` /
+    ``coefficients``, ``extraction`` and ``raw`` are dynamic pytree children, so ``SplineMap`` can be passed through ``jit`` /
     ``grad`` / ``vmap`` and its coefficients can be differentiated.
     ``basis_0`` is a static topology object and rides along as aux data.
 
@@ -24,26 +23,15 @@ class SplineMap(eqx.Module):
 
     coefficients: jnp.ndarray
     extraction: Any
-    extraction_T: Optional[Any]
     basis_0: DifferentialForm = eqx.field(static=True)
     raw: jnp.ndarray
 
-    def __init__(self, coefficients, extraction, extraction_T=None, basis_0=None):
+    def __init__(self, coefficients, extraction, basis_0=None):
         self.coefficients = coefficients
         self.extraction = extraction
-        self.extraction_T = extraction_T
         self.basis_0 = basis_0
         coeffs = coefficients.reshape(3, -1)
         self.raw = (extraction.T @ coeffs.T).T.reshape((3,) + basis_0.shape[0])
-
-    def with_coefficients(self, coefficients):
-        """Return a new spline map with updated coefficients."""
-        return SplineMap(
-            coefficients=coefficients,
-            extraction=self.extraction,
-            extraction_T=self.extraction_T,
-            basis_0=self.basis_0,
-        )
 
     def __call__(self, x):
         return self.basis_0.bases[0].contract(self.raw, x)
@@ -120,57 +108,3 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
                           h * z])
 
     return F
-
-
-def stellarator_map(R: DiscreteFunction, Z: DiscreteFunction, nfp: int = 3, flip_zeta: bool = False) -> Callable:
-    """Stellarator map built from spline R(r,θ,ζ) and Z(r,θ,ζ).
-
-    ``F(r, θ, ζ) = (R cos(2πζ/nfp), -R sin(2πζ/nfp), Z)``
-
-    Args:
-        R: Discrete spline for the cylindrical radius.
-        Z: Discrete spline for the vertical coordinate.
-        nfp: Number of field periods.
-        flip_zeta: If ``True``, replace ζ with ``1 - ζ`` before evaluating.
-    """
-    π_nfp = 2 * jnp.pi / nfp
-
-    def F(x):
-        _, _, ζ = x
-        if flip_zeta:
-            ζ = 1.0 - ζ
-        R_x = R(x)[0]
-        return jnp.array([R_x * jnp.cos(π_nfp * ζ),
-                          -R_x * jnp.sin(π_nfp * ζ),
-                          Z(x)[0]])
-    return F
-
-
-def extend_map_nfp(Phi, nfp, sign=-1.0):
-    """Extend a one-field-period map to the full ``nfp``-period torus.
-
-    ``Phi(r, theta, zeta)`` covers one period with ``zeta in [0, 1]``; the
-    returned map takes ``zeta in [0, 1]`` over the WHOLE device, evaluates
-    ``Phi`` on the local period and rotates its output about the z axis by
-    ``sign * 2 pi j / nfp`` for period ``j``. It agrees with ``Phi`` exactly on
-    the first period -- the toroidal angle is the map's own, not recomputed
-    from ``zeta`` (the previous form did that, and was wrong for any map whose
-    ``atan2(Y, X)`` is not exactly linear in ``zeta``, e.g. a Cartesian spline
-    map).
-
-    ``sign`` is the direction of the toroidal angle with ``zeta``: ``-1`` for
-    the ``(R cos, -R sin)`` convention of :func:`stellarator_map` and the GVEC
-    maps with ``sign = -1`` (the codebase default), ``+1`` for a map whose
-    angle increases with ``zeta``. Made for plotting whole stellarators; the
-    solvers never see more than one period.
-    """
-    def Phi_full_fp(x):
-        r, θ, ζ = x
-        ξ = ζ * nfp
-        j = jnp.floor(ξ)
-        X, Y, Z = Phi(jnp.array([r, θ, ξ - j]))
-        α = sign * 2 * jnp.pi * j / nfp
-        c, s = jnp.cos(α), jnp.sin(α)
-        return jnp.array([c * X - s * Y, s * X + c * Y, Z])
-
-    return Phi_full_fp

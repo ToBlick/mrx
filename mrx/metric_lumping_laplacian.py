@@ -752,13 +752,14 @@ def _apply_lump_payload(payload: _LumpPayload, x):
 
 class _ShiftedPayload(eqx.Module):
     """The shifted-stiffness atom's leaves: the Laplacian blocks with their
-    strong-half mask as ``alpha``, and the core's ``M`` and ``S`` blocks
-    (the core inverse depends on ``eps`` and is formed per solve)."""
+    strong-half mask as ``alpha``, and the core's ``(M, S)`` pair
+    diagonalised (``V^T M V = I``, ``V^T S V = diag(mu)``), from which the
+    core inverse ``V diag(1 / (1 + eps mu)) V^T`` is two matmuls per solve."""
 
     blocks: tuple                # leaves, one _LumpBlock per component
     core: jnp.ndarray            # leaf
-    mass_core: jnp.ndarray       # leaf: M_k on the core rows
-    stiffness_core: jnp.ndarray  # leaf: S_k on the core rows
+    core_V: jnp.ndarray          # leaf: the M-orthonormal eigenvectors of (S, M) on the core
+    core_mu: jnp.ndarray         # leaf: their generalised eigenvalues
     perm: jnp.ndarray            # leaf
     has_core: bool = eqx.field(static=True)
     identity_perm: bool = eqx.field(static=True)
@@ -947,15 +948,21 @@ class MetricLumpingLaplacian:
         self.probe_rows = core
         self.core_inv = _dense_symmetric_inverse(
             probe_core_block(seq, operators, k, dirichlet, core), core_tol)
-        # M_k and S_k on the core rows, for the shifted-stiffness atom's
-        # (M + eps S)^-1 core block (eps is only known at solve time).
+        # M_k and S_k on the core rows, diagonalised together ONCE: the
+        # shifted-stiffness atom's core block is (M + eps S)^-1 = V diag(1 /
+        # (1 + eps mu)) V^T with V^T M V = I and V^T S V = diag(mu), and eps
+        # is only known at solve time. (It used to be an eigendecomposition
+        # of M + eps S per solve, i.e. twice per relaxation step.)
         from mrx.operators import apply_mass_matrix, apply_stiffness  # noqa: PLC0415
         size = int(seq.n(k, dirichlet))
-        self.mass_core = _probe_rows(
+        mass_core = _probe_rows(
             lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet), size, core)
-        self.stiffness_core = _probe_rows(
+        stiffness_core = _probe_rows(
             lambda x: apply_stiffness(seq, x, k, dirichlet=dirichlet), size, core)
-        self.core_tol = core_tol
+        if core.size > 0:
+            self.core_V, self.core_mu = _simultaneous_diagonalize_pair(mass_core, stiffness_core)
+        else:
+            self.core_V, self.core_mu = mass_core, jnp.zeros(0, dtype=DTYPE)
         self._flat = _flatten_payload(self._build_payload())
         self._shifted = self._build_shifted_payload()
 
@@ -974,24 +981,7 @@ class MetricLumpingLaplacian:
         reuses the compiled apply instead of paying ~287 ms to compile an
         identical program again.
         """
-        blocks = []
-        for blk in self.blocks:
-            if blk is None:
-                continue
-            (v_r, v_t, v_z), (l_r, l_t, l_z), alpha = blk["atom"]
-            blocks.append(_LumpBlock(
-                rows=jnp.asarray(blk["rows"]),
-                vals=jnp.asarray(blk["vals"], dtype=DTYPE),
-                v_r=v_r, v_t=v_t, v_z=v_z,
-                lam_r=l_r, lam_t=l_t, lam_z=l_z,
-                alpha=jnp.asarray(alpha, dtype=DTYPE),
-                dscale=blk["dscale"],
-                shape=blk["shape"],
-                offset=blk["offset"],
-            ))
-        perm, identity = _output_permutation(
-            [b["rows"] for b in self.blocks if b is not None],
-            self.probe_rows, self.n_ext)
+        blocks, perm, identity = self._pack_blocks(lambda blk: blk["atom"][2])
         return _LumpPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.probe_rows),
@@ -1006,8 +996,9 @@ class MetricLumpingLaplacian:
         leaves, jitted = self._flat
         return jitted(leaves, jnp.asarray(x))
 
-    def _build_shifted_payload(self):
-        """The Laplacian blocks with ``alpha`` = the strong-half mask."""
+    def _pack_blocks(self, alpha_of):
+        """The component blocks as :class:`_LumpBlock` leaves with ``alpha =
+        alpha_of(block)``, and the output permutation: ``(blocks, perm, identity)``."""
         blocks = []
         for blk in self.blocks:
             if blk is None:
@@ -1018,7 +1009,7 @@ class MetricLumpingLaplacian:
                 vals=jnp.asarray(blk["vals"], dtype=DTYPE),
                 v_r=v_r, v_t=v_t, v_z=v_z,
                 lam_r=l_r, lam_t=l_t, lam_z=l_z,
-                alpha=jnp.asarray(blk["alpha_strong"], dtype=DTYPE),
+                alpha=jnp.asarray(alpha_of(blk), dtype=DTYPE),
                 dscale=blk["dscale"],
                 shape=blk["shape"],
                 offset=blk["offset"],
@@ -1026,11 +1017,16 @@ class MetricLumpingLaplacian:
         perm, identity = _output_permutation(
             [b["rows"] for b in self.blocks if b is not None],
             self.probe_rows, self.n_ext)
+        return blocks, perm, identity
+
+    def _build_shifted_payload(self):
+        """The Laplacian blocks with ``alpha`` = the strong-half mask."""
+        blocks, perm, identity = self._pack_blocks(lambda blk: blk["alpha_strong"])
         return _ShiftedPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.probe_rows),
-            mass_core=self.mass_core,
-            stiffness_core=self.stiffness_core,
+            core_V=self.core_V,
+            core_mu=self.core_mu,
             perm=perm,
             has_core=bool(self.probe_rows.size > 0),
             identity_perm=identity,
@@ -1045,15 +1041,15 @@ class MetricLumpingLaplacian:
         ``D_c^{1/2} (m_r x m_t x m_z) D_c^{1/2}`` (unweighted 1-D masses,
         the component factor as the sandwich). It tends to ``M^-1`` as
         ``eps -> 0`` and to ``(1/eps) S^-1`` as ``eps -> inf``. The core
-        rows get the dense ``(M + eps S)^-1`` from the probed ``M`` and
-        ``S`` core blocks, formed once here -- ``eps`` may be traced -- and
-        hoisted out of the solve. Both split systems of
+        rows get the dense ``(M + eps S)^-1 = V diag(1 / (1 + eps mu)) V^T``
+        from the pair diagonalised at build: ``eps`` enters the diagonal
+        only, so it may be traced, and the block costs two small matmuls
+        here, hoisted out of the solve. Both split systems of
         :func:`~mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`
-        use it (``'auto'``).
+        use it.
         """
         payload = self._shifted
-        core_inv = _dense_symmetric_inverse(
-            payload.mass_core + eps * payload.stiffness_core, self.core_tol)
+        core_inv = (payload.core_V / (1.0 + eps * payload.core_mu)) @ payload.core_V.T
         inv_eps = 1.0 / eps
 
         def apply(x):

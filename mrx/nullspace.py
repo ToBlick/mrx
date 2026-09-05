@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 
 import mrx
+from mrx.solvers import deflation_projectors
 
 # ---------------------------------------------------------------------------
 # Shape helpers
@@ -91,31 +92,6 @@ def get_nullspace(operators, k, dirichlet):
             "nullspaces, compute_nullspaces fills them") from None
 
 
-def get_saddle_point_nullspaces(seq, operators, k, dirichlet):
-    """Nullspace vectors for the saddle-point system.
-
-    If ``v`` lies in ``ker(S_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T)``, then
-    ``[v, M_{k-1}^{-1} D_{k-1}^T v]`` lies in the nullspace of the full
-    saddle-point matrix. Returned as two stacked arrays.
-    """
-    vs_upper = get_nullspace(operators, k, dirichlet)
-    if k == 0 or vs_upper.shape[0] == 0:
-        n_lower = _dof_count(seq, k - 1, dirichlet) if k >= 1 else 0
-        return vs_upper, jnp.zeros((vs_upper.shape[0], n_lower))
-
-    def _lower(v):
-        Dt_v = seq.apply_derivative_matrix(
-            v, k - 1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet,
-            transpose=True,
-        )
-        return seq.apply_inverse_mass_matrix(
-            Dt_v, k - 1, dirichlet=dirichlet, operators=operators)
-
-    vs_lower = jax.vmap(_lower)(vs_upper)
-    return vs_upper, vs_lower
-
-
 def _set_null(operators, k, dirichlet, values):
     """Return ``operators`` with the nullspace of ``(k, dirichlet)`` replaced."""
     spaces = dict(operators.nullspaces)
@@ -130,30 +106,6 @@ def _commit(seq, operators):
     """
     seq.operators = operators
     return operators
-
-
-def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
-    """Store normalised bootstrap guesses in the nullspace field for ``(k, dirichlet)``."""
-    n_vec = len(guesses)
-    n_dof = _dof_count(seq, k, dirichlet)
-    values = jnp.zeros((n_vec, n_dof))
-    stored = []
-
-    for idx, guess in enumerate(guesses):
-        if guess is None:
-            continue
-        work = guess
-        for u in stored:
-            work = work - (u @ seq.apply_mass_matrix(
-                work, k, dirichlet=dirichlet)) * u
-        norm = seq.l2_norm(work, k, dirichlet=dirichlet)
-        if float(norm) <= 0.0:
-            continue
-        work = work / norm
-        stored.append(work)
-        values = values.at[idx].set(work)
-
-    return _commit(seq, _set_null(operators, k, dirichlet, values))
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +191,7 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
 
 
 def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
-                       gap_sweeps=5, verbose=True):
+                       gap_sweeps=0, verbose=True):
     """Harmonic forms by direct Hodge decomposition (no inverse iteration).
 
     Each form is built from an exactly closed seed (``d zeta`` at k = 1,
@@ -263,7 +215,8 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     quotient :func:`harmonic_rayleigh` and, for the two forms that are built
     by solves (k = 1 free, k = 2 Dirichlet), the first non-harmonic eigenvalue
     ``lambda_1`` from :func:`estimate_spectral_gap` in ``gap_sweeps`` sweeps
-    of inverse iteration (``0`` skips it; ~17 s at W7-X (12,24,12) p=3).
+    of inverse iteration when asked (the default ``0`` skips it: it is a
+    check for the console, ~17 s at W7-X (12,24,12) p=3 for 5 sweeps).
     The ratio of the two is the squared relative error of the form, i.e.
     ``O(seq.tol^2)`` when the solves converged -- measured 2e-4 / 4e-5 in
     float32 (tol 3.5e-4) on W7-X, 1e-14-ish in float64; ``1e-1`` is a solve
@@ -538,13 +491,6 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
         for dirichlet in (False, True):
             n_vectors = _n_vectors(betti_numbers, k, dirichlet)
             guesses = _initial_guesses(seq, operators, k, dirichlet, n_vectors)
-            operators = _bootstrap_nullspace_guesses(
-                seq,
-                operators,
-                k,
-                dirichlet,
-                guesses,
-            )
             vectors, iters = find_nullspace_vectors(
                 seq,
                 operators,
@@ -641,12 +587,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         # all of them (they are M-orthonormal, so the projections commute).
         found_stacked = jnp.stack(found) if found else None
 
-        def project_out(v):
-            if found_stacked is None:
-                return v
-            coeffs = found_stacked @ seq.apply_mass_matrix(
-                v, k, dirichlet=dirichlet)
-            return v - coeffs @ found_stacked
+        project_out = (lambda v: v) if found_stacked is None else deflation_projectors(
+            found_stacked, lambda v: seq.apply_mass_matrix(v, k, dirichlet=dirichlet))[0]
 
         v0 = project_out(v0)
         v0 = v0 / seq.l2_norm(v0, k, dirichlet=dirichlet)

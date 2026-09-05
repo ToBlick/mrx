@@ -49,7 +49,11 @@ shifted solve `(M_k + eps S_k)` its shifted-stiffness form
 (`shifted_stiffness_apply`), and a saddle solve (`k >= 1` shifted, and
 `k = 3`) the Laplacian atom of level `k` on the upper block with the mass
 atom of level `k - 1` on the lower block, block-diagonal, never coupled
-through a Schur complement. A missing atom raises at the solve; nothing is
+through a Schur complement; the harmonic forms are deflated from the upper
+block only, since a harmonic `v` has `D^T v = 0` and the saddle matrix's
+nullspace is `(v, 0)`. The saddle solve returns its lower unknown too
+(`apply_inverse_laplacian_saddle`), the weak codifferential of the
+solution, which the Leray projection uses as its gradient part. A missing atom raises at the solve; nothing is
 built on demand and nothing is substituted. (Until 2026-09-04 the same
 mechanism was spread over kind strings, three spec dataclasses and a probed
 Jacobi option that nothing used.)
@@ -84,8 +88,14 @@ pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
 are not tensor-product functions. `core_rows` lists them; `probe_core_block`
 forms `L_k` on those rows by one operator apply per row;
 `_dense_symmetric_inverse` inverts the block on device by `eigh`, dropping
-eigenvalues below `CORE_TOL` relative to the largest. Bulk and core are
-applied independently; they are not coupled through a Schur complement.
+eigenvalues below `CORE_TOL` relative to the largest. The shifted-stiffness
+form of the atom needs `(M_k + eps S_k)^{-1}` on the same rows for an `eps`
+known only at the solve: the pair `(M_k, S_k)` on the core is diagonalised
+once at build (`_simultaneous_diagonalize_pair`, `V^T M V = I`, `V^T S V =
+diag(mu)`) and the block is `V diag(1 / (1 + eps mu)) V^T`, two small
+matmuls per solve (until 2026-09-04 an `eigh` of `M + eps S` per solve,
+twice per relaxation step inside the scan). Bulk and core are applied
+independently; they are not coupled through a Schur complement.
 
 **Natural boundary term.** Under a free condition at `r = 1` the weak block's
 integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗ M_z` with

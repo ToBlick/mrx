@@ -1,7 +1,7 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
-from typing import Callable, Literal, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 import time
 
@@ -69,6 +69,8 @@ def compute_force(
     p_guess: jnp.ndarray | None = None,
     H_guess: jnp.ndarray | None = None,
     JxH_guess: jnp.ndarray | None = None,
+    J_guess: jnp.ndarray | None = None,
+    F_guess: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """The Leray-projected Lorentz force at ``B`` and what it was built from.
 
@@ -79,9 +81,12 @@ def compute_force(
     conserve helicity exactly (:class:`IntegrationScheme`). Returns ``(F,
     p, J, X, JxX)``: ``p`` the Leray multiplier, ``X`` the field the cross
     products read (``H``, or ``B`` itself) and ``JxX`` the unprojected
-    force; the last two warm-start the next call.
+    force. The guesses are the previous call's ``p``, ``X``, ``JxX`` and
+    ``J``, and ``F_guess`` its force: with ``JxH_guess`` it gives the
+    previous gradient part ``JxX - F``, which warm-starts the lower block
+    of the Leray saddle solve next to ``p_guess`` on its upper one.
     """
-    J = seq.apply_weak_curl(B, dirichlet=True)
+    J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
     if auxiliary_B_field:
         H_dual = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
         X = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H_guess)
@@ -90,7 +95,8 @@ def compute_force(
         X = B
         JxX_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
     JxX = seq.apply_inverse_mass_matrix(JxX_dual, 2, guess=JxH_guess)
-    F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess)
+    sigma_guess = None if F_guess is None else JxH_guess - F_guess
+    F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess, sigma_guess=sigma_guess)
     return F, p, J, X, JxX
 
 
@@ -344,6 +350,7 @@ class State(eqx.Module):
     v: Optional[jnp.ndarray] = None
     H: Optional[jnp.ndarray] = None
     JxH: Optional[jnp.ndarray] = None
+    J: Optional[jnp.ndarray] = None
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
     MF_prev: Optional[jnp.ndarray] = None
@@ -413,6 +420,7 @@ class Increment(NamedTuple):
     p_v: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
+    J: jnp.ndarray
     E: jnp.ndarray
     cfl_max: jnp.ndarray
     sy: jnp.ndarray
@@ -581,13 +589,6 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'F_norm', 'v_norm', 'lbfgs_sy', 'picard_iterations', 'picard_restarts', 'picard_residual'], value) -> State:  # noqa: E501
-        return eqx.tree_at(
-            lambda s: getattr(s, field_name),
-            state,
-            value
-        )
-
     def _induction_field(self, u_jk: jnp.ndarray, X: jnp.ndarray, E_guess: jnp.ndarray) -> jnp.ndarray:
         """``E = M_1^-1 load(u x X)`` with ``u`` at the quadrature points and
         ``X`` the auxiliary 1-form ``H`` or the 2-form ``B`` itself."""
@@ -600,7 +601,7 @@ class TimeStepper(eqx.Module):
     def _ideal_increment(self, B: jnp.ndarray, state: State,
                          p_guess: jnp.ndarray, p_v_guess: jnp.ndarray,
                          H_guess: jnp.ndarray, JxH_guess: jnp.ndarray,
-                         E_guess: jnp.ndarray) -> Increment:
+                         J_guess: jnp.ndarray, E_guess: jnp.ndarray) -> Increment:
         """The ideal increment ``dB = curl(u x X)`` evaluated at the field ``B``.
 
         Force, descent direction (the L-BFGS secant ``y = F_prev - F`` is
@@ -608,14 +609,16 @@ class TimeStepper(eqx.Module):
         smoothing, Leray projection, the cross product and the topological
         curl. The explicit step evaluates it once at ``B_n``; the midpoint
         step's Picard sweeps re-evaluate only the induction at the midpoint
-        field (``_midpoint_solve``). The five guesses warm-start the five
-        Krylov solves; they come from ``state`` (the previous step). Without
-        the auxiliary field ``H_guess`` passes through untouched.
+        field (``_midpoint_solve``). The six guesses, and ``state.F_prev``
+        for the gradient part of the force, warm-start the Krylov solves;
+        they come from ``state`` (the previous step). Without the auxiliary
+        field ``H_guess`` passes through untouched.
         """
         seq = self.seq
-        F, p, _, X, JxX = compute_force(
+        F, p, J, X, JxX = compute_force(
             B, seq, self.auxiliary_B_field,
-            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
+            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
+            J_guess=J_guess, F_guess=state.F_prev)
         # M F ONCE.  It serves ||F||_M and the L-BFGS secant
         # M y = M F_prev - M F; the increment applies M_2 three times in total
         # (M F, M u, M dB) whichever method is running -- L-BFGS used to
@@ -671,7 +674,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, p, p_v, H, JxX, E, cfl_max, sy, y_hist, My_hist)
+        return Increment(dB, u, Mu, F, MF, p, p_v, H, JxX, J, E, cfl_max, sy, y_hist, My_hist)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
@@ -766,7 +769,8 @@ class TimeStepper(eqx.Module):
         """
         B_n = state.B_n
         seq = self.seq
-        inc0 = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+        inc0 = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH,
+                                     state.J, state.E)
         dt0, dt_star = self._step_size(inc0)
         dB0 = inc0.dB
         dB0_norm = seq.l2_norm(dB0, 2)
@@ -807,7 +811,8 @@ class TimeStepper(eqx.Module):
         the implicit midpoint rule (``scheme``)."""
         B_n = state.B_n
         if self.scheme == IntegrationScheme.EXPLICIT:
-            inc = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+            inc = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH,
+                                        state.J, state.E)
             dt, dt_star = self._step_size(inc)
             B_nplus1 = B_n + dt * inc.dB
             n_eval, restarts, resid = jnp.int32(1), jnp.int32(0), jnp.zeros((), B_n.dtype)
@@ -834,13 +839,13 @@ class TimeStepper(eqx.Module):
             Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * inc.Mu)
 
         return eqx.tree_at(
-            lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
+            lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.J, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual),
             state,
-            (B_nplus1, inc.u, inc.p, inc.p_v, inc.H, inc.JxH, inc.E,
+            (B_nplus1, inc.u, inc.p, inc.p_v, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
@@ -851,13 +856,13 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     """Build the state at ``B_dof`` with its force already evaluated.
 
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
-    ``H``, ``JxH`` are seeded from one ``compute_force`` here, so the first
-    step's secant ``y = F_prev - F`` sees the true previous gradient.
+    ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
+    first step's secant ``y = F_prev - F`` sees the true previous gradient.
     """
     seq = ts.seq
     n = seq.n(2, True)
     m = ts.history_size
-    F0, p0, _, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
+    F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
     MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
         B_n=B_dof,
@@ -868,6 +873,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         p_v=jnp.zeros(seq.n(3, True)),
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True)),
         JxH=JxX0,
+        J=J0,
         E=jnp.zeros(seq.n(1, True)),
         A=jnp.zeros(seq.n(1, True)),
         F_prev=F0,
@@ -953,9 +959,9 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     """``sample(state, pw_guess, eager=False) -> (state, p_w, scalars)``: the
     diagnostics of a state's field.
 
-    The force at the CURRENT field (``state.p``, ``H``, ``JxH`` are the
-    step's values at the previous one; they warm-start it and are refreshed
-    from it), the weak pressure and its diagnostics
+    The force at the CURRENT field (``state.p``, ``H``, ``JxH``, ``J``,
+    ``F_prev`` are the step's values at the previous one; they warm-start it
+    and are refreshed from it), the weak pressure and its diagnostics
     (:func:`pressure_diagnostics`), the helicity (``state.A`` refreshed),
     ``||J|| / ||B||`` and the pairing ``int J . B`` that sets a
     reconnection dose. ``scalars`` are Python floats. The first call of a
@@ -964,21 +970,23 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     """
     aux = ts.auxiliary_B_field
 
-    def probe(B, p, H, JxH, pw_guess, A):
-        F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH)
+    def probe(B, p, H, JxH, J, F_prev, pw_guess, A):
+        F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
+                                        J_guess=J, F_guess=F_prev)
         p_w, F_w, v = weak_pressure(J, X, seq, aux, p_guess=pw_guess)
         diag = pressure_diagnostics(B, p, p_w, F_w, v, seq)
         h, A_new = compute_helicity(B, seq, A)
         JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
         JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
-        return p, (X if aux else H), JxX, A_new, p_w, h, JoverB, JB, diag
+        return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag
 
     probe_jit = jax.jit(probe)
 
     def sample(state: State, pw_guess: jnp.ndarray, eager: bool = False):
         f = probe if eager else probe_jit
-        p, H, JxH, A, p_w, h, JoverB, JB, diag = f(state.B_n, state.p, state.H, state.JxH, pw_guess, state.A)
-        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A))
+        p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
+            state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
+        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
         scalars = dict(helicity=float(h), JoverB=float(JoverB), JB=float(JB),
                        **{k: float(v) for k, v in diag.items()})
         return state, p_w, scalars

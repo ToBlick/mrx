@@ -162,17 +162,3 @@ class SectionLimits:
     x: Optional[tuple] = None
     p: Optional[tuple] = None
     iota: Optional[tuple] = None
-
-    @classmethod
-    def coerce(cls, limits=None, iota_lim=None):
-        """Normalise the legacy ``(limits dict, iota_lim)`` call into one object."""
-        if isinstance(limits, cls):
-            lim = cls(limits.RZ, limits.z_split, limits.x, limits.p, limits.iota)
-        elif limits:
-            lim = cls(**{k: limits[k] for k in ("RZ", "z_split", "x", "p", "iota")
-                         if k in limits})
-        else:
-            lim = cls()
-        if iota_lim is not None and lim.iota is None:
-            lim.iota = tuple(iota_lim)
-        return lim

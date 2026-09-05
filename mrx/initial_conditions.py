@@ -28,9 +28,9 @@ Three sources of the profiles:
 * :func:`analytic_profile_form`: prescribed power laws, no external data;
   the initial condition of an analytic geometry file (``scripts/relax.py``,
   ``mrx.geometry.read_analytic``).
-* :func:`clebsch_form`: GVEC's own ``dPhi_dr``, ``dchi_dr`` and ``lambda``
-  from a file read by :func:`mrx.gvec.load_clebsch`; the equilibrium field
-  rebuilt from three scalars instead of resampled as a vector.
+* :func:`clebsch_potential_form` with :func:`potential_two_form`: an
+  equilibrium file's own field, ``B = dA'`` from its Clebsch data
+  (:func:`mrx.gvec.load_clebsch`), the production route.
 
 :func:`project_reference_two_form` turns any of them into DoFs. It pushes the
 form forward and uses ``load(frame='phys')``: ``load(frame='ref')`` wants
@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from mrx.relaxation import compute_divergence_norm
 import numpy as np
 
 
@@ -111,41 +112,14 @@ def lambda_dirichlet_energy(lam_h, seq) -> tuple[float, float]:
             float(dof @ seq.apply_laplacian(dof, 0, dirichlet=False)))
 
 
-def clebsch_form(cb):
-    """Reference 2-form of the Clebsch data ``cb`` from
-    :func:`mrx.gvec.load_clebsch`.
-
-    Units: the file's derivatives are with respect to radian angles and MRX's
-    zeta spans one field period, so ``Phi' = 2 pi dPhi_dr``,
-    ``iota = dchi_dr / (nfp dPhi_dr)`` and ``lambda = LA / 2 pi``. The 2 pi on
-    ``Phi'`` divides out of the normalised field.
-    """
-    rho_g = jnp.asarray(cb["rho"])
-    dPhi_g = jnp.asarray(cb["dPhi"])
-    dchi_g = jnp.asarray(cb["dchi"])
-    grad_lam = jax.grad(cb["lam_h"])
-    nfp = cb["nfp"]
-    two_pi = 2.0 * jnp.pi
-
-    def omega_ref(x):
-        r = jnp.clip(x[0], rho_g[0], rho_g[-1])
-        f_phi = jnp.interp(r, rho_g, dPhi_g)
-        f_chi = jnp.interp(r, rho_g, dchi_g) / nfp
-        g = grad_lam(jnp.array([r, x[1] % 1.0, x[2] % 1.0])) / two_pi
-        lam_t, lam_z = g[1], g[2]
-        return jnp.array([0.0, f_chi - f_phi * lam_z, f_phi * (1.0 + lam_t)])
-
-    return omega_ref
-
-
 def clebsch_potential_form(cb, seed=None):
     """Reference 1-form ``A'`` whose exterior derivative is the Clebsch 2-form
-    of :func:`clebsch_form`, from the same ``cb``.
+    of the data ``cb`` (:func:`mrx.gvec.load_clebsch`).
 
     With the GVEC potential ``A = Phi dtheta_G - chi dzeta_G + Phi dLA`` and
     the gauge term ``d(Phi LA)`` dropped,
     ``A' = (-LA dPhi_dr, 2 pi Phi, -(2 pi / nfp) chi)`` in MRX's logical
-    ``(rho, theta, zeta)`` -- ``dA'`` is exactly ``clebsch_form``'s
+    ``(rho, theta, zeta)`` -- ``dA'`` is exactly the pointwise Clebsch 2-form
     ``(0, (chi' - Phi' LA_zeta) / nfp, Phi' (1 + LA_theta))`` up to the
     common ``2 pi``. It needs only VALUES of lambda: the derivatives that
     make the field, and the second derivatives that make the current, are
@@ -266,10 +240,6 @@ def project_reference_two_form(seq, omega_ref):
     return B_raw / norm, norm
 
 
-def divergence_norm(seq, B):
-    """``||div B||_L2`` through the incidence operator (exact ``d``, no solve)."""
-    return float(seq.l2_norm(seq.apply_incidence_matrix(
-        B, 2, dirichlet_in=True, dirichlet_out=True), 3))
 
 
 def leray_clean(seq, B):
@@ -320,7 +290,7 @@ def initial_field(seq, geometry, seed=None):
         if seed is not None:
             info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
-        div = divergence_norm(seq, B)
+        div = float(compute_divergence_norm(B, seq))
         info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
                     div_raw=div, div=div, leray_moved=0.0)
         return B, info
@@ -330,9 +300,9 @@ def initial_field(seq, geometry, seed=None):
     iota, dPhi = make_profiles(prof["iota"][0], prof["iota"][1], prof["iota_exp"], prof["flux_exp"])
     modes = [(int(m), int(n), float(a)) for m, n, a in prof.get("lambda", [])]
     B, norm = project_reference_two_form(seq, analytic_profile_form(iota, dPhi, make_lambda(modes)))
-    div_raw = divergence_norm(seq, B)
+    div_raw = float(compute_divergence_norm(B, seq))
     B, moved = leray_clean(seq, B)
     return B, dict(kind=kind, iota=[float(v) for v in prof["iota"]], iota_exp=float(prof["iota_exp"]),
                    flux_exp=float(prof["flux_exp"]), lambda_modes=len(modes),
-                   B_norm_raw=float(norm), div_raw=div_raw, div=divergence_norm(seq, B),
+                   B_norm_raw=float(norm), div_raw=div_raw, div=float(compute_divergence_norm(B, seq)),
                    leray_moved=float(moved))

@@ -124,6 +124,27 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
+def deflation_projectors(vs, mass_matvec):
+    """``(project_primal, project_dual)`` against the ``(m, n)`` rows of ``vs``,
+    ``M``-orthonormal kernel vectors: ``x - (vs M x) vs`` on a primal vector,
+    ``f - (vs f) (M vs)`` on a dual one, with ``M vs`` formed once. With no
+    rows both are the identity."""
+    vs = jnp.asarray(vs)
+    if vs.ndim != 2:
+        raise ValueError(f"vs must be an (m, n) array, got shape {vs.shape}")
+    if vs.shape[0] == 0:
+        return (lambda x: x), (lambda f: f)
+    mass_vs = jax.vmap(mass_matvec)(vs)
+
+    def project_primal(x):
+        return x - (vs @ mass_matvec(x)) @ vs
+
+    def project_dual(f):
+        return f - (vs @ f) @ mass_vs
+
+    return project_primal, project_dual
+
+
 def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None, maxiter=None, tol=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
@@ -142,30 +163,7 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
     if mass_matvec is None:
         def mass_matvec(x): return x
 
-    vs_stacked = jnp.asarray(vs, dtype=b.dtype)
-    if vs_stacked.ndim != 2:
-        raise ValueError(f"vs must be an (m, n) array, got shape {vs_stacked.shape}")
-
-    def inner_product(x, y):
-        return jnp.dot(x, mass_matvec(y))
-
-    if vs_stacked.shape[0] == 0:
-        def project_primal(x):
-            return x
-
-        def project_dual(f):
-            return f
-    else:
-        mass_vs = jax.vmap(mass_matvec)(vs_stacked)
-
-        def project_primal(x):
-            coeffs = vs_stacked @ mass_matvec(x)
-            return x - coeffs @ vs_stacked
-
-        def project_dual(f):
-            coeffs = vs_stacked @ f
-            return f - coeffs @ mass_vs
-
+    project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=b.dtype), mass_matvec)
     b_proj = project_dual(b)
 
     def A_matvec_safe(x):
@@ -384,8 +382,8 @@ def solve_saddle_point_minres(
         mass_lower_matvec, b_upper, n_upper, n_lower,
         precond_upper=None, precond_lower=None,
         mass_upper_matvec=None,
-        vs_upper=None, vs_lower=None,
-        x0_upper=None,
+        vs_upper=None,
+        x0_upper=None, x0_lower=None,
         tol=None, maxiter=None):
     """
     Solve the saddle-point system using preconditioned MINRES::
@@ -409,9 +407,14 @@ def solve_saddle_point_minres(
         precond_lower: Callable, approximate inverse for lower block
             (mass matrix). Must be linear and SPD.
         mass_upper_matvec: u -> M_k @ u (k-form mass, for nullspace projection).
-        vs_upper: List of nullspace vectors for the k-form block.
-        vs_lower: List of nullspace vectors for the (k-1)-form block.
+        vs_upper: ``(m, n_upper)`` M-orthonormal nullspace vectors of the
+            k-form block, deflated from ``u``. The lower block needs none:
+            a harmonic ``v`` has ``D^T v = 0`` (both halves of ``L_k`` are
+            semidefinite), so the saddle matrix's nullspace is ``(v, 0)``.
         x0_upper: Initial guess for u.
+        x0_lower: Initial guess for sigma. A guess on ``u`` alone leaves
+            ``D^T x0_upper`` in the lower block of the initial residual, so
+            the two go together.
         tol: MINRES tolerance; ``None`` is ``mrx.sqrt_eps()``.
         maxiter: Maximum iterations.
 
@@ -425,39 +428,15 @@ def solve_saddle_point_minres(
             after the two corrected on 2026-08-24 and 2026-08-25. Reading it
             as written turns a converged solve into a failure.
     """
-    if vs_upper is None:
-        vs_upper = []
-    if vs_lower is None:
-        vs_lower = []
     if mass_upper_matvec is None:
         def mass_upper_matvec(x): return x
 
     n_total = n_upper + n_lower
 
-    # --- Nullspace projection helpers ---
-    # Pre-compute mass-applied nullspace vectors with vmap (O(n_null) matvecs),
-    # then use matrix ops for projection — matches solve_singular_cg convention.
-    if len(vs_upper) == 0:
-        def project_primal_upper(x): return x
-        def project_dual_upper(f): return f
-    else:
-        _vs_u = jnp.asarray(vs_upper)
-        _mass_vs_u = jax.vmap(mass_upper_matvec)(_vs_u)
-        def project_primal_upper(x):
-            return x - (_vs_u @ mass_upper_matvec(x)) @ _vs_u
-        def project_dual_upper(f):
-            return f - (_vs_u @ f) @ _mass_vs_u
+    def _rows(vs, n):
+        return jnp.zeros((0, n)) if vs is None or len(vs) == 0 else jnp.asarray(vs)
 
-    if len(vs_lower) == 0:
-        def project_primal_lower(x): return x
-        def project_dual_lower(f): return f
-    else:
-        _vs_l = jnp.asarray(vs_lower)
-        _mass_vs_l = jax.vmap(mass_lower_matvec)(_vs_l)
-        def project_primal_lower(x):
-            return x - (_vs_l @ mass_lower_matvec(x)) @ _vs_l
-        def project_dual_lower(f):
-            return f - (_vs_l @ f) @ _mass_vs_l
+    project_primal_upper, project_dual_upper = deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec)
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -467,29 +446,25 @@ def solve_saddle_point_minres(
 
     def project_primal(x):
         u, s = unpack(x)
-        return pack(project_primal_upper(u), project_primal_lower(s))
+        return pack(project_primal_upper(u), s)
 
     # --- Saddle-point matvec ---
     def A_matvec(x):
         u, s = unpack(x)
         u = project_primal_upper(u)
-        s = project_primal_lower(s)
         # Upper block: S @ u + D @ s
         r_upper = stiffness_matvec(u) + derivative_matvec(s)
         # Lower block: D^T @ u - M @ s
         r_lower = derivative_T_matvec(u) - mass_lower_matvec(s)
-        result = pack(project_dual_upper(r_upper),
-                      project_dual_lower(r_lower))
-        return result
+        return pack(project_dual_upper(r_upper), r_lower)
 
     # --- Block-diagonal preconditioner ---
     def precond(x):
         u, s = unpack(x)
         u = project_dual_upper(u)
-        s = project_dual_lower(s)
         pu = precond_upper(u) if precond_upper is not None else u
         ps = precond_lower(s) if precond_lower is not None else s
-        return pack(project_primal_upper(pu), project_primal_lower(ps))
+        return pack(project_primal_upper(pu), ps)
 
     # --- RHS ---
     b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
@@ -497,7 +472,9 @@ def solve_saddle_point_minres(
     # --- Initial guess ---
     if x0_upper is None:
         x0_upper = jnp.zeros(n_upper)
-    x0 = pack(project_primal_upper(x0_upper), jnp.zeros(n_lower))
+    if x0_lower is None:
+        x0_lower = jnp.zeros(n_lower)
+    x0 = pack(project_primal_upper(x0_upper), x0_lower)
 
     if maxiter is None:
         maxiter = n_total

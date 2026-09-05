@@ -67,7 +67,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import BSpline
 
-from mrx.gvec import StateField, knots_at_data
+from mrx.gvec import knots_at_data
 
 TWO_PI = 2.0 * np.pi
 
@@ -231,17 +231,3 @@ def profile_spline(st, name):
     blk = _fit_block(prof["rho"], np.asarray(prof[name], dtype=np.float64)[:, None],
                      2, np.zeros(1, dtype=int), np.zeros(1, dtype=int), deg)
     return BSpline(blk["T"], blk["coef"][0], deg)
-
-
-def load_wout_clebsch(path, n_rho=401):
-    """The ``load_clebsch`` dict of a wout file (mirror of
-    :func:`mrx.gvec.load_state_clebsch`): profiles on ``n_rho`` uniform
-    radii from the rho-splines (``chi' = iota Phi'``) and ``lam_h`` the
-    closed-form :class:`mrx.gvec.StateField` of lambda."""
-    st = read_wout(path)
-    rho = np.linspace(0.0, 1.0, n_rho)
-    dPhi = profile_spline(st, "phi").derivative()(rho)
-    return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
-                dchi=profile_spline(st, "iota")(rho) * dPhi,
-                p=profile_spline(st, "pressure")(rho),
-                lam_h=StateField(st["LA"], None, st["nfp"]))

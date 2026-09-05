@@ -109,7 +109,7 @@ print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e},
 B = res.state.B_n
 
 fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
-                        left_marker="", right_marker="")
+                        left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
 if _INTERACTIVE:

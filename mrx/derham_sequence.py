@@ -425,12 +425,7 @@ class DeRhamSequence():
         """A :class:`~mrx.mappings.SplineMap` in the sequence's scalar spline basis."""
         from mrx.mappings import SplineMap
 
-        return SplineMap(
-            coefficients=coefficients,
-            extraction=self.E(0),
-            extraction_T=self.E(0).T,
-            basis_0=self.basis_0,
-        )
+        return SplineMap(coefficients=coefficients, extraction=self.E(0), basis_0=self.basis_0)
 
     def geometry_from_spline_map(self, coefficients):
         """Geometry data from spline map coefficients, by the sum-factorised path."""
@@ -567,28 +562,31 @@ class DeRhamSequence():
         return self.apply_incidence_matrix(v, 2, dirichlet_in=dirichlet_in,
                                            dirichlet_out=dirichlet_out)
 
-    def apply_weak_grad(self, v, dirichlet=True):
+    def apply_weak_grad(self, v, dirichlet=True, guess=None):
         """The weak gradient of a 3-form: ``-M_2^{-1} D_2^T v`` (the codifferential;
-        one mass solve). A codifferential stays within one complex, so it carries a
-        single BC class ``dirichlet`` -- used for both the derivative's spaces and
-        the mass inverse (mixed classes are not a well-defined codifferential)."""
+        one mass solve, ``guess`` warm-starts it). A codifferential stays within
+        one complex, so it carries a single BC class ``dirichlet`` -- used for
+        both the derivative's spaces and the mass inverse (mixed classes are not
+        a well-defined codifferential)."""
         dv_dual = -self.apply_derivative_matrix(
             v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 2, dirichlet=dirichlet, guess=guess)
 
-    def apply_weak_curl(self, v, dirichlet=True):
+    def apply_weak_curl(self, v, dirichlet=True, guess=None):
         """The weak curl of a 2-form: ``M_1^{-1} D_1^T v`` (the codifferential; one
-        mass solve). ``dirichlet`` is the single BC class of the operator."""
+        mass solve, ``guess`` warm-starts it). ``dirichlet`` is the single BC
+        class of the operator."""
         dv_dual = self.apply_derivative_matrix(
             v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 1, dirichlet=dirichlet, guess=guess)
 
-    def apply_weak_div(self, v, dirichlet=True):
+    def apply_weak_div(self, v, dirichlet=True, guess=None):
         """The weak divergence of a 1-form: ``-M_0^{-1} D_0^T v`` (the codifferential;
-        one mass solve). ``dirichlet`` is the single BC class of the operator."""
+        one mass solve, ``guess`` warm-starts it). ``dirichlet`` is the single BC
+        class of the operator."""
         dv_dual = -self.apply_derivative_matrix(
             v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet)
+        return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet, guess=guess)
 
     def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True, operators=None):
         """Apply the metric-lumped mass atom for ``M_k`` to a vector ``v``."""
@@ -1077,7 +1075,7 @@ class DeRhamSequence():
         B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
         return self.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False)
 
-    def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False):
+    def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False, sigma_guess=None):
         """
         Apply the Leray projection to a 1 or 2-form v.
 
@@ -1107,8 +1105,14 @@ class DeRhamSequence():
             The vector form DoFs
         k : int
             The degree of the vector form
-        p_guess : jnp.ndarray 
+        p_guess : jnp.ndarray
             Guess for pressure form DoFs
+        sigma_guess : jnp.ndarray
+            k = 2 only: guess for the gradient part ``v - v_out`` the
+            saddle solve returns in its lower block, i.e. the previous
+            call's ``v - v_out``. Warm-starts that block alongside
+            ``p_guess`` (a guess on ``p`` alone leaves ``D^T p_guess`` in
+            the initial residual's lower block).
         dirichlet_p : bool
             k = 1 only: solve the multiplier in the Dirichlet k=0 space.
             k = 2 raises: its multiplier is the 3-form of the Dirichlet
@@ -1139,9 +1143,12 @@ class DeRhamSequence():
             # Assumes dirichlet == True on all spaces.
             div_v = self.apply_derivative_matrix(
                 v, 2, dirichlet_in=True, dirichlet_out=True)
-            q = self.apply_inverse_laplacian(
-                div_v, 3, dirichlet=True, guess=-p_guess)
-            σ = -self.apply_weak_grad(q, True)
+            # The saddle solve's lower unknown IS the gradient part
+            # sigma = M_2^-1 D_2^T q (its second block row); it used to be
+            # discarded and recomputed by a mass solve.
+            q, σ, _ = op.apply_inverse_laplacian_saddle(
+                self, self._require_operators(None), div_v, 3, 0.0, dirichlet=True,
+                guess=-p_guess, sigma_guess=sigma_guess, tol=self.tol, maxiter=self.maxiter)
             return v - σ, -q
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space

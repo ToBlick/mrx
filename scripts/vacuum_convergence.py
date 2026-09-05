@@ -188,8 +188,7 @@ def run_rung(cli):
         mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.gvec import load_clebsch
-    from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
-                                        potential_two_form)
+    from mrx.initial_conditions import (clebsch_potential_form, potential_two_form)
     from mrx.nullspace import compute_nullspaces, estimate_spectral_gap, harmonic_rayleigh
     from mrx.relaxation import compute_force
     from mrx.vmec import read_wout
@@ -248,9 +247,10 @@ def run_rung(cli):
 
     # --- the wout field in V_2^h --------------------------------------------
     t3 = time.perf_counter()
+    from mrx.relaxation import compute_divergence_norm  # noqa: PLC0415
     cb = load_clebsch(cli.geometry)
     Bw_hat, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
-    div_w = divergence_norm(seq, Bw_hat)
+    div_w = float(compute_divergence_norm(Bw_hat, seq))
     Bw = Bw_hat * norm                                           # Tesla, one field period
     t4 = time.perf_counter()
     res.update(t_ic=t4 - t3, B_norm=norm, div_B_w=div_w, wall_discarded=wall)

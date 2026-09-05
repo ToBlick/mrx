@@ -17,11 +17,16 @@ returns `(F, p, J, X, JxX)`:
    k=1 mass solve (`apply_projection_matrix`, `apply_inverse_mass_matrix`),
    the auxiliary variable of the helicity-conserving scheme below.
 3. `JxX = M_2^{-1} cross_product_load(J, X, ...)`: a k=2 mass solve.
-4. `F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess)`: removes
-   the gradient part with one k=3 Hodge solve; `p` is the pressure.
+4. `F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess,
+   sigma_guess=sigma_guess)`: removes the gradient part with one k=3 Hodge
+   solve; `p` is the pressure. The solve is the saddle MINRES in `(p,
+   sigma)` and its lower unknown `sigma = M_2^{-1} D_2^T p` IS the gradient
+   part, so `F = JxX - sigma` costs no further mass solve.
 
 `F` is the Riesz representative of `-∇E` in the `M_2` inner product. Every
-solve is warm-started from the previous step's value.
+solve is warm-started from the previous step's value: `J`, `H`, `JxX`, `p`,
+and `sigma` as the previous `JxX - F` (a warm start on `p` alone leaves
+`D^T p` in the initial residual's lower block, so the two go together).
 
 ## 2. The step
 
@@ -164,11 +169,10 @@ the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
 Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `E`, without the auxiliary field).
 
-`State` holds `B_n`, the warm-start guesses (`p`, `p_v`, `H`, `JxH`, `E`,
-`A`), `F_prev`, `MF_prev`, the four history arrays, `dt`, `dt_star`,
-`cfl_max`, `eta`, `resistive_info`, `resistive_delta`, `resistive_count`,
-`resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`, `picard_iterations`,
-`picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
+`State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`, `p_v`,
+`H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`, the four history arrays,
+`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`, `lbfgs_sy`,
+`picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first secant and CG coefficient see a true
 previous gradient. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
@@ -269,10 +273,9 @@ energy, not fluxes, `ι`, or helicity.
 | `make_profiles(iota0, iota1, iota_exp, flux_exp)` | `ι = ι₀ + (ι₁-ι₀) ρ^e`, `Φ' = ρ^q` |
 | `make_lambda(modes)` | `λ` from `[(m, n, amp), ...]` |
 | `analytic_profile_form(iota, dPhi, dlam)` | the reference 2-form above; the initial condition of an analytic geometry file, whose `profile` block supplies the numbers |
-| `clebsch_form(cb)` | the same pointwise 2-form from an equilibrium file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`: a GVEC state or a VMEC wout, profiles and lambda in closed form) -- the reference the tests check the potential route against; not the production IC |
 | `clebsch_potential_form(cb)`, `potential_two_form(seq, A_ref)` | the reference 1-form `A' = (-LA dPhi_dr, 2π Φ, -(2π/nfp) χ)` (the GVEC potential with the gauge term `d(Φ LA)` dropped; `Φ`, `χ` integrated from the profiles) histopolated on the FREE 1-form space -- its wall trace `2π Φ_edge` is the toroidal flux, the Dirichlet harmonic content -- and `B = dA'` by the exact incidence curl into the Dirichlet 2-form space: `div B = 0` to round-off, no Leray step, and no derivative of the sampled `LA` is ever taken (the discrete `d` differentiates), so a coarse export cannot inject grid-scale current through its interpolant; the initial condition of every equilibrium file |
 | `project_reference_two_form(seq, omega_ref)` | pushes forward `B = DF ω / J` and L²-projects onto the Dirichlet k=2 space |
-| `leray_clean(seq, B)`, `divergence_norm(seq, B)` | remove and measure the projection's divergence |
+| `leray_clean(seq, B)`, `compute_divergence_norm(B, seq)` (`mrx.relaxation`) | remove and measure the projection's divergence |
 
 Units from a GVEC file: `Φ' = 2π dPhi_dr`, `ι = dchi_dr / (nfp · dPhi_dr)`,
 `λ = LA / 2π`, because MRX's `ζ` spans one field period and the file's

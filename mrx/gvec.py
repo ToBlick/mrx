@@ -24,7 +24,7 @@ export of W7-X FMM002 to round-off (2026-08-27).
 
 Two conventions the state carries:
 
-* **Handedness.** ``mrx.mappings.stellarator_map`` uses
+* **Handedness.** :func:`_map_with_sign` uses
   ``Y = -R sin(2 pi zeta/nfp)``, which mirrors raw GVEC data
   (``det DF < 0``). :func:`build_gvec_map` measures the sign instead of
   assuming it.
@@ -47,7 +47,7 @@ import numpy as np
 from scipy.interpolate import BSpline
 
 from mrx.precision import DTYPE
-from mrx.differential_forms import DiscreteFunction
+from mrx.differential_forms import DiscreteFunction, jacobian_determinant
 from mrx.projectors import _conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -186,7 +186,7 @@ def _det_DF(map_func, n=64, seed=0):
     xs = jnp.asarray(np.column_stack([
         rng.uniform(0.15, 0.95, n), rng.uniform(0.0, 1.0, n),
         rng.uniform(0.0, 1.0, n)]))
-    dets = jax.vmap(lambda x: jnp.linalg.det(jax.jacfwd(map_func)(x)))(xs)
+    dets = jax.vmap(jacobian_determinant(map_func))(xs)
     return np.asarray(dets)
 
 
@@ -355,19 +355,6 @@ def build_gvec_map(path, seq, sign=None, nfp=None):
                        f"sampled ranges {tried}")
 
 
-def load_state_clebsch(path, n_rho=401):
-    """The ``load_clebsch`` dict of a state file: profiles on ``n_rho``
-    uniform radii from the profile splines (``chi' = iota Phi'``) and
-    ``lam_h`` the closed-form :class:`StateField` of ``LA``."""
-    st = read_state(path)
-    rho = np.linspace(0.0, 1.0, n_rho)
-    dPhi = profile_spline(st, "phi").derivative()(rho)
-    return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
-                dchi=profile_spline(st, "iota")(rho) * dPhi,
-                p=profile_spline(st, "pressure")(rho),
-                lam_h=StateField(st["LA"], st["sp"], st["nfp"]))
-
-
 def load_clebsch(path):
     """Read the radial profiles, a lambda callable and p(rho) from a file.
 
@@ -384,18 +371,22 @@ def load_clebsch(path):
     holds only when both come from one function.
 
     Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (arrays
-    on ``rho``) and ``lam_h`` (the closed-form :class:`StateField` of
-    ``LA``): a GVEC state
-    (``.dat``) through :func:`load_state_clebsch`, a VMEC wout (``.nc``)
-    through :func:`mrx.vmec.load_wout_clebsch`; anything else raises.
+    on 401 uniform radii from the profile splines, ``chi' = iota Phi'``) and
+    ``lam_h`` (the closed-form :class:`StateField` of ``LA``), from the
+    state of :func:`read_equilibrium` (a GVEC state or a VMEC wout, whose
+    profile splines live in ``rho = sqrt(s)``, :func:`mrx.vmec.profile_spline`).
     """
-    if path.endswith(".dat"):
-        return load_state_clebsch(path)
+    st = read_equilibrium(path)
     if path.endswith(".nc"):
-        from mrx.vmec import load_wout_clebsch  # noqa: PLC0415  (imports this module)
-        return load_wout_clebsch(path)
-    raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
-                     "files (.dat) and VMEC wout files (.nc)")
+        from mrx.vmec import profile_spline as spline  # noqa: PLC0415  (imports this module)
+    else:
+        spline = profile_spline
+    rho = np.linspace(0.0, 1.0, 401)
+    dPhi = spline(st, "phi").derivative()(rho)
+    return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
+                dchi=spline(st, "iota")(rho) * dPhi,
+                p=spline(st, "pressure")(rho),
+                lam_h=StateField(st["LA"], st.get("sp"), st["nfp"]))
 
 
 # ---------------------------------------------------------------------------

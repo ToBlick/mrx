@@ -71,8 +71,8 @@ import matplotlib.pyplot as plt
 import mrx
 from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
-from mrx.initial_conditions import (clebsch_potential_form, divergence_norm,
-                                    potential_two_form, resonant_rho)
+from mrx.relaxation import compute_divergence_norm
+from mrx.initial_conditions import (clebsch_potential_form, potential_two_form, resonant_rho)
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
@@ -97,7 +97,7 @@ print(f"[ic] the file's |iota| = nfp n / m = {nfp * n / m:.4f} chain sits at "
       f"rho = {rho_res:.3f} (seed rho0 {rho0:g})")
 B_unseeded, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 B_seeded, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
-print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {divergence_norm(seq, B_seeded):.2e}, "
+print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {compute_divergence_norm(B_seeded, seq):.2e}, "
       f"wall-normal part {wall:.1e}")
 
 # %%

@@ -182,6 +182,7 @@ def main():
     from mrx.geometry import build_sequence, parse_r_refine, geometry_nfp
     from mrx.geometry import map_jacobian_at
     from mrx.plotting import render_section
+    from mrx.plotstyle import SectionLimits
     from mrx.poincare import (logical_field, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify,
                               require_zeta_parameterisation)
@@ -246,7 +247,7 @@ def main():
         lo = min(float(z[f"{n}_iota"][z[f"{n}_shown"]].min()) for n in which)
         hi = max(float(z[f"{n}_iota"][z[f"{n}_shown"]].max()) for n in which)
         # Per-field pressure gauge, then the global p range: pin the pressure
-        # ordinate across fields and planes exactly like iota_lim above, so a
+        # ordinate across fields and planes exactly like the iota limits, so a
         # re-render is comparable frame to frame.
         presses_by, pmin_by, all_p = {}, {}, []
         for name in which:
@@ -283,8 +284,8 @@ def main():
                     profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
                     logical=(z[f"{tag}_logr"], z[f"{tag}_logth"]),
                     pressure=None if presses[plane] is None else presses[plane] - p_min,
-                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])], iota_lim=(lo, hi),
-                    limits=None if p_lim is None else {"p": p_lim},
+                    pressure_label=PRESSURE_LABELS[str(z["pressure_kind"])],
+                    limits=SectionLimits(iota=(lo, hi), p=p_lim),
                     iota_scatter=z[f"{name}_iota_scatter"] if f"{name}_iota_scatter" in z else None,
                     profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
                 path = os.path.join(out, f"poincare_{name}_zeta{plane:g}.png")
@@ -354,7 +355,7 @@ def main():
                              for plane in planes}
         all_pmin[name] = pressure_gauge(cli.pressure, all_presses[name], keep)
     # ONE pressure scale across every rendered field and every plane, for the
-    # same reason iota_lim is one: ic, final, the reconnection series and the
+    # same reason the iota limits are one: ic, final, the reconnection series and the
     # planes are then comparable at a glance.
     limits = {}
     ps = [100.0 * (all_presses[n][plane] - all_pmin[n])[traced[n][1]]
@@ -365,7 +366,7 @@ def main():
                   for plane in planes}
     # A movie holds EVERY other axis fixed across frames too: the section
     # window, the split line (the FIRST frame's axis) and the profile abscissa,
-    # all from the union over frames; iota_lim already is.
+    # all from the union over frames; the iota limits already are.
     if movie:
         first = which[0]
         for plane in planes:
@@ -395,7 +396,7 @@ def main():
                          f"traced in {cli.precision}",
                 axis_RZ=(aR, aZ), profile_x=a_eff,
                 profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                iota_lim=(lo, hi), limits=limits.get(plane),
+                limits=SectionLimits(iota=(lo, hi), **limits.get(plane, {})),
                 iota_scatter=res["iota_scatter"],
                 profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
             path = os.path.join(out, (f"frame_zeta{plane:g}_{frame:04d}.png" if movie

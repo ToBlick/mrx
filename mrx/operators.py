@@ -18,12 +18,6 @@ def _nullspace_vectors(operators, k: int, dirichlet: bool):
     return get_nullspace(operators, k, dirichlet)
 
 
-def _saddle_nullspaces(seq, operators, k: int, dirichlet: bool):
-    """Return upper/lower nullspace arrays for the saddle-point system."""
-    from mrx.nullspace import get_saddle_point_nullspaces
-    return get_saddle_point_nullspaces(seq, operators, k, dirichlet)
-
-
 class SequenceOperators(eqx.Module):
     """Everything built FROM a geometry: preconditioners and harmonic forms.
 
@@ -1038,66 +1032,53 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         return (u, info) if return_info else u
 
     if k == 3:
-        return apply_inverse_shifted_laplacian(
+        u, _, info = apply_inverse_laplacian_saddle(
             seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
-            tol=tol, maxiter=maxiter, return_info=return_info)
+            tol=tol, maxiter=maxiter)
+        return (u, info) if return_info else u
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
         tol=tol, maxiter=maxiter, return_info=return_info)
 
 
-def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
-                                          eps: float, dirichlet: bool = True, guess=None,
-                                          tol: Optional[float] = None,
-                                          maxiter: Optional[int] = None,
-                                          return_info: bool = False):
-    """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
+def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: int,
+                                   eps: float, dirichlet: bool = True, guess=None,
+                                   sigma_guess=None, tol: Optional[float] = None,
+                                   maxiter: Optional[int] = None):
+    """The saddle-point MINRES on ``L_k + eps M_k`` (``k >= 1``): ``(u, sigma, info)``.
 
-    ``k = 0``: deflated PCG with the k=0 Laplacian atom (measured in its
-    favour against the shifted diagonal on the shifted operator). ``k >= 1``:
-    block-diagonal MINRES on the saddle form, the Laplacian atom of level
-    ``k`` on the upper block (the Schur complement of the saddle system IS
-    ``L_k``, which is what the atom approximates, and MINRES needs its
-    preconditioner SPD, which the atom is) and the mass atom of level
-    ``k - 1`` on the lower block.
+        | S_k + eps M_k   D_{k-1} | | u     |   | rhs |
+        | D_{k-1}^T      -M_{k-1} | | sigma | = | 0   |
+
+    ``u`` solves ``(L_k + eps M_k) u = rhs`` and ``sigma = M_{k-1}^-1
+    D_{k-1}^T u`` is its weak codifferential -- for the k=3 solve of the
+    Leray projection the gradient part it removes, handed back here rather
+    than recomputed by a mass solve. Block-diagonal preconditioner: the
+    Laplacian atom of level ``k`` on the upper block (the Schur complement
+    of the saddle system IS ``L_k``, which is what the atom approximates,
+    and MINRES needs its preconditioner SPD, which the atom is) and the
+    mass atom of level ``k - 1`` on the lower block. At ``eps = 0`` the
+    harmonic forms of level ``k`` are deflated from the upper block and the
+    ``eps M_k`` term is not applied; the lower block needs no deflation
+    (see :func:`~mrx.solvers.solve_saddle_point_minres`). ``guess`` and
+    ``sigma_guess`` warm-start the two blocks together.
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    if eps == 0:
+        vs_upper = _nullspace_vectors(operators, k, dirichlet)
 
-    if k == 0:
-        precond_upper = _laplacian_atom(operators, 0, dirichlet).apply
-        vs = _nullspace_vectors(
-            operators, 0, dirichlet) if eps == 0 else jnp.zeros((0, rhs.shape[0]))
-        u, info = solve_singular_cg(
-            lambda x: apply_stiffness(
-                seq, x, 0, dirichlet=dirichlet)
-            + eps * apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
-            rhs,
-            mass_matvec=(
-                lambda x: apply_mass_matrix(
-                    seq, x, 0, dirichlet=dirichlet)
-            ) if eps == 0 else None,
-            precond_matvec=precond_upper,
-            x0=guess,
-            vs=vs,
-            tol=tol,
-            maxiter=maxiter,
-        )
-        return (u, info) if return_info else u
+        def stiffness_matvec(x):
+            return apply_stiffness(seq, x, k, dirichlet=dirichlet)
+    else:
+        vs_upper = jnp.zeros((0, rhs.shape[0]))
 
-    vs_upper, vs_lower = _saddle_nullspaces(
-        seq, operators, k, dirichlet) if eps == 0 else (
-            jnp.zeros((0, rhs.shape[0])), jnp.zeros((0, 0)))
-    n_upper = seq.n(k, dirichlet)
-    n_lower = seq.n(k-1, dirichlet)
-    precond_lower = _mass_atom(operators, k - 1, dirichlet).apply
-    precond_upper = _laplacian_atom(operators, k, dirichlet).apply
-
-    u, sigma, info = solve_saddle_point_minres(
-        stiffness_matvec=lambda x: apply_stiffness(
-            seq, x, k, dirichlet=dirichlet)
-        + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
+        def stiffness_matvec(x):
+            return (apply_stiffness(seq, x, k, dirichlet=dirichlet)
+                    + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet))
+    return solve_saddle_point_minres(
+        stiffness_matvec=stiffness_matvec,
         derivative_matvec=lambda s: apply_derivative_matrix(
             seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
         derivative_T_matvec=lambda u: apply_derivative_matrix(
@@ -1106,18 +1087,62 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
         mass_lower_matvec=lambda s: apply_mass_matrix(
             seq, s, k - 1, dirichlet=dirichlet),
         b_upper=rhs,
-        n_upper=n_upper,
-        n_lower=n_lower,
-        precond_upper=precond_upper,
-        precond_lower=precond_lower,
+        n_upper=seq.n(k, dirichlet),
+        n_lower=seq.n(k - 1, dirichlet),
+        precond_upper=_laplacian_atom(operators, k, dirichlet).apply,
+        precond_lower=_mass_atom(operators, k - 1, dirichlet).apply,
         mass_upper_matvec=lambda x: apply_mass_matrix(
             seq, x, k, dirichlet=dirichlet),
         vs_upper=vs_upper,
-        vs_lower=vs_lower,
         x0_upper=guess,
+        x0_lower=sigma_guess,
         tol=tol,
         maxiter=maxiter,
     )
+
+
+def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: int,
+                                    eps: float, dirichlet: bool = True, guess=None,
+                                    tol: Optional[float] = None,
+                                    maxiter: Optional[int] = None,
+                                    return_info: bool = False):
+    """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
+
+    ``k = 0``: deflated PCG with the k=0 Laplacian atom (measured in its
+    favour against the shifted diagonal on the shifted operator); at ``eps
+    = 0`` the harmonic forms are deflated and the mass term is not applied.
+    ``k >= 1``: the saddle-point MINRES of
+    :func:`apply_inverse_laplacian_saddle`, ``u`` only.
+    """
+    operators = _require_bundle(operators)
+    tol = seq.tol if tol is None else tol
+    maxiter = seq.maxiter if maxiter is None else maxiter
+
+    if k == 0:
+        if eps == 0:
+            vs = _nullspace_vectors(operators, 0, dirichlet)
+
+            def A_matvec(x):
+                return apply_stiffness(seq, x, 0, dirichlet=dirichlet)
+
+            def mass_matvec(x):
+                return apply_mass_matrix(seq, x, 0, dirichlet=dirichlet)
+        else:
+            vs = jnp.zeros((0, rhs.shape[0]))
+            mass_matvec = None
+
+            def A_matvec(x):
+                return (apply_stiffness(seq, x, 0, dirichlet=dirichlet)
+                        + eps * apply_mass_matrix(seq, x, 0, dirichlet=dirichlet))
+        u, info = solve_singular_cg(
+            A_matvec, rhs, mass_matvec=mass_matvec,
+            precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
+            x0=guess, vs=vs, tol=tol, maxiter=maxiter)
+        return (u, info) if return_info else u
+
+    u, _, info = apply_inverse_laplacian_saddle(
+        seq, operators, rhs, k, eps, dirichlet=dirichlet, guess=guess,
+        tol=tol, maxiter=maxiter)
     return (u, info) if return_info else u
 
 
@@ -1189,91 +1214,42 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     return (x, info) if return_info else x
 
 
-def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
-                          dirichlet: bool = True, guess=None,
-                          tol: Optional[float] = None,
-                          maxiter: Optional[int] = None):
-    """Apply the Hodge Laplacian using explicit operator data.
+def _laplacian_apply(seq, v, k: int, dirichlet: bool, minv):
+    """``S_k v + D_{k-1} minv(D_{k-1}^T v, k - 1)``: the Hodge Laplacian with
+    ``minv(w, j)`` standing in for ``M_j^{-1} w`` (``S_3 = 0``, ``L_0 = S_0``)."""
+    if k not in (0, 1, 2, 3):
+        raise ValueError("k must be 0, 1, 2 or 3")
+    strong = apply_stiffness(seq, v, k, dirichlet=dirichlet)
+    if k == 0:
+        return strong
+    Dt_v = apply_derivative_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
+                                   dirichlet_out=dirichlet, transpose=True)
+    return strong + apply_derivative_matrix(seq, minv(Dt_v, k - 1), k - 1,
+                                            dirichlet_in=dirichlet, dirichlet_out=dirichlet)
 
-    This uses bundled mass, weak derivative, and stiffness operators.
-    """
-    match k:
-        case 0:
-            return apply_stiffness(seq, v, 0, dirichlet=dirichlet)
-        case 1:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_inverse_mass_matrix(
-                seq, operators, Dt_v, 0, dirichlet=dirichlet,
-                guess=guess, tol=tol, maxiter=maxiter)
-            return apply_stiffness(seq, v, 1, dirichlet=dirichlet) + \
-                apply_derivative_matrix(
-                    seq, Minv_Dt_v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case 2:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_inverse_mass_matrix(
-                seq, operators, Dt_v, 1, dirichlet=dirichlet,
-                guess=guess, tol=tol, maxiter=maxiter)
-            return apply_stiffness(seq, v, 2, dirichlet=dirichlet) + \
-                apply_derivative_matrix(
-                    seq, Minv_Dt_v, 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case 3:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_inverse_mass_matrix(
-                seq, operators, Dt_v, 2, dirichlet=dirichlet,
-                guess=guess, tol=tol, maxiter=maxiter)
-            return apply_derivative_matrix(
-                seq, Minv_Dt_v, 2, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
+
+def apply_laplacian(seq, operators: SequenceOperators, v, k: int,
+                    dirichlet: bool = True, guess=None,
+                    tol: Optional[float] = None,
+                    maxiter: Optional[int] = None):
+    """Apply the Hodge Laplacian ``L_k = S_k + D M_{k-1}^{-1} D^T``, the weak
+    half through a mass solve (``guess``, ``tol``, ``maxiter`` are its)."""
+    return _laplacian_apply(
+        seq, v, k, dirichlet,
+        lambda w, j: apply_inverse_mass_matrix(seq, operators, w, j, dirichlet=dirichlet,
+                                               guess=guess, tol=tol, maxiter=maxiter))
 
 
 def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
-                                 dirichlet: bool = True):
+                           dirichlet: bool = True):
     """Linear approximation of the Hodge Laplacian apply.
 
     Replaces the exact ``M_{k-1}^{-1}`` in the Schur term of ``L_k`` with one
-    apply of the configured mass preconditioner. The result is a fully linear SPD
-    matvec: safe to nest inside Krylov iterations and to use as a
-    preconditioner or a diagnostic ``L_k``-apply.  It is not exactly
-    ``L_k`` unless the metric is tensor-separable on the reference domain.
+    apply of the mass atom. The result is a fully linear SPD matvec: safe to
+    nest inside Krylov iterations and to use as a preconditioner or a
+    diagnostic ``L_k``-apply. It is not exactly ``L_k`` unless the metric is
+    tensor-separable on the reference domain.
     """
-    match k:
-        case 0:
-            return apply_stiffness(seq, v, 0, dirichlet=dirichlet)
-        case 1:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 0,
-                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 0, dirichlet=dirichlet)
-            return apply_stiffness(seq, v, 1, dirichlet=dirichlet) + \
-                apply_derivative_matrix(
-                    seq, Minv_Dt_v, 0,
-                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case 2:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 1,
-                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 1, dirichlet=dirichlet)
-            return apply_stiffness(seq, v, 2, dirichlet=dirichlet) + \
-                apply_derivative_matrix(
-                    seq, Minv_Dt_v, 1,
-                    dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case 3:
-            Dt_v = apply_derivative_matrix(
-                seq, v, 2,
-                dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-            Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 2, dirichlet=dirichlet)
-            return apply_derivative_matrix(
-                seq, Minv_Dt_v, 2,
-                dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        case _:
-            raise ValueError("k must be 0, 1, 2 or 3")
-
-
-# ---------------------------------------------------------------------------
+    return _laplacian_apply(
+        seq, v, k, dirichlet,
+        lambda w, j: apply_mass_matrix_preconditioner(seq, operators, w, j, dirichlet=dirichlet))

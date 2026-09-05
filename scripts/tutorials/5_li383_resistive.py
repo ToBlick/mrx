@@ -145,7 +145,7 @@ B = res.state.B_n
 # %%
 # Now we plot the force residual against the energy over the ideal tail.
 fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
-                        left_marker="", right_marker="")
+                        left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
 if _INTERACTIVE:

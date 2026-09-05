@@ -730,9 +730,9 @@ def ladder_figure(j):
         _, (a, ar) = plot_twin_axis(
             m, 100.0 * np.asarray(q["beta_vol"]), x_left=x / 1000.0, x_right=tq,
             left_label=r"$\|F\|_M$", right_label=r"$\beta_{\mathrm{vol}}$, $|H - H_0| / |H_0|$ $(\%)$",
-            left_log=True, right_log=False, left_color=black, right_color=purple,
-            left_plot_kwargs=dict(thin, linestyle="-"),
-            right_plot_kwargs=dict(thin, linestyle="-", label=r"$\beta_{\mathrm{vol}}$"),
+            left_log=True, right_log=False,
+            left_plot_kwargs=dict(thin, linestyle="-", color=black),
+            right_plot_kwargs=dict(thin, linestyle="-", color=purple, label=r"$\beta_{\mathrm{vol}}$"),
             x_label=r"step / $10^3$", ax=ax)
         a.fill_between(x / 1000.0, lo, hi, color=black, alpha=0.2, lw=0)
         ar.plot(tq, 100.0 * np.abs(h - h[0]) / abs(h[0]), color=teal, linestyle="--", lw=1.0,

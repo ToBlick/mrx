@@ -67,7 +67,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.geometry import build_sequence, geometry_nfp
-from mrx.initial_conditions import divergence_norm
+from mrx.relaxation import compute_divergence_norm
 from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
 from mrx.plotting import get_2d_grids, plot_torus, render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
@@ -88,7 +88,7 @@ B = B / float(seq.l2_norm(B, 2))
 _, _, J, _, _ = compute_force(B, seq)
 ratio = float(seq.l2_norm(J, 1))
 rayleigh = float(harmonic_rayleigh(seq, B, 2))
-print(f"[vacuum] ||div B|| = {divergence_norm(seq, B):.2e}, "
+print(f"[vacuum] ||div B|| = {compute_divergence_norm(B, seq):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
       f"Rayleigh quotient of the Hodge Laplacian = {rayleigh:.2e}")
 if ratio > 1e-4:
