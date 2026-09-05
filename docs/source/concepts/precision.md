@@ -26,9 +26,9 @@ The module exports:
 | name | value |
 |---|---|
 | `DTYPE` | the working dtype (`mrx.DTYPE`) |
-| `RESIDUAL_DTYPE` | float64 |
+| `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: the float32-only configuration of a machine without float64 (a TPU), plain float32 solves |
 | `REFINE` | `DTYPE != RESIDUAL_DTYPE`: the solves refine |
-| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32, 1e-10 at float64 |
+| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, 1e-6 for plain float32 |
 | `INNER_TOL` | 1e-4, the relative tolerance of one working-precision pass |
 | `MAX_PASSES` | 6 |
 | `EPS`, `eps(c)`, `sqrt_eps(c)`, `solve_tol(c)` | the machine epsilon of the working dtype and its multiples |

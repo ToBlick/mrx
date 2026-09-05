@@ -21,6 +21,8 @@ force; measured 2026-09-04 on li383 (16,32,32) p=3, ``|div F| / |F| =
 float32 solve reaches :data:`SOLVE_TOL` in a few passes, and the force is
 formed in float64 before it is stored. 64-bit mode is therefore always
 on; Python scalars stay weakly typed and do not promote.
+``MRX_RESIDUAL_DTYPE=float32`` is the configuration of a machine without
+float64 (a TPU): plain float32 solves, default tolerance 1e-6.
 
 Every tolerance in the package that depends on roundoff is expressed
 through :func:`eps` so it scales with the working precision. Tolerances
@@ -54,21 +56,30 @@ jax.config.update("jax_default_matmul_precision", "highest")
 #: The working floating-point dtype.
 DTYPE = jnp.dtype(_NAME)
 
-#: The dtype of every solve's residual and accumulated solution.
-RESIDUAL_DTYPE = jnp.dtype("float64")
+_RES_NAME = os.environ.get("MRX_RESIDUAL_DTYPE", "float64")
+if _RES_NAME not in ("float32", "float64"):
+    raise ValueError(
+        f"MRX_RESIDUAL_DTYPE={_RES_NAME!r}; expected 'float32' or 'float64'")
+
+#: The dtype of every solve's residual and accumulated solution: float64
+#: unless ``MRX_RESIDUAL_DTYPE=float32`` asks for the float32-only
+#: configuration of a machine without float64 (a TPU), where the solves
+#: are plain float32 Krylov iterations.
+RESIDUAL_DTYPE = jnp.dtype(_RES_NAME)
 
 #: Whether the solves refine: a float64 residual against a float32 Krylov
-#: solve. At a float64 working dtype the two coincide and the solve is plain.
+#: solve. When the two dtypes coincide the solve is plain.
 REFINE = DTYPE != RESIDUAL_DTYPE
 
 #: Machine epsilon of the working dtype, as a Python float.
 EPS = float(np.finfo(DTYPE).eps)
 
 #: Default relative residual of a solve, in the residual precision: 1e-8 at
-#: a float32 working dtype (reached by refinement; the float32 solve alone
-#: reaches 1e-7 on the production systems), 1e-10 at float64. Until
-#: 2026-09-04 it was sqrt(eps) of the working dtype, 3.5e-4 at float32.
-SOLVE_TOL = 1e-8 if REFINE else 1e-10
+#: a float32 working dtype (reached by refinement), 1e-10 at float64, 1e-6
+#: for a plain float32 solve (its iteration reaches 1e-7 on the production
+#: systems). Until 2026-09-04 it was sqrt(eps) of the working dtype,
+#: 3.5e-4 at float32.
+SOLVE_TOL = 1e-8 if REFINE else (1e-10 if DTYPE == jnp.dtype("float64") else 1e-6)
 
 #: Relative tolerance of one float32 pass of a refined solve: each pass
 #: takes the residual down by this factor, so a warm start with a 1% defect
