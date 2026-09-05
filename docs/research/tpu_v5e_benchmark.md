@@ -54,8 +54,8 @@ worth per kernel; what they are worth per step is the re-measured table below.
 | `compute_nullspaces`, `gap_sweeps=0` | 34.5 s | **10.9 s** | 19.4 s |
 
 The setup rows survive the resolution change. The relaxation row that used to
-be here was withdrawn for the reason below, and re-measured there: **1.800 s a
-step on the v5e against 0.352 s on the H200.**
+be here was withdrawn for the reason below, and re-measured there: at matched
+tolerance, **2.862 s a step on the v5e against 0.298 s on the H200.**
 
 `compute_nullspaces` is the one place the v5e is now clearly the worst of the
 three, at 3.2x the CPU's time. It is not a dense construction: it is two
@@ -86,8 +86,9 @@ off the slope between two step counts, reporting compile, per-step and
 per-call overhead as separate rows.
 
 Re-measured on the H200 at `(12,24,24)` p=3 float32, the same configuration the
-withdrawn table used, with the corrected code. What one timed call is actually
-made of:
+withdrawn table used -- which means the float32 tolerance of the day,
+`sqrt(eps) = 3.5e-4`, a fact that matters below -- with the corrected code.
+What one timed call is actually made of:
 
 | component of one 10-step call | seconds |
 |---|---|
@@ -106,21 +107,63 @@ The setup rows re-measure at 60.7 s and 18.7 s against the 65.1 s and 19.4 s in
 the table above, so the harness itself was sound; the relaxation row was the
 only bad one.
 
-**The v5e is now measured too, and it does not clear that bar** (2026-09-05,
-`(12,24,24)` p=3 float32, per step from the slope between a 5-step and a 10-step
-call so no compile is folded in):
+**The v5e is now measured too, and it does not clear that bar.**
 
-| component of one 10-step call | v5e | one H200 |
+The first version of this comparison, published on 2026-09-05 as 1.800 s
+against 0.352 s and **5.1x**, was itself confounded and is withdrawn. The two
+backends were not solving to the same tolerance: the H200 ran at the float32
+default of the day, `sqrt(eps) = 3.5e-4`, and the v5e at `SOLVE_TOL = 1e-6`.
+A tolerance is a work knob, so that comparison charged the v5e for iterations
+the H200 was never asked to do. Correcting it does not rescue the TPU -- at
+matched tolerance the gap gets **wider**, which is the only reason worth
+trusting a correction that goes this way.
+
+Re-measured 2026-09-05, `(12,24,24)` p=3, **both backends plain float32 with
+`MRX_RESIDUAL_DTYPE=float32` and `SOLVE_TOL = 1e-6`**, on the same tree
+(`6af991f`):
+
+| | v5e | one H200 |
 |---|---|---|
-| compile, first call only | 42.66 s | 82.54 s |
-| the steps themselves, per step | **1.800 s** | **0.352 s** |
+| inverse-mass CG iterations, k=1 / k=2 | 95 / 98 | 95 / 98 |
+| one compile-free 5-step call | 14.308 s | 1.489 s |
+| **per step** | **2.862 s** | **0.298 s** |
+| compile, first call only | 81.44 s | 60.95 s |
 
-The H200 takes the step by **5.1x**. The withdrawn v5e figure of 6.15 s was
-measured the contaminated way, so the direction it implied was right by
-accident; the size was not.
+**The H200 takes the step by 9.6x.** The identical iteration counts are what
+say the tolerance is no longer the variable: the two machines are now doing
+the same arithmetic, and one of them does it nine times faster.
+
+Per step here is one compile-free call divided by its five steps, not the
+slope between a 5-step and a 10-step call that this note used before. The
+slope is the better estimator when it works, because differencing cancels the
+fixed per-call cost; it did not work here. It implied a per-call overhead of
+**-17 s** on the v5e, which is arithmetically impossible and means the two
+calls were not measured under the same conditions. Dividing by the step count
+instead charges the steps for the call's fixed work, so every figure in the
+table is an upper bound rather than an error of unknown sign, and the same
+method is applied to both machines. The v5e call was repeated three times at
+14.308 s to the millisecond. `relaxation_bench.py` now withdraws its own slope
+row when the implied overhead is negative.
+
+For completeness, each backend at its own production default rather than the
+matched one -- the same call, measured the same way:
+
+| configuration | per step |
+|---|---|
+| H200, refined float32, `SOLVE_TOL = 1e-8` (the GPU default) | 0.410 s |
+| H200, plain float32, `1e-6` (matched to the TPU above) | 0.298 s |
+| v5e, plain float32, `1e-6` | 2.862 s |
+
+Refinement costs the H200 38% per step and buys a tolerance two orders
+tighter. Since 2026-09-05 the plain-float32 default is `sqrt(eps) = 3.5e-4`
+rather than `1e-6` (`mrx/precision.py`), because five of the eight Poisson
+solves could not reach `1e-6` in float32 arithmetic at all; the TPU row above
+is therefore stricter than what a TPU run now does by default.
 
 **Four chips buy nothing, measured rather than assumed.** The same benchmark on
-a `v5litepod-4` (`device_count` 4) and on a `v5litepod-1`:
+a `v5litepod-4` (`device_count` 4) and on a `v5litepod-1`, both at the
+`3.5e-4` tolerance of the withdrawn table above and so not comparable with it,
+only with each other:
 
 | | `v5litepod-1` | `v5litepod-4` |
 |---|---|---|
@@ -129,13 +172,15 @@ a `v5litepod-4` (`device_count` 4) and on a `v5litepod-1`:
 
 0.1 ms apart. The solve is single-device, so three of the four chips are idle
 and the slice size is not the variable; a `pmap` MRX does not have would be. This
-closes the obvious objection to the row above rather than leaving it open.
+closes the obvious objection to the row above rather than leaving it open, and
+it is why `zones.sh` asks only for `v5litepod-1`: a four-chip slice is atomic,
+so the alternative was paying for four chips to use one.
 
 One caveat does remain, and it does not touch the per-step figure. Both nodes ran
 with a cold JAX cache, in zones with no persistent data disk: `build_sequence`
 115.0 s and `compute_nullspaces` 35.3 s against 36.8 s and 34.5 s on a warm node.
-That is the cache, not the hardware. The per-step number is a slope between two
-step counts and is immune to it by construction.
+That is the cache, not the hardware. The per-step number is one compile-free
+call, taken after the compile it does not include.
 
 **The matvec and primitive numbers above are unaffected.** `matvec_bench.py`
 hoists its jit and reuses it across repeats, which is why those rows -- the
@@ -265,11 +310,20 @@ and is not affected:
   unfused.
 
 So the mechanism is measured and the direction was argued from it. The
-comparison is now complete, and the direction does not survive it: 1.800 s on
-the v5e against 0.352 s on the H200. The dispatch effect is real -- the two
-forms do disagree most on the backend paying most per call -- but it is not
-large enough to decide the step, and the end-to-end inference drawn from it was
-wrong. What the branch rests on is the per-kernel table, not this.
+comparison is now complete, and the direction does not survive it: at matched
+tolerance, 2.862 s on the v5e against 0.298 s on the H200. The dispatch effect
+is real -- the two forms do disagree most on the backend paying most per call
+-- but it is not large enough to decide the step, and the end-to-end inference
+drawn from it was wrong. What the branch rests on is the per-kernel table, not
+this.
+
+Nor is the gap an iteration count. At matched tolerance both machines take the
+same 95 and 98 inverse-mass CG iterations, and a single one of those
+iterations is only 1.7x apart (4.73 ms on the v5e against 2.86 ms). The mass
+core apply at k=1 is 7x (0.800 ms against 0.114 ms) and the whole step is
+9.6x, so the gap widens with each layer of nesting: it is in the many nested
+solves a step runs, not in any one kernel and not in how many iterations they
+take.
 
 ## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
 
