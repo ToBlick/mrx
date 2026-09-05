@@ -12,171 +12,93 @@ float32 Krylov iteration alone could make them.
 Set `MRX_DTYPE` to `float32` (the default) or `float64` before importing
 `mrx`. `mrx/precision.py` reads it and sets `jax_default_matmul_precision`
 to `"highest"` so that float32 dot products run at full float32 precision
-rather than TF32. 64-bit mode is always on (the residual precision needs
-it); nothing else in the package touches `jax_enable_x64`. Python scalars
-are weakly typed and do not promote; NumPy-built arrays would, so every
-built object (a sequence, its geometry, a preconditioner bundle) is passed
-through `cast_arrays` at the end of its construction, which pins every
-stored floating array to the working dtype, and the hot paths give their
-constructors an explicit dtype. The relaxation test asserts that no leaf
-of the state leaves the working dtype.
+rather than TF32 (the spline derivatives of a stellarator map lose digits
+in TF32, and `det DF` went negative at the axis). 64-bit mode is always on
+(the residual precision needs it): Python scalars are weakly typed and do
+not promote, NumPy-built arrays would, so every built object (a sequence,
+its geometry, a preconditioner bundle) goes through `cast_arrays` at the
+end of its construction, and the relaxation test asserts that no leaf of
+the state leaves the working dtype.
 
 The module exports:
 
 | name | value |
 |---|---|
 | `DTYPE` | the working dtype (`mrx.DTYPE`) |
-| `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: the float32-only configuration of a machine without float64 (a TPU), plain float32 solves |
+| `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: plain float32 solves, the configuration of a machine without float64 (a TPU) |
 | `REFINE` | `DTYPE != RESIDUAL_DTYPE`: the solves refine |
-| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, sqrt(eps) = 3.5e-4 for plain float32 |
-| `inner_tol(tol)` | the relative tolerance of one working-precision pass: the square root of the tolerance, two passes per solve; derived, not a second hyperparameter |
+| `SOLVE_TOL` | the default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, sqrt(eps) = 3.5e-4 for plain float32 |
+| `inner_tol(tol)` | the tolerance of one working-precision pass, the square root of `tol`: two passes per solve, not a second hyperparameter |
 | `MAX_PASSES` | 6 |
-| `EPS`, `eps(c)`, `sqrt_eps(c)`, `solve_tol(c)` | the machine epsilon of the working dtype and its multiples |
+| `EPS`, `eps(c)`, `sqrt_eps(c)` | the machine epsilon of the working dtype and its multiples |
 
-## One stopping criterion: the true residual in the mass-atom norm
+## One stopping criterion
 
-`mrx.solvers.refine(apply_res, solve, b, x0, tol, norm)` is the outer
-loop of every solve in every configuration: the residual `b - A x` of the
-true outer operator by `apply_res`, in float64 on the view or the
-operator itself in a plain configuration, measured by `norm`, the
-metric-lumped mass atom of the residual's space (`sqrt(r^T P r)`, `P ~
-M^-1`: the L2 norm of the residual's Riesz representative up to a
-mesh-independent factor, so the criterion is h-independent; a mass solve
-would be exact and cost a solve per check, the atom is the middle
-ground); the correction by `solve` from zero, `x` accumulated in float64,
-until `norm(b - A x) <= tol norm(b)` or `MAX_PASSES` passes. In mixed
-precision the inner solve runs to `INNER_TOL` per pass, so a cold solve
-meets 1e-8 in two passes and a warm start with a 1% defect in two as
-well; in a plain configuration it runs at `tol` and the loop is the check
-that its own preconditioned criterion did not stop short of the true
-residual, with a correction pass when it did. `solve_singular_cg` and
-`solve_saddle_point_minres` take the outer operator (`A_res`,
-`saddle_res`), the norm and the inner tolerance; every solve through the
-sequence passes them. The two composite solves, the Hodge split and the
-shifted split, run under an outer loop on the pair `(x, w)` their inner
-solves produce (`w = M_{k-1}^{-1} D^T M x`: the Hodge split's first
-unknown, the shifted split's lower-level unknown) with the saddle
-residual `(b - S x - eps M x - M D w, D^T M x - M w)`, two applies and no
-nested inverse, the criterion of the k=3 saddle solve, in the block
-mass-atom norm with the harmonic forms of level k deflated from the
-upper block. The correction drives both blocks: eliminating `dw` gives
-`(eps M + L) dx = upper - M D y` and `dw = dg + y` with `y = M_{k-1}^{-1}
-lower`, one mass solve at the tolerance per pass, which MINRES does inside
-one Krylov space and the block-triangular split cannot
-(`_pair_loop`). The splits' own solves are inner solves: they stop on
-their own operator's preconditioned criterion at the inner tolerance, and
-the pair loop is the one outer loop (a first version refined each of them
-to the tolerance before the pair loop refined again: three nested outer
-loops per pass and a 4.5x step time). Until 2026-09-05 three
-criteria coexisted: the Krylov iterations' preconditioned norms, a plain
-2-norm in the refinement, and no outer check at all for the composite
-solves, which is how a k=1 Hodge split could report convergence at 1e-8
-with a true residual of 2e-6.
+`mrx.solvers.refine(apply_res, solve, b, x0, tol, norm)` is the outer loop
+of every solve: the residual `b - A x` of the true operator, in float64 on
+the view (the operator itself in a plain configuration), measured by
+`norm` -- the metric-lumped mass atom of the residual's space, `sqrt(r^T P
+r)` with `P ~ M^-1`, the L2 norm of the residual's Riesz representative up
+to a mesh-independent factor, so the criterion is h-independent -- and
+the correction by `solve` from zero, `x` accumulated in float64, until
+`norm(b - A x) <= tol norm(b)` or `MAX_PASSES` passes. Under refinement the
+inner solve runs to `inner_tol(tol)` per pass, so a cold solve meets 1e-8
+in two passes and a warm start with a 1% defect in two as well; in a plain
+configuration it runs at `tol` and the loop is the check that its own
+preconditioned criterion did not stop short of the true residual. The two
+composite solves, the Hodge split and the shifted split, refine on the
+pair `(x, w)` their inner solves produce, with the saddle residual of the
+pair in the block mass-atom norm (`_pair_loop` in `mrx/operators.py`): one
+outer loop, their inner solves stopping on their own criteria at the inner
+tolerance.
 
 The residual-precision operator is `DeRhamSequence.residual`: a shallow
 copy of the sequence with the geometry, quadrature, extraction and polar
-stencils cast to float64 and the mass applies rebuilt on them (the 1-D
-basis tables re-evaluated in float64; the bases, incidence and
-preconditioners are shared). Built once per geometry on first use, about
-twice the geometry's memory; `None` at a float64 working dtype, where the
-solves are plain.
+stencils in float64 and the mass applies rebuilt on them (the bases,
+incidence and preconditioners are shared), built once per geometry on
+first use, about twice the geometry's memory; `None` at a float64 working
+dtype. The harmonic forms and the polar cores of the preconditioners are
+built on the view as well: their construction was limited by the working
+precision, not by the tolerance (`mrx.nullspace._builder`,
+[preconditioning.md](preconditioning.md)).
 
-The harmonic forms and the gap estimate are built on the view as well
-(`mrx.nullspace`): a once-per-geometry construction whose float32 version
-was limited by the working precision, not by the tolerance (the k=2
-Dirichlet form's Rayleigh quotient 1e-6 on li383 and 1e-3 on QA in
-float32, refined or not, against 1e-16 in float64; the gap sweeps'
-shifted saddle solves did not converge in float32). Built on the view at
-the float64 default tolerance and stored in the working dtype, the k=3,
-k=0 and k=1 forms read 1e-11 or better in a float32 process; the k=2
-Dirichlet form reads 1.2e-7 on li383 and 4e-4 on QA (from 9.2e-7 and
-1.3e-3), still short of float64, and the gap sweeps still fail. Its
-limit is measured (`outputs/prune_smoke/probe_k2.py`): the k=1
-Hodge-split solve it rests on reports convergence on the hat operator's
-preconditioned residual while its true residual is 2e-6 to 1e-5, and the
-form's weak half is that residual squared: a stopping-criterion problem.
-The Rayleigh quotient itself is evaluated in the residual precision
-(`laplacian_pair`): `v^T L v` is a cancellation that floored at float32
-round-off whatever the form.
-
-Results come back in the working dtype. A caller that keeps computing
-with the accurate solution asks for it: `apply_inverse_mass_matrix(...,
-dtype=RESIDUAL_DTYPE)`. The Leray projection does exactly that for the
-force. The gradient part `sigma` it removes is the size of `J x B` while
+Results come back in the working dtype. A caller that keeps computing with
+the accurate solution asks for it, `apply_inverse_mass_matrix(...,
+dtype=RESIDUAL_DTYPE)`, and the Leray projection does exactly that for the
+force: the gradient part `sigma` it removes is the size of `J x B` while
 the force `J x B - sigma` is a thousandth of it at a relaxed state, so
-forming the difference in the working precision would cost three digits
-and a solve to the working precision's tolerance relative to `J x B`
-would leave an O(1) error in the force. `compute_force` therefore solves
-for `J x B` in float64, the saddle solve returns `sigma` in float64, the
-force is formed there and rounded once when it is stored.
-
-## Why: what float32 alone does
-
-Measured 2026-09-04 on li383 (16,32,32) p=3 at a relaxed state
-(`docs/research/velocity_leray_ab_2026-09-04.md`): every solve of the
-step converges in float32 to a relative residual of 1e-7, but at the old
-default sqrt(eps) = 3.5e-4 the force carried a divergence remnant 22
-times its own size (0.04 at 1e-7); the energy could not show a step's
-descent at all (`E` moves by less than a float32 ulp per step, which is
-why the trace records the exact per-step change `dE` from the increment
-instead of `E`); and a second Leray projection of the velocity, the
-identity in exact arithmetic, was the most expensive solve of the step
-because it was removing that remnant. Float32 with a float64 residual
-removes the cause: the solves reach 1e-8 relative to `J x B`, the force
-is accurate to float32 rounding, and the residual floor is set by the
-storage of `B`, not by the solver.
-
-## What it costs and what it buys
-
-Measured on li383 (16,32,32) p=3, 2000 relaxation steps
-(`docs/research/velocity_leray_ab_2026-09-04.md`): the production step
-runs at 1.02 s/step in float32 refined (tol 1e-8), 1.44 s/step in
-float64 (tol 1e-10; 0.95 at 1.5e-8) and 0.33 s/step in plain float32
-(`MRX_RESIDUAL_DTYPE=float32`, tol 1e-6 then), all three reaching the same
-residual over 2000 steps (4.0e-4 to 4.5e-4), while float32 with the old
-tolerance sat at 8.4e-4. Plain float32 is the configuration for runs
-that stop near a residual of 5e-4: below that the gradient-part term of
-its tolerance shows in the energy sums. At these meshes the step is bound by
-kernel-launch latency, not memory bandwidth, so the working precision
-buys memory (half the operators, geometry and state), not time. The
-accuracy of a solve costs about a hundred MINRES iterations per decade
-on the k=3 saddle; the tolerance is the cost knob. The velocity's
-gradient part relative to the descent grows as `0.1 tol / resid^2`, so a
-run aimed at a residual below 1e-4 wants `--solve-tol 1e-10` or float64.
-In float32 storage the per-step energy change is at the rounding of the
-stored field: the trace's `dE` sums are right, its single steps are
-noise; float64 gives a clean per-step trace.
+`compute_force` solves for `J x B` in float64, the saddle solve returns
+`sigma` in float64, and the force is formed there and rounded once when it
+is stored. A float32 force with a tolerance relative to `J x B` carried a
+divergence remnant 22 times its own size
+(`docs/research/velocity_leray_ab_2026-09-04.md`).
 
 ## Solver tolerance
 
-`DeRhamSequence(tol=None)` and every solver in `mrx/solvers.py` default
-to `SOLVE_TOL`. An explicit `tol` is used as given, in the residual
-precision. `scripts/poisson_study.py --tol` defaults to `1e-9` because the
-archived convergence numbers were measured there. `scripts/relax.py` takes
-`--precision` (default float32) and stops when the mean over the last
-chunk (`--chunk` steps) of the relative force residual drops below
-`--floor-tol`. The scripts set `MRX_DTYPE` from `--precision` before
-importing `mrx`.
+`DeRhamSequence(tol=None)` and every solver in `mrx/solvers.py` default to
+`SOLVE_TOL`; an explicit `tol` is used as given, in the residual precision.
+`scripts/relax.py --solve-tol` sets it, `--precision` exports `MRX_DTYPE`
+before `mrx` is imported.
 
-The tolerance is the one number of a solve: its defaults follow the
-configuration (1e-8 refined float32, where the returned float32 vector
-rounds at 6e-8 anyway; 1e-10 float64; sqrt(eps) = 3.5e-4 plain float32,
-the true residual float32 arithmetic attains on the composite solves: the
-k=2 Hodge split 2.4e-4 and the k=3 saddle 4.2e-4 on the test mesh, while
-the scalar solves reach 1e-6 to 1e-5 and stop early; at 1e-6 five of the
-eight Poisson solves burned their passes), the per-pass inner tolerance is
-its square root, and
-the pass and cut-off constants are guards, not tolerances. The relaxation
-ties it to its floor: the force `F = J x B - grad p` carries the pressure
-solve's residual, relative to `|J x B|` while `F` is `resid` times that,
-so the gradient-part remnant's energy term is `0.1 tol / resid^2` of the
-descent (li383 float64, `docs/research/velocity_leray_ab_2026-09-04.md`;
-the velocity Leray projection removed it relative to `|u|` and is gone
-since 2026-09-05). The term is a tenth of the descent at `resid =
-sqrt(tol)`: a run to 1e-4 wants 1e-8, a run to 1e-5 wants 1e-10, float64.
-`relax` prints that residual at the start and enforces nothing: a loose
-tolerance with a step cap is a legitimate run.
+The tolerance is the one number of a solve; the pass and cut-off constants
+are guards. The relaxation ties it to its floor: the force `F = J x B -
+grad p` carries the pressure solve's residual relative to `|J x B|` while
+`F` is `resid` times that, so the gradient-part remnant's energy term is
+`0.1 tol / resid^2` of the descent, a tenth of it at `resid = sqrt(tol)`:
+a run to 1e-4 wants 1e-8, a run to 1e-5 wants 1e-10, float64. `relax`
+prints that residual at the start and enforces nothing.
 
-Every test tolerance is expressed through `eps()` or the solver tolerance,
-a quantity stored in the working dtype carrying both; the suite runs in
-the three configurations (`slurm/suite.sh`, `testing_strategy.md`).
+## What the working precision buys
+
+At production meshes the step is bound by kernel-launch latency, not
+memory bandwidth, so float32 buys memory (half the operators, geometry and
+state), not time: on li383 `(16,32,32)` p=3 refined float32 runs at 1.0
+s/step, float64 at 1.4, plain float32 at 0.3, all three reaching the same
+residual over 2000 steps. Plain float32 is the configuration for runs that
+stop near a residual of 5e-4. In float32 storage the per-step energy change
+is at the rounding of the stored field: the trace's `dE` sums are right,
+its single steps are noise; the sampler's `E` per chunk is exact to the
+field's own rounding.
+
+The suite runs in the three configurations (`slurm/suite.sh`,
+[testing_strategy.md](testing_strategy.md)).

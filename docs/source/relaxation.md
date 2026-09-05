@@ -30,6 +30,7 @@ coefficients, so `ns` and `p` are also the map resolution. `build_gvec_map`
 checks that $\det D\Phi > 0$ everywhere and raises otherwise. `nfp=`
 overrides the file's value for a file that declares it wrong. What MRX
 reads from the file is in [GVEC → MRX interface](concepts/gvec_mrx_interface.md).
+The parsed file stays on the sequence as `seq.equilibrium`.
 
 An analytic geometry file names the map and its parameters, and the
 profiles of the initial condition below (`mrx.geometry.read_analytic`):
@@ -42,13 +43,13 @@ profiles of the initial condition below (`mrx.geometry.read_analytic`):
 
 `data/torus.json`, `data/cylinder.json` and `data/rot_ellipse.json` are the
 three shipped ones (`toroid_map`, `cylinder_map`, `rotating_ellipse_map`);
-copy one and edit the numbers. `mrx.geometry.geometry_kind(path)` returns
-`vmec`, `gvec`, or the map's name.
+copy one and edit the numbers.
 
 ## Initial condition
 
-`mrx.initial_conditions` builds every initial field in the reference
-2-form frame, where the components are $\sqrt{g} B^i$:
+`mrx.initial_conditions.initial_field(seq)` builds the field the geometry
+file decides on, in the reference 2-form frame where the components are
+$\sqrt{g} B^i$:
 
 $$
 \hat B^\rho = 0, \qquad
@@ -57,30 +58,16 @@ $$
 $$
 
 This field is divergence-free and tangent to the boundary for any
-$\lambda$ and any geometry. The geometry file decides where the profiles
-come from:
+$\lambda$ and any geometry.
 
 | geometry | initial condition |
 |---|---|
-| VMEC wout, GVEC state | the equilibrium's own field, $B = dA'$ from the file's `dPhi_dr`, `dchi_dr` and `LA` through the histopolated potential (exactly divergence-free) |
-| analytic `.json` | the `profile` block: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$, $\lambda = \sum a\, \rho^{|m|} \sin 2\pi(m\theta - n\zeta)$ on the logical grid, projected and Leray-cleaned |
-
-In code:
-
-```python
-from mrx.initial_conditions import (analytic_profile_form, make_lambda, make_profiles,
-                                    project_reference_two_form, leray_clean)
-
-iota, dPhi = make_profiles(iota0=0.4, iota1=0.9, iota_exp=2.0, flux_exp=1.0)
-omega_ref = analytic_profile_form(iota, dPhi, make_lambda([]))
-B0, B_norm = project_reference_two_form(seq, omega_ref)   # DoFs of the Dirichlet k=2 space
-B0, moved = leray_clean(seq, B0)                            # remove the projection's divergence
-```
+| VMEC wout, GVEC state | the equilibrium's own field, $B = dA'$ from the file's `dPhi_dr`, `dchi_dr` and `LA` through the histopolated potential (`clebsch_potential_form`, `potential_two_form`): exactly divergence-free, no Leray step |
+| analytic `.json` | the `profile` block: $\iota = \iota_0 + (\iota_1 - \iota_0)\rho^e$, $\Phi' = \rho^q$, $\lambda = \sum a\, \rho^{|m|} \sin 2\pi(m\theta - n\zeta)$ on the logical grid, L2-projected (`project_reference_two_form`) and Leray-cleaned (`leray_clean`) |
 
 `project_reference_two_form` pushes the form forward and projects with
 `load(frame='phys')`. Do not pass the primal components to
 `load(frame='ref')`: that argument wants $g\omega/J$ and fails silently.
-The script always Leray-projects the initial condition.
 
 ## Run
 
@@ -95,7 +82,8 @@ SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
   bash slurm/run.sh
 ```
 
-Flags, defaults in brackets:
+Flags, defaults in brackets (`python scripts/relax.py --help` prints the
+same list):
 
 | flag | meaning |
 |---|---|
@@ -103,45 +91,35 @@ Flags, defaults in brackets:
 | `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--r-refine a:b:m,... [""]` | radial refinement: `m` uniform cells in each window `[a, b]` of the logical radius, the remaining `n_r - p` cells spread over the gaps (`mrx.geometry.radial_knots`) |
-| `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
+| `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual ([Precision](concepts/precision.md)) |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
-| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
-| `--scheme {explicit,midpoint} [explicit]` | forward Euler on the descent velocity, or the midpoint-implicit induction with the explicit velocity (Picard on the increment, `dt` halved on a blow-up; `mrx.relaxation.PICARD_*`) |
+| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$, the variable that makes the midpoint scheme conserve the discrete helicity exactly |
+| `--scheme {explicit,midpoint} [explicit]` | forward Euler on the descent velocity, or the midpoint-implicit induction with the explicit velocity (Picard on the increment, `mrx.relaxation.PICARD_*`) |
 | `--history M [1]` | L-BFGS secant pairs: 0 is steepest descent, 1 memoryless BFGS (= CG) |
 | `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
 | `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
-| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
+| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`): the per-step trace comes back, the qoi are sampled, the checkpoint and `relax.json` are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
-| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
+| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B` spending the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)`, after which the descent restarts on the diffused field; `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
 
-`python scripts/relax.py --help` prints the same list. The script is the
-command line of `mrx.relaxation.relax`, the chunked loop with the floor,
-wall-budget and reconnection rules, which the tutorials and the tests call
-directly; `mrx.initial_conditions.initial_field` builds the field and
-`mrx.relaxation.write_checkpoint` / `read_checkpoint` the files below.
+The script is the command line of `mrx.relaxation.relax`, the chunked loop
+with the floor, wall-budget and reconnection rules, which the tutorials and
+the tests call directly; `mrx.initial_conditions.initial_field` builds the
+field and `mrx.relaxation.write_checkpoint` / `read_checkpoint` the files
+below.
 
 ## Stopping criterion
 
 The relative force residual $\|F\|_M / \|\nabla(B^2/2)\|$ is recorded at
-every step. The run stops when its mean over the last `W` steps,
-
-$$
-\frac{1}{W} \sum_{j=i-W+1}^{i} \mathrm{resid}[j] < \texttt{floor-tol},
-$$
-
-or when the step or wall-clock budget runs out. The relaxation guarantees
-$dE/dt \le 0$ only, so the residual is not monotone; the window mean is
-the quantity, never the last value. On the W7-X Clebsch run at `(8,16,8)`,
-`p = 3`, float64, the residual reaches $1.7 \times 10^{-3}$ at step 500
-and floors around $10^{-3}$ by step 1000-3000. A float32 run's solves are
-refined against a float64 residual ([Precision](concepts/precision.md)),
-so its floor is no longer the solve tolerance; until 2026-09-04 it was
-($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), and a `--floor-tol` below it
-never fired.
+every step. The run stops when its mean over the last chunk falls below
+`--floor-tol`, or when the step or wall-clock budget runs out. The
+relaxation guarantees $dE/dt \le 0$ only, so the residual is not monotone;
+the window mean is the quantity, never the last value. Judge a refinement
+by the floor it reaches, not by the rate.
 
 ## Output
 
@@ -149,11 +127,11 @@ never fired.
 
 | file | content |
 |---|---|
-| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `dE` (the exact energy change of the step), `dE_ls` (the line search's prediction), `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
+| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `dE` (the exact energy change of the step), `dE_ls` (the line search's prediction), `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `picard_it`, `picard_resid`; `qoi` with per-chunk `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
 | `checkpoints/state_<step>.h5` | the descent state at that step, one file per chunk plus step 0 (the initial field): every leaf of `mrx.relaxation.State` as a dataset named by its field (`B_n`, `p` the strong pressure, the warm starts, the L-BFGS pairs, `dt`, ...) and the step as an attribute. `--restart` continues from one; the plotters read the field and the strong pressure from them and compute the weak pressure on demand |
 
-`relax.json` and the newest checkpoint are written at every chunk, so a
-run that runs out of time still leaves its trace and its last state.
+Both are written at every chunk, so a run that runs out of time still
+leaves its trace and its last state.
 
 ## Inspect
 
@@ -171,44 +149,11 @@ Three checks of a healthy run (`--scheme explicit`, no reconnection):
 
 - `dE` is negative at every step and matches the line search's `dE_ls`
   to roundoff: their difference is `-dt <u, grad p>`, the velocity's
-  gradient part, zero for a divergence-free velocity. `E_0 - E` is
-  `-cumsum(dE)` (`E_0` is `summary["E0"]`); the energy itself is not in
-  the trace, a step changes it by less than a float32 ulp of `E`.
+  gradient part, zero for a divergence-free velocity. `qoi["E"]` is the
+  energy of the stored field at every chunk; `E_0 - E` from `cumsum(dE)`
+  agrees with it to the working precision's rounding per step.
 - `helicity` is constant to the solver tolerance.
 - `div` stays at roundoff.
-
-`resid` is the force residual relative to the magnetic pressure gradient.
-Judge a refinement by the floor it reaches, not by the rate.
-
-## Two pressures
-
-A run carries two pressures.
-
-| | strong `p` | weak `p_w` |
-|---|---|---|
-| where | `compute_force`, the Leray multiplier of the descent | `weak_pressure`, from the same `J` and field |
-| space | 3-form, Dirichlet complex | 0-form, zero on the wall |
-| boundary | $\partial p / \partial n = 0$ by construction: the Lorentz force is projected onto the Dirichlet 2-form space first, which discards its normal component | $p_w = 0$; the force is projected onto the natural 1-form space, which keeps its normal component, and $\partial p_w / \partial n$ is the wall force once the remainder $F_w$ vanishes |
-| gauge | a constant | none |
-| read it for | the force residual of the constrained principle | the pressure profile, the wall force, beta |
-
-The decomposition is $v = F_w + \nabla p_w$ with $(\nabla \phi, \nabla p_w) =
-(\nabla \phi, v)$ for every $\phi$ vanishing on the wall
-(`seq.apply_leray_projection(v, k=1, dirichlet_p=True)`, one Dirichlet
-k=0 solve). Every qoi sample records, and `ic` / `summary` repeat:
-
-| key | meaning |
-|---|---|
-| `gradp_cmp` | $\|\Pi_2 \nabla p_w - \nabla_w p\|_{M_2} / \|\Pi_2 \nabla p_w\|_{M_2}$, gauge-free: $\nabla_w p$ is the weak gradient of the 3-form in the Dirichlet 2-form space and $\Pi_2$ projects the exact $\nabla p_w$ onto the same space, so both lose the same normal trace |
-| `p_cmp` | the $L^2$ distance of the two pressures as functions with their means removed, relative to $p_w$'s |
-| `weak_resid` | $\|F_w\|_{M_1} / \|v\|_{M_1}$ |
-| `dpdn_wall`, `JxBn_wall` | $\max \lvert \partial p_w / \partial n \rvert$ and $\max \lvert (J \times B) \cdot n \rvert$ on the wall, both relative to $\max \lvert \nabla p_w \rvert$ |
-| `beta_vol` | $\int p_w \, dV / \int B^2/2 \, dV$; code units, the magnetic pressure is $B^2/2$ |
-| `beta_axis` | the same ratio on the coordinate axis (logical $r = 0$: the innermost radial quadrature layer, averaged over $\theta$ and $\zeta$) |
-
-`scripts/poincare_relax.py --pressure weak|strong` (default `weak`) draws
-either pressure on the sections. The details are in
-[Relaxation](concepts/relaxation.md), section 3.
 
 To rebuild the field and evaluate it, load a checkpoint and the run's
 geometry:
@@ -216,6 +161,7 @@ geometry:
 ```python
 import h5py, json
 from mrx.differential_forms import DiscreteFunction, Pushforward
+from mrx.geometry import build_sequence
 
 run = "outputs/relax/<date>/<time>"
 prm = json.load(open(f"{run}/relax.json"))["params"]
@@ -225,56 +171,31 @@ seq, ops = build_sequence(prm["geometry_path"], ns=tuple(prm["ns"]), p=prm["p"])
 B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 ```
 
-## Poincaré sections
-
-`mrx.poincare` traces field lines of a discrete 2-form with the toroidal
-angle as the independent variable, so every crossing of a section plane is
-an integration time and nothing is interpolated. The building blocks are
-`logical_field(seq, dof, 2, dirichlet=True)` for the field,
-`seed_from_axis` for the seeds, `trace` for the
-integration, and `rotational_transform` and `to_RZ` for the section.
-`step_convergence` justifies the fixed step count by refinement. The module
-docstring explains the three design choices. `scripts/poincare_relax.py`
-is the driver: it reads a run directory, traces the initial and the final
-checkpoint (`--fields ic,final,reconnect` adds the field before every
-reconnection, all on one colour scale), and renders one section per
-requested plane:
-
-```bash
-python -u scripts/poincare_relax.py outputs/run --periods 400 --out outputs/run/poincare
-```
-
-Its module docstring lists the flags.
-
-A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
-section per checkpoint with every axis held fixed, ready for `ffmpeg`.
-
 ## Figures
 
-`mrx.plotting` draws a scalar on the geometry: `plot_torus` shows the
-boundary surface as a wireframe with poloidal cuts coloured by the field,
-`plot_crossections_separate` the same cuts side by side in the $(R, z)$
-plane, and `plot_twin_axis` two traces against a shared abscissa with
-separate y axes (a force residual next to an energy or a helicity).
-`scripts/plot_relaxation.py` makes all three from a run -- the weak pressure
-$p_w$ on the torus and in the cuts, and $\|F\|_M$ against $E$ from
-`relax.json`:
+`scripts/plot_relaxation.py` draws the weak pressure $p_w$ on the torus
+and in poloidal cuts (`mrx.plotting.plot_torus`,
+`plot_crossections_separate`) and $\|F\|_M$ against $E_0 - E$
+(`plot_twin_axis`) from a run:
 
 ```bash
 python -u scripts/plot_relaxation.py outputs/run --cuts 6 --fields ic,final
 ```
 
-`scripts/compare_relaxations.py OUT label=run ...` overlays the traces of
-several runs (force, energy, $-dE/dt$, helicity, $dt$, CFL, $\|J\|/\|B\|$,
-$\beta$, line-search cosine) against relaxation time and step, and draws
-the runtime (relaxation time reached per wall hour, seconds per step).
+`scripts/poincare_relax.py` traces the initial and the final checkpoint
+with `mrx.poincare` (the toroidal angle as the independent variable, so
+every crossing of a section plane is an integration time and nothing is
+interpolated) and renders one section per requested plane, the selected
+pressure (`--pressure weak|strong`, default `weak`) drawn below the
+magnetic axis and as a profile next to iota:
 
-## float32
+```bash
+python -u scripts/poincare_relax.py outputs/run --periods 400 --planes 0,0.125,0.25,0.375,0.5
+```
 
-The default. `--precision float64` exports `MRX_DTYPE` before `mrx` is
-imported. In float32 the fields and the Krylov iterations are float32
-and every solve is refined against a float64 residual to `--solve-tol`,
-so the force is accurate beyond float32's own tolerance and the residual
-floor is set by the storage of `B`, not by the solver (until 2026-09-04
-it floored at the solve tolerance, $\sim 2 \times 10^{-3}$). See
-[Precision](concepts/precision.md).
+`--fields ic,final,reconnect` adds the field before every reconnection,
+all on one colour scale; `--fields snapshots` renders one frame per
+checkpoint with every axis held fixed, ready for `ffmpeg`; `--from-npz`
+re-renders from the archived crossings without tracing. Its module
+docstring lists the flags. The two pressures and the diagnostics of the
+`qoi` are explained in [Relaxation](concepts/relaxation.md).

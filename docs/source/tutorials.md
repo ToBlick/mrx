@@ -23,11 +23,10 @@ island must clear the coarse file's own reconstruction residual (see step 4). Al
 call reads a GVEC `.dat` state instead (see the
 [interface](concepts/gvec_mrx_interface.md)).
 
-All five run in the package default, now **float32**, the production
+All five run in the package default, **float32**, the production
 precision. Tutorial 2's harmonic-form ratio reaches round-off only in double
 precision -- run it with `MRX_DTYPE=float64` for that. On a cluster run them
-through `slurm/run.sh` like
-every other MRX script:
+through `slurm/run.sh` like every other MRX script:
 
 ```bash
 SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
@@ -112,8 +111,7 @@ tangential to the wall, nested surfaces -- see [Relaxation](relaxation.md),
 section 4):
 
 ```python
-cb = load_clebsch(seq.equilibrium)   # the file build_sequence parsed
-B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
+B0, ic = initial_field(seq)    # B = dA' from the file build_sequence parsed
 ```
 
 The descent is `mrx.relaxation` with `scripts/relax.py`'s defaults -- L-BFGS
@@ -135,10 +133,10 @@ conserves helicity and lowers the magnetic energy until $J \times B = \nabla p$
 in the weak sense; $p$ is not prescribed, it is the multiplier the descent
 finds (`weak_pressure`). It runs in float32, the production precision.
 
-The script prints the traces, draws $\|F\|_M$ against $E$ on twin axes
+The script prints the traces, draws $\|F\|_M$ against $E_0 - E$ on twin axes
 (`plot_twin_axis`) and the weak pressure on the torus, and writes the run in
 `scripts/relax.py`'s layout (`relax.json` and two checkpoints). `scripts/poincare_relax.py` then draws the
-Poincaré sections of the initial and relaxed fields at the standing three
+Poincaré sections of the initial and relaxed fields at the five standing
 planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$ (half a field period; the other half follows by stellarator symmetry):
 
 ```bash
@@ -173,8 +171,10 @@ not the unseeded one. It uses the **high-resolution reference**
 `data/wout_li383_1.4m.nc` -- on the coarse reference the field's reconstruction
 residual sits on top of the seeded signal, so the seed cannot be told from the
 noise. Sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
-$\sqrt{\varepsilon}$, and `--seed 5,1,0.794,0.1` to move to the $3/5$ surface.
-There is no relaxation and no run directory; this is the cheapest tutorial.
+$\sqrt{\varepsilon}$, and `--seed 5,1,<rho0>,0.1` to move to the $3/5$ surface
+(the script prints where the file's $|\iota| = 3/5$ chain sits; put `rho0`
+there). There is no relaxation and no run directory; this is the cheapest
+tutorial.
 
 ## 5. Reconnect with finite resistivity (`5_li383_resistive.py`)
 
@@ -188,7 +188,7 @@ This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
 relaxed field** if the run `outputs/tutorials/li383_relaxation` is present (same
 $(10, 16, 16)\ p = 2$ mesh), so the initial descent is not repeated; otherwise
 it builds the equilibrium initial condition itself. It then takes a **single
-resistive step** at `--eta-max` and relaxes ideally for another 500 steps:
+resistive step** at `--eps` and relaxes ideally for another 500 steps:
 
 ```python
 B_reconnected, _, rel = resistive_step(B0, seq, eps)                    # one reconnection step
@@ -197,7 +197,7 @@ res = relax(initial_state(B_reconnected, ts), ts, steps=500, chunk=50,
 ```
 
 The helicity drop across the resistive step is the reconnection; the ideal tail
-conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
+conserves it. The script draws $\|F\|_M$ against $E_0 - E$ over the tail and the weak
 pressure on the torus, and writes the run for `poincare_relax.py`. Pass
 `--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 4 syntax) when it falls
 back to building the IC, to watch a seeded island reconnect.

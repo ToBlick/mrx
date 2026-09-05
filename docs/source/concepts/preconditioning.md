@@ -3,21 +3,25 @@
 Every inverse in MRX is a Krylov solve on callable matvecs with a callable
 preconditioner. No matrix is factorised; nothing larger than a dense polar
 core is stored. This page says which solver and which preconditioner each
-operator uses, and what the production preconditioner `metric_lumping` is.
-The measurements behind the choices are in
-`docs/research/preconditioner_technical_note_source.md`.
+operator uses, and what the two preconditioner atoms are. The measurements
+behind the choices are in `docs/research/preconditioner_technical_note_source.md`
+and `preconditioner_lessons.md`.
 
 ## 1. Which solver for which operator
 
 Solvers are in `mrx/solvers.py`; the wiring is in `mrx/operators.py`.
+Every solve runs under the refinement loop of
+[precision.md](precision.md): the Krylov iteration in the working
+precision, the true residual in float64.
 
 | solve | entry point | solver | preconditioner |
 |---|---|---|---|
-| `M_k u = f` | `apply_inverse_mass_matrix` | `solve_singular_cg` | mass, `metric_lumping` |
-| `L_0 u = f` | `apply_inverse_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | Laplacian atom |
-| `L_k u = f`, k=1,2,3 | `apply_inverse_laplacian` | `solve_saddle_point_minres` | lower: mass `metric_lumping` of degree k-1; upper: Laplacian atom |
-| `(L_k + eps M_k) u = f` | `apply_inverse_shifted_laplacian` | as above; nothing deflated | as above, plus a `1/eps` harmonic coarse correction when the harmonic vector exists |
-| `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | two SPD CG solves, `M_k + eps S_k` and `M_{k-1} + eps S_{k-1}`, through the split identity `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T` (exact, from `D_k D_{k-1} = 0`) | shifted-stiffness atom on both solves: the strong-half terms of the `metric_lumping` Laplacian atom divided by `1 + eps lambda`, i.e. `(M^ + eps S^)^-1`, dense `(M + eps S)^-1` on the core |
+| `M_k u = f` | `apply_inverse_mass_matrix` | `solve_singular_cg` | the mass atom |
+| `L_0 u = f` | `apply_inverse_laplacian`, k=0 | `solve_singular_cg`, harmonic mode deflated | the Laplacian atom |
+| `L_k u = f`, k=1,2 | `apply_inverse_laplacian_hodge` | the Hodge split: PCG on the SPD strong stiffnesses `S_k + M_k D W D^T M_k` (`W` the mass atom of level k-1), the exact part from a `(k-1)`-level solve, one more to close; no saddle system, no mass inverse | the Laplacian atoms of levels k and k-1 |
+| `L_3 u = f` | `apply_inverse_laplacian_saddle` | `solve_saddle_point_minres` on `[[0, D_2], [D_2^T, -M_2]]` (`S_3 = 0`, nothing to split) | upper: the k=3 Laplacian atom; lower: the k=2 mass atom |
+| `(L_k + eps M_k) u = f` | `apply_inverse_shifted_laplacian` | k=0 CG, k>=1 the saddle MINRES; nothing deflated | as above |
+| `(M_k + eps L_k) u = f` | `apply_inverse_mass_plus_eps_laplace_matrix` | two SPD CG solves, `M_k + eps S_k` and `M_{k-1} + eps S_{k-1}`, through the split identity `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T` (exact, from `D_k D_{k-1} = 0`) | the shifted-stiffness form of the Laplacian atom, `(M^ + eps S^)^-1` |
 
 The saddle system for k >= 1 is
 
@@ -26,46 +30,34 @@ The saddle system for k >= 1 is
 | D_{k-1}^T       -M_{k-1}  | | s | = | 0 |
 ```
 
-whose Schur complement is `L_k` itself. MINRES needs an SPD preconditioner
-on each block; `solve_saddle_point_minres` takes `precond_upper` and
-`precond_lower` as callables. Every solver takes `tol=None`, which is
-`mrx.sqrt_eps()`, and reports `info = -k` after `k` iterations on convergence
-and `+k` on failure.
+whose Schur complement is `L_k` itself; the lower unknown `s = M_{k-1}^-1
+D_{k-1}^T u` is the weak codifferential of the solution, which the Leray
+projection uses as its gradient part. MINRES needs an SPD preconditioner on
+each block, block-diagonal, never coupled through a Schur complement; the
+harmonic forms are deflated from the upper block only, since a harmonic
+`v` has `D^T v = 0` and the saddle matrix's nullspace is `(v, 0)`.
 
-There is no Krylov solve inside a Krylov solve. The weak term
-`D_{k-1} M_{k-1}^{-1} D_{k-1}^T` of `L_k` is applied with the mass
-*preconditioner* in place of `M_{k-1}^{-1}` (`apply_laplacian_approx`).
-The mass preconditioner is therefore part of the operator at k >= 1, not
-only part of the solve, and changing it changes `L_k`.
+There is no Krylov solve inside a Krylov solve. The weak term `D_{k-1}
+M_{k-1}^{-1} D_{k-1}^T` of `L_k` is applied with the mass *preconditioner*
+in place of `M_{k-1}^{-1}` (`apply_laplacian_approx`) wherever it sits
+inside an iteration -- the operator the Laplacian atoms probe their polar
+core with, and the hat operator of the Hodge split, whose exact-orthogonal
+solution does not depend on `W`. The mass preconditioner is therefore part
+of the operator at k >= 1, not only part of the solve.
 
 ## 2. One preconditioner per solve
 
-There are no kinds. `build_preconditioners` builds the mass atom
-(`MetricLumpingMass`) and the Laplacian atom (`MetricLumpingLaplacian`) for
-every requested `(k, BC)` onto the bundle, and every solve through the
-sequence uses the atom of its own `(k, BC)`: the mass solve the mass atom,
-the k=0 Laplacian and the Hodge-split solves the Laplacian atom, the
-shifted solve `(M_k + eps S_k)` its shifted-stiffness form
-(`shifted_stiffness_apply`), and a saddle solve (`k >= 1` shifted, and
-`k = 3`) the Laplacian atom of level `k` on the upper block with the mass
-atom of level `k - 1` on the lower block, block-diagonal, never coupled
-through a Schur complement; the harmonic forms are deflated from the upper
-block only, since a harmonic `v` has `D^T v = 0` and the saddle matrix's
-nullspace is `(v, 0)`. The saddle solve returns its lower unknown too
-(`apply_inverse_laplacian_saddle`), the weak codifferential of the
-solution, which the Leray projection uses as its gradient part. A missing atom raises at the solve; nothing is
-built on demand and nothing is substituted. (Until 2026-09-04 the same
-mechanism was spread over kind strings, three spec dataclasses and a probed
-Jacobi option that nothing used.)
+`build_preconditioners` builds the mass atom (`MetricLumpingMass`) and the
+Laplacian atom (`MetricLumpingLaplacian`) for every `(k, BC)` onto the
+bundle `seq.operators` (`mass_lumping`, `laplacian_lumping`, keyed `(k,
+dirichlet)`), and every solve through the sequence uses the atom of its own
+`(k, BC)`. A missing atom raises at the solve; nothing is built on demand
+and nothing is substituted.
 
 ## 3. The Laplacian atom: `MetricLumpingLaplacian`
 
-`mrx/metric_lumping_laplacian.py`. One instance per `(k, dirichlet)`, built by
-`assemble_metric_lumping_laplacian_preconditioner(seq, ops)` and stored in
-the dict `seq._metric_lumping_laplacian`. `MetricLumpingLaplacian.apply(x)`
-is one jitted call on a flattened pytree payload.
-
-Block Jacobi with two kinds of block:
+`mrx/metric_lumping_laplacian.py`. Block Jacobi with two kinds of block,
+applied independently.
 
 **Bulk.** For each vector component `c` of `V^k`, the diagonal block of `L_k`
 on the tensor-product rows is approximated by a three-term Kronecker sum
@@ -75,152 +67,77 @@ A_c = K_r ⊗ M_t ⊗ M_z + M_r ⊗ K_t ⊗ M_z + M_r ⊗ M_t ⊗ K_z
 ```
 
 with unweighted 1D masses `M_a` and 1D stiffnesses `K_a` that carry the
-metric weight averaged over the other two axes (`component_factors`). On a
-derivative axis the stiffness is `Ktilde`, the 1D stiffness of the derivative
-splines. The component factor `m_k / J` is pulled out as a diagonal
-similarity `D^{1/2} A_c D^{1/2}` (`component_diagonal`). `A_c` is inverted exactly by fast diagonalisation:
-three 1D generalised eigenproblems at build time
-(`_simultaneous_diagonalize_pair`), then three small dense products and a
-pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
-`O(N (n_r + n_t + n_z))`; storage is `O(n^2)` per axis.
+metric weight averaged over the other two axes (`component_factors`; the
+*bundled* mean `<g^{aa} J>`, since `g^{tt} J ~ 1/r` is integrable where
+`g^{tt}` alone is not). On a derivative axis of the component the stiffness
+is that of the derivative splines themselves, from their tabulated
+derivatives (`seq.dd_basis_jk`). The component factor `m_k / J` is pulled
+out as a diagonal similarity `D^{1/2} A_c D^{1/2}` (`component_diagonal`).
+`A_c` is inverted exactly by fast diagonalisation: three 1D generalised
+eigenproblems at build time (`_simultaneous_diagonalize_pair`), then three
+small dense products and a pointwise divide per apply (`_fd_apply_3d`).
+Cost per apply is `O(N (n_r + n_t + n_z))`; storage is `O(n^2)` per axis.
+Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
 
 **Core.** The polar rows, where the extraction fuses a ring of raw functions,
 are not tensor-product functions. `core_rows` lists them; `probe_core_block`
 forms `L_k` on those rows by one operator apply per row, on the
-residual-precision sequence (the float64 view in a float32 process);
-`_dense_symmetric_inverse` inverts the block on device by `eigh`, dropping
-eigenvalues below `CORE_TOL` relative to the largest, 4096 machine epsilons
-of the residual precision (1e-12). Probed in float32 the same cut-off was
-5e-4 and zeroed real modes of the k=1 core on li383 (12,24,24) p=3: a
-singular preconditioner, whose norm is blind to the residual on those
-modes, so the CG reported convergence at 1e-8 with a true residual of
-2e-6 (2026-09-05). The shifted-stiffness
-form of the atom needs `(M_k + eps S_k)^{-1}` on the same rows for an `eps`
-known only at the solve: the pair `(M_k, S_k)` on the core is diagonalised
-once at build (`_simultaneous_diagonalize_pair`, `V^T M V = I`, `V^T S V =
-diag(mu)`) and the block is `V diag(1 / (1 + eps mu)) V^T`, two small
-matmuls per solve (until 2026-09-04 an `eigh` of `M + eps S` per solve,
-twice per relaxation step inside the scan). Bulk and core are applied
-independently; they are not coupled through a Schur complement.
+residual-precision sequence, and `_dense_symmetric_inverse` inverts the
+block by `eigh`, dropping eigenvalues below `CORE_TOL` (4096 machine
+epsilons of the residual precision) relative to the largest. Probed in the
+working precision the cut-off zeroed real modes of the k=1 core and made the
+preconditioner blind to their residual. The shifted-stiffness form of the
+atom needs `(M_k + eps S_k)^{-1}` on the same rows for an `eps` known only
+at the solve: the pair `(M_k, S_k)` on the core is diagonalised once at
+build and the block is `V diag(1 / (1 + eps mu)) V^T`, two small matmuls
+per solve.
 
-**Natural boundary term.** Under a free condition at `r = 1` the weak block's
-integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗ M_z` with
-`e` the one-hot derivative-spline trace, the shape of the first Kronecker
-term. It merges into `K_r` as a rank-one update at no cost, on the components
-whose radial axis is a derivative axis (`trace_components`: none at k=0, `r`
-at k=1, `theta, zeta` at k=2, the single component at k=3). The coefficient
-`alpha` is derived (`bc_entry="ibpd"`); it is multiplied by
-`PRODUCTION_BC_SCALE = 3.0`, a measured balance point, not a derived factor.
-`build_preconditioners(bc_scale=...)` overrides the constant; there is no
-environment variable. Under Dirichlet the term is zero.
-
-**Why the free 1D ends are the right natural conditions on curved maps.**
-The free Hodge Laplacian at k=1 imposes `u.n = 0` and `curl u x n = 0` at
-`r = 1`. On a flat map these collapse onto the 1D factors: `u.n = 0` pins
-`u_r` on the face, so its tangential derivatives vanish there, and
-`curl u x n = (d_r u_t - d_t u_r, d_r u_z - d_z u_r) = 0` reduces to
-`d_r u_t = d_r u_z = 0` -- exactly the natural conditions of the free-end 1D
-stiffnesses on the primal-axis components. The collapse survives curvature,
-for two metric-independent reasons and one approximation:
-
-1. *The curl half is metric-free.* In the logical covariant components the
-   discretization stores, curl is the exterior derivative:
-   `(du)_{rt} = d_r u_t - d_t u_r`, plain antisymmetrized partials with no
-   metric factors and no Christoffel symbols, on any map.
-2. *Positive weights do not change a natural condition.* The curved
-   conditions carry metric factors, e.g.
-   `g^rr g^tt J (d_r u_t - d_t u_r) = 0` on the face, but
-   `w(1) u'(1) = 0 <=> u'(1) = 0` for `w > 0`: the weighted 1D operators
-   impose the same condition. Only the *strength* of the penalized trace
-   depends on the weight, which is what `_face_alpha` averages.
-3. *The metric enters only through face orthogonality.* `u.n = 0` means
-   `u^r = g^rr u_r + g^rt u_t + g^rz u_z = 0`, which is the logical
-   statement `u_r = 0` -- the trace the rank-one term penalizes -- exactly
-   when `g^rt = g^rz = 0` at the face. Exact on the cylinder and toroid; on
-   W7-X it is the same orthogonal-metric approximation the bulk atom makes
-   everywhere (`component_factors`), so the boundary adds nothing new.
-
-At k=0 there is nothing to penalize at all: the codifferential of a 0-form
-is zero, so `L_0 = D_0^T M_1 D_0` has no weak half, no integration by parts
-and no surface term; the Neumann condition is genuinely natural for
-free-end splines. At k=2 the same collapse runs with the roles swapped (the
-penalized trace is `w x n` on the two derivative components, the primal
-component keeps its free end); k=3 penalizes the full trace. See
-`trace_components` in `mrx/metric_lumping_laplacian.py`.
-
-One caveat: the collapse uses `u_r = 0` *pointwise* on the face, but the
-free discrete problem enforces `u.n = 0` by a penalty, not by removing a
-DOF. The residual `d_t u_r` contamination of the tangential conditions is
-part of why the exact surface integral is not the kappa-best scale and the
-measured `PRODUCTION_BC_SCALE` pushes toward the hard `u_r = 0` limit.
-
-Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
+**Natural boundary term.** Under a free condition at `r = 1` the weak
+block's integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗
+M_z` with `e` the one-hot derivative-spline trace, the shape of the first
+Kronecker term, so it merges into `K_r` as a rank-one update at no cost, on
+the components whose radial axis is a derivative axis. `alpha` is the face
+average of the component's mass weight (`_face_alpha`) times
+`PRODUCTION_BC_SCALE = 3.0`: the exact surface integral is a penalty on the
+normal trace and the atom wants it closer to the hard `u_r = 0` limit; 3.0
+is inside the flat optimum of a 24-cell sweep
+(`docs/research/natural_bc_coefficient_handoff.md`). Under Dirichlet the
+term is zero.
 
 ## 4. The mass preconditioner: `MetricLumpingMass`
 
 Same file, same shape, simpler algebra: a mass is a single Kronecker product,
-so the bulk inverse is three 1D dense solves with no fast diagonalisation
-(`_kron_mass_model_1d`, `_apply_mass_payload`). The polar core is probed
-with `apply_mass_matrix` on the residual-precision sequence and inverted
-densely; there is no pseudoinverse of the extraction anywhere. `apply_in(dtype)`
-is the atom as part of an operator of that precision (the hat Laplacian's
-weak term, the approximate Laplacian the Laplacian cores are probed with). Built by `assemble_mass_metric_lumping_preconditioner`
-(inside `build_preconditioners`) and stored on `operators.mass_lumping`,
-keyed `(k, dirichlet)`; nothing builds one on first use.
+so the bulk inverse is three 1D dense solves inside the diagonal sandwich
+`Lam` that reproduces `diag(M_k)` exactly (`_kron_mass_model_1d`). The polar
+core is probed with `apply_mass_matrix` on the residual-precision sequence
+and inverted densely; there is no pseudoinverse of the extraction anywhere.
+`apply_in(dtype)` is the atom as part of an operator of that precision (the
+weak term of the hat Laplacian on the float64 view).
 
 ## 5. Building and invalidation
 
 ```python
 seq.set_map(F)                  # installs the geometry, drops seq.operators
 seq.build_preconditioners()     # a fresh bundle: both atoms for every (k, BC)
+compute_nullspaces(seq)         # the harmonic forms, onto the bundle
 ```
 
-`seq.set_map_and_preconditioners(F)` is the two calls in one. `set_geometry`
-drops the whole bundle because everything on it factorises the old metric;
-there is no cache to invalidate, and the harmonic forms (also on the bundle)
-are recomputed with `compute_nullspaces`.
+`set_geometry` drops the whole bundle because everything on it factorises
+the old metric; there is no cache to invalidate. The atom payloads are
+`eqx.Module` pytrees built eagerly at construction, with one jitted apply
+per tree structure, so a rebuild for a new geometry of the same
+discretisation reuses the compiled program.
 
-The atom payloads are `eqx.Module` pytrees (`_LumpPayload`, `_MassPayload`)
-built eagerly at construction, with one jitted apply per tree structure, so
-a rebuild for a new geometry of the same discretisation reuses the compiled
-program.
+## 6. Not in production
 
-## 6. Cut-offs
+Multigrid, Chebyshev or Richardson acceleration, CP fits, HX auxiliary-space
+transfers, dense outer-ring probes, the Fourier coarse correction and the
+per-DoF Jacobi baselines were measured and are not used
+(`docs/research/preconditioner_lessons.md`); the research code lives on
+branch `greville-prod` under `mrx/experimental/`.
 
-All rank and structure cut-offs are multiples of the working-precision
-epsilon (`mrx.eps`), so they scale with `MRX_DTYPE` (see
-[precision.md](precision.md)).
-
-| constant | value | gates |
-|---|---|---|
-| `CORE_TOL` | 4096 eps of the residual dtype | eigenvalues of the probed core treated as zero |
-| `PSEUDOINVERSE_TOL` | `eps(2^25)` | singular-value floor in `_symmetric_pseudoinverse` |
-| `PROJECTOR_SVD_TOL` | `eps(2^19)` | rank cut of the extraction projector |
-| `PROJECTOR_PLANE_TOL` | `eps(2^22)` | per-zeta-plane block equality |
-| `BLOCK_DIAGONAL_TOL` | `eps(2^12)` | block-diagonality of the Gram matrix |
-
-Endpoint nudges away from a clamped knot are `sqrt_eps() * h`.
-`PROBE_BATCH_SIZE = 8` rows per `lax.map` batch when probing a diagonal.
-
-## 7. Not in production
-
-Research code (Chebyshev smoothers, the modal-radial atom, the coarse correction) lives on branch `greville-prod` under `mrx/experimental/`, not here:
-`chebyshev.py` (polynomial acceleration), `metric_lumping_coarse.py` (the
-truncated-Fourier coarse correction `CoarseCorrectedMetricLumping`), `modal_radial.py`.
-Multigrid, HX auxiliary-space transfers, CP rank fits, dense outer-ring probes,
-and the per-DoF Jacobi baselines are measured and not used; the
-verdicts are in `docs/research/preconditioner_lessons.md`.
-
-## 8. Measuring
-
-- `scripts/poisson_study.py`: all eight `(k, BC)` Hodge-Laplacian solves on
-  the toroid through the production solves, with the nullspace
-  iteration counts, the true residuals and the solve iteration counts per
-  resolution. `n=[8] p=3` is the smoke run.
-- `test/test_poisson.py` pins the iteration counts of the production
-  preconditioners on the session fixture: all eight `(k, BC)` Laplacians
-  against manufactured solutions.
-
-Rank alternatives by total time, not iterations: every arm costs the same per
-iteration, so build cost decides. Iteration counts move by about 1% between
-runs; only a two-digit percentage is a result.
+`test/test_poisson.py` pins the iteration counts of the production
+preconditioners on the session fixture, all eight `(k, BC)` Laplacians
+against manufactured solutions. Rank alternatives by total time, not
+iterations; iteration counts move by about 1% between runs, and only a
+two-digit percentage is a result.

@@ -1,12 +1,11 @@
 # MRX documentation
 
 Everything is in `docs/source/`, the Sphinx tree: the guides
-(`getting_started.md`, `tutorials.md`, `relaxation.md`,
-`cluster.md`), the concept pages under `concepts/` (architecture, assembly,
-preconditioning, the polar axis, precision, the relaxation loop, the GVEC
-interface, the manufactured solutions, production settings, the testing
-strategy) and the API reference under `api/`. Every identifier named there
-exists in `mrx/` or `scripts/`. Build it with
+(`getting_started.md`, `tutorials.md`, `relaxation.md`, `cluster.md`,
+`faq.md`), the concept pages under `concepts/` (architecture, the mass
+operators, the polar axis, preconditioning, precision, the relaxation loop,
+the GVEC interface, the testing strategy) and the API reference under
+`api/`. Build it with
 
 ```
 pip install -r docs/requirements.txt

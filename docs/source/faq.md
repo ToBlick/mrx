@@ -33,15 +33,10 @@ balances the force it produces. Where the relaxed field has islands or
 chaotic regions the pressure flattens across them, which is the physics the
 code is built to show.
 
-The driver records two pressures. The strong pressure `p` is the multiplier
-itself, a 3-form with `dp/dn = 0` on the wall by construction; it cannot
-see a force on the wall. The weak pressure `p_w` is the gradient part of
-`J × B` in the natural 1-form space with `p_w = 0` on the wall; it does see
-the wall force, and its normal derivative there is the force the strong
-pressure misses. The two agree in the interior of a well-converged
-equilibrium and differ where the equilibrium is not one; the diagnostics
-`gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall` and `JxBn_wall` in the
-[relaxation concepts](concepts/relaxation.md) page quantify that. Beta is
+A run records two pressures, the strong multiplier `p` and the weak
+pressure `p_w` that sees the wall force; they agree in the interior of a
+converged equilibrium, and the diagnostics that quantify their difference
+are in [Relaxation](concepts/relaxation.md). Beta is
 `β = ∫ p dV / ∫ B²/2 dV` in code units, reported as `beta_vol` from `p_w`.
 
 Resistivity lowers the pressure. A resistive step reconnects the field,
@@ -50,25 +45,11 @@ current ratio `‖J‖/‖B‖` and `beta_vol` drop together with the helicity.
 
 ## How expensive is MRX to run?
 
-A single GPU. Everything is matrix-free and jit-compiled with JAX; the cost
-of a relaxation step is a handful of conjugate-gradient and MINRES solves
-(the force, the Leray projection, the velocity smoothing, the line search)
-on the tensor-product B-spline spaces, so it scales with the number of
-degrees of freedom times the solver iteration counts. Measured on one
-H100 for the li383 stellarator (`nfp = 3`), relaxation in float32:
-
-| mesh `(n_r, n_θ, n_ζ)`, degree | setup (operators, preconditioners, harmonic forms) | one relaxation step |
-|---|---|---|
-| (16, 32, 32), p = 2 | 150 s | 0.57 s |
-| (32, 64, 64), p = 2 | 235 s | 4.6 s |
-
-The setup happens once per geometry and includes the compile. A run to the
-ideal floor on the (16, 32, 32) mesh is a few thousand steps, under an
-hour; a reconnection series of 18000 steps is about three hours. A
-Poincaré section (160 field lines, 400 crossings each, float32) takes about
-25 s per field on that mesh plus the same setup; the lean test suite runs
-in about four minutes on a GPU. Memory is not the limit at these meshes;
-the largest arrays are the metric at the quadrature points, which are kept
-resident, and a (32, 64, 64) p = 2 run fits comfortably on an 80 GB card.
-MRX runs on a CPU as well, which is fine for the Poisson tutorials and the
+A single GPU. Everything is matrix-free and jit-compiled with JAX; a
+relaxation step is a handful of CG and MINRES solves on the tensor-product
+B-spline spaces, under a second per step on the li383 `(16, 32, 32)`
+`p = 2` mesh on one H100 after a setup of a few minutes (the compile, the
+preconditioners, the harmonic forms). A run to the ideal floor is a few
+thousand steps; a `(32, 64, 64)` `p = 2` run fits comfortably on an 80 GB
+card. MRX runs on a CPU as well, which is fine for the tutorials and the
 tests, but not for a production relaxation.

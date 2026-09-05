@@ -1,18 +1,14 @@
 # Testing strategy
 
 One lean tier, three configurations. `pytest` runs the suite in the
-configuration `import mrx` gives, refined float32 (the production
-default); `MRX_DTYPE=float64` and `MRX_DTYPE=float32
-MRX_RESIDUAL_DTYPE=float32` (plain float32, the TPU configuration) are the
-other two, each with its own default tolerance (`precision.md`). A change
-to the solvers, the precision module or the atoms is verified in all
-three: `bash slurm/suite.sh` submits the three GPU jobs, and the report
-says the count per configuration. (Until 2026-09-05 the conftest forced
-float64, so a bare `pytest` tested the one configuration nothing runs in
-production.) `pytest` runs the whole suite in a few minutes on a GPU or on
-four CPU cores, in float64 and float32, reading only files tracked in the
-repository. The GitHub workflow runs exactly that, once per precision; a GPU
-node runs the same command through `slurm/run.sh` (see `slurm/README.md`).
+configuration `import mrx` gives, refined float32 (the production default);
+`MRX_DTYPE=float64` and `MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float32`
+(plain float32, the TPU configuration) are the other two, each with its
+own default tolerance ([precision.md](precision.md)). A change to the
+solvers, the precision module or the atoms is verified in all three:
+`bash slurm/suite.sh` submits the three GPU jobs. The suite takes a few
+minutes on a GPU or on four CPU cores and reads only files tracked in the
+repository; the GitHub workflow runs it once per working precision.
 
 ## Two sequences
 
@@ -25,19 +21,13 @@ metric-lumping atoms for all eight `(k, BC)` pairs and the harmonic forms:
   field `B = dA'` from the histopolated Clebsch potential;
 - `toroid`, the spline-interpolated analytic donut torus, the one geometry
   on which all eight Hodge Laplacians have closed-form manufactured
-  solutions (`test/manufactured.py`, `docs/source/concepts/manufactured_solutions.md`).
+  solutions (`test/manufactured.py`; the derivation is
+  `docs/research/manufactured_solutions.md`).
 
-Nothing else builds a sequence.
-
-The suite is XLA-compile-bound: an eager solve traces and compiles its own
-loop body, so a test costs what it compiles, not what it computes, and four
-cores run the suite as fast as thirty-two. Two consequences:
-
-- the persistent compilation cache (`JAX_COMPILATION_CACHE_DIR`) is the lever
-  on wall time in CI;
-- a long chain of distinct compilations in one process is what broke the
-  old, larger suite on the CPU backend (XLA:CPU died after some thousands of
-  executables). Fifty short tests do not get there.
+Nothing else builds a sequence. The suite is XLA-compile-bound: an eager
+solve traces and compiles its own loop body, so a test costs what it
+compiles, not what it computes, and the persistent compilation cache
+(`JAX_COMPILATION_CACHE_DIR`) is the lever on wall time in CI.
 
 ## What is tested
 
@@ -45,8 +35,10 @@ cores run the suite as fast as thirty-two. Two consequences:
 |---|---|---|
 | `test_assembly.py` | `M_k x` from the fused sum-factorised kernel equals evaluate -> metric weight -> integrate, one random vector per `k`; the projection pairs are transposes | `1e3 eps` |
 | `test_complex.py` | `d d = 0` with the polar strong derivative, both BCs; the two harmonic forms have a roundoff Rayleigh quotient and an identity Gram matrix | `eps`-scaled; `seq.tol` |
-| `test_poisson.py` | the eight Hodge Laplacians, `k = 0..3` free and Dirichlet, on `toroid` against the manufactured solutions with the production `'auto'` preconditioner; the Leray projections at k=2 and k=1 are div-free, idempotent and non-expansive | measured error bands 1.25x and iteration bands 2x; `10 seq.tol` |
-| `test_relaxation.py` | 50 production steps on `b0`: energy monotone at every recorded point, the force norm drops by the measured factor, helicity conserved to `25 seq.tol`, `div B` at roundoff | measured band; `seq.tol` |
+| `test_forms.py`, `test_products.py` | pullback inverts pushforward; the quadratic loads against the mass and projection matrices | `eps`-scaled |
+| `test_poisson.py` | the eight Hodge Laplacians, `k = 0..3` free and Dirichlet, on `toroid` against the manufactured solutions with the production preconditioners; the Leray projections at k=2 and k=1 are div-free, idempotent and non-expansive | measured error bands 1.25x and iteration bands 2x; `10 seq.tol` |
+| `test_refine.py` | a refined solve meets the tolerance on the true residual | `seq.tol` |
+| `test_relaxation.py` | 50 production steps on `b0`: energy monotone at every recorded point, the force norm drops by the measured factor, helicity conserved to `25 seq.tol`, `div B` at roundoff; a reconnection and a checkpoint round-trip | measured band; `seq.tol` |
 | `test_readers.py` | the GVEC parser reproduces the closed-form synthetic state; the VMEC reader reads li383 with the expected layout | roundoff; exact |
 | `test_spline_bases.py`, `test_quadrature.py`, `test_precision.py` | partition of unity and the histopolation de Rham identity; quadrature exactness; the working dtype and matmul precision | roundoff |
 
@@ -54,8 +46,7 @@ The manufactured solutions are closed-form on the toroid for every degree and
 both boundary families (they pair up under the Hodge star), which no
 stellarator geometry can offer; the stellarator carries everything that does
 not need an exact solution. Resolution-bound accuracy claims (convergence
-rates, force balance of an equilibrium) belong to the studies under
-`scripts/`, not here.
+rates, force balance of an equilibrium) belong to the studies, not here.
 
 ## What a test asserts
 
@@ -69,11 +60,8 @@ wrong and not when an implementation detail moves:
   and the fixture. A wrong metric factor or a broken preconditioner moves
   these by a factor, precision and run-to-run noise by a few percent.
 
-## Adding a test
-
 A new test is the production configuration plus at most one contrasting
 case, on `seq`. It states which mathematical claim it checks and at which
 tolerance class; if it introduces a band it records the measured value and
 the date. Dense references and anything that probes every degree of freedom
-do not belong in the suite; the studies under `scripts/` and the GPU jobs in
-`slurm/` are where expensive checks live.
+do not belong in the suite.

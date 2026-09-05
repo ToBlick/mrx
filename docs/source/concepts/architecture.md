@@ -17,18 +17,18 @@ objects and the order in which they are built. Assembly detail is in
 ### 1D bases
 
 `SplineBasis(n, p, type)` in `mrx/spline_bases.py` is a 1D B-spline basis of
-`n` functions and degree `p`. `type` is `"clamped"`, `"periodic"`, or
-`"constant"`. `DerivativeSpline(s)` is the basis that contains the derivatives
-of `s`: `n-1` functions of degree `p-1` on a clamped axis, `n` on a periodic
-axis. `SplineBasis.evaluate_local(x)` returns the `p+1` nonzero values at `x`
-and their indices; every evaluation of a field goes through it.
+`n` functions and degree `p`, `type` `"clamped"` or `"periodic"`.
+`DerivativeSpline(s)` is the basis that contains the derivatives of `s`:
+`n-1` functions of degree `p-1` on a clamped axis, `n` on a periodic axis.
+`SplineBasis.evaluate_local(x)` returns the `p+1` nonzero values at `x` and
+their indices; every evaluation of a field goes through it.
 
 ### k-forms
 
 `DifferentialForm(k, ns, ps, types)` in `mrx/differential_forms.py` holds the
 three 1D bases `Λ[a]` and their derivative bases `dΛ[a]`. The basis of `V^k`
 is a product of one 1D function per axis, differentiated on the axes the
-degree prescribes:
+degree prescribes (`derivative_axes(c)`, the one place the pattern lives):
 
 | k | components | axis bases per component |
 |---|---|---|
@@ -50,35 +50,21 @@ the field at a point with one `(p+1)^3` window per component.
 ### Quadrature
 
 `QuadratureRule(form, q)` in `mrx/quadrature.py` is the tensor product of
-composite Gauss rules with `q` points per knot span (`composite_quad`). `q` is a
-required argument of `DeRhamSequence`; every production entry point passes
-`q = p + 1`. See [mass.md](mass.md) for why.
+composite Gauss rules with `q` points per knot span. `q` is a required
+argument of `DeRhamSequence`; every production entry point passes
+`q = p + 1` ([mass.md](mass.md), section 5).
 
 ## 2. Operators from the tensor structure
 
 ### Mass matrices
 
-The mass matrix of `V^k` is
-
-```
-(M_k)_IJ = ∫ Λ_I · W_k · Λ_J dx
-```
-
-with the metric weight built from the map Jacobian `DF` and `J = det DF`:
-
-| k | `W_k` |
-|---|---|
-| 0 | `J` |
-| 1 | `J g^{-1}` with `g^{-1} = DF^{-1} DF^{-T}` |
-| 2 | `g / J` with `g = DF^T DF` |
-| 3 | `1 / J` |
-
-The mass matrices are the only operators that need quadrature and they are
-never stored. `mass_core_apply(seq, k)` in `mrx/operators.py` returns the
-matrix-free apply on the raw tensor-product space: the sum-factorised
-kernel of `mrx/mass.py` bound to the sequence's plan (`seq.mass_plan[k]`)
-and the geometry's weights (`seq.geometry.mass_weights[k]`, attached by
-`set_geometry`).
+The mass matrices `(M_k)_IJ = ∫ Λ_I · W_k · Λ_J dx`, with the metric weight
+`W_k` of [mass.md](mass.md), are the only operators that need quadrature
+and they are never stored. `mass_core_apply(seq, k)` in `mrx/operators.py`
+returns the matrix-free apply on the raw tensor-product space: the
+sum-factorised kernel of `mrx/mass.py` bound to the sequence's plan
+(`seq.mass_plan[k]`) and the geometry's weights
+(`seq.geometry.mass_weights[k]`, attached by `set_geometry`).
 
 ### Incidence, derivative, and stiffness
 
@@ -109,31 +95,20 @@ inner product of two vector forms onto the 0- or 3-forms,
 `scalar_product_load` the product of two scalar forms (0 or 3) onto either,
 and `scalar_vector_load` a scalar form times a vector form onto the 1- or
 2-forms; each has a `_values` twin that takes quadrature values, so a
-factor evaluated once can feed several loads (the force step evaluates `u`
-once for the cross product and the CFL number).
+factor evaluated once can feed several loads.
 
-In the language of forms these are wedge products and contractions, and
-that is what decides where the metric appears. In reference components a
-1-form is covariant (`a_i = DF^T a_phys`), a 2-form a contravariant density
-(`b^i = J DF^{-1} b_phys`), a 0-form a value and a 3-form a density (`J`
-times the value). The wedge products are metric-free in these components:
-`a¹ ∧ b¹` is the 2-form with components `a × b`, `a¹ ∧ b²` the 3-form with
-the value `a · b`, `f⁰ ∧ ω` the pointwise product. So is the contraction:
-`u × B` of a velocity `u` (a 2-form, `u_ref = J ξ̇`) with the flux 2-form
-`B` is `-i_u B`, the 1-form `(B × u)/J`, which is why the induction
-`dB/dt = curl(u × B)` is the Lie derivative `L_u B = d i_u B` of a closed
-form and conserves flux exactly on the discrete level. The metric enters
-only where a Hodge star does (two 1-forms dotted need `G^{-1}`, two 2-forms
-crossed give a 1-form `(a × b)/J` and dotted need `G/J²`, a 3-form read as
-a value needs `1/J`) and in the pairing with the output basis: a 1-form
-against the 1-form basis carries `J G^{-1}`, a 2-form against the 2-form
-basis `G/J`, a 1-form against the 2-form basis or a 2-form against the
-1-form basis nothing (the `P_12` pairing of section 2), a value against
-the 0-form basis `J`, against the 3-form basis nothing. The mass matrices
-are the special case of `scalar_vector_load` and `scalar_product_load` with
-the constant 1 as one factor, the projection masses `P_12` and `P_03`
-likewise across degrees; `test/test_products.py` checks every case
-against them.
+In reference components a 1-form is covariant (`a_i = DF^T a_phys`), a
+2-form a contravariant density (`b^i = J DF^{-1} b_phys`), a 0-form a value
+and a 3-form a density (`J` times the value). Wedge products and
+contractions are metric-free in these components -- `a¹ ∧ b¹` is the
+2-form with components `a × b`, `u × B` of a velocity 2-form and the flux
+2-form `B` is the 1-form `(B × u)/J`, which is why the induction `dB/dt =
+curl(u × B)` conserves flux exactly on the discrete level -- and the metric
+enters only where a Hodge star does and in the pairing with the output
+basis (a 1-form against the 1-form basis carries `J G^{-1}`, a 2-form
+against the 2-form basis `G/J`, the mixed pairings nothing).
+`test/test_products.py` checks every case against the mass and projection
+matrices.
 
 ## 3. Extraction
 
@@ -146,18 +121,15 @@ operator `E_k` of shape `(n_k, n_k_raw)` maps it onto the conforming space:
 
 `MatrixFreeExtraction` in `mrx/extraction_operators.py` stores the nonzeros
 as `(rows, cols, vals)` and applies `E` and `E^T` as one gather and one
-segment sum. Its builder:
+segment sum. Its builder, `PolarExtractionOperator(Λ, xi, zero_bc)`, fuses
+the ring-0 and ring-1 radial functions of every `zeta` slice into three
+axis functions with the weights `xi` from `get_xi`; `zero_bc=True` is
+Dirichlet at `r = 1`.
 
-- `PolarExtractionOperator(Λ, xi, zero_bc)`: fuses the ring-0 and ring-1
-  radial functions of every `zeta` slice into three axis functions with the
-  weights `xi` from `get_xi`. Used when `polar=True`. Dirichlet at `r = 1`
-  is `zero_bc=True`.
-
-A `DeRhamSequence` holds three extractions per degree: `E(k)` (periodic
-and polar only), `E(k, True)` (also drops the `r = 1` functions), and
-`E_bc(k)` (the functions `E(k, True)` dropped, from `bc_extraction_op`);
-`.T` is the transpose. Sizes are `n(k)`, `n(k, True)`, `n_bc(k)`. Every
-apply and solve takes `dirichlet=True|False` and picks the pair.
+A `DeRhamSequence` holds two extractions per degree: `E(k)` (periodic and
+polar only) and `E(k, True)` (also drops the `r = 1` functions); `.T` is
+the transpose and `n(k, dirichlet)` the sizes. Every apply and solve takes
+`dirichlet=True|False` and picks the pair.
 
 ## 4. k-form Laplacians
 
@@ -167,23 +139,17 @@ The Hodge Laplacian of degree `k` is
 L_k = K_k + D_{k-1} M_{k-1}^{-1} D_{k-1}^T
 ```
 
-with `K_3 = 0` and `D_{-1} = 0`. `apply_laplacian` applies it; the
-inverse mass in the second term is a solve. The solves in `mrx/operators.py`
-are:
-
-| k | `apply_inverse_laplacian` | solver in `mrx/solvers.py` |
-|---|---|---|
-| 0 | CG on `K_0`, harmonic mode deflated | `solve_singular_cg` |
-| 1, 2, 3 | MINRES on the saddle system `[[K_k, D_{k-1}], [D_{k-1}^T, -M_{k-1}]]` | `solve_saddle_point_minres` |
-
-`apply_inverse_shifted_laplacian` solves `L_k + eps M_k` the same way;
+with `K_3 = 0` and `D_{-1} = 0`. `apply_laplacian` applies it; the inverse
+mass in the second term is a solve. `apply_inverse_laplacian` solves it: CG
+on `K_0` with the harmonic mode deflated at `k = 0`, the Hodge split at
+`k = 1, 2`, the saddle MINRES at `k = 3`
+([preconditioning.md](preconditioning.md), section 1).
+`apply_inverse_shifted_laplacian` solves `L_k + eps M_k`;
 `apply_inverse_mass_plus_eps_laplace_matrix` solves `M_k + eps L_k` as two
-SPD CG solves, `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1
-D_{k-1}^T`, which is exact because `D_k D_{k-1} = 0`. The
-`DeRhamSequence` methods of the same names forward to these with the
-sequence's own `operators`, `tol`, and `maxiter`. Every solve is
-preconditioned by the metric-lumped atom of its `(k, BC)`, described in
-[preconditioning.md](preconditioning.md).
+SPD CG solves through the split identity. The `DeRhamSequence` methods of
+the same names forward to these with the sequence's own `operators`,
+`tol`, and `maxiter`. Every solve is preconditioned by the metric-lumped
+atom of its `(k, BC)`.
 
 ### Harmonic forms
 
@@ -191,11 +157,11 @@ preconditioned by the metric-lumped atom of its `(k, BC)`, described in
 `DeRhamSequence(betti_numbers=...)`; `(1, 1, 0, 0)` is the solid torus. The
 kernel vectors live on `SequenceOperators.nullspaces[(k, dirichlet)]` as
 arrays of fixed shape `(n_vectors, n_k)`, zero until computed, so a solve on a
-fresh bundle deflates nothing. `mrx/nullspace.py` fills them:
-`compute_nullspaces` by a direct Hodge decomposition (needs `b2 = 0`),
-`compute_nullspaces_iterative` by shifted inverse iteration for any topology.
-Both need mass, incidence, and Laplacian preconditioners assembled first.
-Unshifted solves deflate the kernel; shifted solves do not.
+fresh bundle deflates nothing. `compute_nullspaces(seq)` in
+`mrx/nullspace.py` fills them by a direct Hodge decomposition (needs `b2 =
+0`); `compute_nullspaces_iterative` is shifted inverse iteration for any
+topology. Both need the preconditioners assembled first. Unshifted solves
+deflate the kernel; shifted solves do not.
 
 ## 5. Data model
 
@@ -204,43 +170,39 @@ object captured by closure; what may change is a pytree.
 
 ### Static: `DeRhamSequence`
 
-`DeRhamSequence(ns, ps, q, types, *, polar, tol=None, maxiter=10_000, ...)`
+`DeRhamSequence(ns, ps, q, types, *, polar, tol=None, maxiter=10_000, knots=None, betti_numbers=(1, 1, 0, 0))`
 in `mrx/derham_sequence.py` owns the topology: the four `DifferentialForm`
 objects `basis_0..basis_3`, the `quad` rule, the polar weights `xi`, the
-extraction operators `e0..e3` (free, Dirichlet, boundary), the incidence
-stencils `g0..g2` with the polar grad/curl corrections, the 1D basis tables
-at the quadrature points (`basis_r_jk`, `d_basis_r_jk`, ...), the Greville
-data, and the solve defaults `tol` (default `mrx.sqrt_eps()`) and `maxiter`.
-All of it is built in the constructor. `polar` is keyword-only; the map is
-not a constructor argument. Extra arguments: `betti_numbers`, `knots`,
-`r_scale`.
+extraction operators (free and Dirichlet), the incidence stencils `g0..g2`
+with the polar grad/curl corrections, the 1D basis tables at the
+quadrature points (`basis_r_jk`, `d_basis_r_jk`, ...), the Greville data,
+and the solve defaults `tol` (default `mrx.precision.SOLVE_TOL`) and
+`maxiter`. All of it is built in the constructor. `polar` is keyword-only
+and must be `True`; the map is not a constructor argument.
 
 ### Dynamic: `SequenceGeometry`
 
 `SequenceGeometry` in `mrx/geometry.py` is an `eqx.Module` with the map and
 three arrays on the quadrature grid: the metric `metric_jkl = DF^T DF` of
 shape `(N_q, 3, 3)`, its inverse `metric_inv_jkl` `(N_q, 3, 3)` and
-`jacobian_j = det DF` `(N_q,)`. They are built once from `DF` by the
-constructors and never recomputed; `DF` itself is not kept, because its only
-consumer is the physical-frame pullback at load time (`load(frame='phys')`),
-which recomputes it with `map_jacobian_at(seq.map, seq.quad.x)`. Everything on the hot path -- the mass
-weights `J`, `J G^-1`, `G/J`, `1/J`, the force step's `cross_product_load`,
-the lumped preconditioner builds -- reads the stored arrays. Build the
-geometry with `SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F`
-under `jax.lax.map`) or `SequenceGeometry.from_spline_map(spline_map, seq)`
-(sum factorisation of the spline coefficients). `seq.set_map(F)` and
-`seq.set_spline_map(coefficients)` install it as `seq.geometry` and drop any
-Laplacian preconditioner built for the previous geometry.
+`jacobian_j = det DF` `(N_q,)`, plus the mass weights attached from them.
+They are built once from `DF` by the constructors and never recomputed;
+`DF` itself is not kept, because its only consumer is the physical-frame
+pullback at load time (`load(frame='phys')`), which recomputes it with
+`map_jacobian_at(seq.map, seq.quad.x)`. Build the geometry with
+`SequenceGeometry.from_map(F, seq.quad.x)` (autodiff of `F`) or
+`SequenceGeometry.from_spline_map(spline_map, seq)` (sum factorisation of
+the spline coefficients). `seq.set_map(F)` and
+`seq.set_spline_map(coefficients)` install it as `seq.geometry` and drop the
+operator bundle built for the previous geometry.
 
-Maps enter by interpolation. An analytic map is a callable `F(x)`; a map from
-an equilibrium file becomes scalar 0-form splines on the sequence's own
-space, wrapped as a `SplineMap` (`mrx/mappings.py`) or a stellarator map. An
-analytic map is fitted by `seq.interpolate(f, 0)`: 1D collocation solves on
-the tensor space followed by the polar restriction
-(`greville_interpolate_map` in `mrx/geometry.py`). A GVEC state or VMEC
-wout is not sampled at all: `build_gvec_map` in `mrx/gvec.py` builds the
-polar coefficients of `R`, `Z` from the series coefficients mode by mode
-(`series_spline_dofs`). There is no reference mass matrix.
+Maps enter by interpolation. An analytic map is a callable `F(x)`, fitted
+by `seq.interpolate(f, 0)`: 1D collocation solves on the tensor space
+followed by the polar restriction (`greville_interpolate_map` in
+`mrx/geometry.py`). A GVEC state or VMEC wout is not sampled at all:
+`build_gvec_map` in `mrx/gvec.py` builds the polar coefficients of `R`, `Z`
+from the series coefficients mode by mode (`series_spline_dofs`), wrapped
+as a `SplineMap` (`mrx/mappings.py`). There is no reference mass matrix.
 
 ### Dynamic: `SequenceOperators`
 
@@ -259,7 +221,7 @@ recompile.
 ## 6. Assembly order
 
 Each builder reads the previous one. `build_sequence(geometry, ns, p)` in
-`mrx/geometry.py` is the production recipe:
+`mrx/geometry.py` is the production recipe for a geometry file:
 
 ```python
 seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
@@ -271,19 +233,15 @@ ops = compute_nullspaces(seq)
 
 1. Topology: `DeRhamSequence`. Bases, extraction, incidence (with the polar
    grad and curl stencils), 1D tables, Greville data: everything static.
-2. Geometry: `set_map` or `set_spline_map`. Installs the metric and builds
-   the matrix-free mass and projection applies from it. Drops the operator
-   bundle.
-3. Preconditioners: `build_preconditioners`, one call:
-   `assemble_mass_metric_lumping_preconditioner`, then
-   `assemble_metric_lumping_laplacian_preconditioner` (the Laplacian atoms
-   need the mass preconditioners, because the weak term of `L_k` is applied
-   through them). These are the preconditioners of every solve, the
-   shift-and-invert nullspace route included.
-4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
-   after everything above; they live on the bundle.
+2. Geometry: `set_map` or `set_spline_map`. Installs the metric and the
+   mass and projection weights. Drops the operator bundle.
+3. Preconditioners: `build_preconditioners`, one call: the mass atoms, then
+   the Laplacian atoms (which apply the weak term of `L_k` through the mass
+   atoms). These are the preconditioners of every solve.
+4. Harmonic forms: `compute_nullspaces`, after everything above; they live
+   on the bundle.
 
 Nothing on the bundle is built on first use, and nothing on it survives a
 geometry change: after a new `set_map`, run steps 3 and 4 again. That is the
 contract for an outer loop over geometries (relaxation inside, the map
-outside). `seq.set_map_and_preconditioners(F)` is steps 2 and 3.
+outside).
