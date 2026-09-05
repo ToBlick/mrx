@@ -21,17 +21,14 @@ next) does not exist.  The reparameterisation is exact wherever
 :math:`\hat B^\zeta \ne 0`, which for a toroidal field is everywhere.
 
 **2. The step schedule is prescribed, so lanes do not couple.**
-``diffrax`` adaptive controllers run a whole ``vmap``ed batch on the *smallest*
-step any lane asks for: one seed in a chaotic edge region drags the entire
-batch down, which is why the old code chunked into groups of eight and still
-paid for the worst seed in each group.  With :math:`\zeta` as the independent
-variable the natural step is a fixed fraction of a field period -- geometry-
-uniform, unlike arclength -- so ``StepTo`` can prescribe the whole schedule up
-front.  Every lane then executes the same number of identical-cost steps,
-batching becomes a pure memory knob, and a pathological seed costs what a
-healthy one costs.  :func:`_step_convergence` is the price: fixed steps have no
-error control, so the step count has to be *justified* by refinement instead of
-assumed.
+With :math:`\zeta` as the independent variable the natural step is a fixed
+fraction of a field period -- geometry-uniform, unlike arclength -- so
+``StepTo`` prescribes the whole schedule up front: every lane executes the
+same number of identical-cost steps and a pathological seed costs what a
+healthy one costs (an adaptive controller runs a ``vmap``ed batch on the
+*smallest* step any lane asks for).  :func:`_step_convergence` is the price:
+fixed steps have no error control, so the step count has to be *justified*
+by refinement instead of assumed.
 
 **3. The state is a Cartesian chart on the cross-section.**
 :math:`\hat B^\theta \sim 1/r` near the polar axis (the coordinate vector
@@ -65,47 +62,21 @@ R_MAX = 1.0 - 1e-6
 # The field
 # ---------------------------------------------------------------------------
 
-def logical_field(seq, dof, k, dirichlet):
-    r"""Contravariant logical components of the vector field behind a k-form.
-
-    A 2-form pushes forward by Piola, :math:`B = DF\,\hat B/J`, so its
-    coefficients *are* the contravariant components and the field-line
-    direction in logical space is :math:`\hat B` itself.  A 1-form pushes
-    forward as :math:`v = DF^{-T}\hat A`, so the logical direction is
-    :math:`DF^{-1} v = g^{-1}\hat A` with :math:`g = DF^T DF`.
-
-    Only the direction matters below -- the third component divides out -- so
-    no Jacobian factor is applied.
-    """
-    if k not in (1, 2):
-        raise ValueError(f"logical_field: k must be 1 or 2, got {k}")
-    basis = seq.basis_2 if k == 2 else seq.basis_1
-    extraction = seq.E(k, dirichlet)
-    # DiscreteFunction folds the extraction into the coefficients once and
-    # evaluates only the basis functions that are nonzero at x.
-    discrete = DiscreteFunction(jnp.asarray(dof), basis, extraction)
-
-    if k == 2:
-        def field(x):
-            return discrete(x)
-    else:
-        def field(x):
-            df = jax.jacfwd(seq.map)(x)
-            return jnp.linalg.solve(df.T @ df, discrete(x))
-    return field
+def logical_field(seq, dof):
+    r"""Contravariant logical components of the field behind the Dirichlet
+    2-form ``dof``: a 2-form pushes forward by Piola, :math:`B = DF\,\hat
+    B/J`, so its coefficients *are* the contravariant components and the
+    field-line direction in logical space is :math:`\hat B` itself (no
+    Jacobian factor: only the direction matters, the third component divides
+    out). The extraction is folded into the coefficients once, and only the
+    basis functions nonzero at a point are evaluated."""
+    return DiscreteFunction(jnp.asarray(dof), seq.basis_2, seq.E(2, True))
 
 
 class BzetaParameterisationError(RuntimeError):
     """``B^zeta`` is not bounded away from zero, so ``zeta`` is not a valid
-    independent variable for the field-line ODE on this field.
-
-    Raised by :func:`require_zeta_parameterisation`. It carries the measured
-    range so the caller can report it rather than guess at it.
-    """
-
-    def __init__(self, message, *, lo, hi, tol, worst_x=None):
-        super().__init__(message)
-        self.lo, self.hi, self.tol, self.worst_x = lo, hi, tol, worst_x
+    independent variable for the field-line ODE on this field
+    (:func:`require_zeta_parameterisation`)."""
 
 
 #: ``|B^zeta|/|B|`` below which the toroidal-angle parameterisation is refused.
@@ -158,8 +129,7 @@ def require_zeta_parameterisation(field, *, n=4096, tol=BZETA_MIN_FRACTION,
             "field: where B^zeta = 0 the field line is locally tangent to the "
             "section plane and dr/dzeta is undefined. Trace this field by "
             "arclength instead, or fix the field -- do NOT clamp the "
-            "denominator, which makes the line trace backwards silently.",
-            lo=lo, hi=hi, tol=tol, worst_x=worst_x)
+            "denominator, which makes the line trace backwards silently.")
     if info["bz_over_b_absmin"] <= tol:
         raise BzetaParameterisationError(
             f"{name}: B^zeta comes within {info['bz_over_b_absmin']:.3e} of "
@@ -170,8 +140,7 @@ def require_zeta_parameterisation(field, *, n=4096, tol=BZETA_MIN_FRACTION,
             "dr/dzeta ~ B^r/B^zeta is stiff and the step schedule is "
             "prescribed, so this would surface as drift that does not fall "
             "under refinement -- indistinguishable from chaos. Trace by "
-            "arclength instead of raising the tolerance.",
-            lo=lo, hi=hi, tol=tol, worst_x=worst_x)
+            "arclength instead of raising the tolerance.")
     return info
 
 
@@ -205,8 +174,7 @@ def cross_section_rhs(field):
 # The trace
 # ---------------------------------------------------------------------------
 
-def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
-          batch_size=None):
+def trace(field, seeds, n_periods, steps_per_period, saves_per_period):
     """Integrate ``seeds`` for ``n_periods`` units of logical zeta.
 
     Args:
@@ -258,12 +226,9 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
         )
         return sol.ys, sol.result == dfx.RESULTS.successful
 
-    # Full vmap by default.  With a prescribed schedule every lane executes the
-    # same steps, so there is nothing to gain from chunking and the batch size
-    # is purely a memory knob.
-    if batch_size is None:
-        return jax.vmap(one)(y0s)
-    return jax.lax.map(one, y0s, batch_size=batch_size)
+    # With a prescribed schedule every lane executes the same steps, so there
+    # is nothing to gain from chunking.
+    return jax.vmap(one)(y0s)
 
 
 def _escaped_mask(ys):
@@ -272,17 +237,14 @@ def _escaped_mask(ys):
     return jnp.any(r >= R_MAX, axis=-1) | jnp.any(~jnp.isfinite(r), axis=-1)
 
 
-def _step_convergence(field, seeds, n_periods, steps_per_period,
-                     saves_per_period=8, batch_size=None):
+def _step_convergence(field, seeds, n_periods, steps_per_period, saves_per_period):
     """Max cross-section displacement between ``steps_per_period`` and twice it.
 
     Fixed steps carry no error estimate, so the step count has to be earned.
     Returned in units of the logical minor radius, over healthy seeds only.
     """
-    lo, _ = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
-                  batch_size=batch_size)
-    hi, _ = trace(field, seeds, n_periods, 2 * steps_per_period,
-                  saves_per_period, batch_size=batch_size)
+    lo, _ = trace(field, seeds, n_periods, steps_per_period, saves_per_period)
+    hi, _ = trace(field, seeds, n_periods, 2 * steps_per_period, saves_per_period)
     good = ~(_escaped_mask(lo) | _escaped_mask(hi))
     d = jnp.linalg.norm(lo - hi, axis=-1).max(axis=-1)
     return float(jnp.max(jnp.where(good, d, -jnp.inf)))
@@ -430,56 +392,8 @@ def to_RZ(seq, ys, zeta):
     return R, xyz[..., 2]
 
 
-def midplane_crossings(R, Z, centre_R, centre_Z, max_gap=0.5):
-    """``R`` where each line crosses the midplane through the magnetic axis,
-    outboard and inboard: shape ``(n_lines, 2)``.
-
-    The profile panels are a SLICE of the section along ``Z = centre_Z``, so
-    their abscissa is the physical ``R`` of the crossing and every line
-    appears twice, once on each side of the axis. Sorted by ``R`` the profile
-    reads as one curve inboard -> axis -> outboard, and an island chain is hit
-    on whichever side has a lobe on the midplane.
-
-    Each crossing is interpolated between the two orbit points that bracket
-    the ray in poloidal angle about the axis (``alpha = 0`` outboard,
-    ``alpha = +-pi`` inboard; ``arctan2``'s branch cut lies on the inboard ray,
-    so that side is handled by reflecting ``dR``). The interpolation assumes
-    the two points are NEIGHBOURS on one curve. On an island chain they can
-    sit on two different lobes with the ray between them, and the chord
-    between the lobes crosses the ray anywhere (measured 0.3-0.5 m for a 5/5
-    chain on a 0.25 m plasma), so a bracketing gap wider than ``max_gap``
-    radians is NaN: this line has no crossing on that side, and the profiles
-    leave it out there. Measured on w7x, w7x-ini and hegna, the relative
-    residual of a linear ``r(alpha)`` fit either side of the ray is ~3e-4 on
-    both sides, far below the marker size.
-    """
-    dR, dZ = R - centre_R, Z - centre_Z
-    rad = jnp.sqrt(dR ** 2 + dZ ** 2)
-
-    def crossing(ang):
-        big = jnp.asarray(jnp.inf)
-        above = jnp.where(ang >= 0.0, ang, big)          # smallest angle above
-        below = jnp.where(ang < 0.0, -ang, big)          # smallest |angle| below
-        i = jnp.argmin(above, axis=-1)
-        j = jnp.argmin(below, axis=-1)
-        take = jnp.take_along_axis
-        a_hi = take(ang, i[..., None], -1)[..., 0]
-        a_lo = take(ang, j[..., None], -1)[..., 0]
-        r_hi = take(rad, i[..., None], -1)[..., 0]
-        r_lo = take(rad, j[..., None], -1)[..., 0]
-        ok = (jnp.min(above, axis=-1) < jnp.inf) & (jnp.min(below, axis=-1) < jnp.inf)
-        ok &= (a_hi - a_lo) <= max_gap
-        t = (0.0 - a_lo) / (a_hi - a_lo)
-        return jnp.where(ok, r_lo + t * (r_hi - r_lo), jnp.nan)
-
-    r_out = crossing(jnp.arctan2(dZ, dR))
-    r_in = crossing(jnp.arctan2(dZ, -dR))
-    return jnp.stack([centre_R + r_out, centre_R - r_in], axis=-1)
-
-
-def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
-                   r_edge=0.97, theta=0.0, n_rays=4, probe_periods=64,
-                   steps_per_period=24, t_min=0.02):
+def seed_from_axis(field, n_seeds, saves_per_period, *, r_edge=0.97, n_rays=4,
+                   steps_per_period=24):
     """Seeds spaced from the MAGNETIC axis to the edge, not from ``r = 0``.
 
     Seeding along a ray of constant *logical* angle from ``r = 0`` starts at
@@ -519,24 +433,22 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     # its orbit is now small, and that probe is entry 0, the centre reference.
     # (A probe whose orbit stays large after this pass is on a wide structure
     # -- an island at the core -- not on a shifted axis; measured 2026-08-26.)
-    probe = jnp.array([[r_axis, theta], [r_edge, theta]])
-    ys, _ = trace(field, probe, probe_periods, steps_per_period,
-                  saves_per_period)
+    r_axis, probe_periods = 0.01, 64
+    probe = jnp.array([[r_axis, 0.0], [r_edge, 0.0]])
+    ys, _ = trace(field, probe, probe_periods, steps_per_period, saves_per_period)
     centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
-    offset = r_axis * jnp.array([jnp.cos(TWO_PI * theta), jnp.sin(TWO_PI * theta)])
-    probe2_uv = centre + offset
+    probe2_uv = centre + jnp.array([r_axis, 0.0])
     probe2 = jnp.array([[jnp.sqrt(probe2_uv[0] ** 2 + probe2_uv[1] ** 2),
                          jnp.arctan2(probe2_uv[1], probe2_uv[0]) / TWO_PI % 1.0],
-                        [r_edge, theta]])
-    ys, _ = trace(field, probe2, probe_periods, steps_per_period,
-                  saves_per_period)
+                        [r_edge, 0.0]])
+    ys, _ = trace(field, probe2, probe_periods, steps_per_period, saves_per_period)
     centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
     golden = 0.5 * (jnp.sqrt(5.0) - 1.0)
-    thetas = (theta + golden * jnp.arange(n_rays)) % 1.0
+    thetas = (golden * jnp.arange(n_rays)) % 1.0
     edge = r_edge * jnp.stack([jnp.cos(TWO_PI * thetas),
                                jnp.sin(TWO_PI * thetas)], axis=1)
 
-    t = jnp.linspace(t_min, 1.0, n_seeds)[None, :, None]
+    t = jnp.linspace(0.02, 1.0, n_seeds)[None, :, None]
     uv = (centre[None, None, :]
           + t * (edge - centre[None, :])[:, None, :]).reshape(-1, 2)
     r = jnp.sqrt(uv[:, 0] ** 2 + uv[:, 1] ** 2)
@@ -554,8 +466,7 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
 # a file -- and nothing past that point should be written twice.
 
 def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
-                       saves_per_period, batch_size=None, drift_periods=64,
-                       drift_seeds=8):
+                       saves_per_period):
     """Trace ``seeds``, measure iota, and say which lines have one.
 
     Seed 0 is the axis probe: it defines the centre, so its own winding is the
@@ -585,8 +496,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     ``saves_per_period``.
     """
     t0 = time.perf_counter()
-    ys, ok = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
-                   batch_size=batch_size)
+    ys, ok = trace(field, seeds, n_periods, steps_per_period, saves_per_period)
     ys = jnp.asarray(ys).block_until_ready()
     walltime = time.perf_counter() - t0
 
@@ -616,11 +526,9 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     # this way at all, and a number would be a lie.
     regular = np.flatnonzero(~np.asarray(chaotic | escaped))
     regular = regular[regular > 0]
-    idx = regular[:: max(1, len(regular) // drift_seeds)]
-    drift = (_step_convergence(field, seeds[idx],
-                              min(n_periods, drift_periods),
-                              steps_per_period, saves_per_period,
-                              batch_size=batch_size)
+    idx = regular[:: max(1, len(regular) // 8)]
+    drift = (_step_convergence(field, seeds[idx], min(n_periods, 64),
+                               steps_per_period, saves_per_period)
              if idx.size else float("nan"))
 
     return {"ys": np.asarray(ys[1:]), "ok": np.asarray(ok[1:]),
@@ -628,77 +536,36 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
             "iota_err": np.asarray(iota_err[1:]), "chaotic": np.asarray(chaotic[1:]),
             "iota_scatter": np.asarray(iota_scatter[1:]),
             "seeds": np.asarray(seeds[1:]), "axis": np.asarray(ys[0]),
-            "walltime": walltime, "drift": drift, "drift_lines": int(idx.size),
+            "walltime": walltime, "drift": drift,
             "saves_per_period": saves_per_period}
 
 
-def section_RZ(seq, ys, axis_uv, saves_per_period, plane):
-    """``(R, Z)`` of the crossings, of the magnetic axis, and of ``r = 0``.
-
-    The magnetic axis has no reason to sit on the coordinate axis
-    ``F(0, ., zeta)``: the maps come from equilibria, and a finite-beta one puts
-    ``r = 0`` at its own Shafranov-shifted axis.  Both are returned, so the
-    distance between them is a number the caller can print.  Nothing downstream
-    depends on the two coinciding -- the poloidal angle is measured about the
-    tracked magnetic axis, which is what makes the offset measurable rather
-    than fatal.
-
-    Returns ``(R, Z, axis_R, axis_Z, coord_R, coord_Z, logical_r,
-    logical_theta)``.
-    """
-    off = int(round(plane * saves_per_period))
-    uv = np.asarray(ys)[:, off::saves_per_period, :]
-    R, Z = to_RZ(seq, jnp.asarray(uv), plane)
-    aR, aZ = to_RZ(
-        seq, jnp.asarray(np.asarray(axis_uv)[off::saves_per_period, :]), plane)
-    cR, cZ = to_RZ(seq, jnp.zeros((1, 2)), plane)
-    lr = np.hypot(uv[..., 0], uv[..., 1])
-    lth = np.arctan2(uv[..., 1], uv[..., 0]) / (2.0 * np.pi) % 1.0
-    return (np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ),
-            float(cR[0]), float(cZ[0]), lr, lth)
-
-
-#: Choices for :func:`surface_label`, best first.
-def surface_label(R, Z, axis_R, axis_Z):
-    """The abscissa of the profile panels and its axis label: ``R`` on the
-    midplane through the magnetic axis, both crossings per line
-    (:func:`midplane_crossings`). A property of the physical curve, so two
-    runs on different maps are comparable -- a logical seed radius names a
-    different surface as soon as the map changes.
-    """
-    aR, aZ = float(np.mean(axis_R)), float(np.mean(axis_Z))
-    return (np.asarray(midplane_crossings(jnp.asarray(R), jnp.asarray(Z), aR, aZ)),
-            r"$R$ on the midplane through the axis  [m]")
-
-
-def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
-                   steps_per_period=32, saves_per_period=8, n_rays=4,
-                   title="", batch_size=None):
-    """One Poincare section of the Dirichlet 2-form ``B`` at logical ``plane``.
-
-    The driver glue of ``scripts/poincare_relax.py`` for a single field and
-    plane -- seed from the magnetic axis, trace, classify, render -- for
-    callers that hold a DoF vector and no run directory. Returns ``(fig, res)``
-    with ``res`` the :func:`trace_and_classify` dict (``iota`` per seed,
-    ``chaotic``, ``drift``); the seeds' logical radii are ``res["seeds"][:, 0]``.
-    """
-    from mrx.plotting import render_section  # noqa: PLC0415  (keep this module headless)
-
-    field = logical_field(seq, jnp.asarray(B), 2, True)
-    info = require_zeta_parameterisation(field, name="B")
-    seeds = seed_from_axis(field, n_seeds, saves_per_period, n_rays=n_rays,
+def trace_sections(seq, B, nfp, *, n_seeds=24, n_periods=200, n_rays=4,
+                   steps_per_period=32, saves_per_period=8, r_edge=0.97, name="B"):
+    """Trace the Dirichlet 2-form ``B`` once, seeded from its magnetic axis:
+    ``(res, info)`` with ``res`` the :func:`trace_and_classify` dict (the
+    crossings of every plane are cut from it by :func:`section_RZ`) and
+    ``info`` the ``B^zeta`` diagnostics of :func:`require_zeta_parameterisation`."""
+    field = logical_field(seq, B)
+    info = require_zeta_parameterisation(field, name=name)
+    seeds = seed_from_axis(field, n_seeds, saves_per_period, r_edge=r_edge, n_rays=n_rays,
                            steps_per_period=steps_per_period)
     res = trace_and_classify(field, seeds, nfp, n_periods=n_periods,
                              steps_per_period=steps_per_period,
-                             saves_per_period=saves_per_period, batch_size=batch_size)
-    keep = ~(res["escaped"] | ~res["ok"])
-    R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], saves_per_period, plane)
-    a_eff, xlabel = surface_label(R, Z, aR, aZ)
-    fig, _ = render_section(
-        R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
-        title=f"{title}  |  $\\zeta = {plane:g}$ -- {R.shape[1]} crossings/line",
-        subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
-                  f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"),
-        axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-        logical=(lr, lth), iota_scatter=res["iota_scatter"])
-    return fig, res
+                             saves_per_period=saves_per_period)
+    return res, info
+
+
+def section_RZ(seq, ys, axis_uv, saves_per_period, plane):
+    """``(R, Z, axis_R, axis_Z, logical_r, logical_theta)`` of the crossings
+    of ``plane`` and of the magnetic axis there. The magnetic axis has no
+    reason to sit on the coordinate axis ``F(0, ., zeta)`` (a finite-beta
+    equilibrium puts ``r = 0`` at its own Shafranov-shifted axis); the
+    poloidal angle is measured about the tracked magnetic axis."""
+    off = int(round(plane * saves_per_period))
+    uv = np.asarray(ys)[:, off::saves_per_period, :]
+    R, Z = to_RZ(seq, jnp.asarray(uv), plane)
+    aR, aZ = to_RZ(seq, jnp.asarray(np.asarray(axis_uv)[off::saves_per_period, :]), plane)
+    lr = np.hypot(uv[..., 0], uv[..., 1])
+    lth = np.arctan2(uv[..., 1], uv[..., 0]) / (2.0 * np.pi) % 1.0
+    return np.asarray(R), np.asarray(Z), np.asarray(aR), np.asarray(aZ), lr, lth

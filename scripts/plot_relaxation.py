@@ -1,20 +1,18 @@
 """Figures of a ``scripts/relax.py`` run: the weak pressure on the torus and
-in poloidal cuts, and the force residual against the energy.
+in poloidal cuts, and the force residual against the energy removed.
 
-Reads a run directory (``relax.json`` and the ``ic`` / ``final`` checkpoints; the weak pressure is computed from each field) and the
-run's attributes) and ``relax.json`` (the per-step trace) from the run
-directory and rebuilds the sequence from ``geometry_path`` like
-``scripts/poincare_relax.py`` does.
+Reads the run directory (``relax.json`` for the parameters and the trace,
+the ``ic`` / ``final`` checkpoints for the fields), rebuilds the sequence
+from ``geometry_path`` and computes the weak pressure of each field.
 
     python -u scripts/plot_relaxation.py outputs/run --cuts 6
 
 Options
     run                  the run directory (positional)
     --out DIR            figure directory [<run>/figures]
-    --fields ic,final    which pressures to draw [final]
+    --fields F           comma-separated subset of ic,final [final]
     --cuts N             poloidal cuts per field period [6]
     --n N                points per cut side [48]
-    --geometry PATH      override the run's geometry_path (e.g. after a move)
     --precision {float32,float64}
 
 Writes ``torus_<name>.png``, ``crossections_<name>.png`` and ``trace.png``.
@@ -36,7 +34,6 @@ def main():
     ap.add_argument("--fields", default="final")
     ap.add_argument("--cuts", type=int, default=6)
     ap.add_argument("--n", type=int, default=48)
-    ap.add_argument("--geometry", default=None)
     ap.add_argument("--precision", default="float64", choices=("float32", "float64"))
     cli = ap.parse_args()
 
@@ -48,8 +45,7 @@ def main():
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import build_sequence, parse_r_refine
-    from mrx.plotting import (get_2d_grids, plot_crossections_separate, plot_torus,
-                              plot_twin_axis)
+    from mrx.plotting import plot_crossections_separate, plot_torus, plot_twin_axis, torus_grids
     from mrx.relaxation import compute_force, weak_pressure
 
     run = os.path.abspath(cli.run)
@@ -61,23 +57,12 @@ def main():
     attrs = results["params"]
     ckpts = {int(os.path.basename(f)[6:12]): f
              for f in glob.glob(os.path.join(run, "checkpoints", "state_*.h5"))}
-    geometry = cli.geometry or str(attrs["geometry_path"])
-    ns = tuple(int(v) for v in attrs["ns"])
-    p = int(attrs["p"])
-    nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
+    geometry, ns, p = attrs["geometry_path"], tuple(attrs["ns"]), int(attrs["p"])
     print(f"[run] {run}: {geometry} ns={ns} p={p}", flush=True)
-    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
-                            r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
-    aux = bool(attrs.get("auxiliary_B_field", False))
-
-    # The cuts span one field period: zeta in [0, 1) is the logical toroidal
-    # angle of the map. The surface sample runs zeta backwards so its normal
-    # points outward for the wireframe shading.
-    zetas = np.arange(cli.cuts) / cli.cuts
-    grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=cli.n, ny=cli.n, nz=1)
-                 for z in zetas]
-    grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                                ny=4 * cli.n, nz=4 * cli.n, invert_z=True)
+    seq, _ = build_sequence(geometry, ns, p, nfp=attrs["nfp"],
+                            r_windows=parse_r_refine(attrs["r_refine"]))
+    aux = bool(attrs["auxiliary_B_field"])
+    zetas, grids_pol, grid_surface = torus_grids(seq.map, cli.cuts, cli.n)
 
     for name in (w.strip() for w in cli.fields.split(",")):
         step = {"ic": min(ckpts), "final": max(ckpts)}[name]
@@ -102,8 +87,7 @@ def main():
         plt.close(fig)
         print(f"  -> {path}", flush=True)
 
-    with open(os.path.join(run, "relax.json")) as fh:
-        trace = json.load(fh)["trace"]
+    trace = results["trace"]
     fig, _ = plot_twin_axis(trace["F"], np.cumsum(-np.asarray(trace["dE"], dtype=float)),
                             left_label=r"$\|F\|_{M}$",
                             right_label=r"$E_0 - E$", left_plot_kwargs=dict(marker=""),

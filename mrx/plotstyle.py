@@ -18,7 +18,7 @@ come from the same place. Use it three ways:
   :func:`mrx.plotting.render_section` so a movie or a side-by-side set is
   comparable frame to frame.
 
-Conventions (settled 2026-09-04, see docs/research/relaxation figure notes):
+Conventions:
 
 * **Colours** are black, teal, purple, grey, in that order, never the default
   matplotlib cycle. Black is the run of interest or the left axis, teal the
@@ -33,11 +33,12 @@ Conventions (settled 2026-09-04, see docs/research/relaxation figure notes):
 * **Widths**: :data:`COLUMN_WIDTH` (3.4 in, one journal column) and
   :data:`TEXT_WIDTH` (7.0 in, both columns); :func:`figsize` derives the
   height. Legends inside the axes, ``framealpha`` 0.85.
-* **Output**: PNG at 200 dpi and, for publication figures, the same figure
-  through the pgf backend into a ``pgf/`` subfolder next to the PNG, written
-  by the one writer :func:`mrx.plotting.save_figure` (which adds the two
-  preamble lines the including document also needs). Per-run figures live in
-  the run's own directory, comparison figures in ``outputs/<study>/figures/``.
+* **Output**: PNG at 200 dpi and, for publication and presentation figures,
+  the same figure through the pgf backend into a ``pgf/`` subfolder next to
+  the PNG, written by the one writer :func:`mrx.plotting.save_figure` (which
+  adds the two preamble lines the including document also needs). Per-run
+  figures live in the run's own directory, comparison figures in
+  ``outputs/<study>/figures/``.
 """
 from __future__ import annotations
 
@@ -64,8 +65,6 @@ DASHES = ("-", "--", "-.", ":")
 IOTA_COLOR = BLACK
 #: Pressure on a section page, the beta line, the second profile.
 P_COLOR = PURPLE
-#: Event markers (reconnections, resistive pulses): dotted grey verticals.
-EVENT = dict(color="0.6", linestyle=":", linewidth=0.8)
 
 #: Left trace of :func:`mrx.plotting.plot_twin_axis` (and the iota profile).
 LEFT = dict(color=BLACK, marker="s", linestyle="-", markersize=4)
@@ -101,8 +100,6 @@ COLUMN_WIDTH = 3.4
 TEXT_WIDTH = 7.0
 #: Height / width of one panel: the golden ratio.
 PANEL_ASPECT = 0.618
-
-DPI = 200
 
 
 def figsize(width: float | str = "column", rows: int = 1, cols: int = 1,

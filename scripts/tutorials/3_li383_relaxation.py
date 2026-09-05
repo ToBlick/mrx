@@ -23,7 +23,7 @@ robust there and it is the production precision.
 The script prints the traces, draws ``||F||`` against the energy and the weak
 pressure on the torus, and writes the run in ``scripts/relax.py``'s layout;
 ``scripts/poincare_relax.py`` then draws the Poincare sections of the initial
-and relaxed fields at planes 0, 0.25, 0.5 (see the tutorials page).
+and relaxed fields at the five standing planes (see the tutorials page).
 ``scripts/relax.py`` is the production driver (archives, QoIs, snapshots,
 resistivity, seeds).
 
@@ -75,9 +75,17 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import build_sequence
 from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
-from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
+from mrx.plotting import plot_torus, plot_twin_axis, torus_grids
 from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, weak_pressure,
                             write_checkpoint)
+
+
+def save(fig, name):
+    """Write the figure to the output folder; show it too in a notebook."""
+    path = os.path.join(cli.out, name)
+    fig.savefig(path, dpi=200)
+    plt.show() if _INTERACTIVE else plt.close(fig)
+    print(f"  -> {path}")
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
@@ -98,8 +106,8 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 # scale 0.02 / n_r^2 (mrx.relaxation.SMOOTHING_C).
 ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
 print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
-res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
-            floor_tol=cli.floor_tol)
+state0 = initial_state(B0, ts)
+res = relax(state0, ts, steps=cli.outer * cli.inner, chunk=cli.inner, floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -110,53 +118,30 @@ B = res.state.B_n
 
 fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
                         left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
-path = os.path.join(cli.out, "trace.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+save(fig, "trace.png")
 
 # %%
-# Now we compute the weak pressure -- the Lagrange multiplier the descent finds
-# -- and draw it on the torus.
-def weak_p(field):
-    _, _, J, Hf, _ = compute_force(field, seq)
-    p_w, _, _ = weak_pressure(J, Hf, seq)
-    return np.asarray(p_w)
-
-pw_ic = weak_p(B0)
-pw_final = weak_p(B)
-pw = DiscreteFunction(jnp.asarray(pw_final), seq.basis_0, seq.E(0, True))
+# Now we compute the weak pressure of the relaxed field -- the Lagrange
+# multiplier the descent finds -- and draw it on the torus.
+_, _, J, X, _ = compute_force(B, seq)
+pw = DiscreteFunction(weak_pressure(J, X, seq)[0], seq.basis_0, seq.E(0, True))
 
 def p_h(x):
     return pw(x)[0]
 
 print(f"[relax] weak pressure on the axis {float(p_h(jnp.array([0.0, 0.0, 0.0]))):.4e} "
       f"(||B||_M = 1 units)")
-zetas = np.arange(cli.cuts) / cli.cuts
-n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
-             for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+zetas, grids_pol, grid_surface = torus_grids(seq.map, cli.cuts)
 fig, _ = plot_torus(p_h, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3,
                     elev=25, azim=40, cbar_label=r"$p_w$")
-path = os.path.join(cli.out, "torus_pw.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+save(fig, "torus_pw.png")
 
 # %%
 # Now we archive the run the way scripts/relax.py does -- relax.json with the
 # parameters and the traces, and the initial and final state as checkpoints --
 # so scripts/poincare_relax.py can draw the Poincare sections of both states.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), state0, 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
               r_refine="", precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
@@ -164,5 +149,4 @@ params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace the sections with:")
-print(f"     python -u scripts/poincare_relax.py {cli.out} --planes 0,0.25,0.5)")
-
+print(f"     python -u scripts/poincare_relax.py {cli.out} --planes 0,0.125,0.25,0.375,0.5)")

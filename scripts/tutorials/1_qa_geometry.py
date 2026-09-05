@@ -14,7 +14,7 @@ it at the ``.dat`` file (see ``docs/source/concepts/gvec_mrx_interface.md``).
 
 ``LandremanPaul2021_QA`` is a quasi-axisymmetric two-field-period (``nfp=2``)
 **vacuum** equilibrium: the pressure is zero, so the field it carries is a
-current-free vacuum field (tutorial 3 rebuilds exactly that field from the
+current-free vacuum field (tutorial 2 rebuilds exactly that field from the
 geometry alone). Because ``p = 0`` there is nothing to colour a pressure plot
 with, so this tutorial draws the map's Jacobian ``det DF`` -- the volume
 element of the mapped domain, larger on the outboard side of the torus and
@@ -71,14 +71,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch, read_equilibrium
-from mrx.plotting import get_2d_grids, plot_crossections_separate, plot_torus
+from mrx.plotting import plot_crossections_separate, plot_torus, torus_grids
+
+
+def save(fig, name):
+    """Write the figure to the output folder; show it too in a notebook."""
+    path = os.path.join(cli.out, name)
+    fig.savefig(path, dpi=200)
+    plt.show() if _INTERACTIVE else plt.close(fig)
+    print(f"  -> {path}")
 
 # %%
 # Now we look at what the file actually stores: R, Z and lambda as radial
-# B-splines times Fourier series, plus the flux, iota and pressure profiles.
-# A GVEC .dat state lands in exactly the same blocks.
-# R, Z, lambda as radial B-splines x Fourier series; the profiles at the
-# radial interpolation points. A GVEC .dat lands in the same blocks.
+# B-splines times Fourier series, plus the flux, iota and pressure profiles at
+# the radial interpolation points. A GVEC .dat state lands in the same blocks.
 st = read_equilibrium(cli.geometry)
 nfp = st["nfp"]
 X1 = st["X1"]
@@ -108,35 +114,15 @@ x = jnp.array([0.5, 0.25, 0.0])
 print(f"[seq] the map at logical {np.asarray(x)}: physical {np.asarray(seq.map(x)).round(4)} m")
 
 # %%
-# Now we draw the map's Jacobian det DF on the torus -- the volume element the
-# whole complex is weighted by, and the cleanest look at a vacuum geometry.
-# det DF is the volume element the whole de Rham complex is weighted by;
-# for a vacuum equilibrium with no pressure to draw it is the cleanest
-# look at the geometry itself.
+# Now we draw the map's Jacobian det DF on the torus and in poloidal cuts --
+# the volume element the whole complex is weighted by, and for a vacuum
+# equilibrium with no pressure to draw the cleanest look at the geometry.
 def detDF(x):
     return jnp.linalg.det(jax.jacfwd(seq.map)(x))
 
-zetas = np.arange(cli.cuts) / cli.cuts
-n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
-             for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+zetas, grids_pol, grid_surface = torus_grids(seq.map, cli.cuts)
 fig, _ = plot_torus(detDF, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3,
                     elev=25, azim=40, cbar_label=r"$\det DF$")
-path = os.path.join(cli.out, "torus_jacobian.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+save(fig, "torus_jacobian.png")
 fig, _ = plot_crossections_separate(detDF, grids_pol, zetas)
-path = os.path.join(cli.out, "crossections_jacobian.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
-
+save(fig, "crossections_jacobian.png")

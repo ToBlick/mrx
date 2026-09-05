@@ -66,16 +66,22 @@ if not _INTERACTIVE:
 import matplotlib.pyplot as plt
 import numpy as np
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.geometry import build_sequence, geometry_nfp
-from mrx.relaxation import compute_divergence_norm
+from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
-from mrx.plotting import get_2d_grids, plot_torus, render_section
-from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
-                          trace_and_classify, section_RZ, surface_label)
-from mrx.relaxation import compute_force
+from mrx.plotting import plot_torus, section_figure, torus_grids
+from mrx.poincare import trace_sections
+from mrx.relaxation import compute_divergence_norm
 
-nfp = geometry_nfp(cli.geometry)
+
+def save(fig, name):
+    """Write the figure to the output folder; show it too in a notebook."""
+    path = os.path.join(cli.out, name)
+    fig.savefig(path, dpi=200)
+    plt.show() if _INTERACTIVE else plt.close(fig)
+    print(f"  -> {path}")
+
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
+nfp = seq.equilibrium["nfp"]
 compute_nullspaces(seq)
 
 # %%
@@ -85,8 +91,7 @@ compute_nullspaces(seq)
 # float32).
 B = get_nullspace(seq.get_operators(), 2, True)[0]
 B = B / float(seq.l2_norm(B, 2))
-_, _, J, _, _ = compute_force(B, seq)
-ratio = float(seq.l2_norm(J, 1))
+ratio = float(seq.l2_norm(seq.apply_weak_curl(B), 1))
 rayleigh = float(harmonic_rayleigh(seq, B, 2))
 print(f"[vacuum] ||div B|| = {compute_divergence_norm(B, seq):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
@@ -108,53 +113,22 @@ print(f"[vacuum] |B| near the axis {float(B_mag(jnp.array([0.02, 0.0, 0.0]))):.4
       f"inboard/outboard midplane at zeta = 0: "
       f"{float(B_mag(jnp.array([0.99, 0.5, 0.0]))):.4f} / {float(B_mag(jnp.array([0.99, 0.0, 0.0]))):.4f} "
       f"(||B||_M = 1)")
-zetas = np.arange(cli.cuts) / cli.cuts
-n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
-             for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+zetas, grids_pol, grid_surface = torus_grids(seq.map, cli.cuts)
 fig, _ = plot_torus(B_mag, grids_pol, grid_surface, cstride=8, gridlinewidth=0.3,
                     elev=25, azim=40, cbar_label=r"$|B|$")
-path = os.path.join(cli.out, "torus_Bmag.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+save(fig, "torus_Bmag.png")
 
 # %%
 # Now we trace the field lines once and take Poincare sections at five toroidal
-# planes -- one integration of the trajectories, cut at each plane.
-# A Poincare section integrates the field lines once; each toroidal plane is a
-# different cut through the same trajectories. section_figure does one plane --
-# here we reuse its pieces to cut five planes over half a field period.
-saves_per_period, steps_per_period = 8, 32
-field = logical_field(seq, jnp.asarray(B), 2, True)
-info = require_zeta_parameterisation(field, name="B")
-seeds = seed_from_axis(field, cli.seeds, saves_per_period, n_rays=4,
-                       steps_per_period=steps_per_period)
-res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
-                         steps_per_period=steps_per_period, saves_per_period=saves_per_period)
-render_keep = ~(res["escaped"] | ~res["ok"])
+# planes over half a field period -- one integration of the trajectories, cut
+# at each plane.
+res, info = trace_sections(seq, B, nfp, n_seeds=cli.seeds, n_periods=cli.periods)
 for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
-    R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], saves_per_period, plane)
-    a_eff, xlabel = surface_label(R, Z, aR, aZ)
-    fig, _ = render_section(
-        R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
-        title=f"vacuum field {ns} p={cli.p}  |  $\\zeta = {plane:g}$ -- {R.shape[1]} crossings/line",
+    fig, _ = section_figure(
+        seq, res, plane, title=f"vacuum field {ns} p={cli.p}", nfp=nfp,
         subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
-                  f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"),
-        axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-        logical=(lr, lth), iota_scatter=res["iota_scatter"])
-    path = os.path.join(cli.out, f"poincare_zeta{plane:g}.png")
-    fig.savefig(path, dpi=200)
-    if _INTERACTIVE:
-        plt.show()
-    else:
-        plt.close(fig)
-    print(f"  -> {path}")
+                  f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"))
+    save(fig, f"poincare_zeta{plane:g}.png")
 
 regular = ~(res["escaped"] | ~res["ok"] | res["chaotic"])
 r_reg, iota_reg = res["seeds"][:, 0][regular], res["iota"][regular]
@@ -162,4 +136,3 @@ print(f"[vacuum] {int(regular.sum())}/{regular.size} regular lines, iota from "
       f"{float(iota_reg[np.argmin(r_reg)]):.4f} (r = {float(r_reg.min()):.2f}) to "
       f"{float(iota_reg[np.argmax(r_reg)]):.4f} (r = {float(r_reg.max()):.2f}); "
       f"h/2 drift {res['drift']:.1e}")
-
