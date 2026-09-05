@@ -167,7 +167,13 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
     the residual's space, the h-independent norm of a dual vector (the
     plain 2-norm of the coefficients when no norm is given) -- and the
     correction added, until ``norm(b - A x) <= tol norm(b)`` or
-    ``max_passes`` corrections were taken. In mixed precision each pass
+    ``max_passes`` corrections were taken. A pass that does not strictly
+    decrease the residual -- or that produces a non-finite one -- is
+    discarded and the loop stops on the last improving ``x``: in a plain
+    float32 configuration the true residual has a floor around 1e-4 on
+    some Hodge / saddle systems (measured 2026-09-05), and further
+    corrections at ``tol = 1e-6`` raise it, then NaN the relaxation
+    (li383 (8,12,12) p=2, step 10). In mixed precision each pass
     takes the residual down by about the inner tolerance, so a warm start
     with a 1% defect meets 1e-8 in two; in a plain configuration the inner
     solve runs at ``tol`` and the loop is the check that its own criterion,
@@ -202,16 +208,24 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     def cond(carry):
-        _, r, k, _ = carry
-        return jnp.logical_and(norm(r) > tol * bnorm_safe, k < max_passes)
+        _, r, k, _, keep_going = carry
+        return jnp.logical_and(
+            jnp.logical_and(norm(r) > tol * bnorm_safe, k < max_passes),
+            keep_going)
 
     def body(carry):
-        x, r, k, its = carry
+        x, r, k, its, _ = carry
         d, info = solve(r.astype(inner_dtype))
-        x = x + d.astype(RESIDUAL_DTYPE)
-        return x, residual(x), k + 1, its + jnp.abs(info)
+        x_new = x + d.astype(RESIDUAL_DTYPE)
+        r_new = residual(x_new)
+        n_new = norm(r_new)
+        better = jnp.logical_and(jnp.isfinite(n_new), n_new < norm(r))
+        x = jnp.where(better, x_new, x)
+        r = jnp.where(better, r_new, r)
+        return x, r, k + 1, its + jnp.abs(info), better
 
-    x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
+    x, r, _, its, _ = jax.lax.while_loop(
+        cond, body, (x, residual(x), 0, 0, True))
     converged = norm(r) <= tol * bnorm_safe
     return x, jnp.where(converged, -its, its)
 

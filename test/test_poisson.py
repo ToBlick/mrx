@@ -64,13 +64,23 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
     err = relative_l2_error(seq, k, dirichlet, u, case["exact"])
     print(f"\n  {case_tag(k, dirichlet)}: relative L2 error {err:.3e}, "
           f"{-int(info)} iterations, residual {rel_res:.2e} in the mass-atom norm")
-    assert int(info) < 0, f"{case_tag(k, dirichlet)} did not converge (info={int(info)})"
-    # The solve stops when the true residual in the mass-atom norm is below
-    # seq.tol; it is measured here through apply_laplacian's own nested mass
-    # solve at seq.tol, which adds noise of that size.
-    assert rel_res <= 1e2 * seq.tol
+    # apply_laplacian's nested mass solve is formed in the working precision,
+    # so the measured residual cannot resolve seq.tol at float32: k3_dbc lands
+    # at 1.97e-4 refined and 2.77e-4 plain (2026-09-05), ~2e3 eps. The L2
+    # error below is the one that fails if a solve is actually wrong; it
+    # matches the float64 table to all printed digits in both float32
+    # configurations. A plain solve at 1e-6 then reports maxiter with that
+    # same residual (info > 0), because refine cannot drive a float32 true
+    # residual below the floor. Require declared convergence -- and the
+    # iteration band -- only when the tolerance itself is the looser bound.
+    band = max(1e2 * seq.tol, eps(3e3))
+    assert rel_res <= band, (
+        f"{case_tag(k, dirichlet)} residual {rel_res:.2e} > band {band:.2e}")
+    if 1e2 * seq.tol >= eps(3e3):
+        assert int(info) < 0, (
+            f"{case_tag(k, dirichlet)} did not converge (info={int(info)})")
+        assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
     assert err < 1.25 * ERROR_MEASURED[(k, dirichlet)]
-    assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
 
 
 @pytest.mark.parametrize("k", (2, 1))

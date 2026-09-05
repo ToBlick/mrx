@@ -668,7 +668,11 @@ def main():
     print("=" * 72)
     for key, value in info.items():
         print(f"  {key:<20} {value}")
+    from mrx.precision import REFINE, RESIDUAL_DTYPE, SOLVE_TOL
     print(f"  {'mrx_dtype':<20} {mrx.DTYPE}")
+    print(f"  {'residual_dtype':<20} {RESIDUAL_DTYPE}")
+    print(f"  {'refine':<20} {REFINE}")
+    print(f"  {'solve_tol':<20} {SOLVE_TOL}")
     print(f"  {'matmul_precision':<20} {jax.config.jax_default_matmul_precision}")
 
     dtype = str(mrx.DTYPE)
@@ -688,7 +692,9 @@ def main():
         if not args.skip_relax:
             bench_relaxation(bench, seq, args, dtype)
 
-    result = {"backend": info, "mrx_dtype": dtype, "args": vars(args),
+    result = {"backend": info, "mrx_dtype": dtype,
+              "residual_dtype": str(RESIDUAL_DTYPE), "refine": REFINE,
+              "solve_tol": SOLVE_TOL, "args": vars(args),
               "rows": bench.rows}
     if args.out:
         parent = os.path.dirname(os.path.abspath(args.out))
