@@ -22,6 +22,19 @@ reuse 5/6, simplification 9): the tutorials session redesigned tutorials 4
 and 5 on `tutorial-cell-markers` and rewired 3 and 5 to the pruned API;
 judge those items after that branch lands, not from this note.
 
+**Done in 872e87c (the driver/library split, summary B "Driver vs
+library", altitude 6 and 13, scripts altitude 1).** `mrx.relaxation.relax`
+is the production loop (chunks, sampler, floor, wall budget, reconnection,
+`on_chunk`), `force_scale` the residual normaliser through
+`dot_product_load`, `make_sampler` the QoI sampler, `initial_field` the
+initial condition from the geometry file, `write_checkpoint` /
+`read_checkpoint` the run files (named State leaves in HDF5; `state.eqx`
+and `B.h5` gone, the weak pressure computed on demand). `relaxation_loop`
+deleted; the tests drive the production loop, including a reconnection and
+a checkpoint round-trip; the tutorials' hand-written `B.h5` writers gone.
+`scripts/relax.py` is the CLI plus the JSON writer. The `evaluate_at_xq`
+reach-in in `pressure_diagnostics` (altitude 5) still stands.
+
 **Still valid, unchanged.** Every section-A deletion in the solver core:
 the Jacobi family (the contradiction with the memory and the release
 review stands: recorded deleted 2026-08-27, present in the code), the
