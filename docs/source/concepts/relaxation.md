@@ -50,7 +50,11 @@ chunks (section 2a).
      is the velocity: `s = dt · u`, `y = F_prev - F`.
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
    `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
-   smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0.
+   smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0. The
+   default scale is `SMOOTHING_C / n_r^2 = 0.02 / n_r^2`: the two-cell
+   mode damped by 1/1.2, nothing resolved touched; swept 2026-09-05 at
+   (16,32,32) p=2 (flat optimum 0.02-0.064 per step, 0.02 cheapest per
+   second, the helicity drift independent of the scale).
    The flow is incompressible without a projection of its own: the
    force is Leray-projected, the L-BFGS direction combines projected
    forces and their steps, and the smoothing commutes with the
@@ -330,7 +334,7 @@ method per run. Flags, defaults in brackets:
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |
 | `--history M [1]` | L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG) |
-| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
+| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | `v = (I - MU L)^{-G} F` |
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_relax.py --fields snapshots`, which traces every stored step at the chosen plane and writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |

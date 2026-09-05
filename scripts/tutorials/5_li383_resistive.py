@@ -128,9 +128,7 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
 # %%
 # Now we relax ideally for another 500 steps to a clean floor. The ideal tail
 # conserves helicity and just settles the reconnected field.
-smoothing_scale = 0.064 / ns[0] ** 2
-ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                       velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
+ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
 print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
 res = relax(initial_state(B_reconnected, ts_ideal), ts_ideal, steps=cli.outer * cli.inner,
             chunk=cli.inner, floor_tol=cli.floor_tol)

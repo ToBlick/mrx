@@ -120,11 +120,11 @@ The descent is `mrx.relaxation` with `scripts/relax.py`'s defaults -- L-BFGS
 with history 1 (equivalent to conjugate gradient), analytic line search under
 a CFL cap of 0.5, no resistivity -- plus **velocity smoothing of order 1**
 (gamma = 1), the descent direction $(I - \text{scale}\,L)^{-1} F$ with
-$\text{scale} \approx 0.064 / n_r^2$, run through `relax`:
+$\text{scale} = 0.02 / n_r^2$ (`mrx.relaxation.SMOOTHING_C`, the stepper's
+default), run through `relax`:
 
 ```python
-ts = TimeStepper(seq=seq, history_size=1, cfl=0.5,
-                 velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / ns[0] ** 2)
+ts = TimeStepper(seq=seq, history_size=1, cfl=0.5, velocity_smoothing_order=1)
 res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=1e-3)
 ```
 

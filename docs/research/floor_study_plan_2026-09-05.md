@@ -45,11 +45,11 @@ condition, `--history 1` (L-BFGS m=1), `--cfl 0.5`, `--chunk 500`,
 | arm | precision | env | smoothing |
 |---|---|---|---|
 | f32_g0 | `--precision float32` | `MRX_RESIDUAL_DTYPE=float32` | `--velocity-smoothing-order 0` |
-| f32_g1 | same | same | `--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4` (0.064 / 16^2) |
+| f32_g1 | same | same | `--velocity-smoothing-order 1` (the default scale, 0.02 / 16^2 = 7.8e-5 since 2026-09-05) |
 | mixed_g0 | `--precision float32` | (default) | order 0 |
-| mixed_g1 | same | | order 1, 2.5e-4 |
+| mixed_g1 | same | | order 1 |
 | f64_g0 | `--precision float64` | | order 0 |
-| f64_g1 | same | | order 1, 2.5e-4 |
+| f64_g1 | same | | order 1 |
 
 Output `outputs/floor_study/<arm>/`; `slurm/run.sh` with
 `SCRIPT=scripts/relax.py`, `EXTRA_ENV` for the residual dtype,

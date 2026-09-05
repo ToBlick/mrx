@@ -19,7 +19,6 @@ from mrx.precision import DTYPE, sqrt_eps
 
 from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                             relax, write_checkpoint)
-from test.conftest import NS
 
 STEPS, CHUNK = 50, 25
 # ||F||_end / ||F||_0 after 50 steps on li383 (8, 12, 12) p=2, measured
@@ -34,8 +33,7 @@ HELICITY_DRIFT_TOL = 25.0
 
 
 def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                     velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / NS[0] ** 2)
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 on_chunk=lambda r: saved.append(r.steps))
@@ -70,8 +68,7 @@ def test_reconnection_spends_the_helicity_asked_for(seq, b0):
     """One reconnection at the first chunk boundary, 2% of the helicity: the
     dose estimate ``eps = X |H| / (2 |int J . B|)`` is first order, the
     measured price must be within a third of the target and of its sign."""
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                     velocity_smoothing_order=1, velocity_smoothing_scale=0.064 / NS[0] ** 2)
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 reconnect_every=CHUNK, reconnect_helicity=0.02)
     assert len(res.reconnect) == 1 and res.reconnect_every == CHUNK

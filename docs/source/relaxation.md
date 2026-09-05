@@ -109,7 +109,7 @@ Flags, defaults in brackets:
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler on the descent velocity, or the midpoint-implicit induction with the explicit velocity (Picard on the increment, `dt` halved on a blow-up; `mrx.relaxation.PICARD_*`) |
 | `--history M [1]` | L-BFGS secant pairs: 0 is steepest descent, 1 memoryless BFGS (= CG) |
-| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
+| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
 | `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
