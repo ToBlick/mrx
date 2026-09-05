@@ -207,7 +207,7 @@ def run_rung(cli):
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, p, cli.maxiter, tol=cli.tol)
     t1 = time.perf_counter()
-    ops = seq.set_operators(compute_nullspaces(seq, ops))
+    ops = compute_nullspaces(seq)
     t2 = time.perf_counter()
     h = seq.nullspace(2, True)[0]
     h = h / seq.l2_norm(h, 2)

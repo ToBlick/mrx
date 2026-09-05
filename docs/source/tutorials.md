@@ -86,7 +86,7 @@ helicity are deflated against it:
 
 ```python
 from mrx.nullspace import compute_nullspaces, get_nullspace
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)   # installs the forms on the sequence
 B = get_nullspace(seq.get_operators(), 2, True)[0]
 ```
 

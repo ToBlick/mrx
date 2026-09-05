@@ -88,7 +88,7 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # the operators every solve and the Poincare tracing lean on.
 nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we get the starting field: warm-start from Tutorial 3's relaxed B if its

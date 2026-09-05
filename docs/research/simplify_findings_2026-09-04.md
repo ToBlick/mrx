@@ -174,3 +174,23 @@ chunk, 0.760 -> 0.370 over the last two, a 2.2x faster step (the per-solve
 `eigh`, the lower-block mass solve and its two mass applies per MINRES
 iteration, the sigma recompute and the cold `J` together; the two
 trajectories differ at round-off, F_300/F_0 8.6e-2 vs 9.8e-2).
+
+## Status 2026-09-05 (evening)
+
+**Done.** `from .plotting import *` (843cf1f: `import mrx` no longer
+imports matplotlib). The double parse of the equilibrium (b2c0df9:
+`build_sequence` keeps the parsed file as `seq.equilibrium`,
+`initial_field(seq, seed)` and `load_clebsch(seq.equilibrium)` read it).
+The compute-then-set nullspace install: `compute_nullspaces` always
+installed the bundle itself (`_commit`), the outer `set_operators` was a
+second, redundant install at nine call sites; the line is
+`compute_nullspaces(seq)` everywhere now. It stays an explicit step after
+`build_sequence` (Tobias: the forms are a chain of solves, computed only
+where a run deflates against them; folding them into `build_sequence`
+was tried and undone the same evening). Of the
+morning's "still valid" list that leaves the launcher's hand-computed
+smoothing scales (the constant is being swept at (16,32,32) p=2,
+`outputs/mu_sweep/`) and the scripts items, which are out of scope:
+Tobias 2026-09-05, the repo ships the tutorials, one relaxation driver and
+one plotting driver; every study script is paper tooling, to move to a
+gitignored folder later.

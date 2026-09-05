@@ -81,7 +81,7 @@ from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_fro
 print(f"[env] mrx precision {mrx.DTYPE}")
 
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we build two initial fields: the plain equilibrium, and the same field

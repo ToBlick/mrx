@@ -201,7 +201,7 @@ def main(cli):
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
                               nfp=cli.nfp, r_windows=parse_r_refine(cli.r_refine))
-    seq.set_operators(compute_nullspaces(seq, ops))
+    compute_nullspaces(seq)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)

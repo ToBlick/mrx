@@ -266,7 +266,7 @@ seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
                      polar=True, betti_numbers=(1, 1, 0, 0))
 seq.set_map(toroid_map(epsilon=1 / 3, R0=1.0))
 ops = seq.build_preconditioners()
-ops = seq.set_operators(compute_nullspaces(seq, ops))
+ops = compute_nullspaces(seq)
 ```
 
 1. Topology: `DeRhamSequence`. Bases, extraction, incidence (with the polar

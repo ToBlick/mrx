@@ -49,7 +49,7 @@ def seq():
     t0 = time.perf_counter()
     s, ops = build_sequence(GEOMETRY, NS, P)
     t1 = time.perf_counter()
-    s.set_operators(compute_nullspaces(s, ops))
+    compute_nullspaces(s)
     t2 = time.perf_counter()
     print(f"\n  li383 {NS} p={P}: build_sequence {t1 - t0:.0f} s, "
           f"nullspaces {t2 - t1:.0f} s", flush=True)

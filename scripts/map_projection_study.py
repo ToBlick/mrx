@@ -29,11 +29,10 @@ import numpy as np
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.differential_forms import DiscreteFunction
-from mrx.gvec import StateField, _det_DF, _map_with_sign, load_clebsch, read_state, series_spline_dofs
+from mrx.gvec import StateField, _det_DF, _map_with_sign, load_clebsch, read_equilibrium, series_spline_dofs
 from mrx.initial_conditions import clebsch_potential_form, potential_two_form
 from mrx.nullspace import compute_nullspaces
 from mrx.relaxation import compute_divergence_norm, compute_force
-from mrx.vmec import read_wout
 
 TYPES = ("clamped", "periodic", "periodic")
 
@@ -82,7 +81,7 @@ def main():
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, TYPES, polar=True, betti_numbers=(1, 1, 0, 0))
     print(f"[study] DeRhamSequence {time.time() - t0:.1f} s", flush=True)
 
-    st = read_wout(path) if path.endswith(".nc") else read_state(path)
+    st = read_equilibrium(path)
     nfp, sp = st["nfp"], st.get("sp")
     m, n_per = st["X1"]["m"], st["X1"]["n"] / nfp
     amp = np.abs(st["X1"]["coef"]).max(axis=1)
@@ -147,13 +146,13 @@ def main():
         jac = np.asarray(seq.jacobian_j)
         t1 = time.time()
         print(f"[study] set_map {t1 - t0:.1f} s; det DF at the quadrature points in [{jac.min():.4e}, {jac.max():.4e}]", flush=True)
-        ops = seq.build_preconditioners()
+        seq.build_preconditioners()
         t2 = time.time()
         print(f"[study] build_preconditioners {t2 - t1:.1f} s", flush=True)
-        seq.set_operators(compute_nullspaces(seq, ops))
+        compute_nullspaces(seq)
         t3 = time.time()
         print(f"[study] compute_nullspaces {t3 - t2:.1f} s", flush=True)
-        cb = load_clebsch(seq.equilibrium)
+        cb = load_clebsch(st)
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
         div = float(compute_divergence_norm(B, seq))
         Fv, _, _, _, _ = compute_force(B, seq)

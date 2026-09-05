@@ -872,9 +872,8 @@ class DeRhamSequence():
         ``betti_numbers`` defaults to ``self.betti_numbers``.
         """
         if direct:
-            self.operators = compute_nullspaces(
-                self, self._require_operators(), betti_numbers=betti_numbers,
-                **kwargs)
+            compute_nullspaces(self, self._require_operators(), betti_numbers=betti_numbers,
+                               **kwargs)
             return None
         operators, info = compute_nullspaces_iterative(
             self, self._require_operators(), betti_numbers=betti_numbers, **kwargs)

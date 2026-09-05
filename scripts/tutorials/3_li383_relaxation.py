@@ -81,7 +81,7 @@ from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, we
 print(f"[env] mrx precision {mrx.DTYPE}")
 
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we set the initial condition: li383's own equilibrium field as B = dA'
