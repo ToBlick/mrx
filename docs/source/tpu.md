@@ -186,10 +186,11 @@ helps CPU and GPU by the same factor; a TPU only made it visible. The
 per-step timings that used to sit next to that claim were compile time
 divided by a step count -- `chunk_runner` now builds the jitted scan once
 and the benchmark reports compile and steady state separately. A
-`v5litepod-4` is also four chips where MRX uses one, so a parameter sweep
-takes all four through `jax.pmap` with no library change, measured at 3.99x
-(`scripts/pmap_sweep.py`, which needs only two devices and so works on a
-multi-GPU node too).
+The ladder acquires a single chip (`v5litepod-1`): four chips were measured
+to buy nothing on one solve. A parameter sweep is the one use of several
+devices and takes them through `jax.pmap` with no library change, measured
+at 3.99x (`scripts/pmap_sweep.py`, which needs only two devices and so
+works on a multi-GPU node too).
 
 float32 on the MXU is not a numerical concern: inverse-mass CG at the same
 tolerance takes the same iteration count on both backends (20 at k=1, 24 at

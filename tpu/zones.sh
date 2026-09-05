@@ -81,12 +81,18 @@ runtime_for() {
 # my-data-disk exists in us-central1-a, us-west4-a, us-east5-a and us-east5-b;
 # landing in one of those skips restoring from the snapshot.
 #
-# Single-chip entries are interleaved late because one chip is far likelier to
-# be free than four, and the MRX solve is single-device anyway.
+# v5e is single-chip only. A TPU slice is allocated atomically by accelerator
+# type, so one chip of a v5litepod-4 cannot be taken while the other three
+# stay free, and the MRX solve is single-device: four chips were measured
+# to buy nothing (1.7999 s/step against 1.7998 s/step). A v5litepod-1 costs
+# one chip of TPU-LITE-PODSLICE-V5 quota instead of four, so it is granted
+# far more often. scripts/pmap_sweep.py is the one use of several devices
+# (independent equilibria, not a sharded solve) and runs on any node with
+# two or more devices; the ladder does not acquire a slice for it.
 #
 # The zone list was checked against `gcloud compute tpus accelerator-types list`
 # and `tpu-vm versions list` rather than assumed: every v5e zone here offers
-# v5litepod-1 and -4 and the tpu-ubuntu2204-base image, and every v6e zone here
+# v5litepod-1 and the tpu-ubuntu2204-base image, and every v6e zone here
 # offers v6e-1 and v6e-ubuntu-2404. us-south1-b is deliberately absent, since
 # the API answers "Queueing is not supported for accelerator type
 # v5litepod-1" there. us-central1-b/c and us-south1-c appear for v6e only,
@@ -94,10 +100,10 @@ runtime_for() {
 # neither and so appear nowhere. us-central2-b offers v6e but sits in a
 # restricted region, so it is left out.
 #
-# us-east5-a and -c are kept only for four chips and for spot. On demand they
-# answer "Reservation not found", i.e. the zone serves v5e out of reservations
-# this project does not hold -- which is not the same as having no capacity,
-# and used to be reported as "machine type or image not offered here".
+# us-east5-a and -c on demand answer "Reservation not found", i.e. the zone
+# serves v5e out of reservations this project does not hold -- which is not
+# the same as having no capacity, and used to be reported as "machine type
+# or image not offered here". They stay on the ladder for spot.
 DEFAULT_CANDIDATES=(
     # v5p, 4 chips, 95 GB HBM each. Highest quota that is actually usable.
     v5p:ct5p-hightpu-4t:us-east5-b:STANDARD:gce
@@ -107,19 +113,10 @@ DEFAULT_CANDIDATES=(
     v5p:ct5p-hightpu-4t:us-east1-d:STANDARD:gce
     v5p:ct5p-hightpu-4t:us-south1-a:STANDARD:gce
 
-    # v5e through the Cloud TPU API, disk zones first
-    v5e:v5litepod-4:us-east5-b:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-east5-a:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-central1-a:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-west4-a:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-west4-b:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-east5-c:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-south1-a:ONDEMAND:tpuapi
-
-    # Single chip: much likelier to be free, and enough for the MRX solve.
-    # us-south1-a and us-west4-a/b were listed for four chips but not for one,
-    # which is backwards given that comment. us-south1-a v5litepod-1 is the
-    # rung that produced the only node of a two-day stockout.
+    # v5e through the Cloud TPU API, disk zones first, then the rest.
+    # us-south1-a v5litepod-1 is the rung that produced the only node of a
+    # two-day stockout. us-west1's per-region quota is 4 chips, enough for
+    # four v5litepod-1.
     v5e:v5litepod-1:us-east5-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east5-a:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-central1-a:ONDEMAND:tpuapi
@@ -127,14 +124,6 @@ DEFAULT_CANDIDATES=(
     v5e:v5litepod-1:us-west4-a:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-west4-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east5-c:ONDEMAND:tpuapi
-
-    # On demand in the zones the ladder used to omit. All four offer v5litepod
-    # and all four have quota: the per-region limit is 512 by default, and
-    # us-west1's is 4, which is exactly one v5litepod-4.
-    v5e:v5litepod-4:us-east1-b:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-east1-c:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-east4-b:ONDEMAND:tpuapi
-    v5e:v5litepod-4:us-west1-c:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east1-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east1-c:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east4-b:ONDEMAND:tpuapi
@@ -158,9 +147,6 @@ DEFAULT_CANDIDATES=(
     v5e:v5litepod-1:us-east1-c:SPOT:tpuapi
     v5e:v5litepod-1:us-east4-b:SPOT:tpuapi
     v5e:v5litepod-1:us-west1-c:SPOT:tpuapi
-    v5e:v5litepod-4:us-east5-b:SPOT:tpuapi
-    v5e:v5litepod-4:us-central1-a:SPOT:tpuapi
-    v5e:v5litepod-4:us-west4-a:SPOT:tpuapi
 
     # v6e on spot, one chip. v6e was dropped from the ladder on the reading
     # that its quota is a hard 0, but that was the on-demand bucket:

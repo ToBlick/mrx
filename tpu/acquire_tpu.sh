@@ -248,7 +248,7 @@ queue_request_name() {
 #   us-south1-a  mrx-remeasure-q-v5litepod-1-ondemand
 #     FAILED  already_exists: node 'mrx-remeasure' already exists
 #
-# measured 2026-09-05, after the v5litepod-4 request in that zone had already
+# measured 2026-09-05, after a second request in that zone had already
 # taken the name. CANDIDATES is ordered best-first, so keeping the first rung
 # seen per zone keeps the best one and costs nothing. Only the Cloud TPU API
 # path has a queue at all; the GCE rungs are skipped. Re-filing an existing
@@ -324,8 +324,8 @@ cancel_queued_requests() {
 # Requests are only cancelled by the EXIT trap, so between a fulfilment and the
 # daemon exiting every other request is still standing and can be filled too.
 # That window is not theoretical: on 2026-09-05 a v5litepod-1 came up in
-# us-east1-c while a v5litepod-4 was coming up in us-west1-c, and two nodes
-# billed at once. Cancelling on the spot closes it.
+# us-east1-c while another request was coming up in us-west1-c, and two
+# nodes billed at once. Cancelling on the spot closes it.
 #
 # The winner's own request is left alone. cancel_queued_requests deletes
 # without --force and the API refuses to delete a request holding a node, so
