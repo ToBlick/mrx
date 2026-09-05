@@ -2,6 +2,73 @@
 
 Twelve review passes over the worktree at 1af3c80 (li383-followups): three slices (solver core: operators, metric_lumping_laplacian, derham_sequence, solvers, preconditioners, mass, nullspace, projectors, extraction_operators; the rest of the library; scripts, tutorials, tests, slurm) by four angles (reuse, simplification, efficiency, altitude). Each agent read its slice in full and grepped the rest for callers. Line numbers are those of 1af3c80. The per-slice reports follow the summary verbatim apart from formatting; nothing here has been checked beyond what the reports state, and nothing has been changed. Tobias decides.
 
+## Status at 3420b39 (same day, after the midpoint merge and the relaxation prune)
+
+Checked item by item against the tree (symbols grepped; the note's line
+numbers have drifted, the symbols have not).
+
+**Done since the note.** The B-only stepper duplication (library reuse 1,
+altitude 1, summary B): folded into `TimeStepper` as static branches on
+`auxiliary_B_field`, `mrx/experimental/bonly_relaxation.py` deleted. The
+`relax.py` options nothing runs, the `dirichlet_H` threading and the
+driver's eta schedule (summary B, scripts simplification 6, altitude 5):
+gone with the prune (`docs/research/handoff_2026-09-04_relax_cli_prune.md`,
+"Executed"). `scripts/li383_sweep.sh` deleted. `parse_lambda` and
+`dzeta_form` deleted with `--ic`. The `_PROJECTION_SPACES` lookup written
+twice (simplification 9): replaced by the pair rule, and the scalar pairs
+turned out to be transposed, not just duplicated (OPEN 3.12, resolved
+306d174). The li383 tutorials' copies of the driver mechanics (altitude 2,
+reuse 5/6, simplification 9): the tutorials session redesigned tutorials 4
+and 5 on `tutorial-cell-markers` and rewired 3 and 5 to the pruned API;
+judge those items after that branch lands, not from this note.
+
+**Still valid, unchanged.** Every section-A deletion in the solver core:
+the Jacobi family (the contradiction with the memory and the release
+review stands: recorded deleted 2026-08-27, present in the code), the
+Schur-probe and `coupled` machinery, the boundary-DoF extraction family
+with `apply_bc_mass_correction` reading an attribute that no longer
+exists, the dead constructor knobs, `_assemble_weighted_1d_mass` twice,
+the deflation projector three times, `apply_laplacian` /
+`apply_laplacian_approx`, the dense `differential_forms` evaluators,
+`stellarator_map` / `extend_map_nfp`, `clebsch_form`, `update_field`,
+`relaxation_loop(callback=)`, `compute_geometry_terms`,
+`_bootstrap_nullspace_guesses`, `compute_divergence_norm` next to
+`divergence_norm`. Every efficiency quick win: deflation applying `M` to
+`x` with `mass_vs` in hand, `eps * M` with a Python zero, `eigh` per
+shifted solve inside the scan, `vs_lower` and `sigma` recomputed per step,
+`gap_sweeps=5` by default, `build_sequence` building all eight atoms for
+plotters (`scripts/plot_mesh.py` already sidesteps it by building the
+sequence and map directly: the precedent). Section B: preconditioner
+selection over nine functions, the four owners of the derivative-axes
+rule, the double `set_operators(compute_nullspaces(...))` install, `sp`
+threaded through five reader signatures, `mu = 0.064 h^2` with the
+launcher still carrying five hand-computed scales, the solve-count
+experiments (velocity Leray at smoothing order 0, warm-started `J`),
+`from .plotting import *`. Scripts: `quad_order_equivalence.py` and
+`li383_summary.py` still exist, `slurm/regen_poincare.sh` is still its own
+sbatch wrapper with the TeX path in the repo, `MRX_MAP_BATCH_SIZE_INNER`
+still read in two scripts, `poincare_relax.py`'s `--from-npz` branch still
+a second render path.
+
+**Changed in kind.** `make_force_normaliser` in the driver and the
+`evaluate_at_xq` reach-in in `pressure_diagnostics` are still there, but
+the public surface now covers both: `dot_product_load(B, B, 0, 2, 2)` (=
+`magnitude_squared_load`) and `evaluate_at_quadrature`.
+
+**New, not in the twelve reports.** `DeRhamSequence` gained
+`dot_product_load`, `scalar_product_load` and `scalar_vector_load`
+(3420b39), which share one pairing helper (`_vector_load_values`,
+`_scalar_load_values`); `cross_product_load_values` keeps its eight
+explicit metric cases. Left on purpose so the production kernel stays
+bit-identical, but it is the duplication this note flags elsewhere and
+folds into the helper with a per-apply check (see
+[[relaxation-trajectory-roundoff-divergence]] for why per-apply, never by
+end-state residual). The `(0, 3)` / `(3, 0)` projection masses and the
+assembly test that encoded their transposed convention are fixed
+(306d174, 3420b39). The house style's constrained layout made every
+`fig.tight_layout()` in `mrx/plotting.py` an error once a colourbar
+exists; both calls removed (3420b39).
+
 ## Summary
 
 ### A. Mechanical, high confidence, no behaviour change (I would apply these)
