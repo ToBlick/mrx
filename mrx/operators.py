@@ -679,7 +679,9 @@ def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, gu
     ``dw = dg + y`` with ``y = M_{k-1}^-1 lower``, a mass solve at the
     tolerance on a residual. ``split(rhs) -> (dx, dg, info)`` is the
     inner solve from zero, its own solves stopping on their own criteria at
-    the inner tolerance. ``vs`` is the kernel of the operator, deflated
+    the inner tolerance. ``eps`` is ``None`` for the Laplacian (no shift
+    term is traced) and a positive, possibly traced, scalar for the
+    shifted operator. ``vs`` is the kernel of the operator, deflated
     from the upper residual: the harmonic forms of level ``k`` for the
     Laplacian, none for the shifted operator. Returns ``(x, info)``, ``x``
     in the residual precision.
@@ -710,7 +712,9 @@ def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, gu
     def residual(p):
         x, w = p[:n_k], p[n_k:]
         Mx = M(on, x, k)
-        upper = b64 - apply_stiffness(on, x, k, dirichlet=dirichlet) - eps * Mx - M(on, D(on, w), k)
+        upper = b64 - apply_stiffness(on, x, k, dirichlet=dirichlet) - M(on, D(on, w), k)
+        if eps is not None:
+            upper = upper - eps * Mx
         lower = DT(on, Mx) - M(on, w, k - 1)
         return project_dual(jnp.concatenate([upper, lower]))
 
@@ -993,7 +997,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
         a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
         return x_perp + D(a, k - 1), g, info
 
-    x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
+    x, info = _pair_loop(seq, operators, on, k, d, None, tol, maxiter,
                          lambda r: split(r.astype(seq.dtype)), rhs, guess,
                          get_nullspace(operators, k, d))
     x = _out(seq, x, dtype)
@@ -1200,12 +1204,11 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     measured against the saddle MINRES with the mass atom and against the
     mass atom on the split in ``docs/research/shifted_split_2026-09-02.md``).
 
-    ``eps`` may be a traced scalar: the relaxation's resistive step passes
-    ``dt * eta`` from inside a jitted step. Nothing here branches on its
-    value, so ``eps = 0`` runs two mass solves rather than dispatching to
-    :func:`apply_inverse_mass_matrix` -- a caller with ``eps = 0`` wants
-    that function and should say so. ``info`` is the summed signed
-    iteration count of the two solves, negative when both converged.
+    ``eps > 0``, and it may be a traced scalar (the resistive step passes
+    the helicity-budget ``eps`` through a jitted function): nothing here
+    branches on its value, and the outer loop divides by it. ``info`` is
+    the summed signed iteration count of the two solves, negative when
+    both converged.
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
