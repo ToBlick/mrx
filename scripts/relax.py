@@ -26,7 +26,7 @@ Flags, defaults in brackets:
                                    profiles iota, Phi', lambda of the
                                    logical-grid field; data/torus.json,
                                    cylinder.json, rot_ellipse.json) gives the
-                                   map and that field. Always Leray-projected.
+                                   map and that field, Leray-projected.
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
       --ns R,T,Z [8,16,16]         spline resolution (also the map's)
@@ -168,20 +168,12 @@ def parse_args(argv=None):
                          "mesh, degree and precision")
     cli = ap.parse_args(argv)
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
-    if cli.history < 0:
-        ap.error("--history must be non-negative (0 is steepest descent)")
-    if cli.chunk < 1 or cli.steps % cli.chunk:
-        ap.error("--steps must be a positive multiple of --chunk")
-    if not os.path.isfile(cli.geometry):
-        ap.error(f"--geometry {cli.geometry!r} is not a file (a .nc, .dat or .json)")
-    if cli.seed and cli.geometry.endswith(".json"):
-        ap.error("--seed needs an equilibrium file (.nc or .dat)")
     return cli
 
 
 def main(cli):
     import mrx
-    from mrx.geometry import build_sequence, geometry_kind, parse_r_refine
+    from mrx.geometry import build_sequence, parse_r_refine
     from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
@@ -195,8 +187,7 @@ def main(cli):
                                   time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    params = dict(vars(cli), ns=list(ns), out=out, geometry_path=os.path.abspath(cli.geometry),
-                  ic=geometry_kind(cli.geometry))
+    params = dict(vars(cli), ns=list(ns), out=out, geometry_path=os.path.abspath(cli.geometry))
     results = {"params": params}
 
     # --- geometry and operators ------------------------------------------
@@ -215,7 +206,7 @@ def main(cli):
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
     B0, ic = initial_field(seq, seed)
-    results["ic"] = ic
+    results["ic"], params["ic"] = ic, ic["kind"]
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                       for k, v in ic.items() if k != "kind"), flush=True)
@@ -234,7 +225,6 @@ def main(cli):
     else:
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
-    params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     print(f"\n=== L-BFGS m={cli.history}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
