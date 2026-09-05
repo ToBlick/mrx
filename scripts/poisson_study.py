@@ -143,8 +143,7 @@ def _null_diag(seq, null_info, k: int, dirichlet: bool):
     }
 
 
-def _solve_case(seq, k: int, dirichlet: bool, spec, timings,
-                saddle_preconditioner):
+def _solve_case(seq, k: int, dirichlet: bool, spec, timings):
     """Load, solve (compile + exec passes), and compute the L² error for one case."""
     tag = case_tag(k, dirichlet)
     _log(f"--- {tag} (k={k}, dirichlet={dirichlet}) ---")
@@ -157,19 +156,14 @@ def _solve_case(seq, k: int, dirichlet: bool, spec, timings,
 
     _log("  Solving (compile pass)...")
     t0 = time.perf_counter()
-    preconditioner = 'auto' if k == 0 else saddle_preconditioner
-    u_hat, info = seq.apply_inverse_laplacian(
-        b_ref, k, dirichlet=dirichlet, preconditioner=preconditioner,
-        return_info=True)
+    u_hat, info = seq.apply_inverse_laplacian(b_ref, k, dirichlet=dirichlet, return_info=True)
     jax.block_until_ready(u_hat)
     timings[f"solve_{tag}_compile"] = time.perf_counter() - t0
     _log(f"  Compile pass done ({timings[f'solve_{tag}_compile']:.2f}s)")
 
     _log("  Solving (exec pass)...")
     t0 = time.perf_counter()
-    u_hat, info = seq.apply_inverse_laplacian(
-        b_ref, k, dirichlet=dirichlet, preconditioner=preconditioner,
-        return_info=True)
+    u_hat, info = seq.apply_inverse_laplacian(b_ref, k, dirichlet=dirichlet, return_info=True)
     jax.block_until_ready(u_hat)
     timings[f"solve_{tag}_exec"] = time.perf_counter() - t0
     _log(f"  Solve done: iters={abs(int(info))} converged={int(info) < 0}"
@@ -200,9 +194,6 @@ def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter:
     q = p + 1 if quad_order is None else quad_order
 
     F = toroid_map(epsilon=epsilon)
-    # The production default preconditioners, so the study solves what
-    # production solves.
-    saddle_preconditioner = 'auto'
 
     # --- Sequence setup ------------------------------------------------
     _log(f"Building DeRhamSequence: ns={ns} ps={ps} q={q}")
@@ -260,7 +251,6 @@ def compute_all_k(n: int, p: int, epsilon: float, solver_tol: float, cg_maxiter:
             dirichlet,
             specs[(k, dirichlet)],
             timings,
-            saddle_preconditioner,
         )
         nd = _null_diag(seq, null_info, k, dirichlet)
         _log(f"  null {case_tag(k, dirichlet)}: dim={nd['null_dim']}"

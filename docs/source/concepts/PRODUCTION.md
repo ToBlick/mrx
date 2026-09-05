@@ -21,17 +21,14 @@ bundle. Mass matrices are never stored; every operator is a matrix-free apply
 
 | solve | preconditioner | code |
 |---|---|---|
-| mass, all k | `kind='metric_lumping'`: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
-| Laplacian, k = 0..3, free and Dirichlet | `kind='metric_lumping'`: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
+| mass, all k | the metric-lumped mass atom: separable Kronecker bulk, polar core probed and inverted densely | `MetricLumpingMass` |
+| Laplacian, k = 0..3, free and Dirichlet | the metric-lumped Laplacian atom: per-component Kronecker-sum atom by fast diagonalisation, dense polar core, rank-one natural-BC term | `MetricLumpingLaplacian` |
 
-Kinds: `none`, `jacobi`, `metric_lumping`, `auto`. `auto` resolves to
-`metric_lumping` for the mass, always; for a Laplacian it uses the atom when
-`build_preconditioners` has built it for that `(k, BC)` and `none` otherwise.
-`jacobi` is the probed diagonal, built only by
-`build_preconditioners(jacobi=True)`; it is never substituted.
-
-Saddle solves (k >= 1): `mass = inner = outer = 'metric_lumping'`,
-`coupled = False`.
+The atoms are the only preconditioners (since 2026-09-04; the probed
+Jacobi diagonals and the preconditioner specs are gone). Every solve uses
+the atom of its `(k, BC)`; a missing atom raises, nothing is substituted.
+Saddle solves (k >= 1): the Laplacian atom of level `k` on the upper
+block, the mass atom of level `k - 1` on the lower block, block-diagonal.
 
 `PRODUCTION_BC_SCALE = 3.0` in `mrx/metric_lumping_laplacian.py` multiplies
 the natural-BC coefficient; `build_preconditioners(bc_scale=...)` is the only

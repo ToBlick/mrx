@@ -382,10 +382,10 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
 def solve_saddle_point_minres(
         stiffness_matvec, derivative_matvec, derivative_T_matvec,
         mass_lower_matvec, b_upper, n_upper, n_lower,
-    precond_upper=None, precond_lower=None, precond_matvec=None,
+        precond_upper=None, precond_lower=None,
         mass_upper_matvec=None,
         vs_upper=None, vs_lower=None,
-        x0_upper=None, x0_lower=None,
+        x0_upper=None,
         tol=None, maxiter=None):
     """
     Solve the saddle-point system using preconditioned MINRES::
@@ -408,14 +408,10 @@ def solve_saddle_point_minres(
             (Schur complement / Hodge Laplacian). Must be linear and SPD.
         precond_lower: Callable, approximate inverse for lower block
             (mass matrix). Must be linear and SPD.
-        precond_matvec: Callable, approximate inverse for the full saddle
-            block. Must be linear and SPD. When supplied, it takes precedence
-            over precond_upper / precond_lower.
         mass_upper_matvec: u -> M_k @ u (k-form mass, for nullspace projection).
         vs_upper: List of nullspace vectors for the k-form block.
         vs_lower: List of nullspace vectors for the (k-1)-form block.
         x0_upper: Initial guess for u.
-        x0_lower: Initial guess for σ.
         tol: MINRES tolerance; ``None`` is ``mrx.sqrt_eps()``.
         maxiter: Maximum iterations.
 
@@ -473,10 +469,6 @@ def solve_saddle_point_minres(
         u, s = unpack(x)
         return pack(project_primal_upper(u), project_primal_lower(s))
 
-    def project_dual(x):
-        u, s = unpack(x)
-        return pack(project_dual_upper(u), project_dual_lower(s))
-
     # --- Saddle-point matvec ---
     def A_matvec(x):
         u, s = unpack(x)
@@ -495,9 +487,6 @@ def solve_saddle_point_minres(
         u, s = unpack(x)
         u = project_dual_upper(u)
         s = project_dual_lower(s)
-        if precond_matvec is not None:
-            px = precond_matvec(pack(u, s))
-            return project_primal(px)
         pu = precond_upper(u) if precond_upper is not None else u
         ps = precond_lower(s) if precond_lower is not None else s
         return pack(project_primal_upper(pu), project_primal_lower(ps))
@@ -508,10 +497,7 @@ def solve_saddle_point_minres(
     # --- Initial guess ---
     if x0_upper is None:
         x0_upper = jnp.zeros(n_upper)
-    if x0_lower is None:
-        x0_lower = jnp.zeros(n_lower)
-    x0 = pack(project_primal_upper(x0_upper),
-              project_primal_lower(x0_lower))
+    x0 = pack(project_primal_upper(x0_upper), jnp.zeros(n_lower))
 
     if maxiter is None:
         maxiter = n_total

@@ -12,12 +12,6 @@ import jax
 import jax.numpy as jnp
 
 import mrx
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    SchurPreconditionerSpec,
-    default_mass_preconditioner,
-)
 
 # ---------------------------------------------------------------------------
 # Shape helpers
@@ -160,26 +154,6 @@ def _bootstrap_nullspace_guesses(seq, operators, k, dirichlet, guesses):
         values = values.at[idx].set(work)
 
     return _commit(seq, _set_null(operators, k, dirichlet, values))
-
-
-def _nullspace_shifted_preconditioner(k: int):
-    """The preconditioner of the shifted solves of inverse iteration.
-
-    The metric-lumped atoms throughout: for ``k = 0`` the scalar atom on
-    ``S_0 + eps M_0`` (measured in its favour against the diagonal on the
-    shifted operator), for ``k >= 1`` the production saddle default with the
-    atom as the Schur outer block.
-    """
-    if k == 0:
-        return MassPreconditionerSpec(kind='metric_lumping')
-    return SaddlePointPreconditionerSpec(
-        mass=default_mass_preconditioner(),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='metric_lumping'),
-            outer=MassPreconditionerSpec(kind='metric_lumping'),
-        ),
-        coupled=False,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -657,8 +631,6 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
     found = [] if known is None else [jnp.asarray(v) for v in known]
     n_known = len(found)
     iters = []
-    shifted_preconditioner = _nullspace_shifted_preconditioner(k)
-
     for idx in range(n_vectors):
         seeded = x0s is not None and idx < len(x0s) and x0s[idx] is not None
         if seeded:
@@ -700,7 +672,6 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             w = seq.apply_inverse_shifted_laplacian(
                 Mv, k, eps, dirichlet=dirichlet, guess=v,
                 operators=operators,
-                preconditioner=shifted_preconditioner,
                 tol=inner_tol)
             w = project_out(w)
             # M is SPD so w^T M w >= 0 exactly; in float32 the deflated

@@ -71,14 +71,13 @@ import jax
 import jax.numpy as jnp
 
 from mrx.operators import (
-    _assemble_weighted_1d_mass,
     _fd_apply_3d,
     _fd_apply_3d_shifted,
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
 )
 from mrx.precision import DTYPE, eps, sqrt_eps
-from mrx.preconditioners import _simultaneous_diagonalize_pair
+from mrx.preconditioners import _assemble_weighted_1d_mass, _simultaneous_diagonalize_pair
 
 #: Relative cut-off below which an eigenvalue of the probed dense core is
 #: treated as exactly zero. ~1e-12 in float64 (the value it was tuned at).

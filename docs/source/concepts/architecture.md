@@ -180,8 +180,8 @@ are:
 SPD CG solves, `(M_k + eps S_k)^-1 - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1
 D_{k-1}^T`, which is exact because `D_k D_{k-1} = 0`. The
 `DeRhamSequence` methods of the same names forward to these with the
-sequence's own `operators`, `tol`, and `maxiter`. Every solve takes a
-`preconditioner` argument; the default `'auto'` is described in
+sequence's own `operators`, `tol`, and `maxiter`. Every solve is
+preconditioned by the metric-lumped atom of its `(k, BC)`, described in
 [preconditioning.md](preconditioning.md).
 
 ### Harmonic forms
@@ -277,9 +277,8 @@ ops = seq.set_operators(compute_nullspaces(seq, ops))
    `assemble_mass_metric_lumping_preconditioner`, then
    `assemble_metric_lumping_laplacian_preconditioner` (the Laplacian atoms
    need the mass preconditioners, because the weak term of `L_k` is applied
-   through them). These are what `kind='auto'` applies everywhere, the
-   shift-and-invert nullspace route included. `jacobi=True` adds the probed
-   Jacobi diagonals (mass, Laplacian, Schur) for `kind='jacobi'`.
+   through them). These are the preconditioners of every solve, the
+   shift-and-invert nullspace route included.
 4. Harmonic forms: `compute_nullspaces` or `compute_nullspaces_iterative`,
    after everything above; they live on the bundle.
 

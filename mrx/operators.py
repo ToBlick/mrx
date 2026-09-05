@@ -2,22 +2,14 @@
 from __future__ import annotations
 
 from typing import Optional, Sequence
-import warnings
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 
 from mrx.extraction_operators import MatrixFreeExtraction
 import numpy as np
 
-from mrx.preconditioners import (
-    MassPreconditionerSpec,
-    SchurPreconditionerSpec,
-    SaddlePointPreconditionerSpec,
-    _symmetrize,
-    default_mass_preconditioner,
-)
+from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
 from mrx.solvers import solve_saddle_point_minres, solve_singular_cg
 import mrx
 def _nullspace_vectors(operators, k: int, dirichlet: bool):
@@ -36,8 +28,8 @@ class SequenceOperators(eqx.Module):
     """Everything built FROM a geometry: preconditioners and harmonic forms.
 
     The sequence itself is static (bases, extraction, incidence); this bundle
-    holds every factorisation of the installed metric -- Jacobi diagonals,
-    metric-lumped mass and Laplacian atoms, probed Schur diagonals -- and the
+    holds every factorisation of the installed metric -- the metric-lumped
+    mass and Laplacian atoms, the preconditioners of every solve -- and the
     nullspace vectors. Nothing here is built on first use:
     ``DeRhamSequence.build_preconditioners`` builds it against the geometry
     installed at that moment, and a new geometry means calling it again.
@@ -53,13 +45,6 @@ class SequenceOperators(eqx.Module):
     # :func:`assemble_metric_lumping_laplacian_preconditioner`.
     mass_lumping: Optional[dict] = None
     laplacian_lumping: Optional[dict] = None
-    # The Jacobi option (``build_preconditioners(jacobi=True)``): the inverse
-    # diagonals of ``E M_k E^T``, of ``L_k`` (as ``apply_laplacian_approx``
-    # applies it) and of the approximate Schur operator of the saddle solves,
-    # all by one-hot probes of the applies themselves, keyed ``(k, dirichlet)``.
-    mass_jacobi: Optional[dict] = None
-    laplacian_jacobi: Optional[dict] = None
-    schur_jacobi: Optional[dict] = None
     # Harmonic forms of the k-form Laplacians, keyed ``(k, dirichlet)``: an
     # array ``(n_vectors, n_k)``, one nullspace vector per row. The shapes are
     # topological (Betti numbers); the values belong to the geometry. Zero
@@ -71,8 +56,7 @@ def new_operators(seq) -> SequenceOperators:
     """The empty bundle for ``seq``: zero nullspaces, no preconditioners."""
     from mrx.nullspace import init_nullspaces  # noqa: PLC0415
     return init_nullspaces(seq, SequenceOperators(mass_lumping={}, laplacian_lumping={},
-                                                  mass_jacobi={}, laplacian_jacobi={},
-                                                  schur_jacobi={}, nullspaces={}))
+                                                  nullspaces={}))
 
 
 def _require_bundle(operators):
@@ -80,10 +64,6 @@ def _require_bundle(operators):
         raise ValueError(
             "no operator bundle: call seq.build_preconditioners() after set_map")
     return operators
-
-
-def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndarray:
-    return (B * weights[None, :]) @ B.T
 
 
 def _assemble_weighted_1d_stiffness(
@@ -94,97 +74,6 @@ def _assemble_weighted_1d_stiffness(
     mass_d = _assemble_weighted_1d_mass(derivative_basis, weights)
     stiffness = incidence.T @ (mass_d @ incidence)
     return _symmetrize(stiffness)
-
-
-def _materialize_default_mass_preconditioner(
-        seq, operators: SequenceOperators, *, k: int):
-    # The `_tensor_available` gate here was a leftover from when
-    # `default_mass_preconditioner()` meant kind='tensor', which DOES need an
-    # eager assembly and so needed a fallback. It has meant 'metric_lumping'
-    # since 2026-08-22, and that is always buildable -- so the gate was
-    # silently downgrading the saddle solve's LOWER block to a per-DoF
-    # diagonal whenever the tensor factors happened not to be assembled,
-    # which is the normal case.
-    #
-    # MEASURED (2026-08-24), same operator, same block-Jacobi upper block,
-    # toroid p=3 k=2 free: 84 iterations with block_jacobi below, 9612 with
-    # the jacobi diagonal. The k>=1 saddle solves were not "badly
-    # conditioned"; they were running without the mass preconditioner.
-    del seq, operators, k
-    return default_mass_preconditioner()
-
-
-def _materialize_default_saddle_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        coupled_preconditioner: bool = False):
-    """The k>=1 saddle default: metric_lumping mass, metric_lumping outer.
-
-    You get what you built. The atom when it has been assembled for this
-    ``(k, BC)``, and ``'none'`` otherwise -- never a substitute.
-
-    This used to drop to the per-DoF diagonal with a RuntimeWarning, which is
-    how the relaxation loop came to run its innermost solve on the diagonal
-    without anyone noticing. Probe-building a jacobi diagonal as a soft fallback
-    is not a service: it silently swaps in a different, worse preconditioner and
-    the solve merely gets slower, which is invisible. Running unpreconditioned
-    is visible -- the solve stalls or fails, and the cause is the missing
-    assembly.
-
-    Preconditioners are built explicitly, by the caller, against a known
-    geometry -- see
-    :meth:`~mrx.derham_sequence.DeRhamSequence.set_map_and_preconditioners`.
-    ``set_geometry`` drops the atoms, so "assembled" always means "assembled for
-    the geometry now installed".
-
-    ``schur.inner`` is metric_lumping. Under ``outer='metric_lumping'`` the
-    atom IS the upper-block inverse and the inner slot does no work at all.
-    """
-    outer = ('metric_lumping' if _metric_lumping_available(operators, k, dirichlet) else 'none')
-    return SaddlePointPreconditionerSpec(
-        mass=_materialize_default_mass_preconditioner(seq, operators, k=k - 1),
-        schur=SchurPreconditionerSpec(
-            inner=MassPreconditionerSpec(kind='metric_lumping'),
-            outer=MassPreconditionerSpec(kind=outer),
-        ),
-        coupled=coupled_preconditioner,
-    )
-
-
-def _materialize_default_scalar_hodge_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool = True,
-        eps: float = 0.0):
-    """The scalar (k=0) Laplacian default: the block-Jacobi atom, required.
-
-    Same rule as the k>=1 saddle default, and for the same reason: an
-    availability test cannot tell an atom built for THIS geometry from one left
-    over from the last, so it is not asked. Build it explicitly.
-
-    ``eps > 0`` gets nothing: the atom approximates ``L_k``, not
-    ``L_k + eps M_k``, and its fit to the shifted operator is unmeasured (audit
-    item 3.2). Pass an explicit kind there if you want one.
-    """
-    if eps != 0.0:
-        return MassPreconditionerSpec(kind='none')
-    if _metric_lumping_available(operators, k, dirichlet):
-        return MassPreconditionerSpec(kind='metric_lumping')
-    return MassPreconditionerSpec(kind='none')
-
-
-def _coerce_diffusion_preconditioner_spec(
-        seq, operators: SequenceOperators, *, k: int, preconditioner):
-    if preconditioner is None or preconditioner == 'auto':
-        # 'auto' is the shifted-stiffness atom, (M^_j + eps S^_j)^-1 built
-        # from the metric-lumped Laplacian atom of level j (kind
-        # 'metric_lumping' in this slot); see
-        # MetricLumpingLaplacian.shifted_stiffness_apply.
-        del seq, operators, k
-        return default_mass_preconditioner()
-    if isinstance(preconditioner, MassPreconditionerSpec):
-        return preconditioner
-    if isinstance(preconditioner, str):
-        return MassPreconditionerSpec(kind=preconditioner)
-    raise TypeError(
-        'diffusion preconditioner must be a kind string or MassPreconditionerSpec')
 
 
 # ---------------------------------------------------------------------------
@@ -827,48 +716,21 @@ def apply_derivative_matrix(seq, v, k: int,
 
 
 def apply_mass_matrix_preconditioner(seq, operators: SequenceOperators, v, k: int,
-                                     dirichlet: bool = True,
-                                     kind: str = 'auto'):
-    """Apply a mass-matrix preconditioner from an explicit operator bundle.
-
-    Parameters
-    ----------
-    kind : {'auto', 'jacobi', 'metric_lumping'}
-        Which preconditioner to use.
-    """
-    apply = _build_mass_preconditioner_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        preconditioner=kind,
-        allow_none=False,
-    )
-    return apply(v)
+                                     dirichlet: bool = True):
+    """Apply the metric-lumped mass atom of the bundle for ``(k, dirichlet)`` to ``v``."""
+    del seq
+    return _mass_atom(operators, k, dirichlet).apply(v)
 
 
 def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
                               dirichlet: bool = True, guess=None,
                               tol: Optional[float] = None,
                               maxiter: Optional[int] = None,
-                              preconditioner='auto',
                               return_info: bool = False):
-    """Solve with the inverse mass matrix from an explicit operator bundle.
-
-    ``preconditioner`` accepts a kind string or a
-    :class:`MassPreconditionerSpec`. When omitted (``'auto'``) it resolves to
-    :func:`~mrx.preconditioners.default_mass_preconditioner` (metric_lumping).
-    """
+    """Solve with the inverse mass matrix, PCG with the metric-lumped mass atom."""
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
-    precond_apply = _build_mass_preconditioner_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        preconditioner=preconditioner,
-        allow_none=True,
-    )
+    precond_apply = _mass_atom(operators, k, dirichlet).apply
     x, info = solve_singular_cg(
         lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         rhs,
@@ -900,25 +762,12 @@ def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
     return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
 
 
-def _coerce_mass_preconditioner_spec(preconditioner):
-    if preconditioner is None:
-        return default_mass_preconditioner()
-    if isinstance(preconditioner, MassPreconditionerSpec):
-        return preconditioner
-    if isinstance(preconditioner, str):
-        return MassPreconditionerSpec(kind=preconditioner)
-    raise TypeError(
-        "mass preconditioner must be a kind string or MassPreconditionerSpec")
+def _mass_atom(operators, k: int, dirichlet: bool):
+    """The metric-lumped mass atom for ``(k, dirichlet)`` from the bundle.
 
-
-def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool):
-    """The metric-lumped MASS preconditioner for ``(k, dirichlet)`` from the bundle.
-
-    This is the default mass preconditioner (:func:`~mrx.preconditioners.
-    default_mass_preconditioner`). It is never built here: a missing atom is
-    a missing :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`.
+    Never built here: a missing atom is a missing
+    :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`.
     """
-    del seq
     atoms = _require_bundle(operators).mass_lumping or {}
     try:
         return atoms[(int(k), bool(dirichlet))]
@@ -927,94 +776,6 @@ def _mass_metric_lumping_for(seq, operators, k: int, dirichlet: bool):
             f"metric_lumping mass preconditioner for k={k}, dirichlet={dirichlet} is "
             "not built; seq.build_preconditioners() builds it for the installed "
             "geometry") from None
-
-
-def _diagonal_from_matvec(operator_apply, size: int):
-    """Probe ``diag(A)`` by one-hot vectors, 16 columns per ``lax.map`` batch.
-
-    A full ``vmap`` over chunks of canonical basis vectors fuses into one
-    large transpose that spills registers and crashes ptxas (measured
-    2026-08-17); ``batch_size=16`` keeps each kernel small and is 1.3-2x
-    faster than the fully sequential map.
-    """
-    batched = jax.jit(jax.vmap(operator_apply))
-    out = []
-    for start in range(0, size, 16):
-        idx = jnp.arange(start, min(start + 16, size))
-        basis = jax.nn.one_hot(idx, size, dtype=mrx.DTYPE)
-        out.append(batched(basis)[jnp.arange(idx.shape[0]), idx])
-    return jnp.concatenate(out)
-
-
-def _invert_diagonal(diagonal):
-    diagonal = jnp.asarray(diagonal, dtype=mrx.DTYPE)
-    return jnp.where(diagonal != 0.0, 1.0 / diagonal, 0.0)
-
-
-def _jacobi_entry(operators, slot: str, k: int, dirichlet: bool):
-    table = getattr(_require_bundle(operators), slot) or {}
-    try:
-        return table[(int(k), bool(dirichlet))]
-    except KeyError:
-        raise ValueError(
-            f"{slot} for k={k}, dirichlet={dirichlet} is not on the bundle; "
-            "seq.build_preconditioners(jacobi=True) probes it") from None
-
-
-def _mass_diaginv(seq, operators, k: int, dirichlet: bool):
-    """``1/diag(E M_k E^T)`` from the bundle."""
-    del seq
-    return _jacobi_entry(operators, "mass_jacobi", k, dirichlet)
-
-
-def _laplacian_diaginv(seq, operators, k: int, dirichlet: bool):
-    """``1/diag(L_k)`` from the bundle, ``L_k`` as :func:`apply_laplacian_approx` applies it."""
-    del seq
-    return _jacobi_entry(operators, "laplacian_jacobi", k, dirichlet)
-
-
-def _schur_diaginv(seq, operators, k: int, dirichlet: bool):
-    """``1/diag(S_k + D B D^T)`` from the bundle, the approximate Schur operator of the saddle solve."""
-    del seq
-    return _jacobi_entry(operators, "schur_jacobi", k, dirichlet)
-
-
-def assemble_jacobi_preconditioners(seq, operators: SequenceOperators, *,
-                                    ks: Sequence[int] = (0, 1, 2, 3),
-                                    dirichlets: Sequence[bool] = (False, True)):
-    """Probe the Jacobi diagonals for the given degrees onto the bundle.
-
-    One-hot probes of the applies themselves -- ``O(n_k)`` applies per
-    ``(k, dirichlet)`` -- so the stored diagonal is that of the operator as
-    it is really applied: ``E M_k E^T``, ``L_k`` through
-    :func:`apply_laplacian_approx` (its weak half through the metric-lumped
-    mass atom), and for ``k >= 1`` the approximate Schur operator
-    ``S_k + D_{k-1} B_{k-1} D_{k-1}^T`` that ``schur.outer='jacobi'``
-    preconditions. Needs the metric-lumped mass atoms of the bundle.
-    """
-    operators = _require_bundle(operators)
-    mass, lap, schur = (dict(operators.mass_jacobi or {}), dict(operators.laplacian_jacobi or {}),
-                        dict(operators.schur_jacobi or {}))
-    schur_spec = SaddlePointPreconditionerSpec(
-        mass=MassPreconditionerSpec(kind='metric_lumping'),
-        schur=SchurPreconditionerSpec(inner=MassPreconditionerSpec(kind='metric_lumping'),
-                                      outer=MassPreconditionerSpec(kind='none')))
-    for k in ks:
-        if k not in (0, 1, 2, 3):
-            raise ValueError("k must be 0, 1, 2 or 3")
-        for dirichlet in dirichlets:
-            key, n = (int(k), bool(dirichlet)), int(seq.n(k, dirichlet))
-            mass[key] = _invert_diagonal(_diagonal_from_matvec(
-                lambda x, k=k, d=dirichlet: apply_mass_matrix(seq, x, k, dirichlet=d), n))
-            lap[key] = _invert_diagonal(_diagonal_from_matvec(
-                lambda x, k=k, d=dirichlet: apply_laplacian_approx(seq, operators, x, k, dirichlet=d), n))
-            if k >= 1:
-                schur_apply = _build_schur_apply_from_saddle_preconditioner(
-                    seq, operators, k=k, dirichlet=dirichlet, eps=0.0,
-                    saddle_preconditioner=schur_spec)
-                schur[key] = _invert_diagonal(_diagonal_from_matvec(schur_apply, n))
-    return eqx.tree_at(lambda o: (o.mass_jacobi, o.laplacian_jacobi, o.schur_jacobi), operators,
-                       (mass, lap, schur), is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def assemble_mass_metric_lumping_preconditioner(
@@ -1043,261 +804,6 @@ def assemble_mass_metric_lumping_preconditioner(
                 seq, operators, int(k), bool(dirichlet), **kwargs)
     return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
-
-
-def _resolve_mass_preconditioner(preconditioner):
-    if isinstance(preconditioner, str) and preconditioner == 'auto':
-        # 'auto' is the production default, always buildable on demand.
-        return default_mass_preconditioner()
-    return _coerce_mass_preconditioner_spec(preconditioner)
-
-
-def _build_operator_preconditioner_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-    operator_apply, preconditioner, allow_none: bool = True):
-    spec = _resolve_mass_preconditioner(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'metric_lumping')
-    if spec.kind not in valid_kinds:
-        raise ValueError(
-            "preconditioner kind must be one of "
-            f"{valid_kinds} (got {spec.kind!r})")
-    if spec.kind == 'metric_lumping':
-        # Separable Kronecker bulk plus a sandwich, with the polar CORE probed
-        # and inverted densely. Never splits the space.
-        pre = _mass_metric_lumping_for(seq, operators, k, dirichlet)
-        return lambda x, pre=pre: pre.apply(x)
-    if spec.kind == 'jacobi':
-        diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        return lambda x, diaginv=diaginv: diaginv * x
-    if spec.kind == 'none':
-        if not allow_none:
-            raise ValueError("this preconditioner slot does not allow kind='none'")
-        return lambda x: x
-    raise ValueError(f"unsupported mass preconditioner kind {spec.kind!r}")
-
-
-def _build_mass_preconditioner_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-    preconditioner, allow_none: bool = True):
-    def operator_apply(x):
-        return apply_mass_matrix(seq, x, k, dirichlet=dirichlet)
-
-    return _build_operator_preconditioner_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        operator_apply=operator_apply,
-        preconditioner=preconditioner,
-        allow_none=allow_none,
-    )
-
-
-def _build_schur_operator_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        eps: float, inner_preconditioner_apply):
-    def apply(x):
-        d_t_x = apply_derivative_matrix(
-            seq, x,
-            k - 1,
-            dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet,
-            transpose=True,
-        )
-        inner_d_t_x = inner_preconditioner_apply(d_t_x)
-        schur = apply_derivative_matrix(
-            seq, inner_d_t_x,
-            k - 1,
-            dirichlet_in=dirichlet,
-            dirichlet_out=dirichlet,
-        )
-        return apply_stiffness(seq, x, k, dirichlet=dirichlet) \
-            + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet) \
-            + schur
-
-    return apply
-
-
-def _build_schur_apply_from_saddle_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        eps: float, saddle_preconditioner: SaddlePointPreconditionerSpec):
-    schur_inner_spec = saddle_preconditioner.schur.inner
-    if schur_inner_spec.kind != 'metric_lumping':
-        raise ValueError(
-            "schur.inner supports kind='metric_lumping' only "
-            f"(got {schur_inner_spec.kind!r})"
-        )
-
-    # The weak term B_{k-1} standing in for M_{k-1}^{-1}. Builds on demand, so
-    # this cannot fail for want of a prior assemble_*.
-    pre = _mass_metric_lumping_for(seq, operators, k - 1, dirichlet)
-
-    def schur_inner(x, pre=pre):
-        return pre.apply(x)
-
-    return _build_schur_operator_apply(
-        seq,
-        operators,
-        k=k,
-        dirichlet=dirichlet,
-        eps=eps,
-        inner_preconditioner_apply=schur_inner,
-    )
-
-
-def _coerce_scalar_hodge_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, preconditioner,
-        dirichlet: bool = True, eps: float = 0.0):
-    """The k=0 Laplacian slot: ``None``/``'auto'`` is the eps-aware default,
-    anything else goes through :func:`_coerce_mass_preconditioner_spec`."""
-    if preconditioner is None or preconditioner == 'auto':
-        return _materialize_default_scalar_hodge_preconditioner(
-            seq, operators, k=k, dirichlet=dirichlet, eps=eps)
-    return _coerce_mass_preconditioner_spec(preconditioner)
-
-
-def _coerce_saddle_preconditioner_spec(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        preconditioner) -> SaddlePointPreconditionerSpec:
-    if preconditioner is None or preconditioner == 'auto':
-        return _materialize_default_saddle_preconditioner(
-            seq, operators, k=k, dirichlet=dirichlet)
-    if isinstance(preconditioner, SaddlePointPreconditionerSpec):
-        # 'metric_lumping' added 2026-08-24. The Schur complement of this saddle system
-        # IS L_k = S_k + D M^-1 D^T, which is exactly what the block-Jacobi
-        # atom preconditions, so it belongs here -- and MINRES needs its
-        # preconditioner SPD, which the atom is (test_preconditioner_is_spd).
-        # Until now the only outer option was the per-DoF diagonal, whose weak
-        # half is itself a Kronecker mass MODEL, i.e. doubly approximate.
-        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
-        if preconditioner.schur.outer.kind not in valid_outer_kinds:
-            raise ValueError(
-                "schur.outer kind must be one of "
-                f"{valid_outer_kinds} (got {preconditioner.schur.outer.kind!r})"
-            )
-        return preconditioner
-    if isinstance(preconditioner, str):
-        valid_outer_kinds = ('none', 'jacobi', 'metric_lumping')
-        if preconditioner not in valid_outer_kinds:
-            raise ValueError(
-                "saddle outer kind must be one of "
-                f"{valid_outer_kinds} (got {preconditioner!r})"
-            )
-        lower = default_mass_preconditioner()
-        return SaddlePointPreconditionerSpec(
-            mass=lower,
-            schur=SchurPreconditionerSpec(
-                inner=MassPreconditionerSpec(kind='metric_lumping'),
-                outer=MassPreconditionerSpec(kind=preconditioner),
-            ),
-        )
-    raise TypeError(
-        'saddle preconditioner must be a kind string or '
-        'SaddlePointPreconditionerSpec')
-
-
-def _build_diffusion_preconditioner_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        eps: float, preconditioner, allow_none: bool = True):
-    spec = _coerce_diffusion_preconditioner_spec(
-        seq,
-        operators,
-        k=k,
-        preconditioner=preconditioner,
-    )
-    # The accept list names exactly what is dispatched below.
-    valid_kinds = ('none', 'jacobi', 'metric_lumping')
-    if spec.kind not in valid_kinds:
-        raise ValueError(
-            "preconditioner kind must be one of "
-            f"{valid_kinds} (got {spec.kind!r})")
-    if spec.kind == 'none':
-        if not allow_none:
-            raise ValueError("this preconditioner slot does not allow kind='none'")
-        return lambda x: x
-    if spec.kind == 'jacobi':
-        # The shifted diagonal 1 / (diag(M) + eps diag(L)): valid for every eps.
-        mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
-        shifted = 1.0 / (1.0 / mass_diaginv + eps / stiffness_diaginv)
-        return lambda x, d=shifted: d * x
-    if spec.kind == 'metric_lumping':
-        # The shifted-stiffness atom: the strong-half (primal-axis) Kronecker
-        # terms of the metric-lumped Laplacian atom, divided by
-        # 1 + eps lambda in their eigenbasis, i.e. (M^ + eps S^)^-1 for the
-        # atom's own separable mass, plus the dense (M + eps S)^-1 on the
-        # core rows. Measured on li383 p=3 at the smoothing eps against the
-        # mass atom (CG iterations on M_k + eps S_k): k=2 69 vs 153 at
-        # (8,16,8), 117 vs 371 at (12,24,12); k=1 74 vs 181 and 128 vs 422.
-        # Two "consistent" factorisations with the Jacobian in the 1-D masses
-        # were measured and lost to this plain shift (~200 at (12,24,12)).
-        # Its implied mass is a worse M than the mass atom's, so below
-        # eps n_r^2 ~ 0.006 (the resistive step's eta dt) the mass atom
-        # wins by up to 2x on ~100 iterations; the smoothing eps is 10x
-        # above the crossover. docs/research/shifted_split_2026-09-02.md.
-        if not _metric_lumping_available(operators, k, dirichlet):
-            raise ValueError(
-                f"metric_lumping Laplacian atom not assembled for k={k}, "
-                f"dirichlet={dirichlet}; seq.build_preconditioners() builds it")
-        return operators.laplacian_lumping[(int(k), bool(dirichlet))].shifted_stiffness_apply(eps)
-    raise ValueError(
-        f"unsupported diffusion preconditioner kind {spec.kind!r}")
-
-
-def _build_scalar_hodge_preconditioner_apply(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        eps: float, preconditioner, allow_none: bool = True):
-    spec = _coerce_mass_preconditioner_spec(preconditioner)
-    valid_kinds = ('none', 'jacobi', 'metric_lumping')
-    if spec.kind not in valid_kinds:
-        raise ValueError(
-            "preconditioner kind must be one of "
-            f"{valid_kinds} (got {spec.kind!r})")
-    if spec.kind == 'none':
-        if not allow_none:
-            raise ValueError("this preconditioner slot does not allow kind='none'")
-        return lambda x: x
-    if spec.kind == 'jacobi':
-        # The shifted diagonal 1 / (diag(L) + eps diag(M)).
-        stiffness_diaginv = _laplacian_diaginv(seq, operators, k, dirichlet)
-        if eps == 0.0:
-            return lambda x, d=stiffness_diaginv: d * x
-        mass_diaginv = _mass_diaginv(seq, operators, k, dirichlet)
-        shifted = 1.0 / (1.0 / stiffness_diaginv + eps / mass_diaginv)
-        return lambda x, d=shifted: d * x
-    if spec.kind == 'metric_lumping':
-        # The atom approximates L_k; on L_k + eps M_k it was measured 6/6 in
-        # its favour against the shifted diagonal.
-        if not _metric_lumping_available(operators, k, dirichlet):
-            raise ValueError(
-                f"scalar preconditioner kind='metric_lumping' needs the metric_lumping "
-                f"Laplacian atom for k={k}, dirichlet={dirichlet}; "
-                "seq.build_preconditioners() builds it")
-        return lambda x: apply_laplacian_preconditioner(
-            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping')
-    raise ValueError(f"unsupported scalar preconditioner kind {spec.kind!r}")
-
-
-def _build_coupled_saddle_preconditioner(
-        seq, operators: SequenceOperators, *, k: int, dirichlet: bool,
-        upper_preconditioner, lower_preconditioner):
-    n_upper = seq.n(k, dirichlet)
-
-    def apply(x):
-        u = x[:n_upper]
-        s = x[n_upper:]
-        m_inv_s = lower_preconditioner(s)
-        w_u = u + apply_derivative_matrix(
-            seq, m_inv_s, k - 1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet)
-        y_u = upper_preconditioner(w_u)
-        d_t_y_u = apply_derivative_matrix(
-            seq, y_u, k - 1,
-            dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
-        z_s = m_inv_s + lower_preconditioner(d_t_y_u)
-        return jnp.concatenate([y_u, z_s])
-
-    return apply
 
 
 def assemble_metric_lumping_laplacian_preconditioner(
@@ -1338,43 +844,41 @@ def assemble_metric_lumping_laplacian_preconditioner(
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
-def _metric_lumping_available(operators, k: int, dirichlet: bool) -> bool:
-    """True iff the metric-lumped Laplacian atom for ``(k, dirichlet)`` is on the bundle."""
-    atoms = operators.laplacian_lumping if operators is not None else None
-    return bool(atoms) and (int(k), bool(dirichlet)) in atoms
+def _laplacian_atom(operators, k: int, dirichlet: bool):
+    """The metric-lumped Laplacian atom for ``(k, dirichlet)`` from the bundle."""
+    atoms = _require_bundle(operators).laplacian_lumping or {}
+    try:
+        return atoms[(int(k), bool(dirichlet))]
+    except KeyError:
+        raise ValueError(
+            f"metric_lumping Laplacian atom for k={k}, dirichlet={dirichlet} is not "
+            "built; seq.build_preconditioners() builds it for the installed geometry") from None
+
+
+def _shifted_atom_apply(operators, k: int, dirichlet: bool, eps):
+    """The preconditioner of ``M_k + eps S_k``: the shifted-stiffness atom.
+
+    The strong-half (primal-axis) Kronecker terms of the metric-lumped
+    Laplacian atom, divided by ``1 + eps lambda`` in their eigenbasis, i.e.
+    ``(M^ + eps S^)^-1`` for the atom's own separable mass, plus the dense
+    ``(M + eps S)^-1`` on the core rows. Measured on li383 p=3 at the
+    smoothing eps against the mass atom (CG iterations on ``M_k + eps
+    S_k``): k=2 69 vs 153 at (8,16,8), 117 vs 371 at (12,24,12); k=1 74 vs
+    181 and 128 vs 422. Two "consistent" factorisations with the Jacobian in
+    the 1-D masses were measured and lost to this plain shift (~200 at
+    (12,24,12)). Its implied mass is a worse M than the mass atom's, so
+    below ``eps n_r^2 ~ 0.006`` (the resistive step's eta dt) the mass atom
+    wins by up to 2x on ~100 iterations; the smoothing eps is 10x above the
+    crossover. docs/research/shifted_split_2026-09-02.md.
+    """
+    return _laplacian_atom(operators, k, dirichlet).shifted_stiffness_apply(eps)
 
 
 def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
-                                   dirichlet: bool = True,
-                                   kind: str = 'auto'):
-    """Apply the Laplacian preconditioner of the bundle to ``v``.
-
-    ``kind``: ``'metric_lumping'`` (the metric-lumped atom, k = 0..3, free and
-    Dirichlet -- the production preconditioner), ``'jacobi'`` (the probed
-    ``1/diag(L_k)``, ``build_preconditioners(jacobi=True)``), ``'none'``
-    (identity), or ``'auto'``: the atom when it is on the bundle for this
-    ``(k, BC)``, otherwise a warning and the identity.
-    """
-    if kind not in ('auto', 'none', 'jacobi', 'metric_lumping'):
-        raise ValueError(
-            f"kind must be 'auto', 'none', 'jacobi' or 'metric_lumping' (got {kind!r})")
-    if kind == 'jacobi':
-        return _laplacian_diaginv(seq, operators, k, dirichlet) * v
-    available = _metric_lumping_available(operators, k, dirichlet)
-    if kind == 'auto':
-        if not available:
-            warnings.warn(
-                f"no metric_lumping Laplacian atom for k={k}, dirichlet={dirichlet} "
-                "on the bundle; solving unpreconditioned", stacklevel=2)
-            return v
-        kind = 'metric_lumping'
-    if kind == 'none':
-        return v
-    if not available:
-        raise ValueError(
-            f"metric_lumping Laplacian preconditioner not assembled for "
-            f"k={k}, dirichlet={dirichlet}; seq.build_preconditioners() builds it")
-    return operators.laplacian_lumping[(int(k), bool(dirichlet))].apply(v)
+                                   dirichlet: bool = True):
+    """Apply the metric-lumped Laplacian atom of the bundle for ``(k, dirichlet)`` to ``v``."""
+    del seq
+    return _laplacian_atom(operators, k, dirichlet).apply(v)
 
 
 def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
@@ -1398,13 +902,6 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     expects; those modes are barely excited by a right-hand side of the
     split anyway.  Harmonic forms deflated.
     """
-    for kk in (k, k - 1):
-        if not _metric_lumping_available(operators, kk, dirichlet):
-            raise ValueError(
-                "apply_inverse_laplacian: the Hodge-split solve needs the "
-                f"metric_lumping atoms for k={kk}, dirichlet={dirichlet}; "
-                "seq.build_preconditioners() builds them")
-
     def D(v):
         return apply_incidence_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
                                       dirichlet_out=dirichlet)
@@ -1416,9 +913,7 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     def M(v):
         return apply_mass_matrix(seq, v, k, dirichlet=dirichlet)
 
-    def W(v):
-        return apply_mass_matrix_preconditioner(seq, operators, v, k - 1,
-                                                dirichlet=dirichlet, kind='metric_lumping')
+    W = _mass_atom(operators, k - 1, dirichlet).apply
 
     def L_hat(x):
         return apply_stiffness(seq, x, k, dirichlet=dirichlet) + M(D(W(DT(M(x)))))
@@ -1426,8 +921,7 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     return solve_singular_cg(
         L_hat, b,
         mass_matvec=M,
-        precond_matvec=lambda x: apply_laplacian_preconditioner(
-            seq, operators, x, k, dirichlet=dirichlet, kind='metric_lumping'),
+        precond_matvec=_laplacian_atom(operators, k, dirichlet).apply,
         x0=guess,
         vs=_nullspace_vectors(operators, k, dirichlet),
         tol=tol,
@@ -1511,7 +1005,6 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
-                                  preconditioner='auto',
                                   return_info: bool = False):
     """Solve with the inverse of the unshifted Hodge Laplacian ``L_k``.
 
@@ -1520,31 +1013,15 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     stiffnesses, no saddle system.  ``k = 3``: the saddle-point MINRES
     (``S_3 = 0``, nothing to split; see the split's docstring), which is
     also the solver of the SHIFTED Laplacian at every k
-    (:func:`apply_inverse_shifted_laplacian`).  ``preconditioner`` selects
-    the k=0 atom and the k=3 saddle preconditioner; the Hodge split always
-    uses the metric-lumped atoms.
+    (:func:`apply_inverse_shifted_laplacian`).  Every solve is
+    preconditioned by the metric-lumped atoms of the bundle.
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
-        # The UNSHIFTED path: this is L_0 itself, so eps = 0 and the block atom
-        # is admissible (it approximates L_k, not L_k + eps M_k).
-        selected_preconditioner = _coerce_scalar_hodge_preconditioner(
-            seq, operators, k=k, preconditioner=preconditioner,
-            dirichlet=dirichlet, eps=0.0)
-
-        precond_upper = _build_scalar_hodge_preconditioner_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=0.0,
-            preconditioner=selected_preconditioner,
-            allow_none=True,
-        )
-
+        precond_upper = _laplacian_atom(operators, 0, dirichlet).apply
         vs = _nullspace_vectors(operators, 0, dirichlet)
         u, info = solve_singular_cg(
             lambda x: apply_stiffness(
@@ -1563,8 +1040,7 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     if k == 3:
         return apply_inverse_shifted_laplacian(
             seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
-            tol=tol, maxiter=maxiter, preconditioner=preconditioner,
-            return_info=return_info)
+            tol=tol, maxiter=maxiter, return_info=return_info)
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
         tol=tol, maxiter=maxiter, return_info=return_info)
@@ -1574,34 +1050,23 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
                                           eps: float, dirichlet: bool = True, guess=None,
                                           tol: Optional[float] = None,
                                           maxiter: Optional[int] = None,
-                                          preconditioner='auto',
                                           return_info: bool = False):
     """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
 
-    For ``k >= 1`` the interface is ``preconditioner``, a structured
-    saddle-point preconditioner spec with a lower mass block, a Schur-inner
-    mass inverse, a Schur-outer preconditioner, and an optional coupled
-    completion. Kind strings are accepted as convenience shorthands.
+    ``k = 0``: deflated PCG with the k=0 Laplacian atom (measured in its
+    favour against the shifted diagonal on the shifted operator). ``k >= 1``:
+    block-diagonal MINRES on the saddle form, the Laplacian atom of level
+    ``k`` on the upper block (the Schur complement of the saddle system IS
+    ``L_k``, which is what the atom approximates, and MINRES needs its
+    preconditioner SPD, which the atom is) and the mass atom of level
+    ``k - 1`` on the lower block.
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
-        selected_preconditioner = _coerce_scalar_hodge_preconditioner(
-            seq, operators, k=k, preconditioner=preconditioner,
-            dirichlet=dirichlet, eps=eps)
-
-        precond_upper = _build_scalar_hodge_preconditioner_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            preconditioner=selected_preconditioner,
-            allow_none=True,
-        )
-
+        precond_upper = _laplacian_atom(operators, 0, dirichlet).apply
         vs = _nullspace_vectors(
             operators, 0, dirichlet) if eps == 0 else jnp.zeros((0, rhs.shape[0]))
         u, info = solve_singular_cg(
@@ -1626,69 +1091,8 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             jnp.zeros((0, rhs.shape[0])), jnp.zeros((0, 0)))
     n_upper = seq.n(k, dirichlet)
     n_lower = seq.n(k-1, dirichlet)
-    saddle_preconditioner = _coerce_saddle_preconditioner_spec(
-        seq, operators, k=k, dirichlet=dirichlet, preconditioner=preconditioner)
-
-    if saddle_preconditioner.schur.inner.kind == 'none':
-        raise ValueError("schur.inner cannot use kind='none'")
-    precond_lower = _build_mass_preconditioner_apply(
-        seq,
-        operators,
-        k=k - 1,
-        dirichlet=dirichlet,
-        preconditioner=saddle_preconditioner.mass,
-        allow_none=True,
-    )
-    # The Schur apply is built only in the `else` branch (outer='none'): with
-    # outer='metric_lumping' the atom IS the upper-block inverse and with
-    # outer='jacobi' the probed Schur diagonal is on the bundle; neither needs
-    # the Schur operator or schur.inner here.
-    outer_spec = saddle_preconditioner.schur.outer
-    if outer_spec.kind == 'metric_lumping':
-        if not _metric_lumping_available(operators, k, dirichlet):
-            raise ValueError(
-                "schur.outer kind='metric_lumping' needs the metric_lumping Laplacian "
-                f"atom for k={k}, dirichlet={dirichlet}; seq.build_preconditioners() "
-                "builds it")
-
-        def precond_upper(x, _k=k, _d=dirichlet):
-            return apply_laplacian_preconditioner(
-                seq, operators, x, _k, dirichlet=_d, kind='metric_lumping')
-    elif outer_spec.kind == 'jacobi':
-        schur_diaginv = _schur_diaginv(seq, operators, k, dirichlet)
-
-        def precond_upper(x, d=schur_diaginv):
-            return d * x
-    else:
-        schur_apply = _build_schur_apply_from_saddle_preconditioner(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            eps=eps,
-            saddle_preconditioner=saddle_preconditioner,
-        )
-        precond_upper = _build_operator_preconditioner_apply(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            operator_apply=schur_apply,
-            preconditioner=outer_spec,
-            allow_none=True,
-        )
-    precond_matvec = (
-        _build_coupled_saddle_preconditioner(
-            seq,
-            operators,
-            k=k,
-            dirichlet=dirichlet,
-            upper_preconditioner=precond_upper,
-            lower_preconditioner=precond_lower,
-        )
-        if saddle_preconditioner.coupled
-        else None
-    )
+    precond_lower = _mass_atom(operators, k - 1, dirichlet).apply
+    precond_upper = _laplacian_atom(operators, k, dirichlet).apply
 
     u, sigma, info = solve_saddle_point_minres(
         stiffness_matvec=lambda x: apply_stiffness(
@@ -1704,7 +1108,6 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
         b_upper=rhs,
         n_upper=n_upper,
         n_lower=n_lower,
-        precond_matvec=precond_matvec,
         precond_upper=precond_upper,
         precond_lower=precond_lower,
         mass_upper_matvec=lambda x: apply_mass_matrix(
@@ -1722,7 +1125,6 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
                                                eps: float, dirichlet: bool = True, guess=None,
                                                tol: Optional[float] = None,
                                                maxiter: Optional[int] = None,
-                                               preconditioner='auto',
                                                return_info: bool = False):
     """Solve ``(M_k + eps L_k) x = rhs`` as two SPD solves.
 
@@ -1738,10 +1140,9 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     S_{k-1} M_{k-1}^{-1}``). Each system is a mass plus a semidefinite
     stiffness -- SPD, matrix-free, PCG -- so there is no saddle system, no
     inner mass solve and nothing to deflate. ``k = 0`` is the first solve
-    alone; ``k = 3`` has ``S_3 = 0``. ``'auto'`` is the shifted-stiffness
-    atom of each level (:meth:`~mrx.metric_lumping_laplacian.
-    MetricLumpingLaplacian.shifted_stiffness_apply`), ``(M^ + eps S^)^-1``
-    from the Laplacian atom already on the bundle.
+    alone; ``k = 3`` has ``S_3 = 0``. Each level is preconditioned by its
+    shifted-stiffness atom (:func:`_shifted_atom_apply`), ``(M^ + eps
+    S^)^-1`` from the Laplacian atom on the bundle.
 
     Measured on li383 p=3 at the velocity-smoothing ``eps = 0.064 / n_r^2``,
     both solves together, against the saddle MINRES with the mass atom this
@@ -1762,15 +1163,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     def shifted_solve(j, b, x0):
-        precond_apply = _build_diffusion_preconditioner_apply(
-            seq,
-            operators,
-            k=j,
-            dirichlet=dirichlet,
-            eps=eps,
-            preconditioner=preconditioner,
-            allow_none=True,
-        )
+        precond_apply = _shifted_atom_apply(operators, j, dirichlet, eps)
         return solve_singular_cg(
             lambda x: apply_mass_matrix(seq, x, j, dirichlet=dirichlet)
             + eps * apply_stiffness(seq, x, j, dirichlet=dirichlet),
@@ -1855,7 +1248,7 @@ def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                 seq, v, 0,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 0, dirichlet=dirichlet, kind='auto')
+                seq, operators, Dt_v, 0, dirichlet=dirichlet)
             return apply_stiffness(seq, v, 1, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
                     seq, Minv_Dt_v, 0,
@@ -1865,7 +1258,7 @@ def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                 seq, v, 1,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 1, dirichlet=dirichlet, kind='auto')
+                seq, operators, Dt_v, 1, dirichlet=dirichlet)
             return apply_stiffness(seq, v, 2, dirichlet=dirichlet) + \
                 apply_derivative_matrix(
                     seq, Minv_Dt_v, 1,
@@ -1875,7 +1268,7 @@ def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int,
                 seq, v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
             Minv_Dt_v = apply_mass_matrix_preconditioner(
-                seq, operators, Dt_v, 2, dirichlet=dirichlet, kind='auto')
+                seq, operators, Dt_v, 2, dirichlet=dirichlet)
             return apply_derivative_matrix(
                 seq, Minv_Dt_v, 2,
                 dirichlet_in=dirichlet, dirichlet_out=dirichlet)

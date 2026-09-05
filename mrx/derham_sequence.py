@@ -20,8 +20,8 @@ derivatives, stiffness and Laplacian applies need nothing else.
 **Preconditioners and harmonic forms (on** ``seq.operators`` **, a**
 :class:`~mrx.operators.SequenceOperators` **pytree, built by**
 :meth:`~DeRhamSequence.build_preconditioners` **):** every factorisation of
-the installed metric -- mass and Laplacian atoms, Jacobi diagonals, probed
-Schur diagonals -- and the nullspace vectors. Nothing on the bundle is built
+the installed metric -- the mass and Laplacian atoms -- and the nullspace
+vectors. Nothing on the bundle is built
 on first use: it is built by that one call, against the geometry installed
 at that moment, and a new geometry means calling it again. That is the
 contract for an outer loop over geometries (stellarator optimisation:
@@ -347,19 +347,15 @@ class DeRhamSequence():
         self.operators = None
 
     def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                              jacobi=False, bc_scale=None):
+                              bc_scale=None):
         """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
         ``k`` in ``ks`` and each BC in ``dirichlets``, the metric-lumped mass
         atom and the metric-lumped Laplacian atom -- the preconditioners of
-        every solve through the sequence (``kind='auto'`` resolves to them
-        everywhere: mass, Laplacian, saddle, diffusion and the shifted solves
-        of the nullspace iteration) -- and zero nullspaces. ``jacobi=True``
-        also probes the Jacobi option onto the bundle -- ``1/diag`` of
-        ``E M_k E^T``, of ``L_k`` and of the saddle solves' approximate Schur
-        operator, ``O(n_k)`` applies each -- for ``kind='jacobi'`` and
-        ``schur.outer='jacobi'``.
+        every solve through the sequence: mass, Laplacian, saddle, diffusion
+        and the shifted solves of the nullspace iteration -- and zero
+        nullspaces.
 
         Nothing on the bundle is built anywhere else, and nothing on it
         survives a geometry change: after :meth:`set_map` call this again, and
@@ -386,16 +382,13 @@ class DeRhamSequence():
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
             self, ops, ks=ks, dirichlets=dirichlets,
             **({} if bc_scale is None else {"bc_scale": bc_scale}))
-        if jacobi:
-            ops = op.assemble_jacobi_preconditioners(self, ops, ks=ks, dirichlets=dirichlets)
         self.operators = ops
         return ops
 
-    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                                    jacobi=False):
+    def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):
         """:meth:`set_map` followed by :meth:`build_preconditioners`, nothing else."""
         self.set_map(map)
-        return self.build_preconditioners(ks=ks, dirichlets=dirichlets, jacobi=jacobi)
+        return self.build_preconditioners(ks=ks, dirichlets=dirichlets)
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
@@ -597,22 +590,18 @@ class DeRhamSequence():
             v, 0, dirichlet_in=dirichlet, dirichlet_out=dirichlet, transpose=True)
         return self.apply_inverse_mass_matrix(dv_dual, 0, dirichlet=dirichlet)
 
-    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True,
-                                         operators=None, kind='auto'):
-        """
-        Apply a configured mass-matrix preconditioner for Mk to a vector v.
-        """
+    def apply_mass_matrix_preconditioner(self, v, k, dirichlet=True, operators=None):
+        """Apply the metric-lumped mass atom for ``M_k`` to a vector ``v``."""
         operators = self._require_operators(operators)
         return op.apply_mass_matrix_preconditioner(
-            self, operators, v, k, dirichlet=dirichlet, kind=kind)
+            self, operators, v, k, dirichlet=dirichlet)
 
     def apply_inverse_mass_matrix(self, rhs, k, dirichlet=True, guess=None,
                                   operators=None, tol=None, maxiter=None,
-                                  preconditioner='auto',
                                   return_info=False):
         """
         Apply the inverse mass matrix Mk⁻¹ for k-forms to a right-hand side,
-        solved via CG with a structured mass preconditioner. An optional initial
+        solved via CG with the metric-lumped mass atom. An optional initial
         guess can be provided to warm-start the solver.
         """
         operators = self._require_operators(operators)
@@ -621,7 +610,6 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
     def apply_mass_matrix(self, v, k, dirichlet=True):
@@ -718,7 +706,6 @@ class DeRhamSequence():
 
     def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
                                 operators=None, tol=None, maxiter=None,
-                                preconditioner='auto',
                                 return_info=False):
         """Solve ``L_k x = rhs`` for the k-form ``x``.
 
@@ -735,9 +722,9 @@ class DeRhamSequence():
         saddle system, no mass inverse, no Krylov solve inside another.
 
         ``k = 3``: the symmetric saddle system in ``(x, sigma)`` by MINRES
-        (:func:`~mrx.solvers.solve_saddle_point_minres`) with the block
-        preconditioner ``'auto'`` (metric-lumped atoms, harmonic forms
-        deflated) -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
+        (:func:`~mrx.solvers.solve_saddle_point_minres`) with the
+        block-diagonal preconditioner of the metric-lumped atoms, harmonic
+        forms deflated -- ``S_3 = 0`` leaves nothing to split.  The same MINRES
         is the solver of the SHIFTED Laplacian at every ``k``
         (:meth:`apply_inverse_shifted_laplacian`).
         """
@@ -747,12 +734,10 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
-                                        preconditioner='auto',
                                         return_info=False):
         """
         Solve (L_k + eps * M_k) x = rhs for the k-form x.
@@ -782,12 +767,10 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
     def apply_inverse_mass_plus_eps_laplace_matrix(self, rhs, k, eps, dirichlet=True, guess=None,
                                                    operators=None, tol=None, maxiter=None,
-                                                   preconditioner='auto',
                                                    return_info=False):
         """
         Solve (M_k + eps * L_k) x = rhs for the k-form x.
@@ -797,8 +780,8 @@ class DeRhamSequence():
         - eps D_{k-1} (M_{k-1} + eps S_{k-1})^-1 D_{k-1}^T``, exact because
         ``D_k D_{k-1} = 0``; see
         :func:`mrx.operators.apply_inverse_mass_plus_eps_laplace_matrix`.
-        ``'auto'`` is the shifted-stiffness atom ``(M^ + eps S^)^-1`` of
-        each level, from the metric-lumped Laplacian atom on the bundle.
+        The shifted-stiffness atom ``(M^ + eps S^)^-1`` of each level, from
+        the metric-lumped Laplacian atom on the bundle, preconditions.
         """
         operators = self._require_operators(operators)
         return op.apply_inverse_mass_plus_eps_laplace_matrix(
@@ -806,23 +789,14 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            preconditioner=preconditioner,
             return_info=return_info)
 
-    def apply_laplacian_preconditioner(self, v, k, dirichlet=True,
-                                       operators=None, kind='auto'):
-        """
-        Apply a preconditioner for the k-form Laplacian to a vector ``v``.
-
-        ``kind``: ``'metric_lumping'`` (the metric-lumped atom, k = 0..3, free
-        and Dirichlet -- the production preconditioner, built by
-        :meth:`build_preconditioners`), ``'none'`` (identity), or ``'auto'``
-        (the default): the atom when the bundle has it for this ``(k, BC)``,
-        otherwise a warning and the identity.
-        """
+    def apply_laplacian_preconditioner(self, v, k, dirichlet=True, operators=None):
+        """Apply the metric-lumped Laplacian atom for ``L_k`` (k = 0..3, free
+        and Dirichlet, built by :meth:`build_preconditioners`) to ``v``."""
         operators = self._require_operators(operators)
         return op.apply_laplacian_preconditioner(
-            self, operators, v, k, dirichlet=dirichlet, kind=kind)
+            self, operators, v, k, dirichlet=dirichlet)
 
     def compute_nullspaces(self, betti_numbers=None, *, direct=True, **kwargs):
         """Compute the harmonic forms and store them on ``self.operators``.
