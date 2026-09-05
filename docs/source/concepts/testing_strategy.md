@@ -1,6 +1,15 @@
 # Testing strategy
 
-One lean tier. `pytest` runs the whole suite in a few minutes on a GPU or on
+One lean tier, three configurations. `pytest` runs the suite in the
+configuration `import mrx` gives, refined float32 (the production
+default); `MRX_DTYPE=float64` and `MRX_DTYPE=float32
+MRX_RESIDUAL_DTYPE=float32` (plain float32, the TPU configuration) are the
+other two, each with its own default tolerance (`precision.md`). A change
+to the solvers, the precision module or the atoms is verified in all
+three: `bash slurm/suite.sh` submits the three GPU jobs, and the report
+says the count per configuration. (Until 2026-09-05 the conftest forced
+float64, so a bare `pytest` tested the one configuration nothing runs in
+production.) `pytest` runs the whole suite in a few minutes on a GPU or on
 four CPU cores, in float64 and float32, reading only files tracked in the
 repository. The GitHub workflow runs exactly that, once per precision; a GPU
 node runs the same command through `slurm/run.sh` (see `slurm/README.md`).

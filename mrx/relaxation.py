@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.precision import DTYPE, RESIDUAL_DTYPE
+from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -385,8 +385,12 @@ PICARD_MAX = 20
 #: unconverged, ``state.picard_residual`` above the tolerance.
 PICARD_RESTARTS = 4
 #: The Picard tolerance in units of ``seq.tol``: the inner solves define the
-#: map, so a tighter fixed point means nothing (and in float32 is unreachable).
+#: map, so a tighter fixed point means nothing.
 PICARD_TOL_FACTOR = 10.0
+#: ... plus this many roundoffs of the working dtype: the defect is formed in
+#: the stored precision and floors there (11 eps measured on li383 (8,12,12)
+#: p=2 in float32, 2026-09-05; 4e-15 in float64, inert).
+PICARD_EPS_FACTOR = 20.0
 
 
 class IntegrationScheme(Enum):
@@ -484,8 +488,8 @@ class TimeStepper(eqx.Module):
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
-            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``,
-            set by ``__post_init__``.
+            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
+            plus ``PICARD_EPS_FACTOR`` roundoffs, set by ``__post_init__``.
         cfl_weights: ``logical_cfl_weights(seq)``, built by ``__post_init__``.
     """
     seq: DeRhamSequence
@@ -503,7 +507,7 @@ class TimeStepper(eqx.Module):
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
-        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol
+        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,

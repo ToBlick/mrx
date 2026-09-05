@@ -16,7 +16,7 @@ sqrt(tol)`, the whole descent at `sqrt(0.1 tol)`:
 
 | configuration | tol | term = descent near | float32 storage cap |
 |---|---|---|---|
-| plain float32 (`MRX_RESIDUAL_DTYPE=float32`) | 1e-6 | 3e-4 | 1e-5 |
+| plain float32 (`MRX_RESIDUAL_DTYPE=float32`) | sqrt(eps) = 3.5e-4 (was 1e-6, unattainable on the composite solves; 2026-09-05) | 6e-3 | 1e-5 |
 | mixed (float32 work, float64 residual) | 1e-8 | 3e-5 | ~1e-6 (rounding of the stored `F`: a discrete divergence of ~1e-6 relative to `|F|`) |
 | float64 | 1e-10 | 3e-6 | none |
 

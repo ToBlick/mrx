@@ -16,17 +16,22 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx
+from mrx.precision import cast_arrays
 
-_NAME = os.environ.get("MRX_DTYPE", "float64")
+_NAME = os.environ.get("MRX_DTYPE", "float32")
 _EPS = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}
 
 
 def test_dtype_follows_mrx_dtype():
+    """The working dtype is the environment's (float32 by default), 64-bit
+    mode is on whatever it is (the float64 residual of a refined solve needs
+    it), and the caster pins arrays to the working dtype: a fresh JAX array
+    is float64 under 64-bit mode and says nothing about the working dtype."""
     assert mrx.DTYPE == jnp.dtype(_NAME)
-    assert jax.config.jax_enable_x64 == (_NAME == "float64")
-    # the default dtype of a fresh array is the working dtype
-    assert jnp.zeros(1).dtype == mrx.DTYPE
-    assert jnp.asarray(np.zeros(1)).dtype == mrx.DTYPE
+    assert mrx.EPS == _EPS[_NAME]
+    assert jax.config.jax_enable_x64
+    assert cast_arrays(jnp.zeros(1, dtype=jnp.float64)).dtype == mrx.DTYPE
+    assert cast_arrays(np.zeros(1)).dtype == mrx.DTYPE
 
 
 def test_default_matmul_precision_is_highest():
