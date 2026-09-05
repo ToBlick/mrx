@@ -18,6 +18,10 @@ import argparse
 import os
 import time
 
+# A study of the map projection error: float64 unless asked otherwise (the
+# package default is float32 since 2026-09-04).
+os.environ.setdefault("MRX_DTYPE", "float64")
+
 import jax
 import jax.numpy as jnp
 import numpy as np

@@ -42,6 +42,10 @@ import json
 import os
 import time
 
+# The vacuum study verifies harmonic forms: float64 unless asked otherwise (the
+# package default is float32 since 2026-09-04).
+os.environ.setdefault("MRX_DTYPE", "float64")
+
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,

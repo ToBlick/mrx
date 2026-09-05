@@ -8,8 +8,14 @@ Then merge and plot the whole directory with
 ``python scripts/vacuum_convergence.py --plot outputs/qa_vacuum_highres``.
 """
 import argparse
+import os
 
-import vacuum_convergence as vc
+# vacuum_convergence exports its --precision (default float64) only from its
+# own __main__; this sweep runs the rungs at that default too (the package
+# default is float32 since 2026-09-04).
+os.environ.setdefault("MRX_DTYPE", "float64")
+
+import vacuum_convergence as vc  # noqa: E402
 
 
 def main():
