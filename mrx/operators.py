@@ -1,7 +1,7 @@
 """Matrix-free operator bundle (:class:`SequenceOperators`), assembly of its fields, and the operator applies and solves."""
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Optional
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -11,13 +11,10 @@ from mrx.mass import sumfact_apply
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
+from mrx.nullspace import get_nullspace, init_nullspaces
 from mrx.precision import RESIDUAL_DTYPE, inner_tol
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
 import mrx
-def _nullspace_vectors(operators, k: int, dirichlet: bool):
-    """Return the stacked nullspace array for ``(k, dirichlet)``."""
-    from mrx.nullspace import get_nullspace
-    return get_nullspace(operators, k, dirichlet)
 
 
 class SequenceOperators(eqx.Module):
@@ -50,16 +47,8 @@ class SequenceOperators(eqx.Module):
 
 def new_operators(seq) -> SequenceOperators:
     """The empty bundle for ``seq``: zero nullspaces, no preconditioners."""
-    from mrx.nullspace import init_nullspaces  # noqa: PLC0415
     return init_nullspaces(seq, SequenceOperators(mass_lumping={}, laplacian_lumping={},
                                                   nullspaces={}))
-
-
-def _require_bundle(operators):
-    if operators is None:
-        raise ValueError(
-            "no operator bundle: call seq.build_preconditioners() after set_map")
-    return operators
 
 
 def _assemble_weighted_1d_stiffness(
@@ -73,20 +62,11 @@ def _assemble_weighted_1d_stiffness(
 
 
 # ---------------------------------------------------------------------------
-# Fast-diagonalisation Hodge-Laplacian preconditioner.
-#
-# For a 0-form on the reference cube the discrete Hodge Laplacian
-# ``L_0 = K_0`` is a Kronecker SUM
-#
-#     L_0 ≈  K_r ⊗ M_t ⊗ M_z + M_r ⊗ K_t ⊗ M_z + M_r ⊗ M_t ⊗ K_z ,
-#
-# with 1-D mass ``M_a = ∫ B^p_a (B^p_a)^T`` and 1-D stiffness
-# ``K_a = ∫ (∂B^p_a)(∂B^p_a)^T = G_a^T M^d_a G_a`` (incidence relation).
-# Reducing the per-axis generalised eigenproblem ``K_a v = λ M_a v`` to a
-# standard one via Cholesky gives an ``M``-orthonormal eigenbasis and the
-# inverse can be applied as three small dense matmuls per axis combined with
-# a divide by ``Σ_i α_i λ_i`` on the 3-tensor.  ``α_i = ⟨J·g^{ii}⟩_quad``
-# captures the leading metric anisotropy on the mapped domain.
+# Fast diagonalisation of a Kronecker sum ``K_r ⊗ M_t ⊗ M_z + M_r ⊗ K_t ⊗ M_z
+# + M_r ⊗ M_t ⊗ K_z``: the per-axis generalised eigenproblems ``K_a v = λ M_a
+# v`` give an ``M``-orthonormal eigenbasis, and the inverse is three small
+# dense products per axis and a pointwise divide by ``Σ_a α_a λ_a``
+# (:mod:`mrx.metric_lumping_laplacian` builds the factors).
 # ---------------------------------------------------------------------------
 
 
@@ -94,19 +74,14 @@ def _dense_incidence_1d(n0: int, typ: str) -> jnp.ndarray:
     """Return the dense 1-D incidence matrix ``G_a`` for axis basis type.
 
     ``clamped``: ``(G c)_j = c_{j+1} - c_j`` on ``n0 - 1`` rows;
-    ``periodic``: the same with the index wrapped, ``n0`` rows;
-    ``constant``: the zero ``(n0, n0)`` matrix.
+    ``periodic``: the same with the index wrapped, ``n0`` rows.
     """
     if typ == 'clamped':
         n_out = n0 - 1
         j = jnp.arange(n_out)
         return jnp.zeros((n_out, n0), dtype=mrx.DTYPE).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
-    if typ == 'periodic':
-        j = jnp.arange(n0)
-        return jnp.zeros((n0, n0), dtype=mrx.DTYPE).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
-    if typ == 'constant':
-        return jnp.zeros((n0, n0), dtype=mrx.DTYPE)
-    raise ValueError(f"Unknown basis type {typ!r}")
+    j = jnp.arange(n0)
+    return jnp.zeros((n0, n0), dtype=mrx.DTYPE).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
 
 def _fd_forward(V_r, V_t, V_z, x):
     """``y = V^T x`` on all three axes of a 3-tensor."""
@@ -128,24 +103,18 @@ def _fd_denominator(lam_r, lam_t, lam_z, alpha):
             + alpha[2] * lam_z[None, None, :])
 
 
-def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x, eps: float = 0.0):
-    """Apply ``(L + eps M)^{-1}`` via fast diagonalisation on a 3-tensor ``x``.
-
-    ``eps`` is a Python float (the ``eps == 0`` branch is static); a traced
-    shift goes through :func:`_fd_apply_3d_shifted`.
-    """
+def _fd_apply_3d(V_r, V_t, V_z, lam_r, lam_t, lam_z, alpha, x):
+    """Apply ``L^{-1}`` via fast diagonalisation on a 3-tensor ``x``; a
+    shifted operator goes through :func:`_fd_apply_3d_shifted`."""
     y = _fd_forward(V_r, V_t, V_z, x)
-    denom = _fd_denominator(lam_r, lam_t, lam_z, alpha) + eps
-    if eps == 0:
-        # The pure-constant 0-form is in the null space; threshold relative
-        # to the largest entry so we don't amplify it into a huge spurious
-        # negative direction.
-        denom_max = jnp.max(jnp.abs(denom))
-        null_mask = jnp.abs(denom) < mrx.sqrt_eps(6.7e-3) * denom_max
-        safe = jnp.where(null_mask, 1.0, denom)
-        y = jnp.where(null_mask, 0.0, y / safe)
-    else:
-        y = y / denom
+    denom = _fd_denominator(lam_r, lam_t, lam_z, alpha)
+    # The pure-constant 0-form is in the null space; threshold relative
+    # to the largest entry so we don't amplify it into a huge spurious
+    # negative direction.
+    denom_max = jnp.max(jnp.abs(denom))
+    null_mask = jnp.abs(denom) < mrx.sqrt_eps(6.7e-3) * denom_max
+    safe = jnp.where(null_mask, 1.0, denom)
+    y = jnp.where(null_mask, 0.0, y / safe)
     return _fd_backward(V_r, V_t, V_z, y)
 
 
@@ -167,50 +136,29 @@ def mass_core_apply(seq, k: int):
     sum-factorised kernel never materialises ``M_k``). Built by
     ``DeRhamSequence.set_geometry``.
     """
-    if seq.geometry is None:
-        raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.mass_plan[k], seq.geometry.mass_weights[k]
     return lambda x: sumfact_apply(plan, weights, x)
 
 
 # ---------------------------------------------------------------------------
-# Topological incidence matrices (geometry-independent strong derivatives)
-# ---------------------------------------------------------------------------
-#
-# On a FEEC B-spline de Rham complex the exterior derivative at the DoF level
-# is a topological incidence matrix with entries in {-1, 0, +1}. The 1-D
-# building block maps 0-form DoFs (nodes) to 1-form DoFs (edges) via
-#
-#     (G c)_j = c_{j+1} - c_j           (periodic: indices mod n)
-#
-# so the 3-D operators are Kronecker sums/products of these with identities.
-# Because the incidence is geometry-independent, it does not need to be
-# re-assembled when the spline map changes.
-
-# ---------------------------------------------------------------------------
 # Matrix-free topological incidence (G0/G1/G2 and transposes)
 #
-# The incidence is a {-1, 0, +1} difference stencil, so it never needs to be
-# stored. In non-flattened (tensor) form the apply is just per-axis forward
-# differences (grad/curl/div) or their adjoints, which makes the zero structure
-# explicit. ``_MatrixFreeIncidence`` carries only static shape metadata and
-# applies via reshape + difference.
+# On a FEEC B-spline de Rham complex the exterior derivative at the DoF level
+# is a {-1, 0, +1} incidence stencil, ``(G c)_j = c_{j+1} - c_j`` per axis
+# (periodic: indices mod n), geometry-independent and never stored: in tensor
+# form the apply is per-axis forward differences (grad/curl/div) or their
+# adjoints. ``_MatrixFreeIncidence`` carries only static shape metadata.
 # ---------------------------------------------------------------------------
 
 def _diff_fwd(V, axis: int, typ: str):
     """Forward 1-D incidence (discrete derivative) along ``axis``.
 
     ``clamped``: ``(G c)_j = c_{j+1} - c_j`` (size shrinks by one);
-    ``periodic``: ``c_{(j+1) mod n} - c_j`` (size preserved);
-    ``constant``: derivative of a constant is zero (size preserved).
+    ``periodic``: ``c_{(j+1) mod n} - c_j`` (size preserved).
     """
     if typ == 'clamped':
         return jnp.diff(V, axis=axis)
-    if typ == 'periodic':
-        return jnp.roll(V, -1, axis=axis) - V
-    if typ == 'constant':
-        return jnp.zeros_like(V)
-    raise ValueError(f"Unknown basis type {typ!r}")
+    return jnp.roll(V, -1, axis=axis) - V
 
 
 def _diff_adj(Y, axis: int, typ: str):
@@ -221,11 +169,7 @@ def _diff_adj(Y, axis: int, typ: str):
         pad_start = [(0, 0)] * Y.ndim
         pad_start[axis] = (1, 0)
         return jnp.pad(-Y, pad_end) + jnp.pad(Y, pad_start)
-    if typ == 'periodic':
-        return jnp.roll(Y, 1, axis=axis) - Y
-    if typ == 'constant':
-        return jnp.zeros_like(Y)
-    raise ValueError(f"Unknown basis type {typ!r}")
+    return jnp.roll(Y, 1, axis=axis) - Y
 
 
 def _prod3(shape) -> int:
@@ -244,11 +188,8 @@ def _split3(x, shapes):
 
 def _apply_incidence_mf(op, x):
     """Apply a :class:`_MatrixFreeIncidence` operator to flat vector ``x``."""
-    types = op.types
-    tr, tt, tz = types
+    tr, tt, tz = op.types
     s0, s1, s2, s3 = op.s0, op.s1, op.s2, op.s3
-    s1_r, s1_t, s1_z = s1
-    s2_r, s2_t, s2_z = s2
 
     if op.k == 0 and not op.transpose:
         # G0 grad: 0-form -> (d_r, d_t, d_z).
@@ -631,8 +572,7 @@ def apply_incidence_matrix(seq, v, k: int,
 #: The projection masses ``P_{k_in k_out}`` that ``set_geometry`` builds: a
 #: ``k_in``-form in, a dual ``k_out``-form out, so the rows live in the
 #: ``k_out`` space and the columns in the ``k_in`` space (the raw core is
-#: ``seq.projection_plan[(k_out, k_in)]``). Until 2026-09-04 the scalar
-#: pairs were tabulated the other way round, and ``(0, 3)`` took a 3-form.
+#: ``seq.projection_plan[(k_out, k_in)]``).
 _PROJECTION_PAIRS = ((2, 1), (1, 2), (0, 3), (3, 0))
 
 
@@ -641,45 +581,21 @@ def projection_core_apply(seq, k_in: int, k_out: int):
     if (k_in, k_out) not in _PROJECTION_PAIRS:
         raise ValueError(
             "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
-    if seq.geometry is None:
-        raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.projection_plan[(k_out, k_in)], seq.geometry.reference_weights
     return lambda x: sumfact_apply(plan, weights, x)
 
 
-def extraction(seq, k: int, dirichlet: bool):
-    """The extraction ``E`` of the free (``dirichlet=False``) or Dirichlet ``k``-form space of ``seq``."""
-    return seq.E(k, dirichlet)
-
-
-def _mass_extraction(seq, k: int, dirichlet: bool):
-    e = extraction(seq, k, dirichlet)
-    return e, e.T
-
-
 def _derivative_extraction(seq, k: int, dirichlet_in: bool, dirichlet_out: bool):
-    if k not in (0, 1, 2):
-        raise ValueError("k must be 0, 1 or 2")
-    e_in = extraction(seq, k, dirichlet_in)
-    e_out = extraction(seq, k + 1, dirichlet_out)
+    e_in = seq.E(k, dirichlet_in)
+    e_out = seq.E(k + 1, dirichlet_out)
     return e_in, e_in.T, e_out, e_out.T
-
-
-def _projection_extraction(seq, k_in: int, k_out: int,
-                           dirichlet_in: bool, dirichlet_out: bool):
-    if (k_in, k_out) not in _PROJECTION_PAIRS:
-        raise ValueError(
-            "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
-    e_in = extraction(seq, k_in, dirichlet_in)
-    e_out = extraction(seq, k_out, dirichlet_out)
-    return e_in, e_in.T, e_out
 
 
 def apply_mass_matrix(seq, v, k: int, dirichlet: bool = True):
     """Apply a mass matrix from an explicit operator bundle."""
     core = mass_core_apply(seq, k)
-    e, e_T = _mass_extraction(seq, k, dirichlet)
-    return e @ core(e_T @ v)
+    e = seq.E(k, dirichlet)
+    return e @ core(e.T @ v)
 
 
 def apply_projection_matrix(seq, v,
@@ -688,8 +604,7 @@ def apply_projection_matrix(seq, v,
                             dirichlet_out: bool = True):
     """Apply the projection mass ``P_{k_in k_out}`` (matrix-free, memoised on ``seq``)."""
     core = projection_core_apply(seq, k_in, k_out)
-    e_in, e_in_T, e_out = _projection_extraction(seq, k_in, k_out, dirichlet_in, dirichlet_out)
-    return e_out @ core(e_in_T @ v)
+    return seq.E(k_out, dirichlet_out) @ core(seq.E(k_in, dirichlet_in).T @ v)
 
 
 def apply_derivative_matrix(seq, v, k: int,
@@ -702,10 +617,7 @@ def apply_derivative_matrix(seq, v, k: int,
     the full ``D_k`` is never materialised.
     """
     g_sp, g_sp_T = _incidence_components(seq, k)
-    if g_sp is None or g_sp_T is None:
-        raise ValueError(f"Incidence operator G{k} is required to apply D{k}")
     m_apply = mass_core_apply(seq, k + 1)
-
     e_in, e_in_T, e_out, e_out_T = _derivative_extraction(seq, k, dirichlet_in, dirichlet_out)
 
     if transpose:
@@ -874,12 +786,9 @@ def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
     if k == 3:
         return jnp.zeros_like(v)
     g_sp, g_sp_T = _incidence_components(seq, k)
-    if g_sp is None or g_sp_T is None:
-        raise ValueError(f"Incidence operator G{k} is required to apply K{k}")
     m_apply = mass_core_apply(seq, k + 1)
-
-    e, e_T = _mass_extraction(seq, k, dirichlet)
-    return e @ (g_sp_T @ m_apply(g_sp @ (e_T @ v)))
+    e = seq.E(k, dirichlet)
+    return e @ (g_sp_T @ m_apply(g_sp @ (e.T @ v)))
 
 
 def _mass_atom(operators, k: int, dirichlet: bool):
@@ -888,9 +797,8 @@ def _mass_atom(operators, k: int, dirichlet: bool):
     Never built here: a missing atom is a missing
     :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`.
     """
-    atoms = _require_bundle(operators).mass_lumping or {}
     try:
-        return atoms[(int(k), bool(dirichlet))]
+        return operators.mass_lumping[(int(k), bool(dirichlet))]
     except KeyError:
         raise ValueError(
             f"metric_lumping mass preconditioner for k={k}, dirichlet={dirichlet} is "
@@ -899,10 +807,8 @@ def _mass_atom(operators, k: int, dirichlet: bool):
 
 
 def assemble_mass_metric_lumping_preconditioner(
-        seq, operators: SequenceOperators,
-        *, ks: Sequence[int] = (0, 1, 2, 3),
-        dirichlet_variants: Optional[Sequence[bool]] = None,
-        **kwargs) -> SequenceOperators:
+        seq, operators: SequenceOperators, ks=(0, 1, 2, 3),
+        dirichlets=(False, True)) -> SequenceOperators:
     """Build the metric-lumped mass preconditioner for the given degrees.
 
     A :class:`~mrx.metric_lumping_laplacian.MetricLumpingMass` per
@@ -911,87 +817,43 @@ def assemble_mass_metric_lumping_preconditioner(
     installed geometry, and nowhere else.
     """
     from mrx.metric_lumping_laplacian import MetricLumpingMass  # noqa: PLC0415
-    operators = _require_bundle(operators)
-    if dirichlet_variants is None:
-        dirichlet_variants = (True, False)
-    atoms = dict(operators.mass_lumping or {})
+    atoms = dict(operators.mass_lumping)
     for k in ks:
-        if k not in (0, 1, 2, 3):
-            raise ValueError(
-                "metric_lumping mass preconditioner supports k=0..3")
-        for dirichlet in dirichlet_variants:
+        for dirichlet in dirichlets:
             atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(
-                seq, operators, int(k), bool(dirichlet), **kwargs)
+                seq, operators, int(k), bool(dirichlet))
     return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def assemble_metric_lumping_laplacian_preconditioner(
         seq, operators: SequenceOperators, ks=(0, 1, 2, 3),
-        dirichlets=(False, True), **kwargs):
-    """Build the tensor block-Jacobi Laplacian preconditioner for ``L_k``.
+        dirichlets=(False, True)):
+    """Build the metric-lumped Laplacian atom for ``L_k``, once per (k, BC),
+    onto ``operators.laplacian_lumping``.
 
-    This is the production Laplacian preconditioner for k = 0..3; see
-    ``docs/research/production_simplification_plan.md``.
-
-    Build ONCE per (k, BC) -- the atom is a factorisation, not a per-apply
-    computation. It is stored on ``operators.laplacian_lumping``.
-
-    ``kwargs`` go to :class:`MetricLumpingLaplacian`. The defaults are already the
-    production configuration -- pass nothing.
-
-    NEEDS ``n >= p + 2``. ``component_factors`` forms ``A^-1 M`` per axis
-    (``A`` a 1-D mass weighted by the stiffness profile) and takes its mean
-    eigenvalue as a scale; below that the solve goes non-finite and numpy
-    raises ``LinAlgError: Array must not contain infs or NaNs`` from inside
-    ``eigvals``. ``n - p`` is the number of radial elements, so ``n = 4`` at
-    ``p = 3`` is a ONE-element radial mesh. Measured on a toroid: at
-    ``p = 3``, ``n = 4`` fails for
-    k = 0, 1, 2 in both BCs and ``n = 5, 6, 8, 12`` all build; k = 3 builds even
-    at ``n = 4``. The geometry is healthy throughout, so this is the 1-D
-    factorisation, not the map.
-
-    Returns the bundle with the atoms installed.
+    NEEDS ``n >= p + 2``: ``n - p`` is the number of radial elements, and on
+    a one-element radial mesh the 1-D factorisation of ``component_factors``
+    goes non-finite (numpy raises ``LinAlgError`` from inside ``eigvals``).
     """
     from mrx.metric_lumping_laplacian import MetricLumpingLaplacian  # noqa: PLC0415
-    operators = _require_bundle(operators)
-    atoms = dict(operators.laplacian_lumping or {})
+    atoms = dict(operators.laplacian_lumping)
     for k in ks:
         for dbc in dirichlets:
             atoms[(int(k), bool(dbc))] = MetricLumpingLaplacian(
-                seq, operators, int(k), bool(dbc), **kwargs)
+                seq, operators, int(k), bool(dbc))
     return eqx.tree_at(lambda ops: ops.laplacian_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def _laplacian_atom(operators, k: int, dirichlet: bool):
     """The metric-lumped Laplacian atom for ``(k, dirichlet)`` from the bundle."""
-    atoms = _require_bundle(operators).laplacian_lumping or {}
     try:
-        return atoms[(int(k), bool(dirichlet))]
+        return operators.laplacian_lumping[(int(k), bool(dirichlet))]
     except KeyError:
         raise ValueError(
             f"metric_lumping Laplacian atom for k={k}, dirichlet={dirichlet} is not "
             "built; seq.build_preconditioners() builds it for the installed geometry") from None
-
-
-def _shifted_atom_apply(operators, k: int, dirichlet: bool, eps):
-    """The preconditioner of ``M_k + eps S_k``: the shifted-stiffness atom.
-
-    The strong-half (primal-axis) Kronecker terms of the metric-lumped
-    Laplacian atom, divided by ``1 + eps lambda`` in their eigenbasis, i.e.
-    ``(M^ + eps S^)^-1`` for the atom's own separable mass, plus the dense
-    ``(M + eps S)^-1`` on the core rows. Measured on li383 p=3 at the
-    smoothing eps against the mass atom (CG iterations on ``M_k + eps
-    S_k``): k=2 69 vs 153 at (8,16,8), 117 vs 371 at (12,24,12); k=1 74 vs
-    181 and 128 vs 422. Two "consistent" factorisations with the Jacobian in
-    the 1-D masses were measured and lost to this plain shift (~200 at
-    (12,24,12)). Its implied mass is a worse M than the mass atom's, so
-    below ``eps n_r^2 ~ 0.006`` (the resistive step's eta dt) the mass atom
-    wins by up to 2x on ~100 iterations; the smoothing eps is 10x above the
-    crossover. docs/research/shifted_split_2026-09-02.md.
-    """
-    return _laplacian_atom(operators, k, dirichlet).shifted_stiffness_apply(eps)
 
 
 def apply_laplacian_preconditioner(seq, operators: SequenceOperators, v, k: int,
@@ -1048,7 +910,7 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter):
         L_hat, b,
         mass_matvec=M,
         precond_matvec=_laplacian_atom(operators, k, dirichlet).apply,
-        vs=_nullspace_vectors(operators, k, dirichlet),
+        vs=get_nullspace(operators, k, dirichlet),
         tol=tol,
         maxiter=maxiter,
     )
@@ -1097,7 +959,6 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     """
     if k not in (1, 2):
         raise ValueError(f"apply_inverse_laplacian_hodge: k must be 1 or 2, got {k}")
-    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess = _plain(seq, rhs, guess)
@@ -1134,7 +995,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
 
     x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
                          lambda r: split(r.astype(seq.dtype)), rhs, guess,
-                         _nullspace_vectors(operators, k, d))
+                         get_nullspace(operators, k, d))
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 
@@ -1151,7 +1012,7 @@ def _k0_solve(seq, operators, b, dirichlet, *, tol, maxiter, guess=None, on=None
         mass_matvec=lambda x: apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
         precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
         x0=guess,
-        vs=_nullspace_vectors(operators, 0, dirichlet),
+        vs=get_nullspace(operators, 0, dirichlet),
         tol=tol,
         maxiter=maxiter,
         A_res=None if on is None else (lambda x: apply_stiffness(on, x, 0, dirichlet=dirichlet)),
@@ -1177,7 +1038,6 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     in the working dtype unless ``dtype`` names the residual precision (the
     solution the outer loop accumulated, before its rounding to float32).
     """
-    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess = _plain(seq, rhs, guess)
@@ -1225,7 +1085,6 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
     precision (the Leray projection forms its force from them before it
     rounds).
     """
-    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess, sigma_guess = _plain(seq, rhs, guess, sigma_guess)
@@ -1237,7 +1096,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
         return (apply_stiffness(s, x, k, dirichlet=dirichlet)
                 + eps * apply_mass_matrix(s, x, k, dirichlet=dirichlet))
 
-    vs_upper = (_nullspace_vectors(operators, k, dirichlet) if eps == 0
+    vs_upper = (get_nullspace(operators, k, dirichlet) if eps == 0
                 else jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype))
 
     def saddle_res(u, s):
@@ -1280,15 +1139,14 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
                                     tol: Optional[float] = None,
                                     maxiter: Optional[int] = None,
                                     return_info: bool = False):
-    """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``.
+    """Solve with the inverse of the shifted Hodge Laplacian ``L_k + eps M_k``,
+    ``eps > 0`` (the unshifted solve is :func:`apply_inverse_laplacian`).
 
-    ``k = 0``: deflated PCG with the k=0 Laplacian atom (measured in its
-    favour against the shifted diagonal on the shifted operator); at ``eps
-    = 0`` the harmonic forms are deflated and the mass term is not applied.
-    ``k >= 1``: the saddle-point MINRES of
-    :func:`apply_inverse_laplacian_saddle`, ``u`` only.
+    ``k = 0``: PCG with the k=0 Laplacian atom (measured in its favour
+    against the shifted diagonal on the shifted operator). ``k >= 1``: the
+    saddle-point MINRES of :func:`apply_inverse_laplacian_saddle`, ``u``
+    only. Nothing is deflated: the shifted operator is nonsingular.
     """
-    operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     rhs, guess = _plain(seq, rhs, guess)
@@ -1297,23 +1155,14 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
         res, inner = _outer(seq, tol)
 
         def A_on(s, x):
-            if eps == 0:
-                return apply_stiffness(s, x, 0, dirichlet=dirichlet)
             return (apply_stiffness(s, x, 0, dirichlet=dirichlet)
                     + eps * apply_mass_matrix(s, x, 0, dirichlet=dirichlet))
 
-        if eps == 0:
-            vs = _nullspace_vectors(operators, 0, dirichlet)
-
-            def mass_matvec(x):
-                return apply_mass_matrix(seq, x, 0, dirichlet=dirichlet)
-        else:
-            vs = jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype)
-            mass_matvec = None
         u, info = solve_singular_cg(
-            lambda x: A_on(seq, x), rhs, mass_matvec=mass_matvec,
+            lambda x: A_on(seq, x), rhs,
             precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
-            x0=guess, vs=vs, tol=tol, maxiter=maxiter,
+            x0=guess, vs=jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype),
+            tol=tol, maxiter=maxiter,
             A_res=lambda x: A_on(res, x),
             norm=_dual_norm(operators, 0, dirichlet), inner_tol=inner, inner_dtype=seq.dtype)
         u = _out(seq, u)
@@ -1346,16 +1195,10 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     stiffness -- SPD, matrix-free, PCG -- so there is no saddle system, no
     inner mass solve and nothing to deflate. ``k = 0`` is the first solve
     alone; ``k = 3`` has ``S_3 = 0``. Each level is preconditioned by its
-    shifted-stiffness atom (:func:`_shifted_atom_apply`), ``(M^ + eps
-    S^)^-1`` from the Laplacian atom on the bundle.
-
-    Measured on li383 p=3 at the velocity-smoothing ``eps = 0.064 / n_r^2``,
-    both solves together, against the saddle MINRES with the mass atom this
-    replaced (same tolerance): 145 / 249 iterations at (8,16,8) /
-    (12,24,12) against 2134 / 8478; with the mass atom on the split instead
-    330 / 772 / 1326 at (8,16,8) / (12,24,12) / (16,32,16) against 2134 /
-    8478 / 20362. The solutions agree to ``3 tol`` in the mass norm
-    (``docs/research/shifted_split_2026-09-02.md``).
+    shifted-stiffness atom, ``(M^ + eps S^)^-1`` from the Laplacian atom on
+    the bundle (:meth:`~mrx.metric_lumping_laplacian.MetricLumpingLaplacian.shifted_stiffness_apply`;
+    measured against the saddle MINRES with the mass atom and against the
+    mass atom on the split in ``docs/research/shifted_split_2026-09-02.md``).
 
     ``eps`` may be a traced scalar: the relaxation's resistive step passes
     ``dt * eta`` from inside a jitted step. Nothing here branches on its
@@ -1381,7 +1224,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
             lambda x: A_on(seq, j, x),
             b,
             jnp.zeros((0, b.shape[0]), dtype=b.dtype),
-            precond_matvec=_shifted_atom_apply(operators, j, dirichlet, eps),
+            precond_matvec=_laplacian_atom(operators, j, dirichlet).shifted_stiffness_apply(eps),
             x0=x0,
             tol=tol,
             maxiter=maxiter,

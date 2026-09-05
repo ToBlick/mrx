@@ -59,8 +59,7 @@ but this check. The Nyquist-mesh variables
 are not read -- the Clebsch route rebuilds B from the fluxes and lambda.
 
 Files are NetCDF3 classic, read through ``scipy.io.netcdf_file``; no
-netCDF4 dependency. ``test/test_vmec.py`` exercises the fit on a synthetic
-state and on the simsopt reference files in ``data/``.
+netCDF4 dependency. ``test/test_readers.py`` reads the tracked li383 wout.
 """
 from __future__ import annotations
 
@@ -71,7 +70,7 @@ from mrx.gvec import knots_at_data
 
 TWO_PI = 2.0 * np.pi
 
-_VARIABLES = ("ns", "nfp", "mnmax", "xm", "xn", "lasym__logical__", "signgs",
+_VARIABLES = ("ns", "nfp", "mnmax", "xm", "xn", "lasym__logical__",
               "version_", "rmnc", "zmns", "lmns", "phi", "phipf", "chipf",
               "iotaf", "presf")
 
@@ -193,7 +192,6 @@ def _state_from_raw(raw, path="wout"):
     zmns[0, m > 0] = 0.0
     return dict(
         nfp=nfp, deg=deg, ns=ns, mnmax=int(raw["mnmax"]),
-        signgs=int(raw["signgs"]), version=version,
         X1=_fit_block(rho_full, rmnc, 2, m, n, deg),
         X2=_fit_block(rho_full, zmns, 1, m, n, deg),
         LA=_fit_block(*_lambda_nodes(rho_half, raw["lmns"][1:], m), 1, m, n, deg),

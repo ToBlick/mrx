@@ -1,9 +1,9 @@
 """Gauss quadrature on the logical cube, and the tensor-product evaluate / integrate pair.
 
-Composite Gauss rules per axis (one Gauss point for a constant basis),
-their tensor product in :class:`QuadratureRule`, and the sum-factorised
-:func:`evaluate_at_xq` / :func:`integrate_against` adjoint pair that every
-load, cross product and quadrature-point evaluation in the package goes through.
+Composite Gauss rules per axis, their tensor product in
+:class:`QuadratureRule`, and the sum-factorised :func:`evaluate_at_xq` /
+:func:`integrate_against` adjoint pair that every load, cross product and
+quadrature-point evaluation in the package goes through.
 """
 
 import numpy as np
@@ -14,9 +14,8 @@ import jax.numpy as jnp
 class QuadratureRule:
     """Tensor-product Gauss quadrature on the logical cube of a 0-form basis.
 
-    One 1-D rule per axis, chosen by :func:`select_quadrature` from the axis
-    basis: composite ``p``-point Gauss on the knot spans of a clamped or
-    periodic spline basis, a single Gauss point for a constant basis. The
+    One 1-D rule per axis: composite ``p``-point Gauss on the knot spans of
+    the axis basis (:func:`composite_quad`). The
     3-D rule is their tensor product, flattened **r-major** -- the flat index
     runs fastest over ``zeta``, then ``theta``, then ``r``, so a flat
     quadrature field is the ``(nx, ny, nz)`` array ``field.reshape(shape)``
@@ -29,7 +28,6 @@ class QuadratureRule:
         x: ``(n, 3)`` tensor-product points in the flat order above.
         w: ``(n,)`` tensor-product weights, the product of the axis weights.
         nx, ny, nz: points per axis; ``shape = (nx, ny, nz)``; ``n`` their product.
-        ns: ``arange(n)``, the flat point index.
     """
 
     def __init__(self, form, p):
@@ -41,7 +39,7 @@ class QuadratureRule:
             p: Number of Gauss points per knot span.
         """
         (x_x, w_x), (x_y, w_y), (x_z, w_z) = [
-            select_quadrature(b, p) for b in form.bases[0].bases]
+            composite_quad(b.T[b.p:-b.p], p) for b in form.bases[0].bases]
         n = w_x.size * w_y.size * w_z.size
         x_q = jnp.stack(jnp.meshgrid(x_x, x_y, x_z, indexing='ij'), axis=-1)
         w_q = w_x[:, None, None] * w_y[None, :, None] * w_z[None, None, :]
@@ -53,7 +51,6 @@ class QuadratureRule:
         self.nx, self.ny, self.nz = x_x.size, x_y.size, x_z.size
         self.shape = (self.nx, self.ny, self.nz)
         self.n = n
-        self.ns = jnp.arange(n)
 
 
 def composite_quad(T, p):
@@ -75,35 +72,6 @@ def composite_quad(T, p):
 
     x_q, w_q = jax.vmap(_rescale)(T[:-1], T[1:])
     return jnp.ravel(x_q), jnp.ravel(w_q)
-
-
-def spectral_quad(p):
-    """Single-interval p-point Gauss quadrature on ``[0, 1]``.
-
-    Args:
-        p: Number of Gauss points; exact for polynomials of degree ``<= 2p-1``.
-
-    Returns:
-        Tuple ``(x_q, w_q)`` of quadrature points and weights on ``[0, 1]``.
-    """
-    xi, wi = np.polynomial.legendre.leggauss(p)
-    return jnp.asarray((xi + 1) / 2), jnp.asarray(wi / 2)
-
-
-def select_quadrature(basis, n):
-    """Select the appropriate quadrature rule for a given basis.
-
-    Args:
-        basis: A ``SplineBasis`` instance.
-        n: Number of Gauss points per interval.
-
-    Returns:
-        Tuple ``(x_q, w_q)`` of quadrature points and weights.
-    """
-    if basis.type in ('clamped', 'periodic'):
-        return composite_quad(basis.T[basis.p:-basis.p], n)
-    elif basis.type == 'constant':
-        return spectral_quad(1)
 
 
 # ---------------------------------------------------------------------------

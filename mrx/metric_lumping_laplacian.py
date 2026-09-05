@@ -1,9 +1,9 @@
 """The metric-lumping preconditioners: ``M_k^-1`` and ``L_k^-1`` as a separable bulk plus a dense polar core.
 
-``kind='metric_lumping'`` (``docs/source/concepts/preconditioning.md``): one
-atom per ``(k, dirichlet)``, :class:`MetricLumpingMass` for the mass and
-:class:`MetricLumpingLaplacian` for the Hodge Laplacian, built by
-``DeRhamSequence.build_preconditioners`` onto the operator bundle.
+One atom per ``(k, dirichlet)`` (``docs/source/concepts/preconditioning.md``):
+:class:`MetricLumpingMass` for the mass and :class:`MetricLumpingLaplacian`
+for the Hodge Laplacian, built by ``DeRhamSequence.build_preconditioners``
+onto the operator bundle.
 
 The shape is the same at every ``k``, block Jacobi over two blocks that are
 NOT coupled (no Schur complement is formed):
@@ -47,13 +47,10 @@ axis is a derivative axis, as a rank-one update to the radial stiffness:
 under a free condition the weak block's integration by parts leaves
 ``int_{r=1} w u_r^2``, which for a tensor basis is
 ``alpha (e e^T) (x) M_t (x) M_z`` -- the shape of the first Kronecker term,
-so it merges into ``K_r`` (``bc_entry="ibpd"``; ``False`` switches it off). ``alpha`` is the face average of the weight
-(:func:`_face_alpha`) times ``bc_scale``, default ``PRODUCTION_BC_SCALE = 3.0``
-(``DeRhamSequence.build_preconditioners(bc_scale=...)`` changes it), a measured fit
-(``docs/research/natural_bc_coefficient_handoff.md``): folding the term into
-the sum forces the face weight to a scalar, which is worth 1.5x -> 3.3x on a
-toroid and 1.26x -> 1.56x on W7-X, where the face weight varies too much for
-one number. It vanishes under Dirichlet and at k=0.
+so it merges into ``K_r``. ``alpha`` is the face average of the weight
+(:func:`_face_alpha`) times :data:`PRODUCTION_BC_SCALE`, a measured fit
+(``docs/research/natural_bc_coefficient_handoff.md``). It vanishes under
+Dirichlet and at k=0.
 
 Every atom is a pytree payload with one jitted apply per tree structure, built
 at construction (never on the first apply), so a rebuild for a new geometry
@@ -94,12 +91,9 @@ CORE_TOL = 4096.0 * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 # --------------------------------------------------------------------------- #
 
 def _polar_cut_weight(seq):
-    """Radial quad weight with the polar-surgery element removed.
-
-    The core DOFs are handled by their own dense block, so they must not
-    contribute to the bulk averages: the ``wx_cut`` convention of the k=0
-    "fdbund" atom (2026-08-13), which this module replaced.
-    """
+    """Radial quad weight with the polar-surgery element removed: the core
+    DOFs are handled by their own dense block, so they must not contribute
+    to the bulk averages."""
     xi1 = jnp.asarray(seq.basis_0.Λ[0].T)[seq.ps[0] + 1]
     return seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
 
@@ -128,9 +122,8 @@ def weight_fields(seq):
 
     ``jac`` = ``J``, ``ginv_aa`` = ``(g^{rr}, g^{tt}, g^{zz})``, ``met_aa`` =
     ``(g_{rr}, g_{tt}, g_{zz})``.  Products such as ``g^{aa} J`` are formed by
-    the consumer on the fly and reduced immediately; this used to return them
-    too (``invjac``, ``ginvJ``, ``ginv2J``, ``gJinv``), ten more full-size
-    arrays nobody read -- 6 GB at ``(68, 136, 68)`` p=4, where it OOMed.
+    the consumer on the fly and reduced immediately (ten more full-size
+    arrays here OOMed at ``(68, 136, 68)`` p=4).
     """
     shape = seq.quad.shape
     jac = jnp.asarray(seq.geometry.jacobian_j).reshape(shape)
@@ -223,17 +216,9 @@ def _fd_stiffness_degree0(seq, axis, profile):
     # derivative basis is normalised to unit INTEGRAL, not unit height:
     # ``D_i = 1_{cell i} / h_i`` at p = 1 (mrx.spline_bases.DerivativeSpline
     # scales by ``(p+1)/(T[i+p+2]-T[i+1])``). So ``value_i = u_i / h_i`` and the
-    # jump form has to be conjugated by ``diag(1/h)``.
-    #
-    # Without it the factor is under-scaled by h^2 -- and h^2, not a constant,
-    # so no fixed multiplier repairs it and the damage GROWS with resolution.
-    # Against the derivative mass ``M^d_ii = 1/h_i`` the generalized eigenvalues
-    # come out O(1) instead of O(1/h^2), i.e. the radial direction of the atom
-    # is left with essentially no stiffness at all.
-    # The jump form is assembled on VALUES, not coefficients. Assembling it on
-    # coefficients under-scales it by h^2 -- no fixed multiplier repairs that,
-    # because the damage grows with resolution. The two diagnostic knobs that
-    # once selected between the forms are gone; the fix is landed.
+    # jump form has to be conjugated by ``diag(1/h)``. Without it the factor
+    # is under-scaled by h^2, which no fixed multiplier repairs: the radial
+    # direction of the atom is left with essentially no stiffness.
     k = k / np.outer(h, h)
     return jnp.asarray(0.5 * (k + k.T), dtype=DTYPE)
 
@@ -290,98 +275,38 @@ def _face_alpha(seq, k, c):
     def fm(field):
         return jnp.einsum('rs,r,s->', field[-1], wy, wz) / norm
 
-    m_k = {0: jac, 1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
+    m_k = {1: ginv[c] * jac, 2: met[c] / jac, 3: 1.0 / jac}[k]
     return fm(m_k * jnp.sqrt(ginv[0])) / fm(m_k / jac), 1.0 / _h_last(seq)
 
 
-def _edge_vector(seq, axis, window):
-    """``e = dLam_axis(1)``, windowed -- the shape every boundary update uses."""
-    dlam = seq.basis_0.dΛ[axis]
-    end = _boundary_point(seq) if dlam.type != "periodic" else 0.0
-    e = jax.vmap(lambda i: jnp.sum(dlam(end, i)))(dlam.ns)
-    if window is not None and axis == 0:
-        e = e[window[0]:window[0] + window[1]]
-    return e
-
-
-#: The production natural-BC penalty scale.
-#: `alpha` as spelled is the surface integral itself and is the best NORM
-#: approximation to `L`'s boundary block, but `P` minimises kappa(P^-1 L),
-#: which wants a much smaller number. EMPIRICAL, not derived -- see
-#: docs/research/natural_bc_coefficient_handoff.md §16 (what to ship) and
-#: §17.5 (why a scale is needed at all).
-#:
-#: 3.0 is the `penalty` value, from the merged phase2+phase3 grids (24 cells
-#: that bracket their optimum: 4 geometries x k=1,2,3 x p=2,3,5 x two meshes),
-#: ranked by TOTAL iterations -- sum over cells of iterations at fixed s, over
-#: the sum of the per-cell optima. Worst-case ranking is the wrong metric here
-#: and says otherwise: it lets a 34-iteration cell outvote a 1450-iteration
-#: one. Measured 1.062 / 1.060 / 1.066 at s = 2 / 2.828 / 4, so the basin is
-#: flat over [2, 4] and 3.0 is a round number inside it, not a fitted optimum.
-#:
-#: It is also not an independent fit: 2.828 / 0.10 = 28.3, and the derivation's
-#: own conversion factor is c(p)/a = 31 at p=3 (measured 28-32). This is the
-#: superseded `product` value of 0.10 pushed through §5.2(e).
-#:
-#: NO p CAVEAT. `product` needed one ("prefer 0.05 at p >= 5") because its
-#: mu_0 = c(p)/h carries a c(p) that triples over p=2..5. `penalty` uses a bare
-#: 1/h and its best single s is 2 / 2 / 2.83 at p = 2 / 3 / 5 -- a 1.4x drift
-#: costing 1.8-3.5%, i.e. nothing. Do not re-add a degree-dependent default.
-#:
-#: KNOWN GAP: on rot-ellipse at p=5, k=1 and k=2, the sweep grid stopped at
-#: s=8 with the optimum still there, so those two cells are not bracketed and
-#: are excluded from the 24. Holding s=3 costs ~10% on them (630 vs 574, 635 vs
-#: 578), which is the one place `penalty` at a fixed scale loses to `product`.
-#: Including them moves the head-to-head from +0.8% to +1.7%. Shipped with that
-#: known and accepted; extending that grid is 2 jobs if it ever looks relevant.
-#: Multiplies the natural-BC face coefficient ``alpha`` (a measured balance
-#: point, see the module docstring). Every builder takes ``bc_scale`` with this
-#: default; ``DeRhamSequence.build_preconditioners(bc_scale=...)`` is the
-#: production knob. An explicit argument is the only override -- the
-#: ``MRX_BJ_BC_SCALE`` environment variable was removed 2026-08-28 (a hidden
-#: factor over an explicit one is what the no-implicit-weights rule forbids).
+#: The natural-BC penalty scale on the face coefficient of :func:`_face_alpha`.
+#: ``alpha`` as derived is the surface integral itself, the best NORM
+#: approximation to ``L``'s boundary block; the preconditioner wants a larger
+#: number, and 3.0 is inside the flat optimum [2, 4] of a 24-cell sweep (4
+#: geometries x k=1,2,3 x p=2,3,5 x two meshes, ranked by total iterations;
+#: docs/research/natural_bc_coefficient_handoff.md). Not degree-dependent:
+#: the best single scale drifts 2 -> 2.83 over p=2..5 at a cost of 2-3%.
 PRODUCTION_BC_SCALE = 3.0
 
 
-def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
-                           scalar=None, bc_scale=PRODUCTION_BC_SCALE):
-    """The natural-BC boundary term, straight from the surface integral.
+def _boundary_entry(seq, window, alpha):
+    """The natural-BC boundary term as a rank-one update to ``K_r``.
 
-    Under a natural (free) condition the weak block's integration by parts
-    leaves ``int_{r=1} w . u_r^2``. For a tensor basis that is
-
-        alpha . (e e^T) (x) M_t (x) M_z ,   e = dLam(1),  alpha = <w>_{theta,zeta}(1)
-
-    which has exactly the shape of the FIRST Kronecker-sum term, so it merges
-    into ``K_r`` as a rank-one update. Nothing about the sum, the shared
-    eigenbasis, the cost or the storage changes.
-
-    ``alpha`` needs no fitting and no reference to the exact factor ``F``: it is
-    the same weight family the stiffness already uses, evaluated AT the boundary
-    instead of averaged over ``r``. Returns zero under Dirichlet, where the test
-    function vanishes on the boundary and the term does not exist.
+    Under a free condition the weak block's integration by parts leaves
+    ``int_{r=1} w . u_r^2``; for a tensor basis that is ``alpha (e e^T) (x)
+    M_t (x) M_z`` with ``e = dLam(1)`` on the bulk radial ``window``, the
+    shape of the first Kronecker-sum term. ``alpha`` is the face coefficient
+    of :func:`_face_alpha`, scaled by :data:`PRODUCTION_BC_SCALE`: the exact
+    surface integral is a penalty on the normal trace, and the atom wants it
+    closer to the hard ``u_r = 0`` limit.
     """
-    if dirichlet:
-        return None
-    if scalar is not None:
-        alpha = scalar
-    else:
-        wy, wz = seq.quad.w_y, seq.quad.w_z
-        # <w> over theta,zeta on the last radial quadrature slice.
-        alpha = (jnp.einsum('rs,r,s->', weight_field[-1], wy, wz)
-                 / (jnp.sum(wy) * jnp.sum(wz)))
+    dlam = seq.basis_0.dΛ[0]
+    e = jax.vmap(lambda i: jnp.sum(dlam(_boundary_point(seq), i)))(dlam.ns)
+    e = e[window[0]:window[0] + window[1]]
+    return PRODUCTION_BC_SCALE * alpha * jnp.outer(e, e)
 
-    # Penalty STRENGTH. The natural condition here is u.n = 0 -- an essential
-    # condition on the normal trace, which the free-BC weak block enforces by a
-    # mesh-dependent penalty rather than by removing a DOF. alpha as assembled
-    # is the exact surface integral; this knob asks whether the atom wants the
-    # exact penalty or the hard u_r = 0 limit it approximates.
-    alpha *= bc_scale
 
-    e = _edge_vector(seq, axis, window)
-    return alpha * jnp.outer(e, e)
-def component_factors(seq, k, c, window=None, bc_entry="ibpd",
-                      dirichlet=False, bc_scale=PRODUCTION_BC_SCALE):
+def component_factors(seq, k, c, window, dirichlet):
     """``(masses, stiffnesses)`` per axis for component ``c`` of ``L_k``.
 
     The component's basis is a derivative spline on the axes it is
@@ -398,15 +323,8 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
     weights; the generalized problem ``K v = lam M v`` does not require them to
     agree.
     """
-    if k not in (0, 1, 2, 3):
-        raise ValueError("component_factors handles k = 0..3")
     primal, deriv, quad_w = _axis_bases(seq)
     fields = weight_fields(seq)
-
-    if bc_entry not in ("ibpd", False):
-        raise ValueError(
-            f"bc_entry must be 'ibpd' (the rank-one natural-BC face term) or False "
-            f"(no term), got {bc_entry!r}")
     degree0 = int(seq.basis_0.Λ[0].p) < 2
 
     # ONE formula for every degree:
@@ -427,10 +345,8 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
     # An axis is a DERIVATIVE axis exactly where the component's basis is a
     # derivative spline; those get the honest-K, the primal axes get an
     # ordinary stiffness. k=0 has none, k=3 has all three.
-    ginv, met, jac = fields["ginv_aa"], fields["met_aa"], fields["jac"]
-    mass_weight = {0: jac, 1: ginv[c] * jac,
-                   2: met[c] / jac, 3: 1.0 / jac}[k]
-    deriv_axes = derivative_axes(k, c)
+    ginv, jac = fields["ginv_aa"], fields["jac"]
+    deriv_axes = getattr(seq, f"basis_{k}").derivative_axes(c)
     # DIAGONAL lumping. w(c,a) = g^{cc} * (g^{aa}J) factors into a component
     # part and an axis part, so assemble the 1-D factors with the k=0 weights
     # ONLY -- shared by every component and every degree -- and carry g^{cc}
@@ -445,7 +361,7 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
 
     def cut(mat, axis):
         """Radial window: the bulk atom lives on the bulk DOFs only."""
-        if axis != 0 or window is None:
+        if axis != 0:
             return mat
         lo, n = window
         return mat[lo:lo + n, lo:lo + n]
@@ -477,30 +393,14 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
             else:
                 kt = cut(_assemble_weighted_1d_mass(
                     seq.dd_basis_jk[a], quad_w[a] * prof), a)
-            # a is a derivative axis here; the trace only lives on the
-            # RADIAL one (a == 0), the boundary face being r = 1.
-            if bc_entry == "ibpd" and a == 0:
-                # a == 0 ONLY: the boundary face is r = 1; theta and zeta are
-                # periodic and have no boundary, so an entry added there is
-                # pure noise. (It was, once: a missing guard put entries on the
-                # periodic axes and perturbed the Dirichlet cases where the
-                # term must vanish identically.)
-                #
-                # The coefficient is the face average of the squared trace
-                # against the surface element; see _face_alpha.
-                #
-                # Other spellings of this term were measured and lost; see
-                # docs/research/natural_bc_coefficient_handoff.md §9, §12.3 and
-                # §14.3. Do not re-add them: the exact 2-D face shape and the
-                # cross-term corrections (one of which is INDEFINITE) are both
-                # refuted.
+            # The natural-BC trace lives on the RADIAL derivative axis only:
+            # the boundary face is r = 1, theta and zeta are periodic. Other
+            # spellings of the term (the exact 2-D face shape, cross-term
+            # corrections) were measured and lost;
+            # docs/research/natural_bc_coefficient_handoff.md §9, §12.3, §14.3.
+            if a == 0 and not dirichlet:
                 scalar, amp = _face_alpha(seq, k, c)
-                w_face = mass_weight * ginv[a]
-                corr = _boundary_entry_direct(
-                    seq, a, w_face, window, dirichlet, scalar=scalar,
-                    bc_scale=bc_scale)
-                if corr is not None:
-                    kt = kt + corr * amp
+                kt = kt + _boundary_entry(seq, window, scalar) * amp
             stiffs.append(kt)
         else:
             k_full = _assemble_weighted_1d_stiffness(
@@ -508,11 +408,7 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
                 _dense_incidence_1d(int(m_full.shape[0]),
                                     seq.basis_0.types[a]))
             stiffs.append(cut(k_full, a))
-
-    # One alpha per Kronecker term. The honest stiffness carries its own
-    # weight, so there is no round-trip scale to restore: all ones.
-    alpha = (1.0, 1.0, 1.0)
-    return tuple(masses), tuple(stiffs), alpha
+    return tuple(masses), tuple(stiffs)
 
 
 def component_diagonal(seq, k, c, shape):
@@ -528,7 +424,7 @@ def component_diagonal(seq, k, c, shape):
     w_comp = {0: jnp.ones_like(jac), 1: fields["ginv_aa"][c],
               2: fields["met_aa"][c] / jac ** 2, 3: 1.0 / jac ** 2}[k]
     primal, deriv, quad_w = _axis_bases(seq)
-    deriv_axes = derivative_axes(k, c)
+    deriv_axes = getattr(seq, f"basis_{k}").derivative_axes(c)
     tabs = [(deriv[a] if a in deriv_axes else primal[a]) ** 2
             for a in range(3)]
     wq = seq.quad.w.reshape(seq.quad.shape)
@@ -544,57 +440,22 @@ def component_diagonal(seq, k, c, shape):
     return (num / den).reshape(shape)
 
 
-def build_bulk_atom(seq, k, c, window=None, bc_entry="ibpd", dirichlet=False,
-                    bc_scale=PRODUCTION_BC_SCALE):
-    """Fast-diagonalisation factors for component ``c`` of ``L_k``.
-
-    Returns ``(V_r, V_t, V_z, lam_r, lam_t, lam_z)`` ready for
-    :func:`mrx.operators._fd_apply_3d` with ``alpha = (1, 1, 1)``.
-    """
-    masses, stiffs, alpha = component_factors(seq, k, c, window=window,
-                                              bc_scale=bc_scale,
-                                              bc_entry=bc_entry,
-                                              dirichlet=dirichlet)
+def build_bulk_atom(seq, k, c, window, dirichlet):
+    """Fast-diagonalisation factors for component ``c`` of ``L_k``:
+    ``((V_r, V_t, V_z), (lam_r, lam_t, lam_z))`` for
+    :func:`mrx.operators._fd_apply_3d`."""
+    masses, stiffs = component_factors(seq, k, c, window, dirichlet)
     vs, lams = [], []
     for a in range(3):
         v, lam = _simultaneous_diagonalize_pair(masses[a], stiffs[a])
         vs.append(v)
         lams.append(lam)
-    return tuple(vs), tuple(lams), alpha
+    return tuple(vs), tuple(lams)
 
 
 # --------------------------------------------------------------------------- #
 # Core block: probed and densely inverted                                      #
 # --------------------------------------------------------------------------- #
-
-def derivative_axes(k, c):
-    """Axes on which component ``c`` of a k-form is a derivative spline.
-
-    k=0 none, k=1 axis ``c``, k=2 every axis but ``c``, k=3 all three. The
-    strong half of ``L_k`` (``S_k``) lives on the other, primal, axes.
-    """
-    return {0: (), 1: (c,), 3: (0, 1, 2)}.get(
-        k, tuple(a for a in range(3) if a != c))
-
-
-def trace_components(k):
-    """Components whose radial axis is a DERIVATIVE axis, i.e. the ones the
-    integration by parts touches and the only ones carrying a boundary trace::
-
-        k=0  ()        W_0 = 0
-        k=1  (r,)      <u, grad tau>  -> int (u.n) tau
-        k=2  (t, z)    <w, curl tau>  -> int (w x n).tau
-        k=3  (all)     <om, div tau>  -> int om (tau.n)
-
-    These are also exactly the components whose trace is ESSENTIAL in the
-    opposite BC family, which is what makes them the ones to pin: fixing them
-    on the face kills the tangential derivatives of that component, and the
-    remaining components' natural conditions then collapse onto the scalar
-    per-component conditions the atom already imposes.  See
-    :meth:`MetricLumpingLaplacian.__init__`.
-    """
-    return {0: (), 1: (0,), 2: (1, 2), 3: (0, 1, 2)}[k]
-
 
 def core_rows(seq, k, dirichlet):
     """``(core, bulk, e)``: the extracted rows handled by the dense core block
@@ -620,12 +481,9 @@ def _probe_rows(apply, size, rows, dtype=DTYPE):
     (:func:`_probing_sequence`) so that their inversion at :data:`CORE_TOL`
     drops the kernel and nothing else.
 
-    A Python loop of ASYNCHRONOUS dispatches: nothing here touches the host
-    until the block is used, whereas the previous form copied every column
-    back (one sync per row). ``lax.map`` over the rows was measured instead
-    on 2026-08-26 and rejected: it compiles a fresh scan per ``(k, BC)`` and
-    tripled the k = 0..2 build times at (8,16,8), against a loop whose cost
-    is a few hundred dispatches of an already-compiled apply.
+    A Python loop of asynchronous dispatches of an already-compiled apply
+    (``lax.map`` over the rows compiles a fresh scan per ``(k, BC)`` and was
+    measured at three times the build time).
     """
     if rows.size == 0:
         return jnp.zeros((0, 0), dtype=dtype)
@@ -665,22 +523,11 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
 # The applied payload, as a pytree                                             #
 # --------------------------------------------------------------------------- #
 #
-# WHY THIS EXISTS. `_build_apply` used to close over its arrays and return
-# `jax.jit(m_apply)`, so every array reached jit as a CLOSURE CONSTANT. A new
-# preconditioner object was a new closure and therefore a new compilation, no
-# matter where the object was stored -- measured 2026-08-25 at ~287 ms of
-# recurring compile per payload change, about 4,100 applies' worth of work.
-#
-# As a pytree the arrays are LEAVES passed as arguments. Two payloads with the
-# same shapes share a treedef, so changing the NUMBERS reuses the compiled
-# apply. `alpha` in particular was `tuple(float(a) for a in alpha)` -- Python
-# floats baked in as constants, and alpha is where bc_scale lands.
-#
-# STATIC vs LEAF, and getting this wrong is the whole risk: leaves are arrays
-# whose VALUES change and whose SHAPES do not; static is anything used in
-# Python control flow or as a reshape target. Wrong one way and every change
-# retraces and the exercise buys nothing; wrong the other and a traced value
-# gets used as a Python bool.
+# The arrays of an atom are LEAVES of a pytree passed to one jitted apply, so
+# two payloads with the same shapes share a treedef and a compiled program
+# (an apply that closed over its arrays recompiled per object, ~287 ms).
+# Leaves are arrays whose values change and whose shapes do not; static is
+# anything used in Python control flow or as a reshape target.
 
 
 class _LumpBlock(eqx.Module):
@@ -699,8 +546,8 @@ class _LumpBlock(eqx.Module):
     lam_r: jnp.ndarray           # leaf: per-axis eigenvalues
     lam_t: jnp.ndarray
     lam_z: jnp.ndarray
-    alpha: jnp.ndarray           # leaf: was a tuple of Python floats
-    dscale: jnp.ndarray          # leaf: ALWAYS an array (None was a treedef split)
+    alpha: jnp.ndarray           # leaf: the weight of each Kronecker term
+    dscale: jnp.ndarray          # leaf: the diagonal sandwich
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
     # STATIC: when the block's rows are the contiguous range starting at
     # ``offset`` with unit weights (a pure selector, e.g. every k=3 block)
@@ -709,15 +556,7 @@ class _LumpBlock(eqx.Module):
 
 
 class _LumpPayload(eqx.Module):
-    """Everything the apply reads. One treedef per (k, BC, discretisation).
-
-    CONCATENATING these leaves was tried on 2026-08-25 and REVERTED. The theory
-    was that ~35 array arguments cost ~0.6 us each in dispatch, so folding them
-    into nine arrays would recover most of the 21.5 us regression. Measured, the
-    concatenated version was SLOWER -- 98.0 us against 91.4 -- so argument count
-    is not the mechanism and the extra in-trace slicing cost more than it saved.
-    See the note above `_apply_lump_payload`.
-    """
+    """Everything the apply reads. One treedef per (k, BC, discretisation)."""
 
     blocks: tuple                # leaves, one _LumpBlock per component
     core: jnp.ndarray            # leaf
@@ -749,10 +588,8 @@ def _apply_lump_payload(payload: _LumpPayload, x):
 
     No scatters: every block gathers its input in tensor order, and the
     per-block results are concatenated and gathered once through ``perm``.
-    The previous form wrote one full-length ``out.at[rows].set`` per block
-    plus one for the core -- four scatters per apply. Selector blocks and an
-    identity output order are static slices / no-ops, so a k=3 apply is the
-    fast-diagonalisation solve and nothing else.
+    Selector blocks and an identity output order are static slices / no-ops,
+    so a k=3 apply is the fast-diagonalisation solve and nothing else.
     """
     parts = []
     for b in payload.blocks:
@@ -797,7 +634,7 @@ def _apply_shifted_payload(payload: _ShiftedPayload, core_inv, inv_eps, x):
 def _tensor_blocks(seq, k, dirichlet):
     """Split the extraction into per-component tensor blocks plus the core.
 
-    Returns ``(core, bulk, e, blocks)`` where ``blocks``
+    Returns ``(core, e, blocks)`` where ``blocks``
     holds, per component, ``None`` or ``(rows, vals, (r0, nr), shape, offset)``
     with ``rows``/``vals`` in TENSOR order over the ``(nr, n_t, n_z)`` block
     and ``offset >= 0`` when the block is a pure selector (rows contiguous
@@ -837,7 +674,7 @@ def _tensor_blocks(seq, k, dirichlet):
                     and np.all(vals_t == 1.0))
         blocks.append((rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
                        int(rows_t[0]) if selector else -1))
-    return core, bulk, e, blocks
+    return core, e, blocks
 
 
 def _output_permutation(block_rows, core, n_ext):
@@ -860,26 +697,11 @@ def _output_permutation(block_rows, core, n_ext):
 # Flatten once, compile once per treedef                                       #
 # --------------------------------------------------------------------------- #
 #
-# `eqx.filter_jit(payload, x)` re-PARTITIONS the module on every call, walking
-# ~35 leaves each time. Measured 2026-08-25: that cost 194 us per apply
-# (69.9 -> 264.4 us/call), against a 284.5 ms saving per payload change --
-# break-even at ~1,460 applies, and a production k>=1 solve runs thousands. The
-# first version of this refactor was therefore a NET LOSS on real work despite
-# taking recompiles to zero.
-#
-# The payload does not change between calls, so the flattening is hoisted to
-# BUILD time: the leaves are stored as a flat tuple and the jitted function is
-# cached on the TREEDEF. Per call there is no tree walk, just a jitted call on
-# a tuple of arrays. Two payloads of the same shapes still share one compile
-# because the cache key is the treedef -- which is what keeps arms C and D at
-# zero recompiles.
-
-
-#: BOUNDED deliberately. The entries hold COMPILED functions, so an unbounded
-#: cache is a slow leak. At a fixed discretisation this holds one or two
-#: entries; a sweep over resolutions grows it by one treedef per shape, and 32
-#: covers any realistic sweep. Eviction is harmless -- it costs one recompile,
-#: which is the 2.8 ms this whole mechanism reduced it to.
+# The payload is flattened once at build time and the jitted apply cached on
+# its treedef, so a call is one jitted call on a tuple of arrays with no tree
+# walk (``eqx.filter_jit`` re-partitions the module per call, measured at
+# 194 us per apply). The cache is bounded because its entries are compiled
+# functions; a sweep over resolutions adds one treedef per shape.
 @functools.lru_cache(maxsize=32)
 def _jitted_for(treedef, impl):
     """One jitted apply per (treedef, impl). Unflattening is inside the trace."""
@@ -911,15 +733,12 @@ class MetricLumpingLaplacian:
     building the wrong operator.
     """
 
-    def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL,
-                 bc_entry="ibpd", bc_scale=PRODUCTION_BC_SCALE):
-        self.k, self.dirichlet = k, dirichlet
-        self.bc_scale = bc_scale
-        self.shapes = [tuple(int(s) for s in sh)
-                       for sh in getattr(seq, f"basis_{k}").shape]
+    def __init__(self, seq, operators, k, dirichlet):
+        form = getattr(seq, f"basis_{k}")
+        self.shapes = [tuple(int(s) for s in sh) for sh in form.shape]
 
-        core, bulk, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
-        self.core, self.bulk = core, bulk
+        core, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
+        self.core = core
         self.n_ext = int(e.forward_shape[0])
 
         self.blocks = []
@@ -928,18 +747,7 @@ class MetricLumpingLaplacian:
                 self.blocks.append(None)
                 continue
             rows_t, vals_t, (r0, nr), shape, offset = blk
-            atom = build_bulk_atom(
-                seq, k, c, window=(r0, nr), dirichlet=dirichlet,
-                bc_scale=bc_scale, bc_entry=bc_entry)
-            # The natural-BC trace exists only on the components the
-            # integration by parts actually touches:
-            #   k=1  <u, grad tau>   -> +int (u.n) tau        -> NORMAL, c = r
-            #   k=2  <w, curl tau>   -> +int (w x n).tau      -> TANGENTIAL, c = t,z
-            #   k=3  <om, div tau>   -> +int om (tau.n)       -> the one component
-            #   k=0  W_0 = 0                                  -> none
-            # Equivalently: wherever the component's RADIAL axis is a derivative
-            # axis, which is where delta acts. Building it on w_r at k=2 adds a
-            # term the operator does not have.
+            atom = build_bulk_atom(seq, k, c, (r0, nr), dirichlet)
             # D_i is a ratio of two positive integrals; no floor.
             d_full = component_diagonal(seq, k, c, self.shapes[c])
             dscale = 1.0 / jnp.sqrt(d_full[r0:r0 + nr, :, :])
@@ -947,28 +755,24 @@ class MetricLumpingLaplacian:
             # (component_factors); this mask selects its Kronecker terms for
             # the shifted-stiffness atom.
             alpha_strong = tuple(
-                0.0 if a in derivative_axes(k, c) else 1.0 for a in range(3))
+                0.0 if a in form.derivative_axes(c) else 1.0 for a in range(3))
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape,
                 "offset": offset, "atom": atom, "dscale": dscale,
                 "alpha_strong": alpha_strong})
+        self.perm, self.identity_perm = _output_permutation(
+            [b["rows"] for b in self.blocks if b is not None], core, self.n_ext)
 
-        # Probe the whole core (polar ring + any extra/outer rings) and invert
-        # it exactly. A separable 2-D ring atom was tried instead and dropped:
-        # it MATCHES the dense probe on the inner rings at a tenth of the build
-        # cost but LOSES badly on the outer ones (toroid k=3 free 65 vs 24,
-        # W7-X k=2 free 616 vs 198), because the outer ring earns its keep
-        # through radial coupling a separable ring cannot carry -- the
-        # Steklov/DtN operator is nonlocal.
-        self.probe_rows = core
+        # Probe the whole core and invert it exactly (a separable 2-D ring
+        # atom matches the dense probe on the inner rings and loses badly on
+        # the outer ones: the Steklov/DtN operator is nonlocal).
         on = _probing_sequence(seq)
         self.core_inv = _dense_symmetric_inverse(
-            probe_core_block(on, operators, k, dirichlet, core), core_tol)
+            probe_core_block(on, operators, k, dirichlet, core), CORE_TOL)
         # M_k and S_k on the core rows, diagonalised together ONCE: the
         # shifted-stiffness atom's core block is (M + eps S)^-1 = V diag(1 /
         # (1 + eps mu)) V^T with V^T M V = I and V^T S V = diag(mu), and eps
-        # is only known at solve time. (It used to be an eigendecomposition
-        # of M + eps S per solve, i.e. twice per relaxation step.)
+        # is only known at solve time.
         from mrx.operators import apply_mass_matrix, apply_stiffness  # noqa: PLC0415
         size = int(seq.n(k, dirichlet))
         mass_core = _probe_rows(
@@ -983,28 +787,17 @@ class MetricLumpingLaplacian:
         self._shifted = self._build_shifted_payload()
 
     def _build_payload(self):
-        """Pack the factors into the :class:`_LumpPayload` pytree.
-
-        Built EAGERLY, at construction. It used to be memoised on the first
-        ``apply``; construction is hoisted above every trace but a first apply
-        inside a ``lax`` body stashed tracers on this long-lived object, and
-        the failure surfaced as an ``UnexpectedTracerError`` in whatever ran
-        next (docs/research/OPEN.md 1.1).
-
-        The result is a PYTREE handed to a module-level jitted apply as an
-        argument, rather than closed over by a per-instance `jax.jit`. Two
-        payloads with the same shapes share a treedef, so rebuilding one
-        reuses the compiled apply instead of paying ~287 ms to compile an
-        identical program again.
-        """
-        blocks, perm, identity = self._pack_blocks(lambda blk: blk["atom"][2])
+        """Pack the factors into the :class:`_LumpPayload` pytree, eagerly
+        (a first apply inside a ``lax`` body would stash tracers on this
+        long-lived object). All three Kronecker terms weigh one: the
+        stiffnesses carry their own weights."""
         return _LumpPayload(
-            blocks=tuple(blocks),
-            core=jnp.asarray(self.probe_rows),
+            blocks=tuple(self._pack_blocks(lambda blk: (1.0, 1.0, 1.0))),
+            core=jnp.asarray(self.core),
             core_inv=self.core_inv,
-            perm=perm,
-            has_core=bool(self.probe_rows.size > 0),
-            identity_perm=identity,
+            perm=self.perm,
+            has_core=bool(self.core.size > 0),
+            identity_perm=self.identity_perm,
         )
 
     def apply(self, x):
@@ -1014,12 +807,12 @@ class MetricLumpingLaplacian:
 
     def _pack_blocks(self, alpha_of):
         """The component blocks as :class:`_LumpBlock` leaves with ``alpha =
-        alpha_of(block)``, and the output permutation: ``(blocks, perm, identity)``."""
+        alpha_of(block)``."""
         blocks = []
         for blk in self.blocks:
             if blk is None:
                 continue
-            (v_r, v_t, v_z), (l_r, l_t, l_z), _alpha = blk["atom"]
+            (v_r, v_t, v_z), (l_r, l_t, l_z) = blk["atom"]
             blocks.append(_LumpBlock(
                 rows=jnp.asarray(blk["rows"]),
                 vals=jnp.asarray(blk["vals"], dtype=DTYPE),
@@ -1030,22 +823,18 @@ class MetricLumpingLaplacian:
                 shape=blk["shape"],
                 offset=blk["offset"],
             ))
-        perm, identity = _output_permutation(
-            [b["rows"] for b in self.blocks if b is not None],
-            self.probe_rows, self.n_ext)
-        return blocks, perm, identity
+        return blocks
 
     def _build_shifted_payload(self):
         """The Laplacian blocks with ``alpha`` = the strong-half mask."""
-        blocks, perm, identity = self._pack_blocks(lambda blk: blk["alpha_strong"])
         return _ShiftedPayload(
-            blocks=tuple(blocks),
-            core=jnp.asarray(self.probe_rows),
+            blocks=tuple(self._pack_blocks(lambda blk: blk["alpha_strong"])),
+            core=jnp.asarray(self.core),
             core_V=self.core_V,
             core_mu=self.core_mu,
-            perm=perm,
-            has_core=bool(self.probe_rows.size > 0),
-            identity_perm=identity,
+            perm=self.perm,
+            has_core=bool(self.core.size > 0),
+            identity_perm=self.identity_perm,
         )
 
     def shifted_stiffness_apply(self, eps):
@@ -1112,34 +901,24 @@ def _apply_mass_payload(payload: _MassPayload, x):
 class MetricLumpingMass:
     """``M_k^-1`` as a separable bulk plus a densely-probed core.
 
-    raw_kron is already half of this shape -- ``M ~ Lam (A_r x A_t x A_z) Lam``
-    is "separable bracket + diagonal sandwich", the same structure the Laplacian
-    atom uses.  What changes is the CORE: raw_kron reaches the polar rows
-    through the ``E+`` pseudoinverse, whose "both sides must carry the full
-    ``(EE^T)^-1``" requirement its own docstring calls the single easiest thing
-    to get wrong (the pow0/pow1/pow2 ablation cost 2.3x at k=1).  Here the core
-    rows are probed and inverted densely instead, so there is no pseudoinverse
-    anywhere.
+    A mass is a single Kronecker product, so the bulk inverse is three 1-D
+    solves (:func:`mrx.preconditioners._kron_mass_model_1d`) inside the
+    diagonal sandwich ``Lam``; the polar rows are probed through
+    ``apply_mass_matrix`` and inverted densely, so there is no pseudoinverse
+    of the extraction anywhere.
 
-    A mass is structurally easier than a Laplacian: it is a single Kronecker
-    product rather than a sum, so the bulk inverse is three 1-D solves and no
-    fast diagonalisation is involved.
-
-    NOTE this is not only a preconditioner. ``apply_laplacian_approx``
-    uses the mass preconditioner as the inner inverse of the weak term, so
-    swapping it changes the OPERATOR ``L_k`` at k>=1, not just the solve.
+    Not only a preconditioner: ``apply_laplacian_approx`` uses it as the
+    inner inverse of the weak term, so swapping it changes the OPERATOR
+    ``L_k`` at k>=1, not just the solve.
     """
 
-    def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL):
+    def __init__(self, seq, operators, k, dirichlet):
         from mrx.operators import apply_mass_matrix  # noqa: PLC0415
         from mrx.preconditioners import _kron_mass_model_1d  # noqa: PLC0415
 
-        self.k, self.dirichlet = k, dirichlet
-        shapes, mass_1d, lam = _kron_mass_model_1d(seq, k)
-        self.shapes = [tuple(int(v) for v in sh) for sh in shapes]
-
-        core, bulk, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
-        self.core, self.bulk = core, bulk
+        _, mass_1d, lam = _kron_mass_model_1d(seq, k)
+        core, e, tensor_blocks = _tensor_blocks(seq, k, dirichlet)
+        self.core = core
         self.n_ext = int(e.forward_shape[0])
 
         self.blocks = []
@@ -1158,18 +937,13 @@ class MetricLumpingMass:
         on = _probing_sequence(seq)
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
             lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet),
-            size, core, dtype=on.dtype), core_tol)
+            size, core, dtype=on.dtype), CORE_TOL)
         self._flat = _flatten_payload(self._build_payload())
         self._apply_in = {}
 
     def _build_payload(self):
-        """Pack the factors into the :class:`_MassPayload` pytree.
-
-        Eager, at construction, for the reason given at
-        :meth:`MetricLumpingLaplacian._build_payload`. The apply is jitted
-        and device-only because the mass preconditioner runs INSIDE
-        ``solve_singular_cg``'s ``jax.lax.while_loop``.
-        """
+        """Pack the factors into the :class:`_MassPayload` pytree, eagerly
+        (:meth:`MetricLumpingLaplacian._build_payload`)."""
         blocks = []
         for blk in self.blocks:
             if blk is None:

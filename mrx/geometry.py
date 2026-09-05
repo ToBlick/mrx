@@ -144,7 +144,8 @@ class SequenceGeometry(eqx.Module):
 
         Args:
             spline_map: A :class:`~mrx.mappings.SplineMap`.
-            seq: A :class:`~mrx.derham_sequence.DeRhamSequence` with.
+            seq: The :class:`~mrx.derham_sequence.DeRhamSequence` of the
+                map's space, with its 1-D basis tables.
 
         Returns:
             A fully populated :class:`SequenceGeometry`.
@@ -375,7 +376,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
-        tol: solve tolerance; ``None`` is ``sqrt(eps)`` of working precision.
+        tol: solve tolerance; ``None`` is :data:`mrx.precision.SOLVE_TOL`.
         nfp: overrides an equilibrium file's ``nfp`` (see ``mrx.gvec``);
             ignored for an analytic geometry.
         r_windows: radial refinement windows ``[(a, b, m), ...]`` for

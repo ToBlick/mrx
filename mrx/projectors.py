@@ -3,7 +3,7 @@ Load vector assembly and interpolation for finite element differential forms.
 
 Public API
 ----------
-load(seq, f, k, dirichlet=False, bc=False)
+load(seq, f, k, dirichlet=False)
     Assemble the dual load vector  v_i = ∫ Λ^k_i · f dx  for a k-form.
     Completely matrix-free; only the extraction matrices on ``seq`` are needed.
 
@@ -11,7 +11,7 @@ interpolate(seq, f, k, dirichlet=False)
     Compute primal DOFs by Greville interpolation (k=0) or histopolation
     (k=1,2,3).  The Greville points, spans, collocation/histopolation
     matrices and span quadrature rules depend on the knot vectors only; they
-    are built once per sequence and cached on it (:func:`_greville_data`).
+    are built once per sequence and cached on it (:func:`greville_axes`).
 
 Both functions are also available as ``seq.load(...)`` and
 ``seq.interpolate(...)`` on :class:`~mrx.derham_sequence.DeRhamSequence`.
@@ -84,7 +84,7 @@ def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
 
     Spans and knots are concrete, so the bookkeeping is host-side numpy; it is
     O(n) scalars per axis and runs once per sequence (see
-    :func:`_greville_data`).
+    :func:`greville_axes`).
 
     Returns
     -------
@@ -150,36 +150,9 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
 #: construction of Guclu & Campos Pinto (arXiv:2505.15996),
 #: ``Pi_Z = P_Z . Pi_W``: the tensor-product geometric projector followed by a
 #: local, explicit, matrix-free conforming projection on the coefficients.
-#:
-#: RETRACTION.  Commit 1cf9cbd's message, and an earlier version of this
-#: comment, said "idempotency comes from the coefficient rules being
-#: self-consistent, not from any biorthogonality condition on the extraction".
-#: That is TRUE OF THE PAPER'S ``P_Z`` AND FALSE OF MRX'S EXTRACTION -- the
-#: claim was imported across an operator boundary it does not cross.  MRX's
-#: ``E`` is not ``P_Z``: measured, ``||E E^T - I||_max = 1.556`` at k=1 and
-#: ``0.352`` at k=2.  So
-#: ``e @ c_full`` alone is NOT a projector, and the k=0 round-trip duly came
-#: back at 5.29e-01.  Supplying ``(E E^T)^{-1}`` explicitly, as
-#: :func:`_conforming_restriction` does, is therefore the CORRECT CONSTRUCTION
-#: for a non-biorthogonal extraction -- not a fudge factor bolted on to force a
-#: test green.  With it, k=0 round-trips at 2.5e-16.
-#:
-#: The same retracted claim was the stated justification for removing the two
-#: guards below.  Removing them still looks right -- the construction does work
-#: once the extraction is handled properly -- but the REASON recorded at the
-#: time was not sound.  History is not rewritten; this is the retraction.
-#:
-#: Two guards used to sit here and both were stale:
-#:   * a full-tensor-space check, which rejected every nontrivial extraction --
-#:     i.e. both ``dirichlet=True`` and ``polar=True`` -- although the restrict
-#:     step above is exactly what makes those cases work;
-#:   * a clamped-only check on the histopolation axes, although
-#:     ``SplineBasis.greville_spans`` has handled periodic axes (wrapping the
-#:     final span by +1) for as long as it has existed, and raises its own
-#:     NotImplementedError for anything it does not support.
-#:
-#: ``test_projectors.py`` pins the property that matters: interpolating a
-#: function that already lives in the target space returns its own DOFs.
+#: MRX's ``E`` is not biorthogonal (``||E E^T - I||_max = 1.556`` at k=1), so
+#: the restriction carries ``(E E^T)^{-1}`` explicitly
+#: (:func:`_conforming_restriction`); ``e @ c_full`` alone is not a projector.
 
 
 def _conforming_restriction(e, c_full):
@@ -187,25 +160,15 @@ def _conforming_restriction(e, c_full):
 
     ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
     interpolating a function that ALREADY lies in the extracted space returns
-    its own DOFs exactly.  Plain ``e @ c_full`` does not have that property --
-    measured, the k=0 round-trip came back at 5.29e-01 without this.
+    its own DOFs exactly.
 
     ``E`` is a pure SELECTION on every row but the polar ones (the same
-    ``counts > 1`` discriminator ``block_jacobi_laplacian.core_rows`` uses), and
-    the polar surgery acts only in (rho, theta) while the zeta index is carried
-    along untouched.  So ``E E^T`` is the IDENTITY PLUS SMALL DENSE BLOCKS --
-    one per zeta slice per affected component, of size ``n_polar``.  Confirmed
-    against the component sizes: k=1 contributes ``2*nz + 3*dz`` such rows and
-    k=2 contributes ``2*dz``, reproducing the measured 30-of-606 and 12-of-588
-    exactly; k=3 contributes none and is already a pure selection.
-
-    The blocks are inverted DENSELY -- the same separable-bulk-plus-dense-core
-    idiom as ``BlockJacobiMass``, and for the same reason: an ``E+``
-    pseudoinverse is what that analysis rejected.  For a pure selection (k=3)
-    this returns immediately.
-
-    TODO: cache on the sequence alongside the collocation matrices if it ever
-    shows up in a profile; the blocks depend only on the extraction.
+    ``counts > 1`` discriminator ``metric_lumping_laplacian.core_rows`` uses),
+    and the polar surgery acts only in (rho, theta) while the zeta index is
+    carried along untouched.  So ``E E^T`` is the IDENTITY PLUS SMALL DENSE
+    BLOCKS -- one per zeta slice per affected component, of size ``n_polar``
+    -- which are inverted densely; for a pure selection (k=3) this returns
+    immediately.
     """
     a = e @ c_full
     rows = np.asarray(e.rows)
@@ -242,22 +205,11 @@ def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
     return None
 
 
-def _extraction(seq, k: int, dirichlet: bool, bc: bool):
-    """Pick the right extraction matrix for degree k."""
-    if bc:
-        return seq.E_bc(k)
-    elif dirichlet:
-        return seq.E(k, True)
-    else:
-        return seq.E(k)
-
-
 # ---------------------------------------------------------------------------
 # Load vector assembly  (matrix-free, works on any seq after set_map)
 # ---------------------------------------------------------------------------
 
-def load(seq: "DeRhamSequence", f, k: int,
-         dirichlet: bool = False, bc: bool = False,
+def load(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False,
          frame: str = 'phys'):
     """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
@@ -268,7 +220,6 @@ def load(seq: "DeRhamSequence", f, k: int,
         Arguments are logical coordinates.  Interpretation depends on `frame`.
     k : int  Form degree (0, 1, 2, 3).
     dirichlet : bool  Use Dirichlet-constrained DOFs.
-    bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
     frame : {'phys', 'ref'}
         ``'phys'`` (default): ``f`` returns components in the physical frame;
         a DF-based pullback is applied internally.  This is the only
@@ -293,12 +244,12 @@ def load(seq: "DeRhamSequence", f, k: int,
 
     Returns
     -------
-    Array  Dual load vector of length n_k (or n_k_dbc / n_k_bc).
+    Array  Dual load vector of length n_k (or n_k_dbc).
     """
     if frame not in ('phys', 'ref'):
         raise ValueError(f"frame must be 'phys' or 'ref', got {frame!r}")
 
-    e = _extraction(seq, k, dirichlet, bc)
+    e = seq.E(k, dirichlet)
     comp_info, comp_shapes = seq._form_comp_info(k)
 
     if k == 0:
@@ -361,7 +312,7 @@ def interpolate(seq: "DeRhamSequence", f, k: int, dirichlet: bool = False,
 
     The Greville points, spans, collocation/histopolation matrices and span
     quadrature rules are built once per sequence and cached on it
-    (:func:`_greville_data`); each call evaluates ``f`` and solves.
+    (:func:`greville_axes`); each call evaluates ``f`` and solves.
 
     Parameters
     ----------
@@ -524,23 +475,22 @@ def _greville_moments(seq, fn, rules) -> Array:
         integrate, cells, batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(sizes)
 
 
-def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
-    """Greville histopolation of a vector-valued form, component by component.
-
-    ``histopolated(c, j)`` says whether component ``c`` is histopolated
-    (span rule, histopolation matrix) or collocated (Greville point,
-    collocation matrix) along axis ``j``: for a 1-form the component's own
-    axis, for a 2-form the two others.
-    """
+def _histopolate_vector(seq, pullback, e, form) -> Array:
+    """Greville histopolation of a vector-valued form, component by component:
+    histopolated (span rule, histopolation matrix) on the component's
+    derivative axes (``form.derivative_axes(c)``: a 1-form's own axis, the two
+    others for a 2-form), collocated (Greville point, collocation matrix) on
+    the rest."""
     axes = seq.greville
     coeffs = []
     for c in range(3):
-        rules = tuple(ax.span_rule if histopolated(c, j) else ax.point_rule
+        hist = form.derivative_axes(c)
+        rules = tuple(ax.span_rule if j in hist else ax.point_rule
                       for j, ax in enumerate(axes))
         m = _greville_moments(seq, lambda x, c=c: pullback(x)[c], rules)
         for j, ax in enumerate(axes):
             m = _solve_tensor_collocation_axis(
-                ax.hist if histopolated(c, j) else ax.coll, m, axis=j)
+                ax.hist if j in hist else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))
     return _conforming_restriction(e, jnp.concatenate(coeffs))
 
@@ -551,8 +501,7 @@ def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
     if exact is not None:
         return exact
-    return _histopolate_vector(
-        seq, _oneform_pullback(seq, v, frame), e, lambda c, j: j == c)
+    return _histopolate_vector(seq, _oneform_pullback(seq, v, frame), e, seq.basis_1)
 
 
 def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
@@ -566,8 +515,7 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
     if exact is not None:
         return exact
-    return _histopolate_vector(
-        seq, _twoform_pullback(seq, v, frame), e, lambda c, j: j != c)
+    return _histopolate_vector(seq, _twoform_pullback(seq, v, frame), e, seq.basis_2)
 
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:

@@ -52,10 +52,6 @@ class MatrixFreeExtraction(eqx.Module):
         return self.forward_shape
 
     @property
-    def dtype(self):
-        return self.vals.dtype
-
-    @property
     def T(self):
         return MatrixFreeExtraction(
             rows=self.rows,
@@ -88,15 +84,14 @@ class MatrixFreeExtraction(eqx.Module):
 
 class PolarExtractionOperator:
     """
-    A class for extracting boundary conditions and handling polar mappings.
-
-    This class implements operators for handling boundary conditions and polar
-    coordinate transformations.
+    The polar (and Dirichlet) extraction of one form degree: fuses the two
+    innermost radial rings into the three C¹ polar functions and, with
+    ``zero_bc``, drops the outer ring.
 
     Attributes:
         k (int): Degree of the differential form
-        Λ: 
-        xi: Polar mapping coefficients
+        Lambda: the :class:`~mrx.differential_forms.DifferentialForm`
+        ξ: Polar mapping coefficients
         nr (int): Number of points in r-direction
         nt (int): Number of points in θ-direction
         nz (int): Number of points in ζ-direction
@@ -475,31 +470,3 @@ def get_xi(nt):
     ξ0 = jnp.full((3, nt), 1.0 / 3.0)
     # (3, 2, nθ) -> l, i, j
     return jnp.stack([ξ0, ξ1], axis=1)
-
-
-# Boundary extraction operator for cube-like domains
-def bc_extraction_op(
-    e,
-    e_dbc,
-    n_full: int,
-    dtype=None,
-):
-    """Build the extraction operator for Dirichlet boundary DOFs.
-
-    Returns a :class:`MatrixFreeExtraction` of shape ``(n_bc, n_full)`` that
-    selects the DOFs present in ``e`` (unrestricted) but absent from ``e_dbc``
-    (DBC), i.e. the DOFs that are set to zero by the homogeneous Dirichlet BC.
-    """
-    indicator = np.array(
-        e.T @ jnp.ones(e.shape[0])
-        - e_dbc.T @ jnp.ones(e_dbc.shape[0])
-    )
-    bc_cols = np.where(indicator > 0.5)[0]
-    n_bc = len(bc_cols)
-    return MatrixFreeExtraction(
-        rows=jnp.asarray(np.arange(n_bc, dtype=np.int32)),
-        cols=jnp.asarray(bc_cols.astype(np.int32)),
-        vals=jnp.ones(n_bc, dtype=mrx.DTYPE if dtype is None else dtype),
-        forward_shape=(n_bc, n_full),
-        transposed=False,
-    )

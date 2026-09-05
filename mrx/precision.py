@@ -17,11 +17,10 @@ float64 (:func:`mrx.solvers.refine`). That is what makes a float32 run's
 forces accurate beyond the float32 tolerance: the Leray projection's
 gradient part is the size of ``J x B`` while the force is a thousandth of
 it, so a tolerance relative to ``J x B`` leaves an O(1) error in the
-force; measured 2026-09-04 on li383 (16,32,32) p=3, ``|div F| / |F| =
-22`` at the old default and 0.04 at 1e-7. With a float64 residual the
-float32 solve reaches :data:`SOLVE_TOL` in a few passes, and the force is
-formed in float64 before it is stored. 64-bit mode is therefore always
-on; Python scalars stay weakly typed and do not promote.
+force (``docs/research/velocity_leray_ab_2026-09-04.md``). With a float64
+residual the float32 solve reaches :data:`SOLVE_TOL` in a few passes, and
+the force is formed in float64 before it is stored. 64-bit mode is
+therefore always on; Python scalars stay weakly typed and do not promote.
 ``MRX_RESIDUAL_DTYPE=float32`` is the configuration of a machine without
 float64 (a TPU): plain float32 solves, default tolerance ``sqrt(eps)``.
 
@@ -31,8 +30,11 @@ that encode a physical or algorithmic choice (a force residual, an ODE
 controller, a shift) are ordinary parameters and do not use this module.
 """
 
+import functools
 import os
+import types
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -82,15 +84,11 @@ EPS = float(np.finfo(DTYPE).eps)
 def default_tol(dtype, refine) -> float:
     """The default relative residual of a solve on a sequence of ``dtype``
     that refines or not: 1e-8 for a refined float32 solve, 1e-10 for a
-    plain float64 one, sqrt(eps) = 3.5e-4 for a plain float32 one: the true
-    residual float32 arithmetic attains on the composite solves (the k=2
-    Hodge split 2.4e-4, the k=3 saddle 4.2e-4 on the (8,12,12) p=2 test
-    mesh, 2026-09-05; the scalar solves reach 1e-6 to 1e-5 and stop early).
-    A plain float32 solve at 1e-6, the default until 2026-09-05, burned its
-    passes on five of the eight Poisson cases. The float64 view of a float32
-    sequence solves plainly at 1e-10: the harmonic-form construction on it
-    needs that (its k=1 solve's true residual at 1e-8 was 2e-6, and the
-    k=2 form's Rayleigh quotient that residual squared)."""
+    plain float64 one, sqrt(eps) = 3.5e-4 for a plain float32 one (the true
+    residual float32 arithmetic attains on the composite solves; the scalar
+    solves reach 1e-6 to 1e-5 and stop early). The float64 view of a
+    float32 sequence solves plainly at 1e-10, which the harmonic-form
+    construction on it needs."""
     if refine:
         return 1e-8
     dtype = jnp.dtype(dtype)
@@ -98,8 +96,7 @@ def default_tol(dtype, refine) -> float:
 
 
 #: Default relative residual of a solve through a sequence, in the residual
-#: precision: :func:`default_tol` of the working configuration. Until
-#: 2026-09-04 it was sqrt(eps) of the working dtype, 3.5e-4 at float32.
+#: precision: :func:`default_tol` of the working configuration.
 SOLVE_TOL = default_tol(DTYPE, REFINE)
 
 
@@ -126,9 +123,9 @@ def sqrt_eps(c: float = 1.0) -> float:
     return c * EPS ** 0.5
 
 
-def solve_tol(c: float = 1.0) -> float:
-    """Return ``c`` times :data:`SOLVE_TOL`."""
-    return c * SOLVE_TOL
+def solve_tol() -> float:
+    """:data:`SOLVE_TOL`, read at call time."""
+    return SOLVE_TOL
 
 
 def cast_arrays(obj, dtype=DTYPE, _seen=None):
@@ -184,8 +181,6 @@ def cast_arrays(obj, dtype=DTYPE, _seen=None):
 def _is_function(obj):
     """A function, method, partial or compiled JAX callable: not walked. An
     object of ours that merely defines ``__call__`` (a spline basis) is."""
-    import functools  # noqa: PLC0415
-    import types  # noqa: PLC0415
     if isinstance(obj, (types.FunctionType, types.MethodType, types.BuiltinFunctionType,
                         types.BuiltinMethodType, functools.partial)):
         return True
@@ -194,5 +189,4 @@ def _is_function(obj):
 
 def _is_pytree_module(obj):
     """Equinox modules are pytrees whose fields are immutable: rebuild them."""
-    import equinox as eqx  # noqa: PLC0415
     return isinstance(obj, eqx.Module)

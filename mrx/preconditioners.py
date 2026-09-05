@@ -30,7 +30,7 @@ def _simultaneous_diagonalize_pair(M: jnp.ndarray, A: jnp.ndarray) -> tuple[jnp.
     given a 3D Kronecker sum ``M_r (x) M_t (x) M_z + A_r (x) A_t (x) A_z``
     with all ``M_axis`` SPD, applying the per-axis ``V`` reduces it to
     the diagonal ``1 + lam_r (x) lam_t (x) lam_z`` in the M-orthonormal
-    basis. Reusable by the stiffness preconditioner.
+    basis.
     """
     M_sym = _symmetrize(jnp.asarray(M, dtype=DTYPE))
     A_sym = _symmetrize(jnp.asarray(A, dtype=DTYPE))
@@ -47,26 +47,7 @@ def _assemble_weighted_1d_mass(B: jnp.ndarray, weights: jnp.ndarray) -> jnp.ndar
     return (B * weights[None, :]) @ B.T
 
 
-def _metric_lumping_diff_flags(k: int, c: int) -> tuple:
-    """Differentiated-axis flags for component ``c`` of a k-form.
-
-    Mirrors ``_component_axis_bases_k0/k1/k2/k3`` in :mod:`mrx.mass`:
-    k=0 differentiates nothing, k=3 everything, k=1 only axis ``c``, and k=2
-    every axis *except* ``c``.
-    """
-    match k:
-        case 0:
-            return (False, False, False)
-        case 3:
-            return (True, True, True)
-        case 1:
-            return tuple(a == c for a in range(3))
-        case 2:
-            return tuple(a != c for a in range(3))
-    raise ValueError("k must be 0, 1, 2 or 3")
-
-
-def _kron_mass_model_1d(seq, k: int, d_raw=None):
+def _kron_mass_model_1d(seq, k: int):
     """1-D factors of the Kronecker model of ``M_k``::
 
         M_k  ~  (+)_c  Lam_c (A^c_r x A^c_t x A^c_z) Lam_c
@@ -75,10 +56,8 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
     differentiated axis) and the diagonal scaling ``Lam_c`` chosen so that the
     model reproduces ``diag(M_k)`` **exactly**: it is the support-averaged
     metric weight, ``sqrt(diag(M_k)_c / diag(A^c_r x A^c_t x A^c_z))``.
-
-    This is the forward half of :func:`build_mass_metric_lumping_factors` -- that one
-    inverts the 1-D masses and stores ``1/Lam`` -- and it is also the mass model
-    the weak-term diagonal builds on. Measured ``||M~ - M||_F / ||M||_F`` on a
+    :class:`~mrx.metric_lumping_laplacian.MetricLumpingMass` inverts the 1-D
+    masses and divides by ``Lam``. Measured ``||M~ - M||_F / ||M||_F`` on a
     spline toroid: ``3.1e-2`` at k=1, ``7e-3`` at k=2 and k=3.
 
     Returns ``(shapes, mass_1d, lam)``: the raw block shapes, the three 1-D
@@ -88,10 +67,7 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
 
     form = getattr(seq, f"basis_{k}")
     shapes = [tuple(int(s) for s in sh) for sh in form.shape]
-
-    if d_raw is None:
-        d_raw = build_mass_diagonal(seq, k)
-    d_raw = jnp.asarray(d_raw)
+    d_raw = build_mass_diagonal(seq, k)
 
     primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
     deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
@@ -99,8 +75,8 @@ def _kron_mass_model_1d(seq, k: int, d_raw=None):
 
     mass_1d, lam, start = [], [], 0
     for c, shape in enumerate(shapes):
-        diff = _metric_lumping_diff_flags(k, c)
-        bases = tuple(deriv[a] if diff[a] else primal[a] for a in range(3))
+        deriv_axes = form.derivative_axes(c)
+        bases = tuple(deriv[a] if a in deriv_axes else primal[a] for a in range(3))
         m1 = tuple(_assemble_weighted_1d_mass(bases[a], quad_w[a]) for a in range(3))
         for a in range(3):
             if int(m1[a].shape[0]) != shape[a]:

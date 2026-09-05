@@ -38,15 +38,6 @@ import numpy as np
 
 from mrx.spline_bases import evaluate_basis_local
 
-__all__ = [
-    "SumfactPlan",
-    "attach_weights",
-    "build_mass_diagonal",
-    "mass_plan",
-    "projection_plan",
-    "sumfact_apply",
-]
-
 
 def _elem_counts(seq):
     """(ne_x, ne_y, ne_z, qx, qy, qz) derived from the primal (k=0) basis."""
@@ -59,15 +50,10 @@ def _elem_counts(seq):
 
 
 def _split_field(field_flat, ne_x, ne_y, ne_z, qx, qy, qz):
-    """Reshape a flat (r-major) quad field to per-element blocks.
-
-    Returns shape ``(ne_x, ne_y, ne_z, qx, qy, qz, *trailing)``; trailing axes
-    (e.g. the ``(3, 3)`` of the metric) ride along. One reshape and one transpose,
-    so it fuses into the consumer inside a jit.
-    """
-    trailing = tuple(range(6, 6 + field_flat.ndim - 1))
-    f = field_flat.reshape(ne_x, qx, ne_y, qy, ne_z, qz, *field_flat.shape[1:])
-    return f.transpose(0, 2, 4, 1, 3, 5, *trailing)
+    """Reshape a flat (r-major) scalar quad field to per-element blocks,
+    ``(ne_x, ne_y, ne_z, qx, qy, qz)``: one reshape and one transpose, so it
+    fuses into the consumer inside a jit."""
+    return field_flat.reshape(ne_x, qx, ne_y, qy, ne_z, qz).transpose(0, 2, 4, 1, 3, 5)
 
 
 def _element_layout(seq):
@@ -92,23 +78,6 @@ def _element_layout(seq):
 
 
 # --------------------------------------------------------------------------- #
-# Component basis selectors for vectorial forms
-# --------------------------------------------------------------------------- #
-def _component_axis_bases_k1(form, c):
-    """k=1 component ``c``: derivative basis on axis ``c``, primal elsewhere."""
-    bases = [form.Λ[0], form.Λ[1], form.Λ[2]]
-    bases[c] = form.dΛ[c]
-    return bases
-
-
-def _component_axis_bases_k2(form, c):
-    """k=2 component ``c``: primal basis on axis ``c``, derivative elsewhere."""
-    bases = [form.dΛ[0], form.dΛ[1], form.dΛ[2]]
-    bases[c] = form.Λ[c]
-    return bases
-
-
-# --------------------------------------------------------------------------- #
 # Matrix-free (sum-factorized) mass apply
 # --------------------------------------------------------------------------- #
 # The functions below apply ``M @ x`` in the raw tensor-product DOF space
@@ -116,8 +85,9 @@ def _component_axis_bases_k2(form, c):
 # folded against the input vector instead of forming element blocks.
 # Transient memory is O(n^3 (p+1)^2 q) instead of the O(n^3 (p+1)^6) of a
 # stored matrix.
-def _bases_for_form(seq, form, comp_bases_fn, n_comp):
-    """Evaluate the 1D bases (values + global DOF ids) for each component."""
+def _bases_for_form(seq, form):
+    """Evaluate the 1D bases (values + global DOF ids) for each component of
+    ``form``, from the component's own axis bases (``form.bases[c].bases``)."""
     ne_x, ne_y, ne_z, qx, qy, qz = _elem_counts(seq)
     cache: dict[int, tuple] = {}
 
@@ -128,8 +98,8 @@ def _bases_for_form(seq, form, comp_bases_fn, n_comp):
         return cache[key]
 
     comp = []
-    for c in range(n_comp):
-        b = comp_bases_fn(form, c)
+    for tensor in form.bases:
+        b = tensor.bases
         Bx, gx = local_eval(b[0], seq.quad.x_x, qx)
         By, gy = local_eval(b[1], seq.quad.x_y, qy)
         Bz, gz = local_eval(b[2], seq.quad.x_z, qz)
@@ -157,7 +127,7 @@ def _flat_dof_plan(gx, gy, gz, shape):
 
 
 def _to_quadrature(Bvals, x_flat, gather_idx):
-    """Column half of :func:`_elem_block_mixed` folded against a vector.
+    """The column half of the sum factorisation folded against a vector.
 
     Gathers the element-local input with the precomputed flat index plan (no
     index arithmetic in the matvec) and evaluates the component's field at the
@@ -171,8 +141,8 @@ def _to_quadrature(Bvals, x_flat, gather_idx):
 
 
 def _from_quadrature(Bvals, u):
-    """Row half of :func:`_elem_block_mixed`: test a quadrature-point field
-    (Gauss weights already folded in) against the element-local row basis."""
+    """The row half: test a quadrature-point field (Gauss weights already
+    folded in) against the element-local row basis."""
     Bx, By, Bz = Bvals
     s1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx, u)
     s2 = jnp.einsum('yrc,xyzars->xyzacs', By, s1)
@@ -180,29 +150,11 @@ def _from_quadrature(Bvals, u):
 
 
 def _form_bases(seq, k):
-    """Return ``(form, comp, n_comp)``: the k-form and its per-component 1D tables.
-
-    Both the matvecs and :func:`build_mass_diagonal` go through here so the
-    diagonal is derived from *the same tables the solver applies*. The removed
-    ``diag_EAET_direct`` route recomputed its own tables and drifted from the
-    matvec; that failure mode is structural, so the plan is shared rather than
-    mirrored.
-    """
-    if k == 0:
-        form = seq.basis_0
-        return form, _bases_for_form(
-            seq, form, lambda f, c: [f.Λ[0], f.Λ[1], f.Λ[2]], 1), 1
-    if k == 3:
-        form = seq.basis_3
-        return form, _bases_for_form(
-            seq, form, lambda f, c: [f.dΛ[0], f.dΛ[1], f.dΛ[2]], 1), 1
-    if k == 1:
-        form = seq.basis_1
-        return form, _bases_for_form(seq, form, _component_axis_bases_k1, 3), 3
-    if k == 2:
-        form = seq.basis_2
-        return form, _bases_for_form(seq, form, _component_axis_bases_k2, 3), 3
-    raise ValueError("k must be 0, 1, 2 or 3")
+    """Return ``(form, comp, n_comp)``: the k-form and its per-component 1D
+    tables. Both the matvecs and :func:`build_mass_diagonal` go through here,
+    so the diagonal is derived from the same tables the solver applies."""
+    form = getattr(seq, f"basis_{k}")
+    return form, _bases_for_form(seq, form), len(form.bases)
 
 
 def _mass_structure(k):
@@ -249,7 +201,7 @@ def _reference_structure(n_comp):
     return tuple((c, c) for c in range(n_comp)), (0,) * n_comp
 
 
-def build_mass_diagonal(seq, k, geometry=None):
+def build_mass_diagonal(seq, k):
     """Return ``diag(M_k)`` in raw DOF space, exactly and probe-free.
 
     A diagonal entry only ever sees its own component, so only the ``(c, c)``
@@ -261,13 +213,12 @@ def build_mass_diagonal(seq, k, geometry=None):
 
     Cost is one contraction -- O(1) applies -- against the O(n) full applies a
     probed diagonal needs. The result is exact to floating point, not an
-    estimate, and is the ``D`` of the pow2 sandwich as well as the diagonal of
-    the Jacobi mass preconditioner.
+    estimate: the scaling of the metric-lumping mass atom.
 
     The returned vector is the components concatenated in form order, matching
     the layout of the apply.
     """
-    geometry = seq.geometry if geometry is None else geometry
+    geometry = seq.geometry
     split, gauss = _element_layout(seq)
     form, comp, n_comp = _form_bases(seq, k)
     unique = _mass_weight(k, geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j)

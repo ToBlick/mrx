@@ -10,10 +10,7 @@ singular CG and the saddle MINRES run under :func:`refine`, the one
 stopping criterion of the package: the true residual of the outer
 equation in the mass-atom norm, the correction solved by the Krylov
 iteration in the working precision, the solution accumulated in the
-residual precision and returned in it. Until 2026-09-04 the default was sqrt(eps) of the working
-dtype with a docstring claiming it was the tightest tolerance that did not
-send the loop to ``maxiter``; measured on li383 (16,32,32) p=3 in float32,
-every production solve converges to 1e-7 (``docs/research/velocity_leray_ab_2026-09-04.md``).
+residual precision and returned in it.
 """
 
 from typing import NamedTuple
@@ -25,11 +22,11 @@ from mrx.precision import DTYPE, MAX_PASSES, RESIDUAL_DTYPE, solve_tol
 from mrx.precision import inner_tol as default_inner_tol
 
 
-def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
+def preconditioned_cg(A_matvec, b, M, x0=None, tol=None, maxiter=None):
     """
     Preconditioned Conjugate Gradient with M-norm convergence check.
 
-    Solves A x = b where A is SPD, with optional SPD preconditioner M ≈ A^{-1}.
+    Solves A x = b where A is SPD, with the SPD preconditioner M ≈ A^{-1}.
     Convergence is measured in the preconditioner norm::
 
         ||r_k||_{M} = sqrt(r_k^T M r_k) < tol * ||b||_{M}
@@ -39,32 +36,25 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     Args:
         A_matvec: Callable, x -> A @ x (must be SPD).
         b: Right-hand side vector.
+        M: Preconditioner callable, x -> M @ x (approx A^{-1}, SPD).
         x0: Optional initial guess.
-        M: Optional preconditioner callable, x -> M @ x (approx A^{-1}, SPD).
         tol: Relative tolerance in M-norm; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
         x: Solution vector.
         info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
-            (This docstring said "0 if converged" until 2026-08-24; the code
-            has always returned the signed iteration count -- see the
-            ``jnp.where(converged_final, -k_final, k_final)`` below. The stale
-            version caused converged solves to be read as failures.)
 
     ``M`` must be SPD. That is not checked, and it is not defended against
     either: a non-SPD ``M`` makes ``beta`` the square root of a negative
     number and the whole run turns to NaN, which is the intended outcome.
     """
-    n = b.shape[0]
     if tol is None:
         tol = solve_tol()
     if maxiter is None:
-        maxiter = n
+        maxiter = b.shape[0]
     if x0 is None:
         x0 = jnp.zeros_like(b)
-    if M is None:
-        def M(x): return x
 
     # ||b||_M for relative tolerance.
     #
@@ -154,7 +144,7 @@ def deflation_projectors(vs, mass_matvec):
 
 
 def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
-           max_passes=MAX_PASSES, inner_dtype=DTYPE, residual=None):
+           inner_dtype=DTYPE, residual=None):
     """The outer loop of every solve: the true residual of ``A x = b`` in
     the norm of its space, corrected until it is below ``tol``.
 
@@ -167,7 +157,7 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
     the residual's space, the h-independent norm of a dual vector (the
     plain 2-norm of the coefficients when no norm is given) -- and the
     correction added, until ``norm(b - A x) <= tol norm(b)`` or
-    ``max_passes`` corrections were taken. In mixed precision each pass
+    :data:`~mrx.precision.MAX_PASSES` corrections were taken. In mixed precision each pass
     takes the residual down by about the inner tolerance, so a warm start
     with a 1% defect meets 1e-8 in two; in a plain configuration the inner
     solve runs at ``tol`` and the loop is the check that its own criterion,
@@ -203,7 +193,7 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
 
     def cond(carry):
         _, r, k, _ = carry
-        return jnp.logical_and(norm(r) > tol * bnorm_safe, k < max_passes)
+        return jnp.logical_and(norm(r) > tol * bnorm_safe, k < MAX_PASSES)
 
     def body(carry):
         x, r, k, its = carry
@@ -254,8 +244,8 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
             return project_primal(precond_matvec(project_dual(x)))
 
         x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
-        x, info = preconditioned_cg(A_matvec_safe, project_dual(b), x0=x0,
-                                    M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+        x, info = preconditioned_cg(A_matvec_safe, project_dual(b), precond_matvec_safe,
+                                    x0=x0, tol=tol, maxiter=maxiter)
         return project_primal(x), info
 
     # The inner iteration's projectors in its own dtype, the outer loop's in
@@ -275,7 +265,7 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
     inner = default_inner_tol(tol) if inner_tol is None else inner_tol
 
     def solve(r):
-        return preconditioned_cg(A_matvec_safe, r, M=precond_matvec_safe,
+        return preconditioned_cg(A_matvec_safe, r, precond_matvec_safe,
                                  tol=inner, maxiter=maxiter)
 
     x, info = refine(lambda x: A_res(project_primal(x)), solve, b, x0=x0, tol=tol,
@@ -301,7 +291,7 @@ class _MinresState(NamedTuple):
     converged: bool
 
 
-def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
+def minres(A_matvec, b, M, maxiter, x0=None, tol=None):
     """
     MINRES solver for symmetric (possibly indefinite) linear systems.
 
@@ -311,29 +301,20 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     Args:
         A_matvec: Callable, x -> A @ x (must be symmetric).
         b: Right-hand side vector.
-        x0: Optional initial guess.
-        M: Optional preconditioner callable, x -> M^{-1} @ x.
+        M: Preconditioner callable, x -> M^{-1} @ x.
            Must be symmetric positive definite.
+        maxiter: Maximum number of iterations.
+        x0: Optional initial guess.
         tol: Relative residual tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
-        maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
         x: Solution vector.
         info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
-            (This docstring said "0 if converged" until 2026-08-25; the code
-            has always returned the signed iteration count -- see the
-            ``jnp.where(converged_final, -k_final, k_final)`` below. The stale
-            version caused a converged solve to be read as a failure.)
     """
-    n = b.shape[0]
     if tol is None:
         tol = solve_tol()
-    if maxiter is None:
-        maxiter = n
     if x0 is None:
         x0 = jnp.zeros_like(b)
-    if M is None:
-        def M(x): return x
 
     # Initial residual.
     #
@@ -476,10 +457,8 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
 
 def solve_saddle_point_minres(
         stiffness_matvec, derivative_matvec, derivative_T_matvec,
-        mass_lower_matvec, b_upper, n_upper, n_lower,
-        precond_upper=None, precond_lower=None,
-        mass_upper_matvec=None,
-        vs_upper=None,
+        mass_lower_matvec, b_upper, n_upper, n_lower, *,
+        precond_upper, precond_lower, mass_upper_matvec, vs_upper,
         x0_upper=None, x0_lower=None,
         tol=None, maxiter=None, saddle_res=None, norm_upper=None, norm_lower=None,
         inner_tol=None, inner_dtype=DTYPE):
@@ -526,23 +505,14 @@ def solve_saddle_point_minres(
     Returns:
         u: Solution k-form vector.
         sigma: Solution (k-1)-form vector.
-        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not.
-            Forwarded verbatim from :func:`minres`, which has always returned
-            the SIGNED iteration count. This docstring said "0 if converged"
-            until 2026-08-25 -- the THIRD instance of that claim in this file,
-            after the two corrected on 2026-08-24 and 2026-08-25. Reading it
-            as written turns a converged solve into a failure.
+        info: ``-k`` if converged after ``k`` iterations, ``+k`` if not
+            (forwarded from :func:`minres`).
     """
-    if mass_upper_matvec is None:
-        def mass_upper_matvec(x): return x
-
     n_total = n_upper + n_lower
     dtype = b_upper.dtype
 
-    def _rows(vs, n):
-        return jnp.zeros((0, n), dtype=dtype) if vs is None or len(vs) == 0 else jnp.asarray(vs)
-
-    project_primal_upper, project_dual_upper = deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec)
+    project_primal_upper, project_dual_upper = deflation_projectors(
+        jnp.asarray(vs_upper), mass_upper_matvec)
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -567,10 +537,8 @@ def solve_saddle_point_minres(
     # --- Block-diagonal preconditioner ---
     def precond(x):
         u, s = unpack(x)
-        u = project_dual_upper(u)
-        pu = precond_upper(u) if precond_upper is not None else u
-        ps = precond_lower(s) if precond_lower is not None else s
-        return pack(project_primal_upper(pu), ps)
+        pu = precond_upper(project_dual_upper(u))
+        return pack(project_primal_upper(pu), precond_lower(s))
 
     # --- RHS and initial guess ---
     b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
@@ -584,7 +552,7 @@ def solve_saddle_point_minres(
         maxiter = n_total
 
     if saddle_res is None:
-        x, info = minres(A_matvec, b, x0=x0, M=precond, tol=tol, maxiter=maxiter)
+        x, info = minres(A_matvec, b, precond, maxiter, x0=x0, tol=tol)
         u, sigma = unpack(project_primal(x))
         return u, sigma, info
 
@@ -597,7 +565,7 @@ def solve_saddle_point_minres(
     inner = default_inner_tol(tol) if inner_tol is None else inner_tol
 
     def solve(r):
-        return minres(A_matvec, r, M=precond, tol=inner, maxiter=maxiter)
+        return minres(A_matvec, r, precond, maxiter, tol=inner)
 
     def norm(r):
         r_u, r_l = unpack(r)
