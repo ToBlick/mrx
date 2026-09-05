@@ -61,9 +61,9 @@ the public surface now covers both: `dot_product_load(B, B, 0, 2, 2)` (=
 `_scalar_load_values`); `cross_product_load_values` keeps its eight
 explicit metric cases. Left on purpose so the production kernel stays
 bit-identical, but it is the duplication this note flags elsewhere and
-folds into the helper with a per-apply check (see
-[[relaxation-trajectory-roundoff-divergence]] for why per-apply, never by
-end-state residual). The `(0, 3)` / `(3, 0)` projection masses and the
+folds into the helper with a per-apply check (trajectories diverge from
+round-off, so a kernel change is judged per apply, never by the end-state
+residual). The `(0, 3)` / `(3, 0)` projection masses and the
 assembly test that encoded their transposed convention are fixed
 (306d174, 3420b39). The house style's constrained layout made every
 `fig.tight_layout()` in `mrx/plotting.py` an error once a colourbar
