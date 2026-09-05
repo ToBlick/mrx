@@ -66,6 +66,10 @@ if _RES_NAME not in ("float32", "float64"):
 #: configuration of a machine without float64 (a TPU), where the solves
 #: are plain float32 Krylov iterations.
 RESIDUAL_DTYPE = jnp.dtype(_RES_NAME)
+if np.finfo(RESIDUAL_DTYPE).eps > np.finfo(DTYPE).eps:
+    raise ValueError(
+        f"MRX_RESIDUAL_DTYPE={_RES_NAME} is coarser than MRX_DTYPE={_NAME}; "
+        "the residual precision is the working precision or finer")
 
 #: Whether the solves refine: a float64 residual against a float32 Krylov
 #: solve. When the two dtypes coincide the solve is plain.

@@ -165,6 +165,35 @@ def direct_construction_unsupported_reason(betti_numbers):
     return None
 
 
+def laplacian_pair(seq, v, k, dirichlet=True, operators=None):
+    """``(L_k v, M_k v)`` in the residual precision, for the Rayleigh quotient.
+
+    ``v^T L_k v`` of a near-harmonic ``v`` is a cancellation: ``L v`` is
+    tiny while its two halves, ``S v`` and ``D M^{-1} D^T v``, are each
+    computed from O(1) data, so in float32 the quotient floors at the
+    working precision's round-off times ``lambda_max`` (1e-5 and worse)
+    whatever the form's accuracy. Both applies run on the residual view of
+    the sequence (:attr:`mrx.derham_sequence.DeRhamSequence.residual`,
+    float64), the inner mass solve refined to the residual precision, and
+    the caller takes the dot products there. The nested mass solve is
+    banned inside a Krylov iteration; a diagnostic evaluated once per
+    vector is the one place it is legitimate.
+    """
+    import mrx.operators as op  # noqa: PLC0415
+    from mrx.precision import RESIDUAL_DTYPE  # noqa: PLC0415
+    on = seq.residual if seq.residual is not None else seq
+    v = jnp.asarray(v).astype(RESIDUAL_DTYPE)
+    lv = op.apply_stiffness(on, v, k, dirichlet=dirichlet)
+    if k > 0:
+        Dt_v = op.apply_derivative_matrix(on, v, k - 1, dirichlet_in=dirichlet,
+                                          dirichlet_out=dirichlet, transpose=True)
+        w = seq.apply_inverse_mass_matrix(Dt_v, k - 1, dirichlet=dirichlet,
+                                          operators=operators, dtype=RESIDUAL_DTYPE)
+        lv = lv + op.apply_derivative_matrix(on, w, k - 1, dirichlet_in=dirichlet,
+                                             dirichlet_out=dirichlet)
+    return lv, op.apply_mass_matrix(on, v, k, dirichlet=dirichlet)
+
+
 def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     """``v^T L_k v / v^T M_k v`` -- how far ``v`` is from being harmonic.
 
@@ -175,18 +204,17 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     non-harmonic vector, every deflated solve downstream deflates against it,
     and nothing says a word.
 
-    ``L_k`` is applied EXACTLY (nested mass solve).  That shape is banned inside
-    a Krylov solve; a diagnostic evaluated once per vector is the one place it
-    is legitimate.
+    Evaluated in the residual precision (:func:`laplacian_pair`): until
+    2026-09-05 the quotient was taken in the working precision and floored
+    at its round-off in float32.
 
     Quote it against ``lambda_1`` from :func:`estimate_spectral_gap` -- the
     quotient is not dimensionless, so a raw value carries the units of the
     geometry and means nothing on its own; the ratio is the eigenvector error
     squared.  :func:`compute_nullspaces` prints both for every form it builds.
     """
-    lv = seq.apply_laplacian(v, k, dirichlet=dirichlet,
-                                   operators=operators)
-    mv = seq.apply_mass_matrix(v, k, dirichlet=dirichlet)
+    lv, mv = laplacian_pair(seq, v, k, dirichlet=dirichlet, operators=operators)
+    v = jnp.asarray(v).astype(lv.dtype)
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
 
 
@@ -602,10 +630,9 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         # full L (not of the stiffness block alone -- at k = 3 that block is
         # zero and v^T S v would read 0 for any vector). v0 is M-normalised
         # just above, so v0 @ Lv0 is the quotient.
-        Lv0 = seq.apply_laplacian(
-            v0, k, dirichlet=dirichlet, operators=operators)
-        res_init = float(seq.l2_norm(Lv0, k, dirichlet=dirichlet))
-        rq_init = float(v0 @ Lv0)
+        Lv0, Mv0 = laplacian_pair(seq, v0, k, dirichlet=dirichlet, operators=operators)
+        res_init = float(seq.l2_norm(Lv0.astype(v0.dtype), k, dirichlet=dirichlet))
+        rq_init = float(v0.astype(Lv0.dtype) @ Lv0 / (v0.astype(Lv0.dtype) @ Mv0))
         if rq_init <= abs_tol ** 2:
             found.append(v0)
             iters.append((0, res_init, rq_init))
@@ -627,11 +654,11 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             wgram = seq.l2_norm_sq(w, k, dirichlet=dirichlet)
             wnorm = jnp.sqrt(jnp.maximum(wgram, 0.0))
             w = w / jnp.where(wnorm > 0.0, wnorm, 1.0)
-            Lw = seq.apply_laplacian(
-                w, k, dirichlet=dirichlet, operators=operators)
-            # w is M-normalised on the line above, so w @ Lw IS the Rayleigh
-            # quotient w^T L w / w^T M w.
-            return w, w @ Lw, rq, i + 1
+            # The quotient in the residual precision (laplacian_pair): a
+            # cancellation the working precision cannot resolve.
+            Lw, Mw = laplacian_pair(seq, w, k, dirichlet=dirichlet, operators=operators)
+            w64 = w.astype(Lw.dtype)
+            return w, (w64 @ Lw) / (w64 @ Mw), rq, i + 1
 
         def cond_fn(state):
             _, rq, rq_prev, i = state
@@ -648,7 +675,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             return (i == 0) | ((rq > abs_tol ** 2) & (i < maxiter)
                                & progressing)
 
-        init_state = (v0, jnp.inf, jnp.inf, 0)
+        inf = jnp.asarray(jnp.inf, dtype=mrx.precision.RESIDUAL_DTYPE)
+        init_state = (v0, inf, inf, 0)
         v_final, rq_final, _, n_iters = jax.lax.while_loop(
             cond_fn, body_fn, init_state)
         found.append(v_final)
