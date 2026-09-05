@@ -1,20 +1,20 @@
 """Figures of a ``scripts/relax.py`` run: the weak pressure on the torus and
 in poloidal cuts, and the force residual against the energy.
 
-Reads ``B.h5`` (the ``pw_ic``/``pw_final`` weak-pressure 0-forms and the
+Reads a run directory (``relax.json`` and the ``ic`` / ``final`` checkpoints; the weak pressure is computed from each field) and the
 run's attributes) and ``relax.json`` (the per-step trace) from the run
 directory and rebuilds the sequence from ``geometry_path`` like
 ``scripts/poincare_relax.py`` does.
 
-    python -u scripts/plot_relaxation.py outputs/run/B.h5 --cuts 6
+    python -u scripts/plot_relaxation.py outputs/run --cuts 6
 
 Options
-    state                path to B.h5 (positional)
+    run                  the run directory (positional)
     --out DIR            figure directory [<run>/figures]
     --fields ic,final    which pressures to draw [final]
     --cuts N             poloidal cuts per field period [6]
     --n N                points per cut side [48]
-    --geometry PATH      override the state's geometry_path (e.g. after a move)
+    --geometry PATH      override the run's geometry_path (e.g. after a move)
     --precision {float32,float64}
 
 Writes ``torus_<name>.png``, ``crossections_<name>.png`` and ``trace.png``.
@@ -22,6 +22,7 @@ Writes ``torus_<name>.png``, ``crossections_<name>.png`` and ``trace.png``.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 
@@ -30,7 +31,7 @@ import numpy as np
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("state")
+    ap.add_argument("run", help="a scripts/relax.py run directory (relax.json + checkpoints/)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--fields", default="final")
     ap.add_argument("--cuts", type=int, default=6)
@@ -49,21 +50,25 @@ def main():
     from mrx.geometry import build_sequence, parse_r_refine
     from mrx.plotting import (get_2d_grids, plot_crossections_separate, plot_torus,
                               plot_twin_axis)
+    from mrx.relaxation import compute_force, weak_pressure
 
-    run = os.path.dirname(os.path.abspath(cli.state))
+    run = os.path.abspath(cli.run)
     out = cli.out or os.path.join(run, "figures")
     os.makedirs(out, exist_ok=True)
 
-    with h5py.File(cli.state, "r") as fh:
-        attrs = dict(fh.attrs)
-        dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
+    with open(os.path.join(run, "relax.json")) as fh:
+        results = json.load(fh)
+    attrs = results["params"]
+    ckpts = {int(os.path.basename(f)[6:12]): f
+             for f in glob.glob(os.path.join(run, "checkpoints", "state_*.h5"))}
     geometry = cli.geometry or str(attrs["geometry_path"])
     ns = tuple(int(v) for v in attrs["ns"])
     p = int(attrs["p"])
-    nfp_override = None if str(attrs["nfp"]) == "" else int(attrs["nfp"])
-    print(f"[state] {cli.state}: {geometry} ns={ns} p={p}", flush=True)
+    nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
+    print(f"[run] {run}: {geometry} ns={ns} p={p}", flush=True)
     seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
                             r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
+    aux = bool(attrs.get("auxiliary_B_field", False))
 
     # The cuts span one field period: zeta in [0, 1) is the logical toroidal
     # angle of the map. The surface sample runs zeta backwards so its normal
@@ -75,10 +80,11 @@ def main():
                                 ny=4 * cli.n, nz=4 * cli.n, invert_z=True)
 
     for name in (w.strip() for w in cli.fields.split(",")):
-        key = "pw_" + name
-        if key not in dofs:
-            raise SystemExit(f"{cli.state} has no {key}; run scripts/relax.py first")
-        pw = DiscreteFunction(jnp.asarray(dofs[key]), seq.basis_0, seq.E(0, True))
+        step = {"ic": min(ckpts), "final": max(ckpts)}[name]
+        with h5py.File(ckpts[step], "r") as fh:
+            B = jnp.asarray(np.asarray(fh["B_n"], dtype=np.float64))
+        _, _, J, X, _ = compute_force(B, seq, aux)
+        pw = DiscreteFunction(weak_pressure(J, X, seq, aux)[0], seq.basis_0, seq.E(0, True))
 
         def p_h(x, pw=pw):
             return pw(x)[0]

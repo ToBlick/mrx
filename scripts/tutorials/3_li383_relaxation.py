@@ -20,7 +20,7 @@ what matters is the floor it settles at. It runs in float32 -- the descent is
 robust there and it is the production precision.
 
 The script prints the traces, draws ``||F||`` against the energy and the weak
-pressure on the torus, and writes a ``B.h5`` in ``scripts/relax.py``'s format;
+pressure on the torus, and writes the run in ``scripts/relax.py``'s layout;
 ``scripts/poincare_relax.py`` then draws the Poincare sections of the initial
 and relaxed fields at planes 0, 0.25, 0.5 (see the tutorials page).
 ``scripts/relax.py`` is the production driver (archives, QoIs, snapshots,
@@ -61,7 +61,8 @@ os.makedirs(cli.out, exist_ok=True)
 # %%
 # Now we import MRX -- the sequence, the Clebsch initial condition, and the
 # relaxation time-stepper and loop.
-import h5py
+import json
+
 import jax.numpy as jnp
 import matplotlib
 if not _INTERACTIVE:
@@ -71,11 +72,11 @@ import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import build_sequence
-from mrx.gvec import load_clebsch
-from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
+from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
-from mrx.relaxation import TimeStepper, compute_force, relaxation_loop, weak_pressure
+from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, weak_pressure,
+                            write_checkpoint)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
@@ -85,10 +86,9 @@ seq.set_operators(compute_nullspaces(seq, ops))
 # %%
 # Now we set the initial condition: li383's own equilibrium field as B = dA'
 # from the histopolated Clebsch potential (divergence-free, wall-tangent, nested).
-cb = load_clebsch(cli.geometry)
-B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
-print(f"[ic] ||B||_M before normalisation {norm:.4e}, ||div B|| {divergence_norm(seq, B0):.2e}, "
-      f"wall-normal part {wall:.1e}")
+B0, ic = initial_field(seq, cli.geometry)
+print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}, "
+      f"wall-normal part {ic['wall_discarded']:.1e}")
 
 # %%
 # Now we relax: the energy descent of mrx.relaxation with scripts/relax.py's
@@ -98,20 +98,18 @@ smoothing_scale = 0.064 / ns[0] ** 2
 print(f"[relax] velocity smoothing order 1, scale {smoothing_scale:.3e}")
 ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                  velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
-state, traces = relaxation_loop(B0, ts, num_iters_outer=cli.outer,
-                                num_iters_inner=cli.inner, dt0=1.0,
-                                force_tolerance=cli.floor_tol)
-F = np.asarray(traces["force_norm"], dtype=float)
-E = np.asarray(traces["energy"], dtype=float)
-H = np.asarray(traces["helicity"], dtype=float)
-steps = np.asarray(traces["iteration"])
-print(f"[relax] {steps[-1]} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e}, E_0 - E = {E[0] - E[-1]:.3e}, "
-      f"H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
-      f"||div B|| {float(traces['divergence_B'][-1]):.1e}")
-B = state.B_n
+res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
+            floor_tol=cli.floor_tol)
+F = np.asarray(res.trace["F"], dtype=float)
+E = np.asarray(res.trace["E"], dtype=float)
+H = np.asarray(res.qoi["helicity"], dtype=float)
+print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
+      f"E_0 - E = {E[0] - E[-1]:.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
+      f"||div B|| {float(res.trace['div'][-1]):.1e}")
+B = res.state.B_n
 
 fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
-                        num_iters_inner=cli.inner, left_marker="o", right_marker="s")
+                        left_marker="", right_marker="")
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
 if _INTERACTIVE:
@@ -154,20 +152,17 @@ else:
 print(f"  -> {path}")
 
 # %%
-# Now we archive B (initial and final) so scripts/poincare_relax.py can draw
-# the Poincare sections of both states.
-h5_path = os.path.join(cli.out, "B.h5")
-attrs = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
-             nfp="", maxiter=10_000, precision=str(mrx.DTYPE), steps=int(steps[-1]),
-             method="lbfgs", eta_max=0.0, ic="clebsch")
-with h5py.File(h5_path, "w") as fh:
-    fh.create_dataset("B_ic", data=np.asarray(B0))
-    fh.create_dataset("B_final", data=np.asarray(B))
-    fh.create_dataset("pw_ic", data=pw_ic)
-    fh.create_dataset("pw_final", data=pw_final)
-    for k, v in attrs.items():
-        fh.attrs[k] = v
-print(f"  -> {h5_path}  (trace the sections with:")
-print(f"     python -u scripts/poincare_relax.py {h5_path} "
-      f"--planes 0,0.25,0.5 --out {cli.out})")
+# Now we archive the run the way scripts/relax.py does -- relax.json with the
+# parameters and the traces, and the initial and final state as checkpoints --
+# so scripts/poincare_relax.py can draw the Poincare sections of both states.
+os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
+params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
+              r_refine="", precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
+              auxiliary_B_field=False, ic=ic["kind"])
+with open(os.path.join(cli.out, "relax.json"), "w") as fh:
+    json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
+print(f"  -> {cli.out}/relax.json and checkpoints/  (trace the sections with:")
+print(f"     python -u scripts/poincare_relax.py {cli.out} --planes 0,0.25,0.5)")
 

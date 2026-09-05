@@ -8,7 +8,7 @@ diffusion of ``B`` (an implicit resistive solve), and field lines can
 helicity is no longer conserved, it decays at the resistive rate.
 
 This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
-relaxed field** if its checkpoint ``outputs/tutorials/li383_relaxation/B.h5`` is
+relaxed field** if its run ``outputs/tutorials/li383_relaxation`` is
 present (same ``(10, 16, 16) p = 2`` mesh), so the initial descent is not
 repeated; otherwise it builds the equilibrium initial condition itself. It then
 takes a **single resistive step** at ``--eps`` -- one reconnection event --
@@ -39,8 +39,8 @@ ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorial 3")
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
-ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation/B.h5",
-                help="Tutorial 3's B.h5; warm-start from its relaxed field if present")
+ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation",
+                help="Tutorial 3's run directory; warm-start from its last checkpoint if present")
 ap.add_argument("--eps", type=float, default=1e-4,
                 help="resistive dose eps = eta*dt of the single reconnection step")
 ap.add_argument("--seed", default="",
@@ -60,6 +60,9 @@ os.makedirs(cli.out, exist_ok=True)
 # %%
 # Now we import MRX and its relaxation and Poincare machinery. Precision is the
 # package default (float32, the production precision); nothing is set here.
+import glob
+import json
+
 import h5py
 import jax.numpy as jnp
 import matplotlib
@@ -70,14 +73,13 @@ import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import build_sequence, geometry_nfp
-from mrx.gvec import load_clebsch
-from mrx.initial_conditions import clebsch_potential_form, divergence_norm, potential_two_form
+from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
                           trace_and_classify, section_RZ, surface_label)
-from mrx.relaxation import (TimeStepper, compute_force, relaxation_loop,
-                            resistive_step, weak_pressure)
+from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, resistive_step,
+                            weak_pressure, write_checkpoint)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
@@ -93,27 +95,27 @@ seq.set_operators(compute_nullspaces(seq, ops))
 # checkpoint is on disk and matches this mesh, otherwise build the equilibrium
 # initial condition ourselves (optionally with a resonant seed).
 B0 = None
-if os.path.exists(cli.warm_start):
-    with h5py.File(cli.warm_start, "r") as fh:
-        ws_ns = [int(v) for v in fh.attrs["ns"]]
-        ws_p = int(fh.attrs["p"])
-        B_final = np.asarray(fh["B_final"][:])
-    if tuple(ws_ns) == ns and ws_p == cli.p and B_final.shape[0] == seq.n(2):
-        B0 = jnp.asarray(B_final)
-        print(f"[ic] warm-started from Tutorial 3: {cli.warm_start} (ns={ws_ns} p={ws_p})")
+ws_json = os.path.join(cli.warm_start, "relax.json")
+if os.path.exists(ws_json):
+    with open(ws_json) as fh:
+        ws = json.load(fh)["params"]
+    ckpts = sorted(glob.glob(os.path.join(cli.warm_start, "checkpoints", "state_*.h5")))
+    if tuple(ws["ns"]) == ns and int(ws["p"]) == cli.p and ckpts:
+        with h5py.File(ckpts[-1], "r") as fh:
+            B0 = jnp.asarray(np.asarray(fh["B_n"]))
+        print(f"[ic] warm-started from Tutorial 3: {ckpts[-1]} (ns={ws['ns']} p={ws['p']})")
     else:
-        print(f"[ic] checkpoint {cli.warm_start} is ns={ws_ns} p={ws_p} "
+        print(f"[ic] run {cli.warm_start} is ns={ws['ns']} p={ws['p']} "
               f"(need {list(ns)} p={cli.p}); building the IC instead")
 if B0 is None:
-    cb = load_clebsch(cli.geometry)
     seed = None
     if cli.seed:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
         print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
-    B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
-    print(f"[ic] built the equilibrium IC: ||B||_M {norm:.4e}, "
-          f"||div B|| {divergence_norm(seq, B0):.2e}, wall-normal {wall:.1e}")
+    B0, ic = initial_field(seq, cli.geometry, seed)
+    print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
+          f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
 
 # %%
 # Now we do the single reconnection step with mrx.relaxation.resistive_step: one
@@ -130,22 +132,20 @@ smoothing_scale = 0.064 / ns[0] ** 2
 ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                        velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
 print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
-state, traces = relaxation_loop(B_reconnected, ts_ideal, num_iters_outer=cli.outer,
-                                num_iters_inner=cli.inner, dt0=1.0,
-                                force_tolerance=cli.floor_tol)
-F = np.asarray(traces["force_norm"], dtype=float)
-E = np.asarray(traces["energy"], dtype=float)
-H = np.asarray(traces["helicity"], dtype=float)
-steps = np.asarray(traces["iteration"])
-print(f"[relax] {steps[-1]} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e}, E_0 - E = {E[0] - E[-1]:.3e}, "
-      f"H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
-      f"||div B|| {float(traces['divergence_B'][-1]):.1e}")
-B = state.B_n
+res = relax(initial_state(B_reconnected, ts_ideal), ts_ideal, steps=cli.outer * cli.inner,
+            chunk=cli.inner, floor_tol=cli.floor_tol)
+F = np.asarray(res.trace["F"], dtype=float)
+E = np.asarray(res.trace["E"], dtype=float)
+H = np.asarray(res.qoi["helicity"], dtype=float)
+print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
+      f"E_0 - E = {E[0] - E[-1]:.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
+      f"||div B|| {float(res.trace['div'][-1]):.1e}")
+B = res.state.B_n
 
 # %%
 # Now we plot the force residual against the energy over the ideal tail.
 fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
-                        num_iters_inner=cli.inner, left_marker="o", right_marker="s")
+                        left_marker="", right_marker="")
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
 if _INTERACTIVE:
@@ -217,18 +217,15 @@ else:
 print(f"  -> {path}")
 
 # %%
-# Now we archive B (initial and final) for scripts/poincare_relax.py, which can
-# redraw the sections at any planes from this file.
-h5_path = os.path.join(cli.out, "B.h5")
-attrs = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
-             nfp="", maxiter=10_000, precision=str(mrx.DTYPE), steps=int(steps[-1]),
-             method="lbfgs", eta_max=cli.eps, ic="warmstart",
-             seed=cli.seed, seed_eps=cli.seed_eps)
-with h5py.File(h5_path, "w") as fh:
-    fh.create_dataset("B_ic", data=np.asarray(B0))
-    fh.create_dataset("B_final", data=np.asarray(B))
-    fh.create_dataset("pw_ic", data=pw_ic)
-    fh.create_dataset("pw_final", data=pw_final)
-    for k, v in attrs.items():
-        fh.attrs[k] = v
-print(f"  -> {h5_path}")
+# Now we archive the run the way scripts/relax.py does -- relax.json and the
+# checkpoints of the field before the reconnection and at the end -- so
+# scripts/poincare_relax.py can redraw the sections at any planes from it.
+os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts_ideal), 0)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
+params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
+              r_refine="", precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
+              auxiliary_B_field=False, ic="warmstart", eps=cli.eps, seed=cli.seed, seed_eps=cli.seed_eps)
+with open(os.path.join(cli.out, "relax.json"), "w") as fh:
+    json.dump(dict(params=params, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
+print(f"  -> {cli.out}/relax.json and checkpoints/")

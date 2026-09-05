@@ -691,7 +691,7 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
 
     The driver glue of ``scripts/poincare_relax.py`` for a single field and
     plane -- seed from the magnetic axis, trace, classify, render -- for
-    callers that hold a DoF vector and no ``B.h5``. Returns ``(fig, res)``
+    callers that hold a DoF vector and no run directory. Returns ``(fig, res)``
     with ``res`` the :func:`trace_and_classify` dict (``iota`` per seed,
     ``chaotic``, ``drift``); the seeds' logical radii are ``res["seeds"][:, 0]``.
     """

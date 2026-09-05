@@ -1,26 +1,27 @@
 r"""Poincare sections of a ``scripts/relax.py`` run.
 
-Reads the ``B.h5`` a relaxation wrote (datasets ``B_ic`` and ``B_final``,
-run parameters as root attributes), rebuilds the sequence with
-:func:`mrx.geometry.build_sequence` from the ``geometry_path`` attribute
-(the resolved path of the GVEC export, or the analytic name) and the ``nfp``
-override the run used, traces both fields with :mod:`mrx.poincare`, and
-renders one section per requested plane.
+Reads a run directory: ``relax.json`` for the parameters (geometry path,
+mesh, degree, the ``nfp`` override, radial refinement) and
+``checkpoints/state_<step>.h5`` for the fields (:func:`mrx.relaxation.read_checkpoint`
+layout: the state's ``B_n`` and its strong pressure ``p``), rebuilds the
+sequence with :func:`mrx.geometry.build_sequence`, traces the requested
+fields with :mod:`mrx.poincare`, and renders one section per requested plane.
 
 Usage:
-    python -u scripts/poincare_relax.py outputs/run/B.h5 --periods 400 --out outputs/run/poincare
+    python -u scripts/poincare_relax.py outputs/run --periods 400 --out outputs/run/poincare
 
 Flags (defaults in brackets):
-    state                  path to B.h5 (positional)
-    --fields F             comma-separated subset of ic,final [ic,final];
-                           `reconnect` expands to one field reconnect<k>
-                           per <state dir>/reconnect/<k>/B.h5, the field
-                           before reconnection k of a relax.py
-                           --reconnect-every run, traced in the same call
-                           as ic and final so all of them share one iota
-                           and one p colour scale;
-                           or `snapshots`: one frame per stored step (relax.py
-                           --chunk) with every axis held fixed, written as
+    run                    the run directory (positional)
+    --fields F             comma-separated subset of ic,final [ic,final]:
+                           ic is checkpoints/state_000000.h5, final the
+                           highest step; `reconnect` expands to one field
+                           reconnect<k> per record of relax.json's
+                           ``reconnect`` list, the checkpoint at its step
+                           (the field before the solve), traced in the same
+                           call as ic and final so all of them share one
+                           iota and one p colour scale; or `snapshots`: one
+                           frame per checkpoint (relax.py --chunk) with every
+                           axis held fixed, written as
                            frame_zeta<plane>_<i>.png for ffmpeg
     --snapshot-steps S     subset of the stored steps to render, ranges
                            start:stop:stride separated by commas [all]
@@ -33,19 +34,20 @@ Flags (defaults in brackets):
     --r-max R              outermost seed radius [0.97]
     --batch-size N         lines integrated per batch [all]
     --precision P          tracing precision float64|float32 [float64]
-    --pressure {weak,strong}  which pressure of the state file to draw [weak]
-    --out DIR              output directory [<state dir>/poincare]
+    --pressure {weak,strong}  which pressure to draw [weak]
+    --out DIR              output directory [<run>/poincare]
     --from-npz             re-render from ``<out>/sections.npz`` without tracing
 
-If the state file carries the pressures ``scripts/relax.py`` writes, the
-selected one is evaluated at every crossing and drawn below the axis in the
-section and as a profile on the right axis of the iota-profile panel; on a
-flux surface it is constant, so the width of each stripe is the diagnostic. ``--pressure weak`` (the default) reads
-``pw_ic`` / ``pw_final``, the weak pressure: a 0-form, so its physical value
-is the spline evaluation itself (no ``det DF``), and it is zero on the wall by
-construction (Dirichlet 0-form space), so no gauge shift is applied.
-``--pressure strong`` reads ``p_ic`` / ``p_final``, the Leray multiplier of
-the relaxation: a 3-form, evaluated as ``p / det DF``, and defined up to an
+The selected pressure is evaluated at every crossing and drawn below the axis
+in the section and as a profile on the right axis of the iota-profile panel;
+on a flux surface it is constant, so the width of each stripe is the
+diagnostic. ``--pressure weak`` (the default) computes the weak pressure of
+each field (:func:`mrx.relaxation.weak_pressure`, two solves per field): a
+0-form, so its physical value is the spline evaluation itself (no ``det
+DF``), and it is zero on the wall by construction (Dirichlet 0-form space),
+so no gauge shift is applied. ``--pressure strong`` reads the checkpoint's
+``p``, the Leray multiplier of the relaxation: a 3-form, evaluated as ``p /
+det DF``, and defined up to an
 additive constant, so the displayed value is ``p - min p``, the minimum taken
 over the crossings of the kept lines of that field on every requested plane:
 the profile is >= 0 and its lowest surface reads zero. See "Two pressures" in
@@ -139,7 +141,7 @@ def pressure_gauge(kind, presses, keep):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("state")
+    ap.add_argument("run", help="a scripts/relax.py run directory (relax.json + checkpoints/)")
     ap.add_argument("--fields", default="ic,final")
     ap.add_argument("--snapshot-steps", default=None,
                     help="with --fields snapshots: which stored steps to render, as "
@@ -170,6 +172,7 @@ def main():
     os.environ["MRX_DTYPE"] = cli.precision
 
     import h5py
+    import json
     import jax
     import jax.numpy as jnp
     import matplotlib
@@ -183,25 +186,28 @@ def main():
                               section_RZ, surface_label, trace_and_classify,
                               require_zeta_parameterisation)
 
-    with h5py.File(cli.state, "r") as fh:
-        attrs = dict(fh.attrs)
-        dofs = {k: np.asarray(fh[k], dtype=np.float64) for k in fh.keys()}
+    run_dir = os.path.abspath(cli.run)
+    with open(os.path.join(run_dir, "relax.json")) as fh:
+        results = json.load(fh)
+    attrs = results["params"]
+    ckpts = {int(os.path.basename(f)[6:12]): f
+             for f in glob.glob(os.path.join(run_dir, "checkpoints", "state_*.h5"))}
     fields = [w.strip() for w in cli.fields.split(",")]
     labels = {"ic": f"initial condition ({attrs.get('ic', '?')})", "final": "relaxed field"}
+    steps_of = {"ic": min(ckpts), "final": max(ckpts)}
     if "reconnect" in fields:
-        # The fields before each reconnection of a --reconnect-every run, in the layout of B.h5.
-        rdir = os.path.join(os.path.dirname(os.path.abspath(cli.state)), "reconnect")
-        ks = sorted(int(os.path.basename(d)) for d in glob.glob(os.path.join(rdir, "*")))
-        for k in ks:
-            with h5py.File(os.path.join(rdir, str(k), "B.h5"), "r") as fh:
-                for key in ("B", "p", "pw"):
-                    dofs[f"{key}_reconnect{k}"] = np.asarray(fh[f"{key}_final"], dtype=np.float64)
-                labels[f"reconnect{k}"] = f"before reconnection {k} (step {int(fh.attrs['reconnect_step'])})"
+        # The field before each reconnection: the checkpoint at the record's step.
+        ks = []
+        for ev in results.get("reconnect", []):
+            k = int(ev["k"])
+            ks.append(k)
+            steps_of[f"reconnect{k}"] = int(ev["it"])
+            labels[f"reconnect{k}"] = f"before reconnection {k} (step {int(ev['it'])})"
         fields = [n for w in fields for n in ([f"reconnect{k}" for k in ks] if w == "reconnect" else [w])]
     movie = fields == ["snapshots"]
     if movie:
-        # One frame per stored snapshot (relax.py --chunk), named by step.
-        steps = [int(v) for v in dofs["snapshot_steps"]]
+        # One frame per checkpoint (relax.py --chunk), named by step.
+        steps = sorted(ckpts)
         if cli.snapshot_steps:
             wanted = set()
             for rng in cli.snapshot_steps.split(","):
@@ -211,21 +217,25 @@ def main():
         else:
             keep_steps = steps
         fields = [f"step{k:05d}" for k in keep_steps]
-        for i, k in enumerate(steps):
-            dofs[f"B_step{k:05d}"] = dofs["B_snapshots"][i]
-            dofs[f"pw_step{k:05d}"] = dofs["pw_snapshots"][i]
+        for k in keep_steps:
+            steps_of[f"step{k:05d}"] = k
             labels[f"step{k:05d}"] = f"step {k}"
+    dofs = {}
+    for name in fields:
+        with h5py.File(ckpts[steps_of[name]], "r") as fh:
+            dofs["B_" + name] = np.asarray(fh["B_n"], dtype=np.float64)
+            dofs["p_" + name] = np.asarray(fh["p"], dtype=np.float64)
     geometry = str(attrs["geometry_path"])
     label = os.path.basename(geometry)
     ns = tuple(int(v) for v in attrs["ns"])
     p = int(attrs["p"])
-    nfp_override = None if str(attrs["nfp"]) == "" else int(attrs["nfp"])
+    nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
     nfp = geometry_nfp(geometry, nfp_override)
-    out = cli.out or os.path.join(os.path.dirname(os.path.abspath(cli.state)), "poincare")
+    out = cli.out or os.path.join(run_dir, "poincare")
     os.makedirs(out, exist_ok=True)
     planes = [float(v) for v in cli.planes.split(",")]
     which = fields
-    print(f"[state] {cli.state}: {geometry} ns={ns} p={p} nfp={nfp} "
+    print(f"[run] {run_dir}: {geometry} ns={ns} p={p} nfp={nfp} "
           f"relaxed in {attrs.get('precision')} for {attrs.get('steps')} steps "
           f"({attrs.get('scheme')}, auxiliary B field {attrs.get('auxiliary_B_field')}); "
           f"tracing in {cli.precision}",
@@ -284,15 +294,20 @@ def main():
 
     seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
                             r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
+    if cli.pressure == "weak":
+        # The weak pressure is a diagnostic of the field, not state: two solves per field.
+        from mrx.relaxation import compute_force, weak_pressure
+        aux = bool(attrs.get("auxiliary_B_field", False))
+        for name in fields:
+            _, _, J, X, _ = compute_force(jnp.asarray(dofs["B_" + name]), seq, aux)
+            dofs["pw_" + name] = np.asarray(weak_pressure(J, X, seq, aux)[0], dtype=np.float64)
 
     def physical_pressure(name, lr, lth, zeta):
-        """The selected pressure at logical ``(lr, lth, zeta)``, or None without it.
+        """The selected pressure at logical ``(lr, lth, zeta)``.
 
         Weak: the 0-form's value. Strong: the 3-form's ``p / det DF``.
         """
         key = ("pw_" if cli.pressure == "weak" else "p_") + name
-        if key not in dofs:
-            return None
         pd = jnp.asarray(dofs[key])
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)

@@ -283,3 +283,56 @@ def leray_clean(seq, B):
     B_leray, _ = seq.apply_leray_projection(B, k=2)
     diff_B = float(seq.l2_norm(B_leray - B, 2))
     return B_leray / float(seq.l2_norm(B_leray, 2)), diff_B
+
+
+# ---------------------------------------------------------------------------
+# The initial field of a run
+# ---------------------------------------------------------------------------
+
+def initial_field(seq, geometry, seed=None):
+    """The initial field of a relaxation run and what was measured on the way.
+
+    The geometry file decides (:func:`mrx.geometry.geometry_kind`): an
+    equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
+    through the histopolated Clebsch potential, exactly divergence-free,
+    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
+    analytic geometry file gives the logical-grid field of its ``profile``
+    block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
+
+    Returns ``(B, info)`` with ``B`` the Dirichlet 2-form DoFs and ``info``
+    the numbers a driver prints and records: ``kind``, ``B_norm_raw``,
+    ``div_raw``, ``div``, ``leray_moved``, and for an equilibrium file
+    ``nfp``, ``iota_axis``, ``iota_edge`` (per full turn), ``wall_discarded``,
+    ``lambda_norm_sq``, ``lambda_dirichlet_energy`` and, with a seed,
+    ``seed_rho`` (the file's resonant surface).
+    """
+    from mrx.geometry import geometry_kind, read_analytic  # noqa: PLC0415  (imports this module)
+    from mrx.gvec import load_clebsch  # noqa: PLC0415
+
+    kind = geometry_kind(geometry)
+    if kind in ("gvec", "vmec"):
+        cb = load_clebsch(geometry)
+        lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
+        info = dict(kind=kind, nfp=int(cb["nfp"]),
+                    iota_axis=float(cb["dchi"][1] / cb["dPhi"][1]),
+                    iota_edge=float(cb["dchi"][-1] / cb["dPhi"][-1]),
+                    lambda_norm_sq=float(lam_norm), lambda_dirichlet_energy=float(lam_energy))
+        if seed is not None:
+            info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
+        B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+        div = divergence_norm(seq, B)
+        info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
+                    div_raw=div, div=div, leray_moved=0.0)
+        return B, info
+    if seed is not None:
+        raise ValueError("a resonant seed needs an equilibrium file")
+    prof = read_analytic(geometry)["profile"]
+    iota, dPhi = make_profiles(prof["iota"][0], prof["iota"][1], prof["iota_exp"], prof["flux_exp"])
+    modes = [(int(m), int(n), float(a)) for m, n, a in prof.get("lambda", [])]
+    B, norm = project_reference_two_form(seq, analytic_profile_form(iota, dPhi, make_lambda(modes)))
+    div_raw = divergence_norm(seq, B)
+    B, moved = leray_clean(seq, B)
+    return B, dict(kind=kind, iota=[float(v) for v in prof["iota"]], iota_exp=float(prof["iota_exp"]),
+                   flux_exp=float(prof["flux_exp"]), lambda_modes=len(modes),
+                   B_norm_raw=float(norm), div_raw=div_raw, div=divergence_norm(seq, B),
+                   leray_moved=float(moved))

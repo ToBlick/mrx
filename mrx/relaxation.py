@@ -3,6 +3,8 @@
 from enum import Enum
 from typing import Callable, Literal, NamedTuple, Optional
 
+import time
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -924,70 +926,292 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     return run
 
 
-def relaxation_loop(B_dof: jnp.ndarray,
-                    ts: TimeStepper,
-                    num_iters_outer: int,
-                    num_iters_inner: int = 100,
-                    dt0: float = 1.0,
-                    force_tolerance: float = 1e-6,
-                    callback: Optional[Callable[[State, int], State]] = None,
-                    ) -> tuple[State, dict]:
-    """
-    Perform multiple relaxation steps for the MRX relaxation.
+# ---------------------------------------------------------------------------
+# The run: the residual scale, the diagnostics sampler, checkpoints, the loop
+# ---------------------------------------------------------------------------
 
-    The outer loop is a Python for-loop (for diagnostics / callbacks), the
-    inner loop is ``chunk_runner``'s scan of ``num_iters_inner`` steps.
+def force_scale(seq: DeRhamSequence) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """``||grad(B^2/2)||_L2`` as a jitted function of the 2-form DoFs: the
+    scale the force residual is measured against.
 
-    Returns
-    -------
-    state : State
-    traces : dict  with keys: force_norm, helicity, timestep, energy,
-             velocity_norm, divergence_B, iteration, picard_iterations,
-             picard_residual (of the last step of each chunk)
+    ``grad p`` is a real scale too (the scheme converges to ``J x B = grad
+    p``) but vanishes in the low-beta limit; ``grad(B^2/2)`` has the same
+    units and stays O(1). Through the sequence: the 0-form load of
+    ``B^2/2`` (:meth:`dot_product_load`), one natural ``M_0`` solve, the
+    strong gradient, its norm.
     """
+    @jax.jit
+    def scale(B):
+        q = 0.5 * seq.dot_product_load(B, B, 0, 2, 2, dirichlet_n=False)
+        w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
+        g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
+        return seq.l2_norm(g1, 1, dirichlet=False)
+    return scale
+
+
+def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
+    """``sample(state, pw_guess, eager=False) -> (state, p_w, scalars)``: the
+    diagnostics of a state's field.
+
+    The force at the CURRENT field (``state.p``, ``H``, ``JxH`` are the
+    step's values at the previous one; they warm-start it and are refreshed
+    from it), the weak pressure and its diagnostics
+    (:func:`pressure_diagnostics`), the helicity (``state.A`` refreshed),
+    ``||J|| / ||B||`` and the pairing ``int J . B`` that sets a
+    reconnection dose. ``scalars`` are Python floats. The first call of a
+    run goes ``eager`` (the 1->2 projection builds a host-side core on
+    first use); the loop uses the compiled one.
+    """
+    aux = ts.auxiliary_B_field
+
+    def probe(B, p, H, JxH, pw_guess, A):
+        F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH)
+        p_w, F_w, v = weak_pressure(J, X, seq, aux, p_guess=pw_guess)
+        diag = pressure_diagnostics(B, p, p_w, F_w, v, seq)
+        h, A_new = compute_helicity(B, seq, A)
+        JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
+        JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
+        return p, (X if aux else H), JxX, A_new, p_w, h, JoverB, JB, diag
+
+    probe_jit = jax.jit(probe)
+
+    def sample(state: State, pw_guess: jnp.ndarray, eager: bool = False):
+        f = probe if eager else probe_jit
+        p, H, JxH, A, p_w, h, JoverB, JB, diag = f(state.B_n, state.p, state.H, state.JxH, pw_guess, state.A)
+        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A))
+        scalars = dict(helicity=float(h), JoverB=float(JoverB), JB=float(JB),
+                       **{k: float(v) for k, v in diag.items()})
+        return state, p_w, scalars
+
+    return sample
+
+
+def write_checkpoint(path: str, state: State, step: int) -> None:
+    """The state at a step as one HDF5 file: every leaf of the pytree as a
+    dataset named by its field (``B_n``, ``p``, ``s_history``, ...), the step
+    as an attribute. Nothing else: the run's parameters are the driver's
+    ``relax.json``, and the weak pressure is a diagnostic
+    (:func:`make_sampler`), not state."""
+    import h5py  # noqa: PLC0415
+    leaves = jax.tree_util.tree_flatten_with_path(state)[0]
+    with h5py.File(path, "w") as fh:
+        fh.attrs["step"] = int(step)
+        for keypath, leaf in leaves:
+            fh.create_dataset(jax.tree_util.keystr(keypath).lstrip("."), data=np.asarray(leaf))
+
+
+def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
+    """The ``(state, step)`` of :func:`write_checkpoint`, for a stepper of the
+    same sequence: the skeleton comes from :func:`initial_state` on the
+    stored field (one force evaluation), every leaf is then replaced by
+    the stored one."""
+    import h5py  # noqa: PLC0415
+    from mrx.precision import DTYPE  # noqa: PLC0415
+    with h5py.File(path, "r") as fh:
+        step = int(fh.attrs["step"])
+        data = {k: np.asarray(v) for k, v in fh.items()}
+    skeleton = initial_state(jnp.asarray(data["B_n"]), ts)
+    leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
+    new = []
+    for keypath, _ in leaves:
+        v = data[jax.tree_util.keystr(keypath).lstrip(".")]
+        new.append(jnp.asarray(v, dtype=DTYPE if np.issubdtype(v.dtype, np.floating) else v.dtype))
+    return jax.tree_util.tree_unflatten(treedef, new), step
+
+
+class RelaxResult(NamedTuple):
+    """What :func:`relax` returns and hands to ``on_chunk`` at every chunk.
+
+    ``state`` the descent state, ``steps`` the steps of this run so far
+    (``it0 + steps`` is the absolute step), ``stop`` why it ended (``steps``,
+    ``floor``, ``seconds``, or ``running``), ``wall`` the seconds in the
+    compiled steps (sampling and callbacks excluded), ``trace`` the per-step
+    scalars (``E``, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``,
+    ``cos``, ``gain``, ``picard_it``, ``picard_resid``, ``dE_meas``,
+    ``dE_pred``), ``qoi`` the per-chunk samples (``it``, ``wall``,
+    ``F``, ``resid``, ``helicity``, ``JoverB``, ``JB`` and the pressure
+    diagnostics; the first entry is the start of the run, a reconnection
+    adds a second sample at its step), ``reconnect`` one record per
+    reconnection, ``reconnect_every`` the interval actually used (rounded to
+    whole chunks), ``chunk`` the chunk length.
+    """
+    state: State
+    steps: int
+    stop: str
+    wall: float
+    trace: dict
+    qoi: dict
+    reconnect: list
+    reconnect_every: int
+    chunk: int
+
+
+def pressure_line(d: dict) -> str:
+    """One line of the pressure diagnostics of a sample."""
+    return (f"beta_vol={d['beta_vol']:.3e}  beta_axis={d['beta_axis']:.3e}  "
+            f"|grad pw - grad p|/|grad pw|={d['gradp_cmp']:.3e}  |pw - p|/|pw|={d['p_cmp']:.3e}  "
+            f"weak_resid={d['weak_resid']:.3e}  "
+            f"wall dpw/dn={d['dpdn_wall']:.3e}  (JxB).n={d['JxBn_wall']:.3e}")
+
+
+def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
+          floor_tol: float = 0.0, seconds: Optional[float] = None,
+          reconnect_every: int = 0, reconnect_helicity: float = 0.01,
+          on_chunk: Optional[Callable[[RelaxResult], None]] = None,
+          verbose: bool = True) -> RelaxResult:
+    """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
+    (:func:`chunk_runner`), the diagnostics sampled once per chunk
+    (:func:`make_sampler`), the stop tests and the reconnection series.
+
+    Stops on the step count, on ``floor_tol`` (the last chunk's mean of the
+    relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
+    residual is not monotone, the window mean is the quantity) or on
+    ``seconds`` of wall time in the steps. ``reconnect_every`` (rounded to
+    whole chunks, never on the last one) applies one :func:`resistive_step`
+    to the field whose dose spends the fraction ``reconnect_helicity`` of
+    its helicity, ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J
+    . B``, then restarts the optimiser on the diffused field
+    (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
+    every chunk's sample and BEFORE a reconnection at that step, so what it
+    saves is the field the solve starts from. ``it0`` is the absolute step
+    the run starts at (a restart); the trace and samples are this run's.
+    """
+    if chunk < 1 or steps % chunk:
+        raise ValueError("steps must be a positive multiple of chunk")
+    if reconnect_every:
+        reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
-    state = initial_state(B_dof, ts, dt0)
-    run = chunk_runner(ts, num_iters_inner)
-    get_helicity = jax.jit(compute_helicity, static_argnames=["seq"])
+    scale = force_scale(seq)
+    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: st.F_norm / scale(st.B_n)))
+    sample = make_sampler(seq, ts)
+    reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
-    traces = {k: [] for k in (
-        "force_norm", "helicity", "timestep", "energy",
-        "velocity_norm", "divergence_B", "iteration",
-        "picard_iterations", "picard_residual")}
+    trace = {k: [] for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
+                             "gain", "picard_it", "picard_resid", "dE_meas", "dE_pred")}
+    qoi: dict = {}
+    events: list = []
 
-    def record(state, iteration, energy, div_norm):
-        traces["force_norm"].append(state.F_norm)
-        h, A_new = get_helicity(state.B_n, seq, state.A)
-        traces["helicity"].append(h)
-        traces["timestep"].append(state.dt)
-        traces["energy"].append(energy)
-        traces["velocity_norm"].append(state.v_norm)
-        traces["divergence_B"].append(div_norm)
-        traces["iteration"].append(iteration)
-        traces["picard_iterations"].append(int(state.picard_iterations))
-        traces["picard_residual"].append(float(state.picard_residual))
-        return eqx.tree_at(lambda s: s.A, state, A_new)
+    def result(n_done, stop, wall):
+        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk)
 
-    state = record(state, 0, 0.5 * seq.l2_norm_sq(state.B_n, 2),
-                   compute_divergence_norm(state.B_n, seq))
-    print(f"Initial: |F|={state.F_norm:.2e}  "
-          f"H={traces['helicity'][-1]:.2e}  "
-          f"E={traces['energy'][-1]:.2e}")
+    def record(it, wall, scalars):
+        row = dict(it=it, wall=wall, F=float(state.F_norm),
+                   resid=float(state.F_norm / scale(state.B_n)), **scalars)
+        for k, v in row.items():
+            qoi.setdefault(k, []).append(v)
 
-    for i in range(1, num_iters_outer + 1):
-        state, trace = run(state, (i - 1) * num_iters_inner)
+    t_arm = time.perf_counter()
+    t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
+    E_prev = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
+    pw = jnp.zeros(seq.n(0, True))
+    tq = time.perf_counter()
+    state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
+    h0 = scalars["helicity"]
+    record(it0, 0.0, scalars)
+    if verbose:
+        print(f"[start] it {it0}  E={E_prev:.8e}  |F|={float(state.F_norm):.4e}  "
+              f"resid={float(state.F_norm / scale(state.B_n)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
+              f"        {pressure_line(scalars)}", flush=True)
+    t_out += time.perf_counter() - tq
 
-        state = record(state, i * num_iters_inner, trace["E"][-1], trace["div"][-1])
-        if callback is not None:
-            state = callback(state, i)
+    n_done, stop = 0, "running"
+    for _ in range(steps // chunk):
+        state, ch = run(state, it0 + n_done)
+        ch = {k: np.asarray(v) for k, v in ch.items()}
+        n_done += chunk
+        it = it0 + n_done
+        with np.errstate(invalid="ignore"):   # a backward line-search step has no gain
+            cos = ch["Fu"] / (ch["F"] * ch["v"])
+            trace["cos"].extend(cos.tolist())
+            trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
+        trace["dE_meas"].extend(np.diff(ch["E"], prepend=E_prev).tolist())
+        trace["dE_pred"].extend((-0.5 * ch["dt"] * ch["Fu"]).tolist())
+        for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
+            trace[k].extend(ch[k].tolist())
+        E_prev = float(ch["E"][-1])
+        resid_now = float(ch["resid"].mean())
 
-        print(f"Iter {traces['iteration'][-1]:>6d}: "
-              f"|F|={state.F_norm:.2e}  "
-              f"dH/H={(traces['helicity'][0] - traces['helicity'][-1]) / (abs(traces['helicity'][0]) + 1e-30):.2e}  "
-              f"dt={state.dt:.2e}  "
-              f"dE/E={(traces['energy'][0] - traces['energy'][-1]) / (abs(traces['energy'][0]) + 1e-30):.2e}")
-
-        if state.F_norm < force_tolerance:
+        tq = time.perf_counter()
+        wall = tq - t_arm - t_out
+        state, pw, scalars = sample(state, pw)
+        record(it, wall, scalars)
+        if verbose:
+            print(f"  it {it:>5d}  E={E_prev:.8e}  |F|={ch['F'][-1]:.4e}  "
+                  f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
+                  f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
+                  f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
+                  f"picard max={int(ch['picard_it'].max())}  [{wall:.0f}s steps +{t_out:.0f}s other]\n"
+                  f"           {pressure_line(scalars)}", flush=True)
+        if resid_now < floor_tol:
+            stop = "floor"
+        elif seconds is not None and wall > seconds:
+            stop = "seconds"
+        elif n_done == steps:
+            stop = "steps"
+        if on_chunk is not None:
+            on_chunk(result(n_done, stop, wall))
+        if stop != "running":
+            if verbose and stop != "steps":
+                print(f"  [{stop}] {'chunk mean of the force residual %.3e below %.1e' % (resid_now, floor_tol) if stop == 'floor' else '%.0f s spent' % seconds} at it={it}", flush=True)
+            t_out += time.perf_counter() - tq
             break
+        if reconnect_every and n_done % reconnect_every == 0:
+            k = len(events) + 1
+            eps = reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"]))
+            ev = dict(k=k, it=it, resid=resid_now, eps=eps, helicity_target=reconnect_helicity,
+                      F_before=float(state.F_norm), **{f"{kk}_before": v for kk, v in scalars.items()})
+            B_new, info, rel = reconnect_fn(state.B_n, eps)
+            state = initial_state(B_new, ts, dt=float(state.dt))
+            state, pw, scalars = sample(state, pw)
+            record(it, wall, scalars)
+            ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
+                      helicity_spent=(scalars["helicity"] - ev["helicity_before"]) / abs(ev["helicity_before"]),
+                      **{f"{kk}_after": v for kk, v in scalars.items()})
+            events.append(ev)
+            if verbose:
+                print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} for {reconnect_helicity:.2%} of H "
+                      f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
+                      f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "
+                      f"({ev['helicity_spent']:+.2%}), J/B {ev['JoverB_before']:.3f} -> "
+                      f"{ev['JoverB_after']:.3f}", flush=True)
+        t_out += time.perf_counter() - tq
 
-    return state, traces
+    res = result(n_done, stop, time.perf_counter() - t_arm - t_out)
+    if verbose:
+        print_summary(res, ts)
+    return res
+
+
+def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
+    """The end-of-run summary of :func:`relax`: energy removed, residual,
+    the line-search identity, helicity drift, pressures, the CFL cap, the
+    midpoint solve."""
+    tr, q = res.trace, res.qoi
+    n = res.steps
+    E0, E1 = tr["E"][0] - tr["dE_meas"][0], tr["E"][-1]
+    dEm, dEp = np.array(tr["dE_meas"]), np.array(tr["dE_pred"])
+    ident = np.abs(dEm - dEp) / E0
+    resid = np.array(tr["resid"])
+    print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
+    print(f"    E {E0:.8e} -> {E1:.8e}  ({(E0 - E1) / E0:.4%} of the initial energy removed)")
+    print(f"    residual {resid[0]:.4e} -> {resid[-1]:.4e}  (mean over the last chunk of "
+          f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
+    print(f"    linesearch identity |dE_meas - dE_pred| / E0: median {np.median(ident):.3e}  max {ident.max():.3e}"
+          + ("  (not an identity under the midpoint scheme)"
+             if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT else ""))
+    print(f"    energy increases on {int((dEm > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
+          f"||J||/||B|| {q['JoverB'][0]:.4e} -> {q['JoverB'][-1]:.4e}")
+    h = np.array(q["helicity"])
+    print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"
+          f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}")
+    print(f"    pressures at the start: {pressure_line({k: v[0] for k, v in q.items()})}")
+    print(f"    pressures at the end:   {pressure_line({k: v[-1] for k, v in q.items()})}")
+    dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
+    print(f"    CFL cap (C={ts.cfl}) bound on {int((dts < dt_star).sum())}/{n} steps;  "
+          f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
+          f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
+    if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
+        pit, pres = np.array(tr["picard_it"]), np.array(tr["picard_resid"])
+        print(f"    midpoint solve: increment evaluations mean {pit.mean():.2f}  max {pit.max()};  "
+              f"defect max {pres.max():.2e};  unconverged on {int((pres > ts.picard_tol).sum())}/{n} "
+              f"steps (tolerance {ts.picard_tol:.1e})", flush=True)
