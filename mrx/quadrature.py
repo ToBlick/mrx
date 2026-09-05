@@ -132,7 +132,7 @@ def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
     -------
     f_jk : array, shape ``(n_q, d)``
     """
-    f = jnp.zeros((d,) + quad_shape)
+    f = jnp.zeros((d,) + quad_shape, dtype=dofs.dtype)
     offset = 0
     for c, (out_dim, R, T, Z) in enumerate(comp_info):
         s = comp_shapes[c]

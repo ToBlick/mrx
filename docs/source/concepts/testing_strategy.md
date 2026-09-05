@@ -55,7 +55,7 @@ wrong and not when an implementation detail moves:
 
 - exact identities to a multiple of `mrx.eps()`, so the same assertion is
   meaningful in both precisions;
-- solver-based quantities to a multiple of `seq.tol` (`mrx.sqrt_eps()`);
+- solver-based quantities to a multiple of `seq.tol` (`mrx.precision.SOLVE_TOL`);
 - measured bands, 1.25x a measured error, stated next to the value, the date
   and the fixture. A wrong metric factor or a broken preconditioner moves
   these by a factor, precision and run-to-run noise by a few percent.

@@ -11,7 +11,11 @@ must spend the helicity it was asked to, and a checkpoint must round-trip.
 """
 import os
 
+import jax
+import jax.numpy as jnp
 import numpy as np
+
+from mrx.precision import DTYPE, sqrt_eps
 
 from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                             relax, write_checkpoint)
@@ -22,8 +26,10 @@ STEPS, CHUNK = 50, 25
 # 2026-09-02: 0.113 .. 0.143 in float64, 0.154 in float32 across three runs
 # (the line search is not bitwise reproducible); band 1.25x the largest.
 FORCE_DROP = 0.20
-# |H_end - H_0| / (2 E_0): helicity is conserved to the solves' tolerance,
-# so the band is a multiple of seq.tol in either precision.
+# |H_end - H_0| / (2 E_0): the helicity drifts by the rounding of the stored
+# field, not by a solve (the solves are refined to 1e-8 in float64 whatever
+# the working dtype), so the band is a multiple of sqrt(eps) of the working
+# dtype: 3.5e-4 in float32, 1.5e-8 in float64.
 HELICITY_DRIFT_TOL = 25.0
 
 
@@ -41,9 +47,13 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     print(f"\n  {STEPS} steps: E {E0:.6e} -> {E1:.6e}, ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
           f"({F[-1] / F[0]:.3f}), dH/2E0 {abs(H[-1] - H[0]) / (2 * E0):.2e}, ||div B|| {div:.1e}")
     assert res.stop == "steps" and res.steps == STEPS and saved == [CHUNK, STEPS]
+    leaked = {path for path, leaf in jax.tree_util.tree_flatten_with_path(res.state)[0]
+              if jnp.issubdtype(jnp.asarray(leaf).dtype, jnp.floating)
+              and jnp.asarray(leaf).dtype != DTYPE}
+    assert not leaked, f"state leaves not in the working dtype: {leaked}"
     assert np.all(dE < 0.0), f"energy not monotone: {dE}"
     assert F[-1] < FORCE_DROP * F[0], f"||F|| {F[0]:.3e} -> {F[-1]:.3e}"
-    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E0, \
+    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
     assert div < 1e3 * seq.tol * np.sqrt(2 * E1), f"||div B|| {div:.2e}"
 
@@ -89,5 +99,5 @@ def test_midpoint_conserves_helicity(seq, b0):
           f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, increment evaluations max {max(it)}, defect max {max(resid):.2e}")
     assert np.all(dE < 0.0), f"energy not monotone: {dE}"
     assert max(resid) < ts.picard_tol, f"Picard did not converge: {max(resid)}"
-    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * seq.tol * 2 * E0, \
+    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

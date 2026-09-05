@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.precision import DTYPE, RESIDUAL_DTYPE
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -94,10 +95,13 @@ def compute_force(
     else:
         X = B
         JxX_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
-    JxX = seq.apply_inverse_mass_matrix(JxX_dual, 2, guess=JxH_guess)
+    # JxX in the residual precision: the Leray projection forms the force
+    # as JxX - sigma, the small difference of two large fields, before it
+    # rounds to the working dtype.
+    JxX = seq.apply_inverse_mass_matrix(JxX_dual, 2, guess=JxH_guess, dtype=RESIDUAL_DTYPE)
     sigma_guess = None if F_guess is None else JxH_guess - F_guess
     F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess, sigma_guess=sigma_guess)
-    return F, p, J, X, JxX
+    return F, p, J, X, JxX.astype(DTYPE)
 
 
 def weak_pressure(
@@ -276,7 +280,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     h = np.array(h)
     weights = 1.0 / (np.asarray(seq.jacobian_j)[:, None] * h[None, :])
     weights[:, 1] *= np.asarray(seq.quad.x[:, 0]) >= h[0]
-    return jnp.asarray(weights)
+    return jnp.asarray(weights, dtype=DTYPE)
 
 
 # %%
@@ -864,21 +868,21 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         B_n=B_dof,
         dt=dt,
         dt_star=dt,
-        v=jnp.zeros(n),
+        v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
-        p_v=jnp.zeros(seq.n(3, True)),
-        H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True)),
+        p_v=jnp.zeros(seq.n(3, True), dtype=DTYPE),
+        H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
         JxH=JxX0,
         J=J0,
-        E=jnp.zeros(seq.n(1, True)),
-        A=jnp.zeros(seq.n(1, True)),
+        E=jnp.zeros(seq.n(1, True), dtype=DTYPE),
+        A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
         MF_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),
-        s_history=jnp.zeros((m, n)),
-        y_history=jnp.zeros((m, n)),
-        Ms_history=jnp.zeros((m, n)),
-        My_history=jnp.zeros((m, n)),
+        s_history=jnp.zeros((m, n), dtype=DTYPE),
+        y_history=jnp.zeros((m, n), dtype=DTYPE),
+        Ms_history=jnp.zeros((m, n), dtype=DTYPE),
+        My_history=jnp.zeros((m, n), dtype=DTYPE),
         picard_iterations=jnp.int32(0),
         picard_restarts=jnp.int32(0),
         picard_residual=jnp.zeros((), B_dof.dtype),
@@ -1016,7 +1020,6 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     stored field (one force evaluation), every leaf is then replaced by
     the stored one."""
     import h5py  # noqa: PLC0415
-    from mrx.precision import DTYPE  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
@@ -1119,7 +1122,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
     E0 = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
     E_removed = 0.0
-    pw = jnp.zeros(seq.n(0, True))
+    pw = jnp.zeros(seq.n(0, True), dtype=DTYPE)
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
     h0 = scalars["helicity"]

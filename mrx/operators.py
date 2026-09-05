@@ -98,12 +98,12 @@ def _dense_incidence_1d(n0: int, typ: str) -> jnp.ndarray:
     if typ == 'clamped':
         n_out = n0 - 1
         j = jnp.arange(n_out)
-        return jnp.zeros((n_out, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
+        return jnp.zeros((n_out, n0), dtype=mrx.DTYPE).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
     if typ == 'periodic':
         j = jnp.arange(n0)
-        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
+        return jnp.zeros((n0, n0), dtype=mrx.DTYPE).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
     if typ == 'constant':
-        return jnp.zeros((n0, n0))
+        return jnp.zeros((n0, n0), dtype=mrx.DTYPE)
     raise ValueError(f"Unknown basis type {typ!r}")
 
 def _fd_forward(V_r, V_t, V_z, x):
@@ -720,11 +720,15 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
                               dirichlet: bool = True, guess=None,
                               tol: Optional[float] = None,
                               maxiter: Optional[int] = None,
-                              return_info: bool = False):
-    """Solve with the inverse mass matrix, PCG with the metric-lumped mass atom."""
+                              return_info: bool = False, dtype=None):
+    """Solve with the inverse mass matrix: PCG with the metric-lumped mass
+    atom, refined against the residual view (:func:`mrx.solvers.refine`).
+    The result is in the working dtype unless ``dtype`` names the residual
+    precision, for a caller that keeps computing with it."""
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
     precond_apply = _mass_atom(operators, k, dirichlet).apply
+    res = seq.residual
     x, info = solve_singular_cg(
         lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet),
         rhs,
@@ -735,8 +739,15 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
         x0=guess,
         tol=tol,
         maxiter=maxiter,
+        A_res=None if res is None else (lambda x: apply_mass_matrix(res, x, k, dirichlet=dirichlet)),
     )
+    x = _out(x, dtype)
     return (x, info) if return_info else x
+
+
+def _out(x, dtype=None):
+    """A solve's result in the working dtype, or in ``dtype``."""
+    return x.astype(mrx.DTYPE if dtype is None else dtype)
 
 
 def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
@@ -912,6 +923,17 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     def L_hat(x):
         return apply_stiffness(seq, x, k, dirichlet=dirichlet) + M(D(W(DT(M(x)))))
 
+    res = seq.residual
+
+    def L_hat_res(x):
+        Mx = apply_mass_matrix(res, x, k, dirichlet=dirichlet)
+        DTMx = apply_incidence_matrix(res, Mx, k - 1, dirichlet_in=dirichlet,
+                                      dirichlet_out=dirichlet, transpose=True)
+        DWDTMx = apply_incidence_matrix(res, W(DTMx), k - 1, dirichlet_in=dirichlet,
+                                        dirichlet_out=dirichlet)
+        return (apply_stiffness(res, x, k, dirichlet=dirichlet)
+                + apply_mass_matrix(res, DWDTMx, k, dirichlet=dirichlet))
+
     return solve_singular_cg(
         L_hat, b,
         mass_matvec=M,
@@ -920,6 +942,7 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
         vs=_nullspace_vectors(operators, k, dirichlet),
         tol=tol,
         maxiter=maxiter,
+        A_res=None if res is None else L_hat_res,
     )
 
 
@@ -991,7 +1014,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     g, _ = solve(DT(rhs, k - 1), k - 1)
     x_perp, info = solve(rhs - M(D(g, k - 1), k), k, guess=guess)
     a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
-    x = x_perp + D(a, k - 1)
+    x = _out(x_perp + D(a, k - 1))
     return (x, info) if return_info else x
 
 
@@ -1015,26 +1038,27 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
-        precond_upper = _laplacian_atom(operators, 0, dirichlet).apply
-        vs = _nullspace_vectors(operators, 0, dirichlet)
+        res = seq.residual
         u, info = solve_singular_cg(
-            lambda x: apply_stiffness(
-                seq, x, 0, dirichlet=dirichlet),
+            lambda x: apply_stiffness(seq, x, 0, dirichlet=dirichlet),
             rhs,
-            mass_matvec=lambda x: apply_mass_matrix(
-                seq, x, 0, dirichlet=dirichlet),
-            precond_matvec=precond_upper,
+            mass_matvec=lambda x: apply_mass_matrix(seq, x, 0, dirichlet=dirichlet),
+            precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
             x0=guess,
-            vs=vs,
+            vs=_nullspace_vectors(operators, 0, dirichlet),
             tol=tol,
             maxiter=maxiter,
+            A_res=None if res is None else (
+                lambda x: apply_stiffness(res, x, 0, dirichlet=dirichlet)),
         )
+        u = _out(u)
         return (u, info) if return_info else u
 
     if k == 3:
         u, _, info = apply_inverse_laplacian_saddle(
             seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
             tol=tol, maxiter=maxiter)
+        u = _out(u)
         return (u, info) if return_info else u
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
@@ -1061,24 +1085,34 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
     harmonic forms of level ``k`` are deflated from the upper block and the
     ``eps M_k`` term is not applied; the lower block needs no deflation
     (see :func:`~mrx.solvers.solve_saddle_point_minres`). ``guess`` and
-    ``sigma_guess`` warm-start the two blocks together.
+    ``sigma_guess`` warm-start the two blocks together. Refined against the
+    residual view; ``u`` and ``sigma`` then come back in the residual
+    precision (the Leray projection forms its force from them before it
+    rounds).
     """
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
-    if eps == 0:
-        vs_upper = _nullspace_vectors(operators, k, dirichlet)
+    res = seq.residual
 
-        def stiffness_matvec(x):
-            return apply_stiffness(seq, x, k, dirichlet=dirichlet)
-    else:
-        vs_upper = jnp.zeros((0, rhs.shape[0]))
+    def stiffness_on(s, x):
+        if eps == 0:
+            return apply_stiffness(s, x, k, dirichlet=dirichlet)
+        return (apply_stiffness(s, x, k, dirichlet=dirichlet)
+                + eps * apply_mass_matrix(s, x, k, dirichlet=dirichlet))
 
-        def stiffness_matvec(x):
-            return (apply_stiffness(seq, x, k, dirichlet=dirichlet)
-                    + eps * apply_mass_matrix(seq, x, k, dirichlet=dirichlet))
+    vs_upper = (_nullspace_vectors(operators, k, dirichlet) if eps == 0
+                else jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype))
+
+    def saddle_res(u, s):
+        return (stiffness_on(res, u) + apply_derivative_matrix(
+                    res, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
+                apply_derivative_matrix(res, u, k - 1, dirichlet_in=dirichlet,
+                                        dirichlet_out=dirichlet, transpose=True)
+                - apply_mass_matrix(res, s, k - 1, dirichlet=dirichlet))
+
     return solve_saddle_point_minres(
-        stiffness_matvec=stiffness_matvec,
+        stiffness_matvec=lambda x: stiffness_on(seq, x),
         derivative_matvec=lambda s: apply_derivative_matrix(
             seq, s, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet),
         derivative_T_matvec=lambda u: apply_derivative_matrix(
@@ -1098,6 +1132,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
         x0_lower=sigma_guess,
         tol=tol,
         maxiter=maxiter,
+        saddle_res=None if res is None else saddle_res,
     )
 
 
@@ -1119,30 +1154,34 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     maxiter = seq.maxiter if maxiter is None else maxiter
 
     if k == 0:
+        res = seq.residual
+
+        def A_on(s, x):
+            if eps == 0:
+                return apply_stiffness(s, x, 0, dirichlet=dirichlet)
+            return (apply_stiffness(s, x, 0, dirichlet=dirichlet)
+                    + eps * apply_mass_matrix(s, x, 0, dirichlet=dirichlet))
+
         if eps == 0:
             vs = _nullspace_vectors(operators, 0, dirichlet)
-
-            def A_matvec(x):
-                return apply_stiffness(seq, x, 0, dirichlet=dirichlet)
 
             def mass_matvec(x):
                 return apply_mass_matrix(seq, x, 0, dirichlet=dirichlet)
         else:
-            vs = jnp.zeros((0, rhs.shape[0]))
+            vs = jnp.zeros((0, rhs.shape[0]), dtype=rhs.dtype)
             mass_matvec = None
-
-            def A_matvec(x):
-                return (apply_stiffness(seq, x, 0, dirichlet=dirichlet)
-                        + eps * apply_mass_matrix(seq, x, 0, dirichlet=dirichlet))
         u, info = solve_singular_cg(
-            A_matvec, rhs, mass_matvec=mass_matvec,
+            lambda x: A_on(seq, x), rhs, mass_matvec=mass_matvec,
             precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
-            x0=guess, vs=vs, tol=tol, maxiter=maxiter)
+            x0=guess, vs=vs, tol=tol, maxiter=maxiter,
+            A_res=None if res is None else (lambda x: A_on(res, x)))
+        u = _out(u)
         return (u, info) if return_info else u
 
     u, _, info = apply_inverse_laplacian_saddle(
         seq, operators, rhs, k, eps, dirichlet=dirichlet, guess=guess,
         tol=tol, maxiter=maxiter)
+    u = _out(u)
     return (u, info) if return_info else u
 
 
@@ -1186,29 +1225,35 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    res = seq.residual
+    on = seq if res is None else res      # the level-(k-1) coupling in the residual precision
+
+    def A_on(s, j, x):
+        return (apply_mass_matrix(s, x, j, dirichlet=dirichlet)
+                + eps * apply_stiffness(s, x, j, dirichlet=dirichlet))
 
     def shifted_solve(j, b, x0):
-        precond_apply = _shifted_atom_apply(operators, j, dirichlet, eps)
         return solve_singular_cg(
-            lambda x: apply_mass_matrix(seq, x, j, dirichlet=dirichlet)
-            + eps * apply_stiffness(seq, x, j, dirichlet=dirichlet),
+            lambda x: A_on(seq, j, x),
             b,
             jnp.zeros((0, b.shape[0]), dtype=b.dtype),
-            precond_matvec=precond_apply,
+            precond_matvec=_shifted_atom_apply(operators, j, dirichlet, eps),
             x0=x0,
             tol=tol,
             maxiter=maxiter,
+            A_res=None if res is None else (lambda x: A_on(res, j, x)),
         )
 
     x, info = shifted_solve(k, rhs, guess)
     if k == 0:
+        x = _out(x)
         return (x, info) if return_info else x
 
     z, info_lower = shifted_solve(
         k - 1,
         apply_incidence_matrix(seq, rhs, k - 1, dirichlet, dirichlet, transpose=True),
         None)
-    x = x - eps * apply_incidence_matrix(seq, z, k - 1, dirichlet, dirichlet)
+    x = _out(x - eps * apply_incidence_matrix(on, z, k - 1, dirichlet, dirichlet))
     total = jnp.abs(info) + jnp.abs(info_lower)
     info = jnp.where((info <= 0) & (info_lower <= 0), -total, total)
     return (x, info) if return_info else x

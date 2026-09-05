@@ -1,12 +1,17 @@
 """Matrix-free Krylov solvers: :func:`preconditioned_cg`, :func:`solve_singular_cg`
-and :func:`solve_saddle_point_minres`.
+and :func:`solve_saddle_point_minres`, and :func:`refine`, the iterative
+refinement that runs them in mixed precision.
 
-Every solver takes a relative tolerance ``tol``.  ``tol=None`` -- the default
-everywhere -- resolves to :func:`mrx.precision.sqrt_eps`, the square root of
-the working dtype's machine epsilon (1.5e-8 at float64, 3.5e-4 at float32):
-the residual of a matrix-free solve is limited by roundoff in the matvec, and
-that is the tightest tolerance which does not send the loop to ``maxiter``.
-Anything tighter or looser is an ALGORITHMIC choice and is passed explicitly.
+Every solver takes a relative tolerance ``tol``; ``tol=None`` is
+:data:`mrx.precision.SOLVE_TOL`. Given a residual-precision operator
+(``A_res`` / ``saddle_res``, the float64 view of the sequence), the singular
+CG and the saddle MINRES are refined: the residual of the outer equation is
+evaluated in float64, the correction solved in the working precision to
+:data:`mrx.precision.INNER_TOL`, the solution accumulated in float64 and
+returned in it. Until 2026-09-04 the default was sqrt(eps) of the working
+dtype with a docstring claiming it was the tightest tolerance that did not
+send the loop to ``maxiter``; measured on li383 (16,32,32) p=3 in float32,
+every production solve converges to 1e-7 (``docs/research/velocity_leray_ab_2026-09-04.md``).
 """
 
 from typing import NamedTuple
@@ -14,7 +19,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from mrx.precision import sqrt_eps
+from mrx.precision import DTYPE, INNER_TOL, MAX_PASSES, RESIDUAL_DTYPE, solve_tol
 
 
 def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
@@ -33,7 +38,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         b: Right-hand side vector.
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M @ x (approx A^{-1}, SPD).
-        tol: Relative tolerance in M-norm; ``None`` is ``mrx.sqrt_eps()``.
+        tol: Relative tolerance in M-norm; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -50,7 +55,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     n = b.shape[0]
     if tol is None:
-        tol = sqrt_eps()
+        tol = solve_tol()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -145,7 +150,51 @@ def deflation_projectors(vs, mass_matvec):
     return project_primal, project_dual
 
 
-def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None, maxiter=None, tol=None):
+def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None,
+           max_passes=MAX_PASSES):
+    """Iterative refinement of ``A x = b`` in mixed precision.
+
+    ``apply_res(x)`` applies ``A`` in the residual precision
+    (:data:`mrx.precision.RESIDUAL_DTYPE`), ``solve(r)`` solves ``A d = r``
+    in the working precision from zero to :data:`mrx.precision.INNER_TOL`
+    and returns ``(d, info)``. The residual ``b - A x`` is evaluated in the
+    residual precision, the correction added there, until the residual is
+    below ``tol`` times ``|b|`` (2-norms of the dual vectors) or
+    ``max_passes`` corrections were taken; each pass takes the residual
+    down by about ``INNER_TOL``, so a warm start with a 1% defect meets
+    1e-8 in two. ``project_dual`` removes the nullspace component of a
+    singular system's residual. Returns ``(x, info)`` with ``x`` in the
+    residual precision and ``info`` the inner iterations of all passes,
+    negative when the residual test was met.
+    """
+    tol = solve_tol() if tol is None else tol
+    if project_dual is None:
+        def project_dual(r): return r
+    b = b.astype(RESIDUAL_DTYPE)
+    x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
+    bnorm = jnp.linalg.norm(b)
+    bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+
+    def residual(x):
+        return project_dual(b - apply_res(x))
+
+    def cond(carry):
+        _, r, k, _ = carry
+        return jnp.logical_and(jnp.linalg.norm(r) > tol * bnorm_safe, k < max_passes)
+
+    def body(carry):
+        x, r, k, its = carry
+        d, info = solve(r.astype(DTYPE))
+        x = x + d.astype(RESIDUAL_DTYPE)
+        return x, residual(x), k + 1, its + jnp.abs(info)
+
+    x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
+    converged = jnp.linalg.norm(r) <= tol * bnorm_safe
+    return x, jnp.where(converged, -its, its)
+
+
+def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None,
+                      maxiter=None, tol=None, A_res=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
@@ -158,31 +207,33 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
             possibly 0 -- the shape the sequence stores its harmonic forms in
             (:func:`mrx.nullspace.get_nullspace`).
         maxiter: Maximum number of CG iterations.
-        tol: CG tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        tol: CG tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
+        A_res: ``A`` in the residual precision. When given the solve is
+            :func:`refine`'d and ``x`` comes back in that precision.
     """
     if mass_matvec is None:
         def mass_matvec(x): return x
 
     project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=b.dtype), mass_matvec)
-    b_proj = project_dual(b)
 
     def A_matvec_safe(x):
-        x = project_primal(x)
-        # Apply the bilinear form (output is Dual)
-        Ax = A_matvec(x)
-        return project_dual(Ax)
+        return project_dual(A_matvec(project_primal(x)))
 
     def precond_matvec_safe(x):
         return project_primal(precond_matvec(project_dual(x)))
 
-    if x0 is None:
-        x0 = jnp.zeros_like(b_proj)
-    else:
-        x0 = project_primal(x0)
+    if A_res is None:
+        x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
+        x, info = preconditioned_cg(A_matvec_safe, project_dual(b), x0=x0,
+                                    M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+        return project_primal(x), info
 
-    x, info = preconditioned_cg(A_matvec_safe, b_proj, x0=x0,
-                                M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+    def solve(r):
+        return preconditioned_cg(A_matvec_safe, r, M=precond_matvec_safe,
+                                 tol=INNER_TOL, maxiter=maxiter)
 
+    x, info = refine(lambda x: A_res(project_primal(x)), solve, b, x0=x0, tol=tol,
+                     project_dual=project_dual)
     return project_primal(x), info
 
 
@@ -217,7 +268,7 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M^{-1} @ x.
            Must be symmetric positive definite.
-        tol: Relative residual tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        tol: Relative residual tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -230,7 +281,7 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     n = b.shape[0]
     if tol is None:
-        tol = sqrt_eps()
+        tol = solve_tol()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -384,7 +435,7 @@ def solve_saddle_point_minres(
         mass_upper_matvec=None,
         vs_upper=None,
         x0_upper=None, x0_lower=None,
-        tol=None, maxiter=None):
+        tol=None, maxiter=None, saddle_res=None):
     """
     Solve the saddle-point system using preconditioned MINRES::
 
@@ -415,8 +466,11 @@ def solve_saddle_point_minres(
         x0_lower: Initial guess for sigma. A guess on ``u`` alone leaves
             ``D^T x0_upper`` in the lower block of the initial residual, so
             the two go together.
-        tol: MINRES tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        tol: MINRES tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum iterations.
+        saddle_res: ``(u, sigma) -> (S u + D sigma, D^T u - M sigma)`` in the
+            residual precision. When given the solve is :func:`refine`'d
+            and ``u``, ``sigma`` come back in that precision.
 
     Returns:
         u: Solution k-form vector.
@@ -432,9 +486,10 @@ def solve_saddle_point_minres(
         def mass_upper_matvec(x): return x
 
     n_total = n_upper + n_lower
+    dtype = b_upper.dtype
 
     def _rows(vs, n):
-        return jnp.zeros((0, n)) if vs is None or len(vs) == 0 else jnp.asarray(vs)
+        return jnp.zeros((0, n), dtype=dtype) if vs is None or len(vs) == 0 else jnp.asarray(vs)
 
     project_primal_upper, project_dual_upper = deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec)
 
@@ -466,23 +521,30 @@ def solve_saddle_point_minres(
         ps = precond_lower(s) if precond_lower is not None else s
         return pack(project_primal_upper(pu), ps)
 
-    # --- RHS ---
-    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
-
-    # --- Initial guess ---
+    # --- RHS and initial guess ---
+    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
     if x0_upper is None:
-        x0_upper = jnp.zeros(n_upper)
+        x0_upper = jnp.zeros(n_upper, dtype=dtype)
     if x0_lower is None:
-        x0_lower = jnp.zeros(n_lower)
+        x0_lower = jnp.zeros(n_lower, dtype=dtype)
     x0 = pack(project_primal_upper(x0_upper), x0_lower)
 
     if maxiter is None:
         maxiter = n_total
 
-    x, info = minres(A_matvec, b, x0=x0, M=precond,
-                     tol=tol, maxiter=maxiter)
+    if saddle_res is None:
+        x, info = minres(A_matvec, b, x0=x0, M=precond, tol=tol, maxiter=maxiter)
+        u, sigma = unpack(project_primal(x))
+        return u, sigma, info
+
+    def apply_res(x):
+        u, s = unpack(x)
+        r_upper, r_lower = saddle_res(project_primal_upper(u), s)
+        return pack(project_dual_upper(r_upper), r_lower)
+
+    def solve(r):
+        return minres(A_matvec, r, M=precond, tol=INNER_TOL, maxiter=maxiter)
+
+    x, info = refine(apply_res, solve, b, x0=x0, tol=tol)
     u, sigma = unpack(project_primal(x))
-
     return u, sigma, info
-
-

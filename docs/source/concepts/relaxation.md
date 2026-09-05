@@ -314,7 +314,7 @@ method per run. Flags, defaults in brackets:
 | `--nfp N [file value]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--r-refine a:b:m,... [""]` | radial refinement windows, `m` uniform cells in each `[a, b]` (`radial_knots`) |
-| `--solve-maxiter N [2000]`, `--solve-tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
+| `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`precision.md`) |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |

@@ -36,7 +36,7 @@ Flags, defaults in brackets:
                                    gaps (mrx.geometry.radial_knots)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --solve-maxiter N [2000]     iteration budget of every inner solve
-      --solve-tol TOL [sqrt(eps)]  inner solve tolerance
+      --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
       --precision {float32,float64} [float32]  exported as MRX_DTYPE before
                                    mrx is imported
       --seed m,n,rho0,width [""], --seed-eps EPS [0]

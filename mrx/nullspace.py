@@ -75,7 +75,7 @@ def init_nullspaces(seq, operators, betti_numbers=None):
     if betti_numbers is None:
         betti_numbers = seq.betti_numbers
     spaces = {(k, dirichlet): jnp.zeros((_n_vectors(betti_numbers, k, dirichlet),
-                                         _dof_count(seq, k, dirichlet)))
+                                         _dof_count(seq, k, dirichlet)), dtype=mrx.DTYPE)
               for k in range(4) for dirichlet in (False, True)}
     return eqx.tree_at(lambda ops: ops.nullspaces, operators, spaces,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
@@ -256,7 +256,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     if _n_vectors(betti_numbers, 3, True):
         # k = 3, Dirichlet: lift the constant 1-vector via M^{-1}.
         v3 = seq.apply_inverse_mass_matrix(
-            jnp.ones(seq.n(3, True)), 3, dirichlet=True, operators=operators)
+            jnp.ones(seq.n(3, True), dtype=mrx.DTYPE), 3, dirichlet=True, operators=operators)
         v3 = v3 / seq.l2_norm(v3, 3, dirichlet=True)
         operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
 
@@ -280,10 +280,12 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
             seed2, 2, dirichlet_in=True, dirichlet_out=True)
         closed = float(seq.l2_norm(div_seed, 3, dirichlet=True)
                        / seq.l2_norm(seed2, 2, dirichlet=True))
-        if closed > seq.tol:
+        # A histopolated seed is closed to the round-off of its working-
+        # precision incidence apply, not to the solves' residual tolerance.
+        if closed > mrx.sqrt_eps():
             raise RuntimeError(
                 "compute_nullspaces: the dr^dchi seed is not closed "
-                f"(|D seed| / |seed| = {closed:.2e} > tol {seq.tol:.1e}); the "
+                f"(|D seed| / |seed| = {closed:.2e} > sqrt(eps) {mrx.sqrt_eps():.1e}); the "
                 "k=2 Dirichlet harmonic form would carry that divergence")
         curl_dual = seq.apply_derivative_matrix(
             seed2, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
@@ -295,7 +297,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
 
     if _n_vectors(betti_numbers, 0, False):
         # k = 0, no Dirichlet BC: the constant function.
-        v0 = jnp.ones(seq.n(0))
+        v0 = jnp.ones(seq.n(0), dtype=mrx.DTYPE)
         v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
         operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
 
@@ -321,10 +323,12 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
             seed1, 1, dirichlet_in=False, dirichlet_out=False)
         closed = float(seq.l2_norm(curl_seed, 2, dirichlet=False)
                        / seq.l2_norm(seed1, 1, dirichlet=False))
-        if closed > seq.tol:
+        # A histopolated seed is closed to the round-off of its working-
+        # precision incidence apply, not to the solves' residual tolerance.
+        if closed > mrx.sqrt_eps():
             raise RuntimeError(
                 "compute_nullspaces: the d zeta seed is not closed "
-                f"(|C seed| / |seed| = {closed:.2e} > tol {seq.tol:.1e}); the "
+                f"(|C seed| / |seed| = {closed:.2e} > sqrt(eps) {mrx.sqrt_eps():.1e}); the "
                 "k=1 free harmonic form would carry that curl unremoved")
         v1, _ = seq.apply_leray_projection(seed1, k=1)
         v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
@@ -406,10 +410,10 @@ def _initial_guesses(seq, operators, k, dirichlet, n_vec):
         return []
     guesses = [None] * n_vec
     if k == 0 and not dirichlet:
-        guesses[0] = jnp.ones(seq.n(0))
+        guesses[0] = jnp.ones(seq.n(0), dtype=mrx.DTYPE)
     elif k == 3 and dirichlet:
         guesses[0] = seq.apply_inverse_mass_matrix(
-            jnp.ones(seq.n(3, True)), 3, dirichlet=True, operators=operators)
+            jnp.ones(seq.n(3, True), dtype=mrx.DTYPE), 3, dirichlet=True, operators=operators)
     elif k == 1 and not dirichlet:
         guesses[0] = _logical_constant_seed(
             seq, operators, 1, False, (0.0, 0.0, 1.0))
@@ -572,9 +576,9 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         abs_tol = seq.tol
     n = _dof_count(seq, k, dirichlet)
     if n_vectors == 0:
-        return jnp.zeros((0, n)), []
+        return jnp.zeros((0, n), dtype=mrx.DTYPE), []
 
-    found = [] if known is None else [jnp.asarray(v) for v in known]
+    found = [] if known is None else [jnp.asarray(v, dtype=mrx.DTYPE) for v in known]
     n_known = len(found)
     iters = []
     for idx in range(n_vectors):

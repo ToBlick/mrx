@@ -25,6 +25,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
+
+from mrx.precision import DTYPE
 from scipy import sparse
 from scipy.sparse import csgraph
 
@@ -102,7 +104,7 @@ def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
     halfwidths = 0.5 * (hi - lo)
     xs = (centers[:, :, None] + halfwidths[:, :, None] * xi_ref).reshape(len(spans), -1)
     ws = (halfwidths[:, :, None] * w_ref).reshape(len(spans), -1)
-    return jnp.asarray(xs), jnp.asarray(ws)
+    return jnp.asarray(xs, dtype=DTYPE), jnp.asarray(ws, dtype=DTYPE)
 
 
 class _GrevilleAxis(NamedTuple):
@@ -223,7 +225,7 @@ def _conforming_restriction(e, c_full):
     for lab in np.unique(labels[core]):
         idx = order[bounds[lab]:bounds[lab + 1]]
         out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
-    return jnp.asarray(out)
+    return jnp.asarray(out, dtype=DTYPE)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
@@ -236,7 +238,7 @@ def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
     if transform is None:
         return None
     if transform is extraction:
-        return jnp.asarray(dof)
+        return jnp.asarray(dof, dtype=DTYPE)
     return None
 
 
@@ -417,7 +419,7 @@ def _wrap_periodic_point(seq, xi):
         if basis.type == 'periodic':
             coord = jnp.mod(coord, 1.0)
         wrapped.append(coord)
-    return jnp.asarray(wrapped)
+    return jnp.asarray(wrapped, dtype=DTYPE)
 
 
 def _oneform_pullback(seq, v, frame: str = 'phys'):
