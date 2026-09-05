@@ -890,6 +890,22 @@ class DeRhamSequence():
     def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
         """Integrate ``Λⁿ_i · (w × u)`` from quadrature values of ``w`` and ``u``.
 
+        The physical cross product is formed in the reference representation
+        that pairs metric-free with the output basis (covariant for ``n =
+        2``, contravariant density for ``n = 1``, :meth:`_vector_load_values`),
+        so at most one metric contraction is spent on the inputs. With ``G =
+        DF^T DF``, ``J^2 = det G`` and ``(A a) x (A b) = det(A) A^-T (a x b)``:
+        two 1-forms cross to the density ``w x u`` (the wedge product,
+        metric-free; the 2-form pairing then brings ``G / J``), two 2-forms
+        to the covariant ``(w x u) / J`` or the density ``G^-1 (w x u)``, a
+        1-form and a 2-form to the covariant vector with ``G^-1`` on the
+        1-form factor or the density with ``G`` on the 2-form factor over
+        ``J``. The production kernels (the force ``J x B`` onto the 2-forms,
+        the induction ``u x B`` onto the 1-forms) are the same expressions
+        as the eight explicit cases this replaced on 2026-09-04; the two
+        density cases with a 1-form factor associate ``1 / J`` with the
+        product instead of the weight (round-off only).
+
         Args:
             w_jk: Reference components of the m-form at the quadrature points,
                 shape ``(n_q, 3)`` (see :meth:`evaluate_at_quadrature`).
@@ -903,49 +919,27 @@ class DeRhamSequence():
         Returns:
             The n-form dual DOF vector.
         """
-        from mrx.quadrature import integrate_against
-        if n not in (1, 2):
-            raise ValueError("n must be 1 or 2")
-        en = self.E(n, dirichlet_n)
-        comp_info_n, comp_shapes_n = self._form_comp_info(n)
+        if n not in (1, 2) or m not in (1, 2) or k not in (1, 2):
+            raise ValueError("n, m and k must be 1 or 2")
 
-        if n == 1 and m == 2 and k == 1:
-            Gw_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_jk)
-            Gw_x_u_jk = jnp.cross(Gw_jk, u_jk, axis=1)
-            f_jk = Gw_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
-        elif n == 1 and m == 1 and k == 1:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.quad.w)[:, None]
-        elif n == 2 and m == 1 and k == 1:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            G_wxu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, w_x_u_jk)
-            f_jk = G_wxu_jk * (self.quad.w / self.jacobian_j)[:, None]
-        elif n == 2 and m == 2 and k == 1:
-            Ginvu_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, u_jk)
-            w_x_Ginvu_jk = jnp.cross(w_jk, Ginvu_jk, axis=1)
-            f_jk = w_x_Ginvu_jk * (self.quad.w)[:, None]
-        elif n == 1 and m == 2 and k == 2:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            Ginv_wxu_jk = jnp.einsum(
-                'jkl,jk->jl', self.metric_inv_jkl, w_x_u_jk)
-            f_jk = Ginv_wxu_jk * (self.quad.w)[:, None]
-        elif n == 2 and m == 1 and k == 2:
-            Ginvw_jk = jnp.einsum('jkl,jk->jl', self.metric_inv_jkl, w_jk)
-            Ginvw_x_u_jk = jnp.cross(Ginvw_jk, u_jk, axis=1)
-            f_jk = Ginvw_x_u_jk * (self.quad.w)[:, None]
-        elif n == 1 and m == 1 and k == 2:
-            # The (1, 2, 1) case with the factors swapped: w x u = -(u x w).
-            Gu_jk = jnp.einsum('jkl,jk->jl', self.metric_jkl, u_jk)
-            w_x_Gu_jk = jnp.cross(w_jk, Gu_jk, axis=1)
-            f_jk = w_x_Gu_jk * (self.quad.w / self.jacobian_j)[:, None]
-        elif n == 2 and m == 2 and k == 2:
-            w_x_u_jk = jnp.cross(w_jk, u_jk, axis=1)
-            f_jk = w_x_u_jk * (self.quad.w / self.jacobian_j)[:, None]
-        else:
-            raise ValueError("Not yet implemented")
+        def contract(A, x):
+            return jnp.einsum('jkl,jk->jl', A, x)
 
-        return en @ integrate_against(
-            f_jk, comp_info_n, comp_shapes_n, self.quad.shape)
+        G, G_inv, J = self.metric_jkl, self.metric_inv_jkl, self.jacobian_j[:, None]
+        if m == 1 and k == 1:
+            c, rep = jnp.cross(w_jk, u_jk, axis=1), 2
+        elif m == 2 and k == 2:
+            wxu = jnp.cross(w_jk, u_jk, axis=1)
+            c, rep = (wxu / J, 1) if n == 2 else (contract(G_inv, wxu), 2)
+        elif n == 2:      # covariant: G^-1 on the 1-form factor
+            c = (jnp.cross(contract(G_inv, w_jk), u_jk, axis=1) if m == 1
+                 else jnp.cross(w_jk, contract(G_inv, u_jk), axis=1))
+            rep = 1
+        else:             # density: G on the 2-form factor, over J
+            c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
+                 else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
+            rep = 2
+        return self._vector_load_values(c, rep, n, dirichlet_n)
 
     # --- the other quadratic operators ------------------------------------
     #

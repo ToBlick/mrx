@@ -97,6 +97,16 @@ plotters (they solve: the weak pressure and the force need the k=1/2 mass
 atoms and the k=0/3 Laplacian atoms; only the k=1/2 Laplacian atoms are
 spare), the drift-check recompiles, the double parse of the equilibrium.
 
+**Done: the two small ones.** `pressure_diagnostics` reads the two
+pressures through `evaluate_at_quadrature`; `cross_product_load_values`
+forms the cross product in the representation that pairs metric-free
+with the output basis and hands it to `_vector_load_values`, the eight
+explicit cases gone. Per apply against the old kernel
+(`outputs/prune_smoke/probe_batchE.py`, li383 (8,16,16) p=2): the force
+kernel bit-identical, the induction to 2e-10, the other cases at float32
+round-off (1e-7, the `1/J` associated with the product instead of the
+weight).
+
 **The "div f = 0" question, measured** (`probe_batchD.py`, li383
 (12,24,24) p=3 float32, 200 steps in). The shifted split solves `(M_2 +
 eps S_2) x = M_2 u` and then the k=1 curl-curl level. For a
@@ -121,4 +131,10 @@ step's solves): the force Leray 249 cold, 198 with `p` alone, 8-16 with
 0-6 warm. The returned `sigma` differs from the recomputed weak gradient
 by 1.2e-3 in the M norm (3.5 tol, float32). The diagonalised shifted
 core differs from the per-solve inverse by 4e-5 (k=1) and 2e-6 (k=2),
-round-off of the two routes.
+round-off of the two routes. Step time, same mesh, 300 steps in chunks of
+100, the previous commit aa939e1 against b8701a1
+(`outputs/prune_smoke/timing_ab.py`): 0.551 -> 0.247 s/step on the last
+chunk, 0.760 -> 0.370 over the last two, a 2.2x faster step (the per-solve
+`eigh`, the lower-block mass solve and its two mass applies per MINRES
+iteration, the sigma recompute and the cold `J` together; the two
+trajectories differ at round-off, F_300/F_0 8.6e-2 vs 9.8e-2).

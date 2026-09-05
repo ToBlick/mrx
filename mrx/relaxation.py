@@ -194,9 +194,7 @@ def pressure_diagnostics(
     """
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import map_jacobian_at
-    from mrx.quadrature import evaluate_at_xq
 
-    quad_shape = seq.quad.shape
     wJ = seq.quad.w * seq.jacobian_j
 
     # (a) the gauge-free comparisons: gradients in the Dirichlet 2-form
@@ -206,10 +204,8 @@ def pressure_diagnostics(
         seq.apply_projection_matrix(gpw, 1, 2, dirichlet_in=False, dirichlet_out=True), 2)
     gp = seq.apply_weak_grad(p, True)
     gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
-    ci0, cs0 = seq._form_comp_info(0)
-    ci3, cs3 = seq._form_comp_info(3)
-    pw_q = evaluate_at_xq(seq.E(0, True).T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
-    p_q = evaluate_at_xq(seq.E(3, True).T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
+    pw_q = seq.evaluate_at_quadrature(p_w, 0, True)[:, 0]
+    p_q = seq.evaluate_at_quadrature(p, 3, True)[:, 0] / seq.jacobian_j
     pw_c = pw_q - jnp.sum(wJ * pw_q) / jnp.sum(wJ)
     p_c = p_q - jnp.sum(wJ * p_q) / jnp.sum(wJ)
     p_cmp = jnp.sqrt(jnp.sum(wJ * (p_c - pw_c) ** 2) / jnp.sum(wJ * pw_c ** 2))
