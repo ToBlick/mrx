@@ -82,6 +82,23 @@ removes the cause: the solves reach 1e-8 relative to `J x B`, the force
 is accurate to float32 rounding, and the residual floor is set by the
 storage of `B`, not by the solver.
 
+## What it costs and what it buys
+
+Measured on li383 (16,32,32) p=3, 2000 relaxation steps
+(`docs/research/velocity_leray_ab_2026-09-04.md`): mixed precision at
+`SOLVE_TOL` 1e-8 runs at 1.04 s/step and float64 at 0.95 s/step, both
+reaching the same residual floor (4.7e-4 to 5.0e-4), while float32 with
+the old tolerance sat at 8.4e-4. At these meshes the step is bound by
+kernel-launch latency, not memory bandwidth, so the working precision
+buys memory (half the operators, geometry and state), not time. The
+accuracy of a solve costs about a hundred MINRES iterations per decade
+on the k=3 saddle; the tolerance is the cost knob. The velocity's
+gradient part relative to the descent grows as `0.1 tol / resid^2`, so a
+run aimed at a residual below 1e-4 wants `--solve-tol 1e-10` or float64.
+In float32 storage the per-step energy change is at the rounding of the
+stored field: the trace's `dE` sums are right, its single steps are
+noise; float64 gives a clean per-step trace.
+
 ## Solver tolerance
 
 `DeRhamSequence(tol=None)` and every solver in `mrx/solvers.py` default

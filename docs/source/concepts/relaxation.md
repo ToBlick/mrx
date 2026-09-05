@@ -51,13 +51,18 @@ chunks (section 2a).
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
    `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
    smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0.
-4. `u, p_v = seq.apply_leray_projection(u, k=2)`: the flow is
-   incompressible.
-5. `E = M_1^{-1} cross_product_load(u, X, ...)`: the ideal electric
+   The flow is incompressible without a projection of its own: the
+   force is Leray-projected, the L-BFGS direction combines projected
+   forces and their steps, and the smoothing commutes with the
+   divergence. A second Leray projection of the velocity was measured to
+   change nothing in float64 and in mixed precision and to cost 1.5-4x
+   the step (`docs/research/velocity_leray_ab_2026-09-04.md`); until
+   2026-09-05 it was step 4.
+4. `E = M_1^{-1} cross_product_load(u, X, ...)`: the ideal electric
    field, one k=1 mass solve (`X` as in section 1).
-6. `dB = seq.apply_incidence_matrix(E, 1)`: the topological curl, so
+5. `dB = seq.apply_incidence_matrix(E, 1)`: the topological curl, so
    `div B` is conserved to `1e-16` along the trajectory.
-7. `dt_star = F·Mu / ||dB||²_M`, the minimiser of the energy along the
+6. `dt_star = F·Mu / ||dB||²_M`, the minimiser of the energy along the
    direction and the largest step that still lowers `E` (the analytic line
    search). Then the CFL cap, `dt = min(dt_star, cfl / cfl_max)`:
    `cfl_max = max_{q,i} |u_ref^i(x_q)| / (J(x_q) h_i)` is the largest
@@ -70,7 +75,7 @@ chunks (section 2a).
    raise the energy, but a large `dt_star` leaves the ideal-induction flow
    (frozen-in topology violated at `O(dt²)`) and diverges when `||dB||`
    collapses. `state.dt_star` and `state.cfl_max` record the cap's activity.
-8. `B_{n+1} = B_n + dt · dB`.
+7. `B_{n+1} = B_n + dt · dB`.
 
 `M_2` is applied three times per step (`M F`, `M u`, `M dB`) whatever the
 history. With the line search `dE/dt <= 0` is a guarantee: the step is the
@@ -169,7 +174,7 @@ the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
 Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `E`, without the auxiliary field).
 
-`State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`, `p_v`,
+`State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
 `H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`, the four history arrays,
 `dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`, `lbfgs_sy`,
 `picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which

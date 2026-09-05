@@ -346,7 +346,6 @@ class State(eqx.Module):
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
     p: Optional[jnp.ndarray] = None
-    p_v: Optional[jnp.ndarray] = None
     v: Optional[jnp.ndarray] = None
     H: Optional[jnp.ndarray] = None
     JxH: Optional[jnp.ndarray] = None
@@ -417,7 +416,6 @@ class Increment(NamedTuple):
     F: jnp.ndarray
     MF: jnp.ndarray
     p: jnp.ndarray
-    p_v: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
     J: jnp.ndarray
@@ -432,8 +430,8 @@ class TimeStepper(eqx.Module):
     """One step of the energy descent, ``B_{n+1} = B_n + dt curl(u x X)``.
 
     Force and descent direction (L-BFGS on the velocity), velocity
-    smoothing, Leray projection, the analytic line search with its CFL cap,
-    and the induction, forward Euler or midpoint-implicit
+    smoothing, the analytic line search with its CFL cap, and the
+    induction, forward Euler or midpoint-implicit
     (:class:`IntegrationScheme`). The step is ideal; reconnection is a
     separate :func:`resistive_step` between chunks.
 
@@ -599,18 +597,26 @@ class TimeStepper(eqx.Module):
         return seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
 
     def _ideal_increment(self, B: jnp.ndarray, state: State,
-                         p_guess: jnp.ndarray, p_v_guess: jnp.ndarray,
+                         p_guess: jnp.ndarray,
                          H_guess: jnp.ndarray, JxH_guess: jnp.ndarray,
                          J_guess: jnp.ndarray, E_guess: jnp.ndarray) -> Increment:
         """The ideal increment ``dB = curl(u x X)`` evaluated at the field ``B``.
 
         Force, descent direction (the L-BFGS secant ``y = F_prev - F`` is
         pushed against ``state``'s history here, see part 1 below), velocity
-        smoothing, Leray projection, the cross product and the topological
-        curl. The explicit step evaluates it once at ``B_n``; the midpoint
-        step's Picard sweeps re-evaluate only the induction at the midpoint
-        field (``_midpoint_solve``). The six guesses, and ``state.F_prev``
-        for the gradient part of the force, warm-start the Krylov solves;
+        smoothing, the cross product and the topological curl. The velocity
+        is divergence-free without a projection of its own: the force is
+        Leray-projected, the L-BFGS direction combines projected forces and
+        their steps, and the smoothing ``(M + mu L)^-1 M`` commutes with
+        the divergence; a second Leray projection of the velocity was
+        measured to change nothing in float64 and in mixed precision and
+        to cost 1.5-4x the step (``docs/research/velocity_leray_ab_2026-09-04.md``;
+        in float32 with a solve tolerance relative to ``J x B`` it was what
+        kept the step a descent). The explicit step evaluates the increment
+        once at ``B_n``; the midpoint step's Picard sweeps re-evaluate only
+        the induction at the midpoint field (``_midpoint_solve``). The five
+        guesses, and ``state.F_prev`` for the gradient part of the force,
+        warm-start the Krylov solves;
         they come from ``state`` (the previous step). Without the auxiliary
         field ``H_guess`` passes through untouched.
         """
@@ -644,7 +650,6 @@ class TimeStepper(eqx.Module):
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
         u, sy = self._lbfgs_direction(F, state.s_history, y_hist, state.Ms_history, My_hist)
         u = self.smooth_velocity(u)
-        u, p_v = seq.apply_leray_projection(u, k=2, p_guess=p_v_guess)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -674,7 +679,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, p, p_v, H, JxX, J, E, cfl_max, sy, y_hist, My_hist)
+        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
@@ -691,7 +696,7 @@ class TimeStepper(eqx.Module):
 
         The step is ``B_{n+1} = B_n + dt curl(u x X_mid)`` with ``u`` the
         descent velocity of the explicit predictor at ``B_n`` (direction,
-        smoothing, Leray projection, line-search ``dt``, CFL cap: all of
+        smoothing, line-search ``dt``, CFL cap: all of
         ``_ideal_increment``) and ``X_mid`` the MIDPOINT field ``(B_n +
         B_{n+1}) / 2`` itself or, with ``auxiliary_B_field``, its 1-form
         proxy ``H_mid = M_1^-1 P (B_n + B_{n+1}) / 2``: the
@@ -769,7 +774,7 @@ class TimeStepper(eqx.Module):
         """
         B_n = state.B_n
         seq = self.seq
-        inc0 = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH,
+        inc0 = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
                                      state.J, state.E)
         dt0, dt_star = self._step_size(inc0)
         dB0 = inc0.dB
@@ -811,7 +816,7 @@ class TimeStepper(eqx.Module):
         the implicit midpoint rule (``scheme``)."""
         B_n = state.B_n
         if self.scheme == IntegrationScheme.EXPLICIT:
-            inc = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH,
+            inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
                                         state.J, state.E)
             dt, dt_star = self._step_size(inc)
             B_nplus1 = B_n + dt * inc.dB
@@ -839,13 +844,13 @@ class TimeStepper(eqx.Module):
             Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * inc.Mu)
 
         return eqx.tree_at(
-            lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.J, s.E,
+            lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual),
             state,
-            (B_nplus1, inc.u, inc.p, inc.p_v, inc.H, inc.JxH, inc.J, inc.E,
+            (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
@@ -870,7 +875,6 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         dt_star=dt,
         v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
-        p_v=jnp.zeros(seq.n(3, True), dtype=DTYPE),
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
         JxH=JxX0,
         J=J0,

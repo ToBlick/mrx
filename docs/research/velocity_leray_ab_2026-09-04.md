@@ -61,25 +61,54 @@ arms end below the float32 arms (4.5e-4 to 5.0e-4 against 8.3e-4 to
 8.4e-4 at step 2000): the float32 arms were tolerance-limited. Figure
 `outputs/velocity_leray_ab/velocity_leray_ab_f64.png`.
 
-## Mixed precision (e4220d5: float32 Krylov, float64 residual, tol 1e-8)
+## Mixed precision (e4220d5: float32 Krylov, float64 residual)
 
 Measured first at (12,24,24) p=3 (`outputs/prune_smoke/probe_mp.py`): the
-force's divergence is 3e-9 of the divergence of `J x B` (5e-5 of the
-force at the initial field, 1.6e-6 at step 300), the smoothed velocity is
-divergence-free to 1e-5, and the step costs 1.16 s against 0.25 before:
-a warm-started solve now closes six decades instead of one and a half,
-at about a hundred MINRES iterations per decade on the k=3 saddle. The
-velocity Leray is 1357 of the step's iterations and removes a 1e-5
-remnant. Three arms at (16,32,32) decide the rest: with and without the
-velocity Leray at tol 1e-8, and without it at tol 1e-6 (results below
-when they land; `arm.py with|without float32 _mixed [tol]`).
+force's divergence is 3e-9 of the divergence of `J x B`, the smoothed
+velocity is divergence-free to 1e-5, and the step costs 1.16 s against
+0.25 before: a warm-started solve now closes six decades instead of one
+and a half, at about a hundred MINRES iterations per decade on the k=3
+saddle. Then three arms at (16,32,32), 2000 steps, `arm.py with|without
+float32 _mixed [tol]`:
 
-## What follows
+| | with, tol 1e-8 | without, tol 1e-8 | without, tol 1e-6 |
+|---|---|---|---|
+| s/step (steady) | 4.892 | 1.036 | 0.545 |
+| resid mean, steps 501-1000 / 1001-1500 / 1501-2000 | 7.2e-4 / 5.6e-4 / 4.8e-4 | 7.2e-4 / 5.6e-4 / 4.8e-4 | 6.9e-4 / 5.5e-4 / 4.7e-4 |
+| resid at step 2000 | 4.8e-4 | 4.7e-4 | 4.4e-4 |
+| E removed, steps 1-500 / 501-1000 | 1.405e-6 / 4.5e-8 | 1.407e-6 / 3.7e-8 | 1.399e-6 / 3.1e-8 |
 
-- float32 alone keeps the velocity Leray; the residual floor in float32
-  alone is the solver tolerance in any case (the same remnant is inside
-  `||F||`).
-- In float64 and in mixed precision the remnant is 1e-5 or below
-  relative to `F` and `<g, sigma>` is below the descent by the same
-  factor: the second projection can go. Which of float64 and mixed
-  precision is cheaper per step at equal floor is what the arms decide.
+Identical descent with and without the projection, as in float64, and the
+same at tol 1e-6 over these 2000 steps. Figure
+`outputs/velocity_leray_ab/velocity_leray_ab_mixed.png`; per-block numbers
+from `descent_check.py`.
+
+**Two things the float64 arms add.** (1) The trace's `|dE - dE_ls| /
+|dE|` is the velocity's gradient part against `grad p` relative to the
+descent; in float64 it is 1.4e-4 at resid 1.5e-3 and 9.4e-3 at resid
+4.8e-4 (without the projection, tol 1.5e-8), i.e. `0.1 tol / resid^2` on
+li383: the term reaches the size of the descent near resid 3e-4 at tol
+1e-6 and near 3e-5 at tol 1e-8, which is why the default stays 1e-8 and
+a run aimed below 1e-4 wants 1e-10 or float64. (2) In float32 storage the
+per-step `dE` is noise even in mixed precision: it disagrees with `dE_ls`
+at the 100% level and is positive on 40% of the steps, while the block
+sums agree (the rounding of the stored field per step is the size of the
+descent increment's energy); in float64 the two agree to 1e-6 and no
+step increases the energy. Float32 energy figures use block sums.
+
+**Speed.** Mixed precision at tol 1e-8 without the projection, 1.04
+s/step, is not faster than float64 without it, 0.95 s/step at tol
+1.5e-8: at these meshes the step is launch-latency-bound, not
+bandwidth-bound, so float32 buys memory (half the operators and state),
+not time. Against the float32 run that had to keep the projection (0.478
+s/step, tolerance-limited at 8e-4), mixed precision without it is 2x
+slower per step and reaches the float64 floor.
+
+## Decision (2026-09-05)
+
+The velocity Leray projection leaves the step (relaxation.py,
+`_ideal_increment`): the float32-alone configuration that needed it no
+longer exists, every solve being refined. `SOLVE_TOL` stays 1e-8 at
+float32 and 1e-10 at float64. For the sweeps: float64 and mixed
+precision cost the same per step at n <= 32 and reach the same floors;
+float64 has a clean per-step energy trace.
