@@ -84,7 +84,8 @@ is fitted by `seq.interpolate(f, 0)` on the same space
 reference mass matrix.
 Geometry lives on `SequenceGeometry` as `metric_jkl`, `metric_inv_jkl` and
 `jacobian_j`, built once per map; every mass weight is an elementwise product
-of those, memoised per degree in the element layout. `DF` is not stored --
+of those, memoised per degree in the element layout as a field of the same
+pytree (`mass_weights`, `reference_weights`). `DF` is not stored --
 `load(frame='phys')` recomputes it at load time.
 
 ## Relaxation

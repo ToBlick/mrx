@@ -104,6 +104,37 @@ not time. Against the float32 run that had to keep the projection (0.478
 s/step, tolerance-limited at 8e-4), mixed precision without it is 2x
 slower per step and reaches the float64 floor.
 
+## The production step on the current code (d933ffd and later, no velocity projection)
+
+`arm.py step <precision>`, li383 (16,32,32) p=3, 2000 steps, the same
+settings; `MRX_RESIDUAL_DTYPE=float32` for the plain float32 arm. Per
+500-step block: the energy removed against the line search's prediction
+(their difference is the velocity's gradient part against `grad p`), and
+the mean residual.
+
+| | float32 refined, tol 1e-8 | float64, tol 1e-10 | float32 plain, tol 1e-6 |
+|---|---|---|---|
+| s/step (steady) | 1.022 | 1.438 | 0.326 |
+| resid mean, blocks 2 / 3 / 4 | 7.1e-4 / 5.6e-4 / 4.9e-4 | 7.1e-4 / 5.5e-4 / 4.9e-4 | 7.3e-4 / 5.7e-4 / 4.9e-4 |
+| resid at step 2000 | 4.5e-4 | 4.0e-4 | 4.3e-4 |
+| E removed / predicted, block 2 | 3.9e-8 / 3.9e-8 | 3.59e-8 / 3.59e-8 | 1.5e-8 / 3.7e-8 |
+| E removed / predicted, block 4 | 2.0e-8 / 1.4e-8 | 1.25e-8 / 1.25e-8 | 0.2e-8 / 1.5e-8 |
+| `\|dE - dE_ls\| / \|dE\|`, block 4 | 0.98 (storage noise) | 1.3e-4 | 1.01 |
+| steps with dE > 0, block 4 | 212 | 0 | 254 |
+
+All three descend the residual alike over these 2000 steps. In float64
+the energy removed equals the prediction to 1e-4 in every block and no
+step increases the energy. In float32 storage the per-step `dE` is noise
+(the stored field's rounding), but the block sums tell the two float32
+configurations apart: refined, the sums match the prediction (3.9e-8
+against 3.9e-8, then 2.0e-8 against 1.4e-8); plain, they fall short by
+2.5x, 4x and 7x in successive blocks, the gradient-part term of the
+scaling law arriving at tol 1e-6 as the residual approaches 3e-4. Plain
+float32 is the configuration for runs that stop near 5e-4; refined
+float32 and float64 for anything deeper, at 3-4x the cost per step.
+The float64 arm at the new default 1e-10 costs 1.44 s/step against 0.95
+at 1.5e-8 for the same residual descent: the tolerance is the cost knob.
+
 ## Decision (2026-09-05)
 
 The velocity Leray projection leaves the step (relaxation.py,

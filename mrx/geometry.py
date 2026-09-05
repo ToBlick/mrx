@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import equinox as eqx
 import jax
@@ -100,6 +100,12 @@ class SequenceGeometry(eqx.Module):
     metric_jkl: jnp.ndarray = None
     metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
+    # The mass weights per degree and the projection masses' reference
+    # weight in the element layout, attached by ``mrx.mass.attach_weights``
+    # when the geometry is installed on a sequence: geometry-derived data
+    # that rides with the geometry pytree instead of closing over it.
+    mass_weights: Optional[dict] = None
+    reference_weights: Optional[tuple] = None
 
     @classmethod
     def from_DF(cls, map, DF_jkl: jnp.ndarray) -> "SequenceGeometry":

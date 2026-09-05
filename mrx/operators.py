@@ -7,6 +7,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from mrx.extraction_operators import MatrixFreeExtraction
+from mrx.mass import sumfact_apply
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
@@ -165,9 +166,10 @@ def mass_core_apply(seq, k: int):
     sum-factorised kernel never materialises ``M_k``). Built by
     ``DeRhamSequence.set_geometry``.
     """
-    if seq.mass_apply is None:
+    if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
-    return seq.mass_apply[k]
+    plan, weights = seq.mass_plan[k], seq.geometry.mass_weights[k]
+    return lambda x: sumfact_apply(plan, weights, x)
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +378,9 @@ class _StencilTriplets:
         self.cols.append(cols[keep])
         self.data.append(data[keep])
 
-    def operator(self, shape):
-        """Return the collected triplets as a :class:`MatrixFreeExtraction`.
+    def operator(self, shape, dtype=None):
+        """Return the collected triplets as a :class:`MatrixFreeExtraction`
+        with values of ``dtype`` (the working dtype by default).
 
         Duplicates are summed on the host first so the device arrays hold one
         entry per nonzero.
@@ -388,10 +391,10 @@ class _StencilTriplets:
              (np.concatenate(self.rows).astype(np.int32),
               np.concatenate(self.cols).astype(np.int32))),
             shape=shape).tocsr().tocoo()
-        return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, shape)
+        return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, shape, dtype=dtype)
 
 
-def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
+def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool, dtype=None):
     """Analytic, INVERSE-FREE polar discrete gradient ``G_0`` (V0 -> V1).
 
     Builds the true strong gradient on extracted DoFs as an indexed operator
@@ -472,10 +475,10 @@ def build_grad_stencil_g0(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
 
     n0 = int(seq.n(0, True) if dirichlet_in else seq.n(0))
     n1 = int(seq.n(1, True) if dirichlet_out else seq.n(1))
-    return out.operator((n1, n0))
+    return out.operator((n1, n0), dtype=dtype)
 
 
-def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
+def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool, dtype=None):
     """Analytic, INVERSE-FREE polar discrete curl ``G_1`` (V1 -> V2).
 
     The degree-1 analog of :func:`build_grad_stencil_g0`: the true strong curl on
@@ -576,7 +579,7 @@ def build_curl_stencil_g1(seq, xi, dirichlet_in: bool, dirichlet_out: bool):
 
     n1 = int(seq.n(1, True) if dirichlet_in else seq.n(1))
     n2 = int(seq.n(2, True) if dirichlet_out else seq.n(2))
-    return out.operator((n2, n1))
+    return out.operator((n2, n1), dtype=dtype)
 
 
 def _grad_stencil(seq, dirichlet_in: bool, dirichlet_out: bool, transpose: bool):
@@ -627,7 +630,7 @@ def apply_incidence_matrix(seq, v, k: int,
 #: The projection masses ``P_{k_in k_out}`` that ``set_geometry`` builds: a
 #: ``k_in``-form in, a dual ``k_out``-form out, so the rows live in the
 #: ``k_out`` space and the columns in the ``k_in`` space (the raw core is
-#: ``seq.projection_apply[(k_out, k_in)]``). Until 2026-09-04 the scalar
+#: ``seq.projection_plan[(k_out, k_in)]``). Until 2026-09-04 the scalar
 #: pairs were tabulated the other way round, and ``(0, 3)`` took a 3-form.
 _PROJECTION_PAIRS = ((2, 1), (1, 2), (0, 3), (3, 0))
 
@@ -637,9 +640,10 @@ def projection_core_apply(seq, k_in: int, k_out: int):
     if (k_in, k_out) not in _PROJECTION_PAIRS:
         raise ValueError(
             "Only (k_in, k_out) = (1, 2), (2, 1), (0, 3), or (3, 0) supported")
-    if seq.projection_apply is None:
+    if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
-    return seq.projection_apply[(k_out, k_in)]
+    plan, weights = seq.projection_plan[(k_out, k_in)], seq.geometry.reference_weights
+    return lambda x: sumfact_apply(plan, weights, x)
 
 
 def extraction(seq, k: int, dirichlet: bool):
@@ -727,6 +731,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     precision, for a caller that keeps computing with it."""
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess = _plain(seq, rhs, guess)
     precond_apply = _mass_atom(operators, k, dirichlet).apply
     res = seq.residual
     x, info = solve_singular_cg(
@@ -741,13 +746,24 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
         maxiter=maxiter,
         A_res=None if res is None else (lambda x: apply_mass_matrix(res, x, k, dirichlet=dirichlet)),
     )
-    x = _out(x, dtype)
+    x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 
 
-def _out(x, dtype=None):
-    """A solve's result in the working dtype, or in ``dtype``."""
-    return x.astype(mrx.DTYPE if dtype is None else dtype)
+def _out(seq, x, dtype=None):
+    """A solve's result in the sequence's dtype (the working dtype; the
+    residual dtype on the float64 view), or in ``dtype``."""
+    return x.astype(seq.dtype if dtype is None else dtype)
+
+def _plain(seq, *arrays):
+    """The right-hand side and guesses of a solve on a sequence that does not
+    refine, in that sequence's dtype: the plain Krylov iteration runs in it.
+    A refined solve keeps them as given (:func:`~mrx.solvers.refine` casts
+    the right-hand side to the residual precision itself)."""
+    if seq.residual is not None:
+        return arrays
+    return tuple(None if a is None else jnp.asarray(a).astype(seq.dtype) for a in arrays)
+
 
 
 def apply_stiffness(seq, v, k: int, dirichlet: bool = True):
@@ -907,6 +923,8 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter,
     expects; those modes are barely excited by a right-hand side of the
     split anyway.  Harmonic forms deflated.
     """
+    b, guess = _plain(seq, b, guess)
+
     def D(v):
         return apply_incidence_matrix(seq, v, k - 1, dirichlet_in=dirichlet,
                                       dirichlet_out=dirichlet)
@@ -992,6 +1010,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess = _plain(seq, rhs, guess)
     d = dirichlet
 
     def D(v, j):
@@ -1014,7 +1033,7 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     g, _ = solve(DT(rhs, k - 1), k - 1)
     x_perp, info = solve(rhs - M(D(g, k - 1), k), k, guess=guess)
     a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
-    x = _out(x_perp + D(a, k - 1))
+    x = _out(seq, x_perp + D(a, k - 1))
     return (x, info) if return_info else x
 
 
@@ -1036,6 +1055,7 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess = _plain(seq, rhs, guess)
 
     if k == 0:
         res = seq.residual
@@ -1051,14 +1071,14 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
             A_res=None if res is None else (
                 lambda x: apply_stiffness(res, x, 0, dirichlet=dirichlet)),
         )
-        u = _out(u)
+        u = _out(seq, u)
         return (u, info) if return_info else u
 
     if k == 3:
         u, _, info = apply_inverse_laplacian_saddle(
             seq, operators, rhs, 3, 0.0, dirichlet=dirichlet, guess=guess,
             tol=tol, maxiter=maxiter)
-        u = _out(u)
+        u = _out(seq, u)
         return (u, info) if return_info else u
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
@@ -1093,6 +1113,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess, sigma_guess = _plain(seq, rhs, guess, sigma_guess)
     res = seq.residual
 
     def stiffness_on(s, x):
@@ -1152,6 +1173,7 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
     operators = _require_bundle(operators)
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess = _plain(seq, rhs, guess)
 
     if k == 0:
         res = seq.residual
@@ -1175,13 +1197,13 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
             x0=guess, vs=vs, tol=tol, maxiter=maxiter,
             A_res=None if res is None else (lambda x: A_on(res, x)))
-        u = _out(u)
+        u = _out(seq, u)
         return (u, info) if return_info else u
 
     u, _, info = apply_inverse_laplacian_saddle(
         seq, operators, rhs, k, eps, dirichlet=dirichlet, guess=guess,
         tol=tol, maxiter=maxiter)
-    u = _out(u)
+    u = _out(seq, u)
     return (u, info) if return_info else u
 
 
@@ -1225,6 +1247,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
     """
     tol = seq.tol if tol is None else tol
     maxiter = seq.maxiter if maxiter is None else maxiter
+    rhs, guess = _plain(seq, rhs, guess)
     res = seq.residual
     on = seq if res is None else res      # the level-(k-1) coupling in the residual precision
 
@@ -1246,14 +1269,14 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
 
     x, info = shifted_solve(k, rhs, guess)
     if k == 0:
-        x = _out(x)
+        x = _out(seq, x)
         return (x, info) if return_info else x
 
     z, info_lower = shifted_solve(
         k - 1,
         apply_incidence_matrix(seq, rhs, k - 1, dirichlet, dirichlet, transpose=True),
         None)
-    x = _out(x - eps * apply_incidence_matrix(on, z, k - 1, dirichlet, dirichlet))
+    x = _out(seq, x - eps * apply_incidence_matrix(on, z, k - 1, dirichlet, dirichlet))
     total = jnp.abs(info) + jnp.abs(info_lower)
     info = jnp.where((info <= 0) & (info_lower <= 0), -total, total)
     return (x, info) if return_info else x

@@ -6,7 +6,10 @@ quadrature points, a pointwise multiply by the weight, and three 1-D
 contractions back (:func:`_sumfact_kernel`, one compiled executable per
 operator shape). The applies act in the raw (unextracted, periodic) DoF
 space; the polar extraction ``E (.) E^T`` is applied by the caller
-(:mod:`mrx.operators`), and ``DeRhamSequence.set_geometry`` builds them.
+(:mod:`mrx.operators`). An apply is a geometry-independent plan on the
+sequence (:class:`SumfactPlan`, built once in ``DeRhamSequence.__init__``)
+and the weights on the geometry (:func:`attach_weights`, applied by
+``set_geometry``), so nothing closes over the geometry.
 
 The weights are elementwise products of the stored geometry (``G = DF^T DF``,
 ``G^{-1}`` and ``J = det DF`` per quadrature point), formed once per geometry
@@ -26,7 +29,9 @@ factorisation, is the diagonal the metric-lumping mass atom is scaled by.
 """
 
 import functools
+from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -34,9 +39,12 @@ import numpy as np
 from mrx.spline_bases import evaluate_basis_local
 
 __all__ = [
+    "SumfactPlan",
+    "attach_weights",
     "build_mass_diagonal",
-    "build_matrixfree_mass_apply",
-    "build_matrixfree_projection_apply",
+    "mass_plan",
+    "projection_plan",
+    "sumfact_apply",
 ]
 
 
@@ -197,44 +205,48 @@ def _form_bases(seq, k):
     raise ValueError("k must be 0, 1, 2 or 3")
 
 
-def _mass_weight(k, metric, metric_inv, jac):
-    """Pointwise ``M_k`` weight per component pair, from the stored geometry.
-
-    ``metric`` / ``metric_inv`` are ``(..., 3, 3)`` and ``jac`` ``(...)`` in
-    any layout; returns ``{(cr, cc): (...) array}``.  Every entry is ONE
-    elementwise product (or quotient) of stored arrays -- no adjugate, no
-    3x3 algebra:
-
-    * k=0: ``J``
-    * k=1: ``J g^{-1}``
-    * k=2: ``g / J``
-    * k=3: ``1 / J``
-
-    The symmetric pairs of k=1, 2 share one array, which the apply relies on
-    to form six weights instead of nine.
-    """
-    if k == 0:
-        return {(0, 0): jac}
-    if k == 3:
-        return {(0, 0): 1.0 / jac}
+def _mass_structure(k):
+    """``(pairs, cols)`` of the ``M_k`` weight: the ``(row, col)`` component
+    pairs that exist and, for each, which of the unique weight arrays of
+    :func:`_mass_weight` it reads. k = 0, 3: the one pair on the one
+    array; k = 1, 2: all nine pairs on the six unique entries of the
+    symmetric metric, ``(i, j)`` and ``(j, i)`` sharing one array."""
+    if k in (0, 3):
+        return ((0, 0),), (0,)
     if k not in (1, 2):
         raise ValueError("k must be 0, 1, 2 or 3")
-    w = {}
-    for i in range(3):
-        for j in range(i, 3):
-            w[(i, j)] = (metric_inv[..., i, j] * jac if k == 1
-                         else metric[..., i, j] / jac)
-            w[(j, i)] = w[(i, j)]                         # symmetric: shared array
-    return w
+    unique = [(i, j) for i in range(3) for j in range(i, 3)]
+    pairs = tuple((i, j) for i in range(3) for j in range(3))
+    return pairs, tuple(unique.index((min(i, j), max(i, j))) for i, j in pairs)
 
 
-def _reference_weight(n_comp):
-    """Pointwise weight of the reference-domain projection masses (``W = I``)."""
-    def weight(metric, metric_inv, jac):
-        del metric, metric_inv
-        one = jnp.ones_like(jac)
-        return {(c, c): one for c in range(n_comp)}
-    return weight
+def _mass_weight(k, metric, metric_inv, jac):
+    """The unique pointwise weights of ``M_k``, in the order of
+    :func:`_mass_structure`, from the stored geometry.
+
+    ``metric`` / ``metric_inv`` are ``(..., 3, 3)`` and ``jac`` ``(...)`` in
+    any layout. Every entry is ONE elementwise product (or quotient) of
+    stored arrays -- no adjugate, no 3x3 algebra:
+
+    * k=0: ``J``
+    * k=1: ``J g^{-1}``, the six entries ``i <= j``
+    * k=2: ``g / J``, the six entries ``i <= j``
+    * k=3: ``1 / J``
+    """
+    if k == 0:
+        return (jac,)
+    if k == 3:
+        return (1.0 / jac,)
+    if k not in (1, 2):
+        raise ValueError("k must be 0, 1, 2 or 3")
+    return tuple(metric_inv[..., i, j] * jac if k == 1 else metric[..., i, j] / jac
+                 for i in range(3) for j in range(i, 3))
+
+
+def _reference_structure(n_comp):
+    """``(pairs, cols)`` of the reference-domain projection mass (``W = I``):
+    the matching pairs, all on the one array of ones."""
+    return tuple((c, c) for c in range(n_comp)), (0,) * n_comp
 
 
 def build_mass_diagonal(seq, k, geometry=None):
@@ -253,18 +265,18 @@ def build_mass_diagonal(seq, k, geometry=None):
     the Jacobi mass preconditioner.
 
     The returned vector is the components concatenated in form order, matching
-    the layout of :func:`build_matrixfree_mass_apply`.
+    the layout of the apply.
     """
     geometry = seq.geometry if geometry is None else geometry
     split, gauss = _element_layout(seq)
     form, comp, n_comp = _form_bases(seq, k)
-    weight_of = _mass_weight(k, geometry.metric_jkl, geometry.metric_inv_jkl,
-                             geometry.jacobian_j)
+    unique = _mass_weight(k, geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j)
+    pairs, cols = _mass_structure(k)
     shapes = form.shape
 
     parts = []
     for c in range(n_comp):
-        Wf = split(weight_of[(c, c)]) * gauss
+        Wf = split(unique[cols[pairs.index((c, c))]]) * gauss
         Bx, By, Bz = comp[c][0], comp[c][2], comp[c][4]
         # Squared basis tables: the row and column bases coincide on the diagonal.
         t1 = jnp.einsum('xqa,xyzqrs->xyzars', Bx * Bx, Wf)
@@ -277,34 +289,37 @@ def build_mass_diagonal(seq, k, geometry=None):
     return jnp.concatenate(parts)
 
 
-def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
-    """Jitted raw-DOF apply of ``int Lambda^{k_row} . W . Lambda^{k_col}``.
+class SumfactPlan(NamedTuple):
+    """The geometry-independent half of a sum-factorised apply: the 1-D basis
+    values per component, the gather and scatter index plans, and the pair
+    structure of the weight. Built once per ``(k_row, k_col)`` on the
+    sequence (:func:`mass_plan`, :func:`projection_plan`); the weights it
+    is applied with live on the geometry (:func:`attach_weights`)."""
 
-    ``weight_fn(metric, metric_inv, jac)`` returns the pointwise weight per
-    ``(row_comp, col_comp)`` pair as ``{(cr, cc): (N_q,)}``; pairs it omits
-    are skipped and pairs that share one array (a symmetric weight) are formed
-    once.
+    Bvals_r: tuple
+    Bvals_c: tuple
+    gather_idx: tuple
+    seg_idx: jnp.ndarray
+    pairs: tuple
+    cols: tuple
+    starts_c: tuple
+    n_out: int
 
-    The element plan (basis values, gather indices, scatter segment ids) and
-    the weight -- the unique entries, moved to the element layout with the
-    Gauss weights folded in -- are built once here and passed to the jitted
-    kernel as runtime arguments (not captured as constants) to avoid XLA
-    constant-folding of the large integer index tensors.  Memoising the
-    weight is a measured choice: forming it inside the kernel from the stored
-    metric, even as bare elementwise products with one stacked transpose,
-    costs +18% on the k=1/2 apply at (16,32,16) (0.353 vs 0.297 ms) -- the
-    cost is the per-apply pass over the geometry, not the algebra.  The price
-    is six element-layout fields per vector degree resident on the sequence
-    (14 scalars per quadrature point over k=0..3), rebuilt with the plan when
-    the geometry changes; the compiled kernel is shared (see
-    :func:`_sumfact_kernel`).
+
+def build_sumfact_plan(seq, k_row, k_col, pairs, cols):
+    """The :class:`SumfactPlan` of ``int Lambda^{k_row} . W . Lambda^{k_col}``
+    for a weight with the given ``(pairs, cols)`` structure.
+
+    The element plan (basis values, gather indices, scatter segment ids) is
+    built once here and passed to the jitted kernel as runtime arguments
+    (not captured as constants) to avoid XLA constant-folding of the large
+    integer index tensors.
 
     The matvec is the sum factorization split at the quadrature points: each
     column component is gathered and pushed to the quadrature points ONCE, the
     weight mixes the components pointwise, and each row component is tested
     ONCE, followed by a single ``segment_sum`` into the concatenated output.
     """
-    split, gauss = _element_layout(seq)
     form_r, comp_r, n_r = _form_bases(seq, k_row)
     form_c, comp_c, n_c = _form_bases(seq, k_col)
 
@@ -316,21 +331,6 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
 
     starts_r = starts(form_r, n_r)
     starts_c = starts(form_c, n_c)
-    # The weight: which pairs exist, which share an array, and the unique
-    # arrays themselves in the element layout with the Gauss weights folded in.
-    weight_of = weight_fn(geometry.metric_jkl, geometry.metric_inv_jkl,
-                          geometry.jacobian_j)
-    pairs = tuple(weight_of)
-    unique_ids, column = [], {}
-    for pair, w in weight_of.items():
-        if id(w) not in unique_ids:
-            unique_ids.append(id(w))
-        column[pair] = unique_ids.index(id(w))
-    Ws = [None] * len(unique_ids)
-    for pair, w in weight_of.items():
-        Ws[column[pair]] = split(w) * gauss
-    Ws = tuple(Ws)
-
     # Basis VALUES (for the einsums) are separated from the gather/scatter
     # index plans, which depend only on the mesh topology: flat gather indices
     # per column component and one flat scatter (segment-id) array for the
@@ -344,15 +344,59 @@ def _build_sumfact_apply(seq, k_row, k_col, weight_fn, geometry):
         _flat_dof_plan(comp_r[c][1], comp_r[c][3], comp_r[c][5],
                        form_r.shape[c]).reshape(-1) + starts_r[c]
         for c in range(n_r)])
-    n_out = starts_r[-1]
-    cols = tuple(column[pair] for pair in pairs)
+    return SumfactPlan(Bvals_r, Bvals_c, gather_idx, seg_idx, tuple(pairs), tuple(cols),
+                       starts_c, starts_r[-1])
 
-    def apply(x):
-        return _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx,
-                               pairs=pairs, cols=cols, starts_c=starts_c,
-                               n_out=n_out)
 
-    return apply
+def mass_plan(seq, k):
+    """The :class:`SumfactPlan` of ``M_k``."""
+    return build_sumfact_plan(seq, k, k, *_mass_structure(k))
+
+
+def projection_plan(seq, k_row, k_col):
+    """The :class:`SumfactPlan` of the projection mass ``int Lambda^{k_row} . Lambda^{k_col}``:
+    the reference-domain identity weight, so only the matching component
+    pairs contribute; the input is a raw ``k_col``-form vector and the
+    output a raw ``k_row``-form vector."""
+    n_comp = 1 if k_row in (0, 3) else 3
+    if n_comp != (1 if k_col in (0, 3) else 3):
+        raise ValueError(
+            f"projection mass needs matching component counts, got k_row={k_row}, k_col={k_col}")
+    return build_sumfact_plan(seq, k_row, k_col, *_reference_structure(n_comp))
+
+
+def element_weights(seq, unique):
+    """The unique weight arrays moved to the element layout with the Gauss
+    weights folded in: what the kernel multiplies with."""
+    split, gauss = _element_layout(seq)
+    return tuple(split(w) * gauss for w in unique)
+
+
+def attach_weights(seq, geometry):
+    """``geometry`` with the mass weights of every degree and the reference
+    weight of the projection masses attached, in the element layout
+    (``mass_weights[k]`` a tuple in the order of :func:`_mass_structure`,
+    ``reference_weights`` the one array of ones). They are what the applies
+    read, and they ride with the geometry: cast with it, passed with it.
+    Memoising them is a measured choice: forming the weight inside the
+    kernel from the stored metric costs +18% on the k=1/2 apply at
+    (16,32,16); the price is 14 scalars per quadrature point over k=0..3.
+    """
+    metric, metric_inv, jac = geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
+    mass_weights = {k: element_weights(seq, _mass_weight(k, metric, metric_inv, jac))
+                    for k in range(4)}
+    reference = element_weights(seq, (jnp.ones_like(jac),))
+    return eqx.tree_at(lambda g: (g.mass_weights, g.reference_weights), geometry,
+                       (mass_weights, reference), is_leaf=lambda x: x is None)
+
+
+def sumfact_apply(plan, weights, x):
+    """``x -> int Lambda_row . W . Lambda_col x`` on the raw tensor-product
+    DOF space, from a :class:`SumfactPlan` and its weights. Boundary and
+    polar extraction ``E (.) E^T`` are the caller's."""
+    return _sumfact_kernel(x, plan.Bvals_r, plan.Bvals_c, weights, plan.gather_idx, plan.seg_idx,
+                           pairs=plan.pairs, cols=plan.cols, starts_c=plan.starts_c,
+                           n_out=plan.n_out)
 
 
 @functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c", "n_out"))
@@ -363,7 +407,7 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
     Module-level and keyed on the static plan (which component pairs exist,
     which weight array each uses, the component offsets, the output size),
     so a new geometry -- new ``Ws`` of the same shapes -- reuses the compiled
-    kernel; a kernel defined inside the builder was a new function object per
+    kernel; a kernel defined inside a builder was a new function object per
     build and recompiled on every ``set_geometry``.
     """
     W = {pair: Ws[c] for pair, c in zip(pairs, cols)}
@@ -376,34 +420,3 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, gather_idx, seg_idx, *,
         y_parts.append(_from_quadrature(Bvals_r[cr], v).reshape(-1))
     return jax.ops.segment_sum(jnp.concatenate(y_parts), seg_idx,
                                num_segments=n_out)
-
-
-def build_matrixfree_mass_apply(seq, k, geometry=None):
-    """Return a jitted raw-DOF-space ``x -> M_k x`` that never stores ``M_k``.
-
-    The returned callable acts on a vector in the *raw tensor-product* DOF
-    space (the unextracted, periodic DOF layout). Boundary / polar extraction
-    ``E (.) E^T`` is applied by the caller. The metric weight is formed once
-    from the geometry's stored metric, inverse metric and ``det DF`` (see
-    :func:`_mass_weight`) and memoised in the element layout.
-    """
-    geometry = seq.geometry if geometry is None else geometry
-    return _build_sumfact_apply(
-        seq, k, k,
-        lambda metric, metric_inv, jac: _mass_weight(k, metric, metric_inv, jac),
-        geometry)
-
-
-def build_matrixfree_projection_apply(seq, k_row, k_col):
-    """Return a jitted raw-DOF apply of the projection mass ``int Lambda^{k_row} . Lambda^{k_col}``.
-
-    The weight is the reference-domain identity (no metric), so only the
-    matching component pairs contribute; the input is a raw ``k_col``-form
-    vector and the output a raw ``k_row``-form vector.
-    """
-    n_comp = 1 if k_row in (0, 3) else 3
-    if n_comp != (1 if k_col in (0, 3) else 3):
-        raise ValueError(
-            f"projection mass needs matching component counts, got k_row={k_row}, k_col={k_col}")
-    return _build_sumfact_apply(
-        seq, k_row, k_col, _reference_weight(n_comp), seq.geometry)

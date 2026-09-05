@@ -78,12 +78,23 @@ REFINE = DTYPE != RESIDUAL_DTYPE
 #: Machine epsilon of the working dtype, as a Python float.
 EPS = float(np.finfo(DTYPE).eps)
 
-#: Default relative residual of a solve, in the residual precision: 1e-8 at
-#: a float32 working dtype (reached by refinement), 1e-10 at float64, 1e-6
-#: for a plain float32 solve (its iteration reaches 1e-7 on the production
-#: systems). Until 2026-09-04 it was sqrt(eps) of the working dtype,
-#: 3.5e-4 at float32.
-SOLVE_TOL = 1e-8 if REFINE else (1e-10 if DTYPE == jnp.dtype("float64") else 1e-6)
+def default_tol(dtype, refine) -> float:
+    """The default relative residual of a solve on a sequence of ``dtype``
+    that refines or not: 1e-8 for a refined float32 solve, 1e-10 for a
+    plain float64 one, 1e-6 for a plain float32 one (its iteration reaches
+    1e-7 on the production systems). The float64 view of a float32
+    sequence solves plainly at 1e-10: the harmonic-form construction on it
+    needs that (its k=1 solve's true residual at 1e-8 was 2e-6, and the
+    k=2 form's Rayleigh quotient that residual squared)."""
+    if refine:
+        return 1e-8
+    return 1e-10 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-6
+
+
+#: Default relative residual of a solve through a sequence, in the residual
+#: precision: :func:`default_tol` of the working configuration. Until
+#: 2026-09-04 it was sqrt(eps) of the working dtype, 3.5e-4 at float32.
+SOLVE_TOL = default_tol(DTYPE, REFINE)
 
 #: Relative tolerance of one float32 pass of a refined solve: each pass
 #: takes the residual down by this factor, so a warm start with a 1% defect

@@ -55,6 +55,24 @@ preconditioners are shared). Built once per geometry on first use, about
 twice the geometry's memory; `None` at a float64 working dtype, where the
 solves are plain.
 
+The harmonic forms and the gap estimate are built on the view as well
+(`mrx.nullspace`): a once-per-geometry construction whose float32 version
+was limited by the working precision, not by the tolerance (the k=2
+Dirichlet form's Rayleigh quotient 1e-6 on li383 and 1e-3 on QA in
+float32, refined or not, against 1e-16 in float64; the gap sweeps'
+shifted saddle solves did not converge in float32). Built on the view at
+the float64 default tolerance and stored in the working dtype, the k=3,
+k=0 and k=1 forms read 1e-11 or better in a float32 process; the k=2
+Dirichlet form reads 1.2e-7 on li383 and 4e-4 on QA (from 9.2e-7 and
+1.3e-3), still short of float64, and the gap sweeps still fail. Its
+limit is measured (`outputs/prune_smoke/probe_k2.py`): the k=1
+Hodge-split solve it rests on reports convergence on the hat operator's
+preconditioned residual while its true residual is 2e-6 to 1e-5, and the
+form's weak half is that residual squared: a stopping-criterion problem.
+The Rayleigh quotient itself is evaluated in the residual precision
+(`laplacian_pair`): `v^T L v` is a cancellation that floored at float32
+round-off whatever the form.
+
 Results come back in the working dtype. A caller that keeps computing
 with the accurate solution asks for it: `apply_inverse_mass_matrix(...,
 dtype=RESIDUAL_DTYPE)`. The Leray projection does exactly that for the
@@ -85,10 +103,14 @@ storage of `B`, not by the solver.
 ## What it costs and what it buys
 
 Measured on li383 (16,32,32) p=3, 2000 relaxation steps
-(`docs/research/velocity_leray_ab_2026-09-04.md`): mixed precision at
-`SOLVE_TOL` 1e-8 runs at 1.04 s/step and float64 at 0.95 s/step, both
-reaching the same residual floor (4.7e-4 to 5.0e-4), while float32 with
-the old tolerance sat at 8.4e-4. At these meshes the step is bound by
+(`docs/research/velocity_leray_ab_2026-09-04.md`): the production step
+runs at 1.02 s/step in float32 refined (tol 1e-8), 1.44 s/step in
+float64 (tol 1e-10; 0.95 at 1.5e-8) and 0.33 s/step in plain float32
+(`MRX_RESIDUAL_DTYPE=float32`, tol 1e-6), all three reaching the same
+residual over 2000 steps (4.0e-4 to 4.5e-4), while float32 with the old
+tolerance sat at 8.4e-4. Plain float32 is the configuration for runs
+that stop near a residual of 5e-4: below that the gradient-part term of
+its tolerance shows in the energy sums. At these meshes the step is bound by
 kernel-launch latency, not memory bandwidth, so the working precision
 buys memory (half the operators, geometry and state), not time. The
 accuracy of a solve costs about a hundred MINRES iterations per decade

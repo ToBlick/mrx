@@ -102,10 +102,25 @@ def _set_null(operators, k, dirichlet, values):
 
 def _commit(seq, operators):
     """Set ``seq.operators`` to ``operators`` so fallback lookups see the
-    latest null fields, and return the bundle unchanged.
+    latest null fields -- on the residual view too, which shares the bundle
+    -- and return the bundle unchanged.
     """
     seq.operators = operators
+    if getattr(seq, "_residual", None) is not None:
+        seq._residual.operators = operators
     return operators
+
+
+def _builder(seq):
+    """The sequence the harmonic forms are built on: its float64 view when
+    there is one. The construction is a once-per-geometry chain of solves
+    and incidence applies whose float32 version is limited by the working
+    precision, not by the solve tolerance (measured 2026-09-05: the k=2
+    Dirichlet form's Rayleigh quotient 1e-6 on li383 and 1e-3 on QA in
+    float32, refined or not, against 1e-16 in float64; the gap sweeps'
+    shifted saddle solves do not converge in float32). The forms are
+    stored in the working dtype."""
+    return seq.residual if seq.residual is not None else seq
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +265,9 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     float32 (tol 3.5e-4) on W7-X, 1e-14-ish in float64; ``1e-1`` is a solve
     that stopped early.
 
+    Built on the float64 view of the sequence (:func:`_builder`), the
+    forms stored in the working dtype.
+
     Returns the updated ``SequenceOperators`` bundle.
     """
     if operators is None:
@@ -278,15 +296,17 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
 
+    build = _builder(seq)
+
     # Order is load-bearing: each solve below is deflated against a kernel
     # that a previous step has already stored (see the table in
     # direct_construction_unsupported_reason).
     if _n_vectors(betti_numbers, 3, True):
         # k = 3, Dirichlet: lift the constant 1-vector via M^{-1}.
-        v3 = seq.apply_inverse_mass_matrix(
-            jnp.ones(seq.n(3, True), dtype=mrx.DTYPE), 3, dirichlet=True, operators=operators)
-        v3 = v3 / seq.l2_norm(v3, 3, dirichlet=True)
-        operators = _commit(seq, _set_null(operators, 3, True, v3[None, :]))
+        v3 = build.apply_inverse_mass_matrix(
+            jnp.ones(build.n(3, True), dtype=mrx.DTYPE), 3, dirichlet=True, operators=operators)
+        v3 = v3 / build.l2_norm(v3, 3, dirichlet=True)
+        operators = _commit(seq, _set_null(operators, 3, True, v3.astype(mrx.DTYPE)[None, :]))
 
     if _n_vectors(betti_numbers, 2, True):
         # k = 2, Dirichlet: the seed is the flux 2-form dr^dchi -- primal
@@ -303,11 +323,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         # which at that point is still zero, and returned a form with
         # |D h_2| / |h_2| ~ 2 on QA (co-closed, not closed).
         flux = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
-        seed2 = seq.interpolate(lambda x_hat: flux, 2, dirichlet=True, frame='ref')
-        div_seed = seq.apply_incidence_matrix(
+        seed2 = build.interpolate(lambda x_hat: flux, 2, dirichlet=True, frame='ref')
+        div_seed = build.apply_incidence_matrix(
             seed2, 2, dirichlet_in=True, dirichlet_out=True)
-        closed = float(seq.l2_norm(div_seed, 3, dirichlet=True)
-                       / seq.l2_norm(seed2, 2, dirichlet=True))
+        closed = float(build.l2_norm(div_seed, 3, dirichlet=True)
+                       / build.l2_norm(seed2, 2, dirichlet=True))
         # A histopolated seed is closed to the round-off of its working-
         # precision incidence apply, not to the solves' residual tolerance.
         if closed > mrx.sqrt_eps():
@@ -315,19 +335,19 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                 "compute_nullspaces: the dr^dchi seed is not closed "
                 f"(|D seed| / |seed| = {closed:.2e} > sqrt(eps) {mrx.sqrt_eps():.1e}); the "
                 "k=2 Dirichlet harmonic form would carry that divergence")
-        curl_dual = seq.apply_derivative_matrix(
+        curl_dual = build.apply_derivative_matrix(
             seed2, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
-        a = seq.apply_inverse_laplacian(
+        a = build.apply_inverse_laplacian(
             curl_dual, 1, dirichlet=True, operators=operators)
-        v2 = seed2 - seq.apply_strong_curl(a, True, True)
-        v2 = v2 / seq.l2_norm(v2, 2, dirichlet=True)
-        operators = _commit(seq, _set_null(operators, 2, True, v2[None, :]))
+        v2 = seed2 - build.apply_strong_curl(a, True, True)
+        v2 = v2 / build.l2_norm(v2, 2, dirichlet=True)
+        operators = _commit(seq, _set_null(operators, 2, True, v2.astype(mrx.DTYPE)[None, :]))
 
     if _n_vectors(betti_numbers, 0, False):
         # k = 0, no Dirichlet BC: the constant function.
-        v0 = jnp.ones(seq.n(0), dtype=mrx.DTYPE)
-        v0 = v0 / seq.l2_norm(v0, 0, dirichlet=False)
-        operators = _commit(seq, _set_null(operators, 0, False, v0[None, :]))
+        v0 = jnp.ones(build.n(0), dtype=mrx.DTYPE)
+        v0 = v0 / build.l2_norm(v0, 0, dirichlet=False)
+        operators = _commit(seq, _set_null(operators, 0, False, v0.astype(mrx.DTYPE)[None, :]))
 
     if _n_vectors(betti_numbers, 1, False):
         # k = 1, no BC: the seed is d zeta itself -- covariant (0, 0, 1), which
@@ -346,11 +366,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         # take this shortcut: it is the Hodge star of d zeta, metric-weighted,
         # never in V^2, so its L_1 solve is doing real work.
         dzeta = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
-        seed1 = seq.interpolate(lambda x_hat: dzeta, 1, dirichlet=False, frame='ref')
-        curl_seed = seq.apply_incidence_matrix(
+        seed1 = build.interpolate(lambda x_hat: dzeta, 1, dirichlet=False, frame='ref')
+        curl_seed = build.apply_incidence_matrix(
             seed1, 1, dirichlet_in=False, dirichlet_out=False)
-        closed = float(seq.l2_norm(curl_seed, 2, dirichlet=False)
-                       / seq.l2_norm(seed1, 1, dirichlet=False))
+        closed = float(build.l2_norm(curl_seed, 2, dirichlet=False)
+                       / build.l2_norm(seed1, 1, dirichlet=False))
         # A histopolated seed is closed to the round-off of its working-
         # precision incidence apply, not to the solves' residual tolerance.
         if closed > mrx.sqrt_eps():
@@ -358,9 +378,9 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                 "compute_nullspaces: the d zeta seed is not closed "
                 f"(|C seed| / |seed| = {closed:.2e} > sqrt(eps) {mrx.sqrt_eps():.1e}); the "
                 "k=1 free harmonic form would carry that curl unremoved")
-        v1, _ = seq.apply_leray_projection(seed1, k=1)
-        v1 = v1 / seq.l2_norm(v1, 1, dirichlet=False)
-        operators = _commit(seq, _set_null(operators, 1, False, v1[None, :]))
+        v1, _ = build.apply_leray_projection(seed1, k=1)
+        v1 = v1 / build.l2_norm(v1, 1, dirichlet=False)
+        operators = _commit(seq, _set_null(operators, 1, False, v1.astype(mrx.DTYPE)[None, :]))
 
     if verbose:
         for k, dirichlet in ((3, True), (2, True), (0, False), (1, False)):
@@ -370,7 +390,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                         f"form {i}: v^T L v / v^T M v = {rq:.2e}")
                 if gap_sweeps and k in (1, 2):
                     lam, sweeps = estimate_spectral_gap(
-                        seq, operators, k, dirichlet, maxiter=gap_sweeps)
+                        _builder(seq), operators, k, dirichlet, maxiter=gap_sweeps)
                     # The gap sweep is one shifted saddle solve; in float32 that
                     # solve can diverge for a near-singular block (e.g. QA k=2),
                     # returning a non-finite estimate. Report that plainly instead
@@ -518,13 +538,14 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
     info = {}
+    build = _builder(seq)
 
     for k in range(4):
         for dirichlet in (False, True):
             n_vectors = _n_vectors(betti_numbers, k, dirichlet)
-            guesses = _initial_guesses(seq, operators, k, dirichlet, n_vectors)
+            guesses = _initial_guesses(build, operators, k, dirichlet, n_vectors)
             vectors, iters = find_nullspace_vectors(
-                seq,
+                build,
                 operators,
                 k,
                 n_vectors,
@@ -535,7 +556,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
                 inner_tol=inner_tol,
                 maxiter=maxiter,
             )
-            operators = _commit(seq, _set_null(operators, k, dirichlet, vectors))
+            operators = _commit(seq, _set_null(operators, k, dirichlet,
+                                               jnp.asarray(vectors).astype(mrx.DTYPE)))
             info[(k, dirichlet)] = iters
 
     return operators, info
@@ -614,7 +636,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         if seeded:
             v0 = x0s[idx]
         else:
-            v0 = jax.random.normal(jax.random.PRNGKey(idx), (n,))
+            v0 = jax.random.normal(jax.random.PRNGKey(idx), (n,), dtype=mrx.DTYPE)
         # M-orthogonalise against already-found vectors: one mass apply for
         # all of them (they are M-orthonormal, so the projections commute).
         found_stacked = jnp.stack(found) if found else None
@@ -622,8 +644,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         project_out = (lambda v: v) if found_stacked is None else deflation_projectors(
             found_stacked, lambda v: seq.apply_mass_matrix(v, k, dirichlet=dirichlet))[0]
 
-        v0 = project_out(v0)
-        v0 = v0 / seq.l2_norm(v0, k, dirichlet=dirichlet)
+        v0 = project_out(jnp.asarray(v0, dtype=mrx.DTYPE))
+        v0 = (v0 / seq.l2_norm(v0, k, dirichlet=dirichlet)).astype(seq.dtype)
 
         # Early exit if the initial guess is already harmonic to tolerance,
         # on the SAME criterion the loop uses: the Rayleigh quotient of the
@@ -653,7 +675,7 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             # sqrt and the division so a single-precision sweep stays finite.
             wgram = seq.l2_norm_sq(w, k, dirichlet=dirichlet)
             wnorm = jnp.sqrt(jnp.maximum(wgram, 0.0))
-            w = w / jnp.where(wnorm > 0.0, wnorm, 1.0)
+            w = (w / jnp.where(wnorm > 0.0, wnorm, 1.0)).astype(seq.dtype)
             # The quotient in the residual precision (laplacian_pair): a
             # cancellation the working precision cannot resolve.
             Lw, Mw = laplacian_pair(seq, w, k, dirichlet=dirichlet, operators=operators)
