@@ -495,7 +495,7 @@ def bench_relaxation(bench, seq, args, dtype):
     ns = tuple(int(v) for v in args.ns.split(","))
     print("\n[phase] relaxation", flush=True)
 
-    cb = load_clebsch(args.geometry)
+    cb = load_clebsch(seq.equilibrium)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,

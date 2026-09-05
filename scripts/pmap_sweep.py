@@ -77,7 +77,7 @@ def main() -> None:
     seq, ops = build_sequence(cli.geometry, ns, cli.p)
     seq.set_operators(compute_nullspaces(seq, ops))
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(
-        load_clebsch(cli.geometry)))
+        load_clebsch(seq.equilibrium)))
     print(f"[setup] ns={ns} p={cli.p}  {time.perf_counter() - t0:.1f}s")
 
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
