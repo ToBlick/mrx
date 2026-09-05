@@ -61,6 +61,18 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 #
 # Single-chip entries are interleaved late because one chip is far likelier to
 # be free than four, and the MRX solve is single-device anyway.
+#
+# The zone list was checked against `gcloud compute tpus accelerator-types list`
+# and `tpu-vm versions list` rather than assumed. Every zone here offers both
+# v5litepod-1 and -4 and the tpu-ubuntu2204-base image. Two zones are
+# deliberately absent: us-south1-b, where the API answers "Queueing is not
+# supported for accelerator type v5litepod-1", and us-central1-b/c/f,
+# us-west4-c and us-south1-c, which offer no v5litepod at all.
+#
+# us-east5-a and -c are kept only for four chips and for spot. On demand they
+# answer "Reservation not found", i.e. the zone serves v5e out of reservations
+# this project does not hold -- which is not the same as having no capacity,
+# and used to be reported as "machine type or image not offered here".
 DEFAULT_CANDIDATES=(
     # v5p, 4 chips, 95 GB HBM each. Highest quota that is actually usable.
     v5p:ct5p-hightpu-4t:us-east5-b:STANDARD:gce
@@ -75,13 +87,20 @@ DEFAULT_CANDIDATES=(
     v5e:v5litepod-4:us-east5-a:ONDEMAND:tpuapi
     v5e:v5litepod-4:us-central1-a:ONDEMAND:tpuapi
     v5e:v5litepod-4:us-west4-a:ONDEMAND:tpuapi
+    v5e:v5litepod-4:us-west4-b:ONDEMAND:tpuapi
     v5e:v5litepod-4:us-east5-c:ONDEMAND:tpuapi
     v5e:v5litepod-4:us-south1-a:ONDEMAND:tpuapi
 
-    # Single chip: much likelier to be free, and enough for the MRX solve
+    # Single chip: much likelier to be free, and enough for the MRX solve.
+    # us-south1-a and us-west4-a/b were listed for four chips but not for one,
+    # which is backwards given that comment. us-south1-a v5litepod-1 is the
+    # rung that produced the only node of a two-day stockout.
     v5e:v5litepod-1:us-east5-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east5-a:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-central1-a:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-south1-a:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-west4-a:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-west4-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east5-c:ONDEMAND:tpuapi
 
     # Spot: cheapest, preemptible, same pools
@@ -178,6 +197,14 @@ tpu_running_zone() {
 #              renewed, and a daemon left alone will otherwise sweep for hours
 #              reporting "no capacity" when nothing was ever asked
 #   PERMISSION IAM or API enablement
+#   RESERVATION_ONLY  the zone serves this accelerator only out of reservations
+#              and this project holds none. The API says "Reservation not
+#              found", which matched UNSUPPORTED's "not found" and was reported
+#              as "machine type or image not offered here" -- wrong, and
+#              actively misleading: both the accelerator type and the runtime
+#              image are listed as available in the zone.
+#   NO_QUEUEING  the accelerator type cannot be queued in this location. Not a
+#              capacity statement at all; the rung is simply unusable as asked.
 #   UNSUPPORTED the machine type or image genuinely is not offered here
 #   NOT_ALLOWLISTED  the machine type exists and quota exists, but this project
 #              is not permitted to reach it by this API (v5e via GCE)
@@ -212,6 +239,10 @@ classify_failure() {
         echo "TRANSIENT"
     elif rg -q "PERMISSION_DENIED|Required .* permission|403" "${log}"; then
         echo "PERMISSION"
+    elif rg -q "Reservation not found|reservation .* not found" "${log}"; then
+        echo "RESERVATION_ONLY"
+    elif rg -q "Queueing is not supported" "${log}"; then
+        echo "NO_QUEUEING"
     elif rg -q "not found|does not exist|Invalid value|UNSUPPORTED" "${log}"; then
         echo "UNSUPPORTED"
     else
@@ -247,6 +278,9 @@ explain_failure() {
             echo "machine type not allowlisted for this project (quota is irrelevant)" ;;
         DISK_INCOMPATIBLE)
             echo "${DATA_DISK} type rejected by this machine type; retrying without it" ;;
+        RESERVATION_ONLY)
+            echo "on-demand not served here; the zone has only reserved v5e" ;;
+        NO_QUEUEING) echo "this accelerator type cannot be queued in this zone" ;;
         UNSUPPORTED) echo "machine type or image not offered here" ;;
         *)
             # gcloud puts "Could not fetch resource:" on the ERROR line and the
