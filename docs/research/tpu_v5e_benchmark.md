@@ -42,7 +42,7 @@ Four things moved the v5e columns, in order of size: the persistent compilation
 cache, the gather, the assembly, and compiling the extraction operator's two ops
 together. The first is configuration; the rest are in `mrx/mass.py` and
 `mrx/extraction_operators.py`. The before/after columns above are what each is
-worth per kernel; what they are worth per step is pending the re-measurement.
+worth per kernel; what they are worth per step is the re-measured table below.
 
 ## At twice the resolution
 
@@ -54,7 +54,8 @@ worth per kernel; what they are worth per step is pending the re-measurement.
 | `compute_nullspaces`, `gap_sweeps=0` | 34.5 s | **10.9 s** | 19.4 s |
 
 The setup rows survive the resolution change. The relaxation row that used to
-be here does not; it is withdrawn for the reason below.
+be here was withdrawn for the reason below, and re-measured there: **1.800 s a
+step on the v5e against 0.352 s on the H200.**
 
 `compute_nullspaces` is the one place the v5e is now clearly the worst of the
 three, at 3.2x the CPU's time. It is not a dense construction: it is two
@@ -105,12 +106,26 @@ The setup rows re-measure at 60.7 s and 18.7 s against the 65.1 s and 19.4 s in
 the table above, so the harness itself was sound; the relaxation row was the
 only bad one.
 
-**The v5e and its host CPU are still outstanding** -- the ladder has been in
-total stockout, every rung returning `zonesAvailable empty`. Until they land
-this note makes no claim about relaxation throughput on a TPU. The bar is now
-explicit and it is high: **the v5e has to beat 0.352 s/step to win the step at
-all**, and its withdrawn 6.15 s was measured the same contaminated way, over a
-compile that is typically larger on a TPU than on a GPU.
+**The v5e is now measured too, and it does not clear that bar** (2026-09-05,
+`(12,24,24)` p=3 float32, per step from the slope between a 5-step and a 10-step
+call so no compile is folded in):
+
+| component of one 10-step call | v5e | one H200 |
+|---|---|---|
+| compile, first call only | 42.66 s | 82.54 s |
+| the steps themselves, per step | **1.800 s** | **0.352 s** |
+
+The H200 takes the step by **5.1x**. The withdrawn v5e figure of 6.15 s was
+measured the contaminated way, so the direction it implied was right by
+accident; the size was not.
+
+Two bounds on how far to read this. The node was a single-chip `v5litepod-1`,
+the only shape capacity would give, and the solve is single-device, so the other
+three chips of a `v5litepod-4` would have sat idle without a `pmap` that does not
+exist here. And it ran with a cold JAX cache in `us-east1-c`, which has no
+persistent data disk: `build_sequence` 115.0 s and `compute_nullspaces` 35.3 s
+there against 36.8 s and 34.5 s on a warm node. That is a cache artefact, not a
+hardware result, and the per-step figure is immune to it by construction.
 
 **The matvec and primitive numbers above are unaffected.** `matvec_bench.py`
 hoists its jit and reuses it across repeats, which is why those rows -- the
@@ -239,10 +254,12 @@ and is not affected:
   and 20 scatters fused into one `jit` cost 0.531 ms each against 0.533 ms
   unfused.
 
-So the mechanism is measured and the direction is argued for. The magnitude is
-not. Half the comparison is now back: the H200 runs a step in 0.352 s. A v5e
-step has to come in under that for any of the end-to-end argument to survive,
-and there is no longer any reason to assume it does.
+So the mechanism is measured and the direction was argued from it. The
+comparison is now complete, and the direction does not survive it: 1.800 s on
+the v5e against 0.352 s on the H200. The dispatch effect is real -- the two
+forms do disagree most on the backend paying most per call -- but it is not
+large enough to decide the step, and the end-to-end inference drawn from it was
+wrong. What the branch rests on is the per-kernel table, not this.
 
 ## `jax_default_matmul_precision` is a real TPU tax, and `high` is the floor
 
