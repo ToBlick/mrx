@@ -86,7 +86,7 @@ seq.set_operators(compute_nullspaces(seq, ops))
 # %%
 # Now we set the initial condition: li383's own equilibrium field as B = dA'
 # from the histopolated Clebsch potential (divergence-free, wall-tangent, nested).
-B0, ic = initial_field(seq, cli.geometry)
+B0, ic = initial_field(seq)
 print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}, "
       f"wall-normal part {ic['wall_discarded']:.1e}")
 

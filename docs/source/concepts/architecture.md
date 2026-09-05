@@ -75,9 +75,10 @@ with the metric weight built from the map Jacobian `DF` and `J = det DF`:
 
 The mass matrices are the only operators that need quadrature and they are
 never stored. `mass_core_apply(seq, k)` in `mrx/operators.py` returns the
-matrix-free apply on the raw tensor-product space (`seq.mass_apply[k]`,
-built by `set_geometry`); it is the sum-factorised kernel of
-`mrx/mass.py`.
+matrix-free apply on the raw tensor-product space: the sum-factorised
+kernel of `mrx/mass.py` bound to the sequence's plan (`seq.mass_plan[k]`)
+and the geometry's weights (`seq.geometry.mass_weights[k]`, attached by
+`set_geometry`).
 
 ### Incidence, derivative, and stiffness
 

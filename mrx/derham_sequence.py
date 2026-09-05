@@ -40,13 +40,13 @@ import copy
 
 import mrx
 from mrx.differential_forms import DifferentialForm
-from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, solve_tol
+from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, default_tol, solve_tol
 from mrx.extraction_operators import (PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            get_nullspace)
 import mrx.operators as op
-from mrx.mass import build_matrixfree_mass_apply, build_matrixfree_projection_apply
+from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.spline_bases import basis_derivative_table, basis_table
@@ -93,9 +93,10 @@ class DeRhamSequence():
         ``(dirichlet_in, dirichlet_out)``.
     geometry : SequenceGeometry or None
         Metric and Jacobian data of the installed map (:meth:`set_map`).
-    mass_apply, projection_apply : dict or None
-        Matrix-free raw-DOF applies of ``M_k`` and ``P_{k_in k_out}``, built
-        with the geometry.
+    mass_plan, projection_plan : dict
+        The geometry-independent plans of the mass and projection applies
+        (``mrx.mass.SumfactPlan``: basis tables, index plans, pair
+        structure); their weights ride on ``geometry``.
     operators : SequenceOperators or None
         Preconditioners and harmonic forms of the installed geometry
         (:meth:`build_preconditioners`).
@@ -197,9 +198,12 @@ class DeRhamSequence():
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
-        self.mass_apply = None
-        self.projection_apply = None
+        #: the parsed geometry file of :func:`mrx.geometry.build_sequence`
+        self.equilibrium = None
         self.operators = None
+        #: The dtype of the sequence's arrays and of its solves' results: the
+        #: working dtype; the residual dtype on the float64 view.
+        self.dtype = mrx.DTYPE
         assert len(betti_numbers) == 4, "betti_numbers must have length 4"
         self.betti_numbers = tuple(betti_numbers)
         Ts = list(knots) if knots is not None else [None] * 3
@@ -261,6 +265,12 @@ class DeRhamSequence():
         pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
         self.g0_grad = {pr: op.build_grad_stencil_g0(self, self.xi, *pr) for pr in pairs}
         self.g1_curl = {pr: op.build_curl_stencil_g1(self, self.xi, *pr) for pr in pairs}
+        # The geometry-independent plans of the mass and projection applies
+        # (basis tables, index plans, pair structure); their weights come
+        # with the geometry (``mrx.mass.attach_weights``).
+        self.mass_plan = {k: mass_plan(self, k) for k in range(4)}
+        self.projection_plan = {pair: projection_plan(self, *pair)
+                                for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
         # Every stored floating array in the working dtype (64-bit mode is
         # always on, so NumPy-built arrays would otherwise be float64).
         cast_arrays(self)
@@ -347,12 +357,7 @@ class DeRhamSequence():
             raise ValueError(
                 f"the map folds: det DF at the quadrature points spans "
                 f"[{jac.min():.3e}, {jac.max():.3e}] and must be positive")
-        geometry = cast_arrays(geometry)
-        self.geometry = geometry
-        self.mass_apply = {k: build_matrixfree_mass_apply(self, k, geometry)
-                           for k in range(4)}
-        self.projection_apply = {pair: build_matrixfree_projection_apply(self, *pair)
-                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
+        self.geometry = attach_weights(self, cast_arrays(geometry))
         self.operators = None
         self._residual = None
 
@@ -360,24 +365,42 @@ class DeRhamSequence():
     def residual(self):
         """The sequence in the residual precision, for the residual of a
         refined solve (:mod:`mrx.precision`, :func:`mrx.solvers.refine`):
-        the geometry, quadrature, extraction and polar stencils cast to
-        float64 and the mass applies rebuilt on them (the 1-D basis tables
-        re-evaluated in float64; the bases, incidence and preconditioners
-        are shared). ``None`` at a float64 working dtype, where the solves
-        are plain. Built once per geometry, on first use."""
-        if not REFINE:
-            return None
+        the geometry (its mass weights with it), quadrature, extraction and
+        polar stencils cast to float64; the plans of the applies (float32
+        basis tables and index plans), the bases, incidence and
+        preconditioners are shared, so the residual operator is the
+        working-precision operator's own values applied in float64.
+        ``None`` at a float64 working dtype, where the solves are plain.
+        Built once per geometry, on first use."""
+        if not REFINE or self.dtype == RESIDUAL_DTYPE:
+            return None     # a sequence in the residual precision refines nothing
         if self._residual is None:
             self._require_geometry()
             view = copy.copy(self)
             view._residual = None
+            view.dtype = RESIDUAL_DTYPE
+            view.tol = default_tol(RESIDUAL_DTYPE, refine=False)
             view.geometry = cast_arrays(self.geometry, RESIDUAL_DTYPE)
             view.quad = cast_arrays(copy.copy(self.quad), RESIDUAL_DTYPE)
-            for name in ("extraction", "boundary_extraction", "g0_grad", "g1_curl"):
-                setattr(view, name, cast_arrays(dict(getattr(self, name)), RESIDUAL_DTYPE))
-            view.mass_apply = {k: build_matrixfree_mass_apply(view, k, view.geometry)
-                               for k in range(4)}
-            view.projection_apply = None
+            # The extraction and the polar stencils REBUILT in float64 from
+            # the exact host data, not cast from the working copies: the
+            # topological identities (d d = 0 on the extracted polar DoFs)
+            # hold only as exactly as these values are stored, and the
+            # harmonic-form construction on the view leans on them
+            # (measured 2026-09-05: cast, the k=2 Dirichlet form read 1e-6
+            # on li383 and 1e-3 on QA; rebuilt, 1e-12 and better).
+            xi = get_xi(self.ns[1])
+            bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
+            view.xi = xi
+            view.extraction, view.boundary_extraction = {}, {}
+            for k in range(4):
+                e = PolarExtractionOperator(bases[k], xi, False).build_extraction(dtype=RESIDUAL_DTYPE)
+                e_dbc = PolarExtractionOperator(bases[k], xi, True).build_extraction(dtype=RESIDUAL_DTYPE)
+                view.extraction[(k, False)], view.extraction[(k, True)] = e, e_dbc
+                view.boundary_extraction[k] = bc_extraction_op(e, e_dbc, bases[k].n, dtype=RESIDUAL_DTYPE)
+            pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
+            view.g0_grad = {pr: op.build_grad_stencil_g0(view, xi, *pr, dtype=RESIDUAL_DTYPE) for pr in pairs}
+            view.g1_curl = {pr: op.build_curl_stencil_g1(view, xi, *pr, dtype=RESIDUAL_DTYPE) for pr in pairs}
             self._residual = view
         return self._residual
 
@@ -1170,7 +1193,7 @@ class DeRhamSequence():
             if dirichlet_p:
                 raise ValueError("dirichlet_p selects the k=1 scalar space; "
                                  "the k=2 multiplier is always the Dirichlet 3-form")
-            p_guess = jnp.zeros(self.n(3, True), dtype=mrx.DTYPE) if p_guess is None else p_guess
+            p_guess = jnp.zeros(self.n(3, True), dtype=self.dtype) if p_guess is None else p_guess
             # Assumes dirichlet == True on all spaces. A ``v`` in the residual
             # precision is kept there: the force ``v - sigma`` is the small
             # difference of two large fields and is rounded once, at the end.
@@ -1182,12 +1205,12 @@ class DeRhamSequence():
             q, σ, _ = op.apply_inverse_laplacian_saddle(
                 self, self._require_operators(None), div_v, 3, 0.0, dirichlet=True,
                 guess=-p_guess, sigma_guess=sigma_guess, tol=self.tol, maxiter=self.maxiter)
-            return (v - σ).astype(mrx.DTYPE), (-q).astype(mrx.DTYPE)
+            return (v - σ).astype(self.dtype), (-q).astype(self.dtype)
         elif k == 1:
             # v lives in the natural 1-form space; only the scalar space
             # (test functions AND multiplier) carries the boundary condition.
             n_p = self.n(0, True) if dirichlet_p else self.n(0)
-            p_guess = jnp.zeros(n_p, dtype=mrx.DTYPE) if p_guess is None else p_guess
+            p_guess = jnp.zeros(n_p, dtype=self.dtype) if p_guess is None else p_guess
             div_v = -self.apply_derivative_matrix(
                 v, 0, dirichlet_in=dirichlet_p, dirichlet_out=False, transpose=True)
             q = self.apply_inverse_laplacian(

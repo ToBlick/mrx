@@ -4,7 +4,6 @@ from .differential_forms import *
 from .extraction_operators import *
 from .mappings import *
 from .operators import *
-from .plotting import *
 from .projectors import *
 from .quadrature import *
 from .solvers import *

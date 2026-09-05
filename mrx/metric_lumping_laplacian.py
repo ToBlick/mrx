@@ -76,12 +76,18 @@ from mrx.operators import (
     _assemble_weighted_1d_stiffness,
     _dense_incidence_1d,
 )
-from mrx.precision import DTYPE, eps, sqrt_eps
+from mrx.precision import DTYPE, RESIDUAL_DTYPE, sqrt_eps
 from mrx.preconditioners import _assemble_weighted_1d_mass, _simultaneous_diagonalize_pair
 
 #: Relative cut-off below which an eigenvalue of the probed dense core is
-#: treated as exactly zero. ~1e-12 in float64 (the value it was tuned at).
-CORE_TOL = eps(4096.0)
+#: treated as exactly zero: 4096 machine epsilons of the RESIDUAL precision,
+#: ~1e-12 in float64, the precision the cores are probed and inverted in
+#: (see :func:`_probe_rows`). In the working precision it was 5e-4 in a
+#: float32 process, which zeroed real modes of the k=1 Laplacian core on
+#: li383 (12,24,24) p=3: the preconditioner was singular on them, the CG's
+#: preconditioned criterion blind to their residual, and the k=1 Dirichlet
+#: solve reported convergence with a true residual of 2e-6 (2026-09-05).
+CORE_TOL = 4096.0 * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
 # --------------------------------------------------------------------------- #
 # Bundled axis profiles                                                        #
@@ -608,8 +614,11 @@ def core_rows(seq, k, dirichlet):
     return core, bulk, e
 
 
-def _probe_rows(apply, size, rows):
-    """Dense ``A`` restricted to ``rows``, by one apply per row, on device.
+def _probe_rows(apply, size, rows, dtype=DTYPE):
+    """Dense ``A`` restricted to ``rows``, by one apply per row, on device,
+    in ``dtype``: the cores are probed on the residual-precision sequence
+    (:func:`_probing_sequence`) so that their inversion at :data:`CORE_TOL`
+    drops the kernel and nothing else.
 
     A Python loop of ASYNCHRONOUS dispatches: nothing here touches the host
     until the block is used, whereas the previous form copied every column
@@ -619,12 +628,18 @@ def _probe_rows(apply, size, rows):
     is a few hundred dispatches of an already-compiled apply.
     """
     if rows.size == 0:
-        return jnp.zeros((0, 0), dtype=DTYPE)
+        return jnp.zeros((0, 0), dtype=dtype)
     rows_j = jnp.asarray(rows)
     block = jnp.stack(
-        [apply(jnp.zeros(size, dtype=DTYPE).at[int(i)].set(1.0))[rows_j]
+        [apply(jnp.zeros(size, dtype=dtype).at[int(i)].set(1.0))[rows_j]
          for i in rows], axis=1)
     return 0.5 * (block + block.T)
+
+
+def _probing_sequence(seq):
+    """The sequence the dense cores are probed on: the float64 view, or
+    ``seq`` itself in the residual precision."""
+    return seq if seq.residual is None else seq.residual
 
 
 def _dense_symmetric_inverse(block, tol):
@@ -645,7 +660,7 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
     return _probe_rows(
         lambda x: apply_laplacian_approx(seq, operators, x, k,
                                                dirichlet=dirichlet),
-        size, rows)
+        size, rows, dtype=seq.dtype)
 # --------------------------------------------------------------------------- #
 # The applied payload, as a pytree                                             #
 # --------------------------------------------------------------------------- #
@@ -946,8 +961,9 @@ class MetricLumpingLaplacian:
         # through radial coupling a separable ring cannot carry -- the
         # Steklov/DtN operator is nonlocal.
         self.probe_rows = core
+        on = _probing_sequence(seq)
         self.core_inv = _dense_symmetric_inverse(
-            probe_core_block(seq, operators, k, dirichlet, core), core_tol)
+            probe_core_block(on, operators, k, dirichlet, core), core_tol)
         # M_k and S_k on the core rows, diagonalised together ONCE: the
         # shifted-stiffness atom's core block is (M + eps S)^-1 = V diag(1 /
         # (1 + eps mu)) V^T with V^T M V = I and V^T S V = diag(mu), and eps
@@ -956,9 +972,9 @@ class MetricLumpingLaplacian:
         from mrx.operators import apply_mass_matrix, apply_stiffness  # noqa: PLC0415
         size = int(seq.n(k, dirichlet))
         mass_core = _probe_rows(
-            lambda x: apply_mass_matrix(seq, x, k, dirichlet=dirichlet), size, core)
+            lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype)
         stiffness_core = _probe_rows(
-            lambda x: apply_stiffness(seq, x, k, dirichlet=dirichlet), size, core)
+            lambda x: apply_stiffness(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype)
         if core.size > 0:
             self.core_V, self.core_mu = _simultaneous_diagonalize_pair(mass_core, stiffness_core)
         else:
@@ -1139,11 +1155,12 @@ class MetricLumpingMass:
                 "offset": offset, "lam": lam[c][r0:r0 + nr, :, :]})
 
         size = int(seq.n(k, dirichlet))
+        on = _probing_sequence(seq)
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
-            lambda x: apply_mass_matrix(seq, x, k,
-                                        dirichlet=dirichlet),
-            size, core), core_tol)
+            lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet),
+            size, core, dtype=on.dtype), core_tol)
         self._flat = _flatten_payload(self._build_payload())
+        self._apply_in = {}
 
     def _build_payload(self):
         """Pack the factors into the :class:`_MassPayload` pytree.
@@ -1182,3 +1199,21 @@ class MetricLumpingMass:
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
         return jitted(leaves, jnp.asarray(x))
+
+    def apply_in(self, dtype):
+        """``apply`` with the payload in ``dtype``: the atom as part of an
+        OPERATOR of that precision -- the weak term of the hat Laplacian
+        (:func:`mrx.operators._hat_solve`) and of the approximate Laplacian
+        the Laplacian atoms' cores are probed with, on the float64 view --
+        rather than as a preconditioner, whose own precision is immaterial.
+        One cast per dtype, memoised in closures (which the bundle's cast
+        to the working dtype leaves alone)."""
+        dtype = jnp.dtype(dtype)
+        try:
+            return self._apply_in[dtype]
+        except KeyError:
+            leaves, jitted = self._flat
+            leaves = tuple(leaf.astype(dtype) if jnp.issubdtype(leaf.dtype, jnp.floating) else leaf
+                           for leaf in leaves)
+            self._apply_in[dtype] = apply = lambda x: jitted(leaves, jnp.asarray(x, dtype))
+            return apply

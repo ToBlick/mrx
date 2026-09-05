@@ -13,9 +13,14 @@ function is a product of three 1D functions and a degree-`p` spline touches
 `(p+1)^3 × (p+1)^3` blocks. A matvec never forms the block: it folds the
 input vector into the contraction.
 
-`build_matrixfree_mass_apply(seq, k, geometry=None)` in
-`mrx/mass.py` returns a jitted `x -> M_k x` on the raw
-tensor-product space. `mass_core_apply` in `mrx/operators.py` wraps it; the
+`sumfact_apply(plan, weights, x)` in `mrx/mass.py` is `x -> M_k x` on the
+raw tensor-product space, from the geometry-independent plan of the
+apply (`mass_plan(seq, k)`: the 1-D basis tables, the per-axis shift plans
+of the read and of the assembly, the pair structure of the weight; built
+once on the sequence) and the weights that ride on the geometry
+(`attach_weights(seq, geometry)`, applied by `set_geometry`:
+`geometry.mass_weights[k]`). `mass_core_apply` in `mrx/operators.py`
+binds the two; the
 extraction `E (·) E^T` is applied by the caller, so `apply_mass_matrix` is
 `E M_k E^T`. The weak derivatives, stiffness blocks, and Laplacians of
 [architecture.md](architecture.md) are compositions of this apply with the
@@ -100,9 +105,11 @@ layout with the Gauss weights folded in, and passes them to the kernel as
 runtime arguments; a new map means the same compiled kernel with a new
 weight. Forming the weight inside the kernel instead was measured at +18% on
 the k=1/2 apply at (16,32,16) even as bare elementwise products, so the
-memo stays. The projection masses between degrees
-(`build_matrixfree_projection_apply`) use the same kernel with the reference
-weight `W = I`.
+memo stays. The projection masses between degrees (`projection_plan`,
+`geometry.reference_weights`) use the same kernel with the reference
+weight `W = I`. Nothing closes over the geometry: the weights are fields
+of the `SequenceGeometry` pytree, cast with it and, for an ensemble,
+batched with it.
 
 The quadrature points are flattened r-major, `(r, theta, zeta)`: a flat
 quadrature field is the `(nx, ny, nz)` array `field.reshape(seq.quad.shape)`,
@@ -158,7 +165,7 @@ point passes `p + 1`:
 ## 7. What remains assembled
 
 Nothing. The inter-degree projection masses `P_21, P_12, P_03, P_30` (the
-helicity diagnostic; `seq.projection_apply`) are the same sum-factorised
+helicity diagnostic; `seq.projection_plan`) are the same sum-factorised
 apply with the reference weight. The only stored operators are index/value triplets: the extraction
 operators and the analytic polar grad/curl stencils, both
 `MatrixFreeExtraction` objects applied by gather and segment sum, with a

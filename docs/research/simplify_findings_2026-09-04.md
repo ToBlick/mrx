@@ -107,6 +107,42 @@ kernel bit-identical, the induction to 2e-10, the other cases at float32
 round-off (1e-7, the `1/J` associated with the product instead of the
 weight).
 
+**Done 2026-09-05: mixed precision and its consequences.** Every solve
+is float32 Krylov refined against a float64 residual on the float64 view
+of the sequence (`concepts/precision.md`); the velocity Leray projection
+left the step; the harmonic forms and the gap are built on the view; the
+mass and projection weights ride on the geometry pytree with the plans
+on the sequence (level 1 of "the applies take the geometry as an
+argument"). Level 2, the step reading geometry and bundle from its
+arguments with the preconditioner atoms as pytrees, is what would remove
+the geometry literals from the jitted step and allow `vmap` over an
+ensemble; not done.
+
+**Done 2026-09-05: one stopping criterion.** Every solve runs under
+`refine` in every configuration, the true residual of the outer
+operator measured in the mass-atom norm of its space; the Hodge split
+and the shifted split run under one pair loop on `(x, w)` with the
+saddle residual (two applies, no nested inverse; their own solves are
+inner solves at the square root of the tolerance; the Laplacian's
+harmonic forms deflated, nothing for the shifted operator). Before,
+three criteria coexisted (preconditioned norms inside the Krylov
+iterations, a 2-norm in the refinement, nothing for the composites),
+and the k=1 Hodge split reported convergence at 1e-8 with a true
+residual of 2e-6, which the k=2 harmonic form inherited squared. The
+criterion then exposed the root cause of that residual: the atoms'
+dense cores were inverted with a cut-off of 4096 float32 epsilons,
+5e-4, which zeroed real modes on p=3 meshes and left the preconditioner
+singular, so CG's own criterion was blind there. The cores are probed
+and inverted on the float64 view at 1e-12 now; in a float32 process the
+k=1 Dirichlet builder solve converges in 936 / 1082 iterations to 1e-13
+on li383 (12,24,24) / QA (16,32,32) p=3 (was 3e5 iterations, 2e-7), the
+k=2 form's weak half is 1e-24. One tolerance per solve (defaults 1e-8
+refined float32, 1e-10 float64, 1e-6 plain float32; the inner tolerance
+its square root); `relax` refuses a tolerance above `floor_tol^2`. Cost:
+the Poisson counts are 2.5-3x the 2026-09-02 baselines (one float32
+pass to 3.5e-4 then, two passes to 1e-8 now), the step 0.68 s against
+0.50 at (12,24,24) p=3 float32.
+
 **The "div f = 0" question, measured** (`probe_batchD.py`, li383
 (12,24,24) p=3 float32, 200 steps in). The shifted split solves `(M_2 +
 eps S_2) x = M_2 u` and then the k=1 curl-curl level. For a

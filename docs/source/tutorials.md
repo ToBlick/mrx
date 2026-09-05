@@ -112,7 +112,7 @@ tangential to the wall, nested surfaces -- see [Relaxation](relaxation.md),
 section 4):
 
 ```python
-cb = load_clebsch("data/wout_li383_low_res_reference.nc")
+cb = load_clebsch(seq.equilibrium)   # the file build_sequence parsed
 B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
 ```
 

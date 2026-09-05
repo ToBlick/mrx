@@ -17,38 +17,31 @@ import numpy as np
 import pytest
 
 import mrx
-from mrx.precision import MAX_PASSES, REFINE, eps
+from mrx.precision import eps
 from test.conftest import TORUS_EPSILON
 from test.manufactured import CASES, case_specs, case_tag, relative_l2_error
 
 # Relative L2 error of each solve on the (8, 12, 12) p=2 spline donut,
 # measured 2026-09-02 in float64 (see the print); the band is 1.25x that.
-# The float32 solve stops well below these discretisation errors -- at
-# sqrt(eps) = 3.5e-4 until 2026-09-04 and at SOLVE_TOL = 1e-8 by refinement
-# since -- so the bands hold in either precision.
+# Every solve stops at seq.tol (1e-8 refined float32, 1e-10 float64), far
+# below these discretisation errors, so the bands hold in either precision.
 ERROR_MEASURED = {
     (0, False): 9.315e-4, (0, True): 1.054e-3,
     (1, False): 1.060e-2, (1, True): 1.067e-2,
     (2, False): 1.430e-2, (2, True): 3.185e-3,
     (3, False): 1.998e-2, (3, True): 1.069e-2,
 }
-# Iterations of the production solve, measured with the errors above in
-# float64, where the solve is a single Krylov run and a count moves by a few
-# percent between precisions and compilations.
+# Iterations of the production solve to 1e-8 in the mass-atom norm, refined
+# float32 (two passes at k=0 and k=3, three for the Hodge splits), measured
+# 2026-09-05; the band is 2x (a count moves by a few percent between
+# precisions and compilations). The 2026-09-02 counts (13-51) were a single
+# float32 pass to sqrt(eps) = 3.5e-4.
 ITERS_MEASURED = {
-    (0, False): 16, (0, True): 13,
-    (1, False): 39, (1, True): 25,
-    (2, False): 32, (2, True): 32,
-    (3, False): 51, (3, True): 42,
+    (0, False): 47, (0, True): 33,
+    (1, False): 119, (1, True): 82,
+    (2, False): 96, (2, True): 100,
+    (3, False): 160, (3, True): 123,
 }
-# A refined solve is not one Krylov run: mrx.solvers.refine reports the inner
-# iterations of every pass summed, and each pass solves from zero to INNER_TOL,
-# so it costs about one count from the table. k0 free came out at 44 against a
-# baseline of 16 (three passes), k1 dbc at 62 against 25. Budgeting one band
-# per permitted pass is what keeps this a preconditioner check rather than a
-# precision check; the error assertion above stays tight either way, and it is
-# the one that fails if a solve is actually wrong.
-ITER_BAND = 2 * MAX_PASSES if REFINE else 2
 
 
 @pytest.fixture(scope="module")
@@ -63,22 +56,21 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
     b = seq.load(case["src_ref"], k, dirichlet=dirichlet, frame='ref')
     u, info = seq.apply_inverse_laplacian(b, k, dirichlet=dirichlet, return_info=True)
     residual = seq.apply_laplacian(u, k, dirichlet=dirichlet) - b
-    rel_res = float(jnp.linalg.norm(residual) / jnp.linalg.norm(b))
+
+    def norm(v):   # the stopping criterion's norm: the mass atom of the dual k-forms
+        return float(jnp.sqrt(v @ seq.apply_mass_matrix_preconditioner(v, k, dirichlet)))
+
+    rel_res = norm(residual) / norm(b)
     err = relative_l2_error(seq, k, dirichlet, u, case["exact"])
     print(f"\n  {case_tag(k, dirichlet)}: relative L2 error {err:.3e}, "
-          f"{-int(info)} iterations, residual {rel_res:.2e}")
+          f"{-int(info)} iterations, residual {rel_res:.2e} in the mass-atom norm")
     assert int(info) < 0, f"{case_tag(k, dirichlet)} did not converge (info={int(info)})"
-    # The solve stops at seq.tol on its own preconditioned residual; the
-    # plain dual residual is measured through apply_laplacian's own inner
-    # mass solve at seq.tol and came out at up to 253 tol (k=1 free, the
-    # Hodge split, 2026-09-02). That measurement is itself made in the working
-    # precision, so at float32 it cannot resolve the 1e-8 refinement reaches:
-    # k=1 free lands at 7.1e-4, twice sqrt(eps) through the Hodge split. The
-    # band is whichever floor is looser, and at float64 the roundoff one is
-    # 2e-12 and inert.
-    assert rel_res <= max(1e3 * seq.tol, eps(1e4))
+    # The solve stops when the true residual in the mass-atom norm is below
+    # seq.tol; it is measured here through apply_laplacian's own nested mass
+    # solve at seq.tol, which adds noise of that size.
+    assert rel_res <= 1e2 * seq.tol
     assert err < 1.25 * ERROR_MEASURED[(k, dirichlet)]
-    assert -int(info) <= ITER_BAND * ITERS_MEASURED[(k, dirichlet)]
+    assert -int(info) <= 2 * ITERS_MEASURED[(k, dirichlet)]
 
 
 @pytest.mark.parametrize("k", (2, 1))

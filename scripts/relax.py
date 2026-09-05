@@ -212,7 +212,7 @@ def main(cli):
     if cli.seed:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
-    B0, ic = initial_field(seq, cli.geometry, seed)
+    B0, ic = initial_field(seq, seed)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"

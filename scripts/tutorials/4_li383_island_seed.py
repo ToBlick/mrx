@@ -88,7 +88,7 @@ seq.set_operators(compute_nullspaces(seq, ops))
 # with a resonant seed added on the Clebsch potential.
 m, n, rho0, width = (float(v) for v in cli.seed.split(","))
 seed = (int(m), int(n), rho0, width, cli.seed_eps)
-cb = load_clebsch(cli.geometry)
+cb = load_clebsch(seq.equilibrium)
 nfp = int(cb["nfp"])
 rho_res = resonant_rho(cb, int(m), int(n))
 print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, width {width:g}, "
