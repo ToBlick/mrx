@@ -28,8 +28,21 @@ IMAGE_FAMILY="${IMAGE_FAMILY:-ubuntu-accel-2204-amd64-tpu-v5e-v5p-v6e}"
 VM_NAME="${VM_NAME:-my-tpu-vm}"
 # Runtime for the Cloud TPU API path. The -base images ship the TPU driver and
 # leave Python to us, which is what the conda build on /mnt/data expects.
+# Setting TPU_RUNTIME pins every rung to it; left unset, the runtime follows the
+# accelerator, because v6e does not boot the generic -base image -- the only
+# runtime the API offers it is v6e-ubuntu-2404, checked in all seven zones the
+# v6e rungs below use.
+TPU_RUNTIME_PINNED="${TPU_RUNTIME:+1}"
 TPU_RUNTIME="${TPU_RUNTIME:-tpu-ubuntu2204-base}"
 PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+
+runtime_for() {
+    if [[ -z "${TPU_RUNTIME_PINNED}" && "$1" == v6e-* ]]; then
+        echo "v6e-ubuntu-2404"
+    else
+        echo "${TPU_RUNTIME}"
+    fi
+}
 
 # Candidate ladder
 # Entries are generation:type:zone:model:api, tried in order.
@@ -46,10 +59,19 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 #   v5e via tpuapi   works; currently "Insufficient capacity". This is what
 #                    the TPU-LITE-PODSLICE-V5 quota of 512 actually governs.
 #   v5p via gce      works; currently ZONE_RESOURCE_POOL_EXHAUSTED. Quota 768.
-#   v6e via gce      quota is a hard 0.0 in us-east5 and us-east4, and every
-#                    other reachable zone has been in continuous stockout, so
-#                    v6e is not in the ladder: it cannot succeed without a CT6E
-#                    grant. Add entries back if one is obtained.
+#   v6e via gce      quota is a hard 0.0 in us-east5 and us-east4.
+#
+# That last line was read, until 2026-09-05, as "v6e cannot succeed without a
+# CT6E grant", and v6e was struck from the ladder. It was the wrong bucket. The
+# on-demand and preemptible limits are separate quotas, and
+# PREEMPTIBLE-TPU-V6E-per-project-region is 1536 in us-central1, us-east1,
+# us-south1 and us-west1 -- unfunded only in the two regions that were
+# measured. v6e is back below, on spot, in the funded regions.
+#
+# The same correction applies across the board: every preemptible bucket is
+# larger than its on-demand twin (v5e 1536 against 512, v5p 1536 against 768),
+# and spot draws on a separate pool, so the spot rungs are not a cheaper way of
+# asking the same question -- they are a different question.
 #
 # Also constraining things: constraints/gcp.resourceLocations restricts this
 # project to US locations, so the non-US regions carrying a CT6E limit of 48
@@ -63,11 +85,14 @@ PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 # be free than four, and the MRX solve is single-device anyway.
 #
 # The zone list was checked against `gcloud compute tpus accelerator-types list`
-# and `tpu-vm versions list` rather than assumed. Every zone here offers both
-# v5litepod-1 and -4 and the tpu-ubuntu2204-base image. Two zones are
-# deliberately absent: us-south1-b, where the API answers "Queueing is not
-# supported for accelerator type v5litepod-1", and us-central1-b/c/f,
-# us-west4-c and us-south1-c, which offer no v5litepod at all.
+# and `tpu-vm versions list` rather than assumed: every v5e zone here offers
+# v5litepod-1 and -4 and the tpu-ubuntu2204-base image, and every v6e zone here
+# offers v6e-1 and v6e-ubuntu-2404. us-south1-b is deliberately absent, since
+# the API answers "Queueing is not supported for accelerator type
+# v5litepod-1" there. us-central1-b/c and us-south1-c appear for v6e only,
+# because they carry no v5litepod at all; us-central1-f and us-west4-c carry
+# neither and so appear nowhere. us-central2-b offers v6e but sits in a
+# restricted region, so it is left out.
 #
 # us-east5-a and -c are kept only for four chips and for spot. On demand they
 # answer "Reservation not found", i.e. the zone serves v5e out of reservations
@@ -103,19 +128,74 @@ DEFAULT_CANDIDATES=(
     v5e:v5litepod-1:us-west4-b:ONDEMAND:tpuapi
     v5e:v5litepod-1:us-east5-c:ONDEMAND:tpuapi
 
-    # Spot: cheapest, preemptible, same pools
-    v5e:v5litepod-4:us-east5-b:SPOT:tpuapi
+    # On demand in the zones the ladder used to omit. All four offer v5litepod
+    # and all four have quota: the per-region limit is 512 by default, and
+    # us-west1's is 4, which is exactly one v5litepod-4.
+    v5e:v5litepod-4:us-east1-b:ONDEMAND:tpuapi
+    v5e:v5litepod-4:us-east1-c:ONDEMAND:tpuapi
+    v5e:v5litepod-4:us-east4-b:ONDEMAND:tpuapi
+    v5e:v5litepod-4:us-west1-c:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-east1-b:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-east1-c:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-east4-b:ONDEMAND:tpuapi
+    v5e:v5litepod-1:us-west1-c:ONDEMAND:tpuapi
+
+    # Spot. Not "the same pools": spot is a separate pool, which is the whole
+    # reason these are worth walking after the on-demand rungs have all said
+    # "Insufficient capacity". PREEMPTIBLE-TPU-LITE-PODSLICE-V5 is 1536 chips
+    # per region everywhere, against 512 on demand, and the ladder used to
+    # spend that on three rungs in one region. A spot node can be reclaimed at
+    # any time; the benchmark is minutes long and idle_reaper.sh already owns
+    # teardown, so that is a price worth paying for the extra pool.
     v5e:v5litepod-1:us-east5-b:SPOT:tpuapi
     v5e:v5litepod-1:us-east5-a:SPOT:tpuapi
+    v5e:v5litepod-1:us-central1-a:SPOT:tpuapi
+    v5e:v5litepod-1:us-west4-a:SPOT:tpuapi
+    v5e:v5litepod-1:us-west4-b:SPOT:tpuapi
+    v5e:v5litepod-1:us-south1-a:SPOT:tpuapi
+    v5e:v5litepod-1:us-east5-c:SPOT:tpuapi
+    v5e:v5litepod-1:us-east1-b:SPOT:tpuapi
+    v5e:v5litepod-1:us-east1-c:SPOT:tpuapi
+    v5e:v5litepod-1:us-east4-b:SPOT:tpuapi
+    v5e:v5litepod-1:us-west1-c:SPOT:tpuapi
+    v5e:v5litepod-4:us-east5-b:SPOT:tpuapi
+    v5e:v5litepod-4:us-central1-a:SPOT:tpuapi
+    v5e:v5litepod-4:us-west4-a:SPOT:tpuapi
+
+    # v6e on spot, one chip. v6e was dropped from the ladder on the reading
+    # that its quota is a hard 0, but that was the on-demand bucket:
+    # PREEMPTIBLE-TPU-V6E is 1536 in us-central1, us-east1, us-south1 and
+    # us-west1 (only us-east4 and us-east5 are unfunded, so no v6e rung uses
+    # them). It is a newer and faster generation than v5e, and an entirely
+    # unexplored pool. These need v6e-ubuntu-2404, which runtime_for supplies.
+    v6e:v6e-1:us-central1-a:SPOT:tpuapi
+    v6e:v6e-1:us-east1-d:SPOT:tpuapi
+    v6e:v6e-1:us-south1-a:SPOT:tpuapi
+    v6e:v6e-1:us-west1-c:SPOT:tpuapi
+    v6e:v6e-1:us-central1-b:SPOT:tpuapi
+    v6e:v6e-1:us-central1-c:SPOT:tpuapi
+    v6e:v6e-1:us-south1-c:SPOT:tpuapi
+
+    # v5p on spot, through the GCE path that already works for it on demand.
+    # PREEMPTIBLE-TPU-V5P is 1536 against 768; every v5p rung above is on
+    # demand, so this pool has never been asked either.
+    v5p:ct5p-hightpu-4t:us-east5-b:SPOT:gce
+    v5p:ct5p-hightpu-4t:us-east5-a:SPOT:gce
+    v5p:ct5p-hightpu-4t:us-central1-a:SPOT:gce
+    v5p:ct5p-hightpu-4t:us-east1-d:SPOT:gce
 )
 
 # Cloud Quotas bucket that actually governs each generation. The generic
 # TPUS-PER-TPU-FAMILY bucket is a poor guide: it reads "unset" for regions that
 # in practice permit creates and for regions that hard-fail at 0.
+# v6e names the preemptible bucket because every v6e rung is spot: its
+# on-demand limit is 0 where it is set at all, so reporting that one would say
+# "blocked" about rungs no on-demand quota governs.
 quota_bucket_for() {
     case "$1" in
         v5e) echo "TPU-LITE-PODSLICE-V5-per-project-region" ;;
         v5p) echo "TPU-V5P-per-project-region" ;;
+        v6e) echo "PREEMPTIBLE-TPU-V6E-per-project-region" ;;
         *)   echo "TPUS-PER-TPU-FAMILY-per-project-region" ;;
     esac
 }
@@ -235,7 +315,11 @@ classify_failure() {
         echo "POLICY"
     elif rg -q "problem refreshing your current auth|Reauthentication failed|credentials.*expired|invalid_grant" "${log}"; then
         echo "AUTH"
-    elif rg -q "Internal error|backend error|Try again later|deadline exceeded" "${log}"; then
+    # Case-insensitive on the internal-error wording: the Queued Resources API
+    # says "an internal error has occurred" (lowercase), which the capitalised
+    # pattern missed, and a retryable failure was reported as OTHER -- measured
+    # 2026-09-05 on the us-south1-a v5litepod-4 request, code 13.
+    elif rg -qi "internal error|backend error|Try again later|deadline exceeded" "${log}"; then
         echo "TRANSIENT"
     elif rg -q "PERMISSION_DENIED|Required .* permission|403" "${log}"; then
         echo "PERMISSION"

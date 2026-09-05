@@ -6,18 +6,26 @@
 # ladder, sleep, sweep again, and the moment a node reaches RUNNING build the
 # environment, run MRX and send a desktop notification.
 #
-# Every create fails fast rather than queueing. The command in Google's setup
-# doc blocks for up to two hours, because --request-valid-for-duration leaves
-# the instance PENDING while Dynamic Workload Scheduler waits for capacity and
-# gcloud waits with it. A success here is always a real VM, so there is no
-# probe-then-claim race.
+# Every create in the sweep fails fast rather than queueing. The command in
+# Google's setup doc blocks for up to two hours, because
+# --request-valid-for-duration leaves the instance PENDING while Dynamic
+# Workload Scheduler waits for capacity and gcloud waits with it. A success in
+# the sweep is therefore always a real VM, and there is no probe-then-claim
+# race.
+#
+# --queue adds the other half of that trade rather than replacing it: standing
+# requests through the Queued Resources API, which wait in Google's admission
+# queue while the sweep goes on asking. Worth turning on in a stockout, when the
+# sweep has been losing the instant-capacity race for hours.
 #
 # Usage:
 #   ./acquire_tpu.sh                  # loop until acquired or budget spent
 #   ./acquire_tpu.sh --once           # a single sweep, no looping
 #   ./acquire_tpu.sh --acquire-only   # stop once the hardware lands
+#   ./acquire_tpu.sh --queue          # also file standing queued requests
 #   GENERATIONS=v5e ./acquire_tpu.sh
 #   MAX_HOURS=6 SWEEP_INTERVAL=300 ./acquire_tpu.sh
+#   QUEUE_VALID_FOR=12h ./acquire_tpu.sh --queue
 #
 set -uo pipefail
 
@@ -37,10 +45,17 @@ ONCE=0
 # for, say, a relaxation first burns several minutes and dollars on a run that
 # is about to be superseded.
 ACQUIRE_ONLY=0
+# --queue additionally files standing requests through the Queued Resources
+# API, which the sweep alone cannot do. The requests live exactly as long as
+# this daemon: they are cancelled on exit, so nothing it filed can be fulfilled
+# after nobody is left watching for it.
+QUEUE=0
+QUEUE_VALID_FOR="${QUEUE_VALID_FOR:-6h}"
 for arg in "$@"; do
     case "${arg}" in
         --once)         ONCE=1 ;;
         --acquire-only) ACQUIRE_ONLY=1 ;;
+        --queue)        QUEUE=1 ;;
     esac
 done
 
@@ -196,7 +211,7 @@ create_tpuapi() {
         "${VM_NAME}"
         --zone="${zone}"
         --accelerator-type="${accel}"
-        --version="${TPU_RUNTIME}"
+        --version="$(runtime_for "${accel}")"
         --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
         --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}",mrx-branch="${MRX_BRANCH}"
     )
@@ -205,6 +220,137 @@ create_tpuapi() {
         args+=("--data-disk=source=projects/${PROJECT}/zones/${zone}/disks/${DATA_DISK},mode=read-write")
     fi
     gcloud compute tpus tpu-vm create "${args[@]}" >"${log}" 2>&1
+}
+
+# Standing requests through the Queued Resources API.
+#
+# A sweep asks "is there capacity this instant", and in a stockout it loses that
+# race to whoever else is asking, for hours at a time. A queued resource asks
+# instead to be placed in Google's own admission queue and filled when a slice
+# frees, whether or not we happen to be awake for the moment it does. The two
+# are complementary and run together: the sweep can still win a node outright
+# while the requests wait.
+#
+# A fulfilled request creates a node named VM_NAME carrying the same metadata,
+# runtime and data disk a direct create gives it, so idle_reaper.sh is installed
+# exactly as it would be otherwise. That matters more here than on the sweep,
+# because the node can appear at a moment nobody is watching, and the reaper is
+# the only thing bounding the bill.
+queue_request_name() {
+    local accel="$1" model="$2"
+    echo "${VM_NAME}-q-${accel}-$(printf '%s' "${model}" | tr '[:upper:]' '[:lower:]')"
+}
+
+# One request per queueable ZONE, not per rung. Every request asks for a node
+# called VM_NAME, and a zone holds only one node of that name, so a second
+# request there can do nothing but fail:
+#
+#   us-south1-a  mrx-remeasure-q-v5litepod-1-ondemand
+#     FAILED  already_exists: node 'mrx-remeasure' already exists
+#
+# measured 2026-09-05, after the v5litepod-4 request in that zone had already
+# taken the name. CANDIDATES is ordered best-first, so keeping the first rung
+# seen per zone keeps the best one and costs nothing. Only the Cloud TPU API
+# path has a queue at all; the GCE rungs are skipped. Re-filing an existing
+# request is not an error, so this is safe to call on every pass.
+file_queued_requests() {
+    local entry gen mt zone model api name errlog kind seen=""
+    local filed=0 already=0 refused=0
+    errlog="$(mktemp)"
+
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        case " ${seen} " in *" ${zone} "*) continue ;; esac
+        seen="${seen} ${zone}"
+        name="$(queue_request_name "${mt}" "${model}")"
+
+        # shellcheck disable=SC2054  # commas are inside one argument, as above
+        local args=(
+            "${name}"
+            --zone="${zone}"
+            --node-id="${VM_NAME}"
+            --accelerator-type="${mt}"
+            --runtime-version="$(runtime_for "${mt}")"
+            --valid-until-duration="${QUEUE_VALID_FOR}"
+            --metadata-from-file=startup-script=startup.sh,idle-reaper=idle_reaper.sh
+            --metadata=idle-timeout-min="${IDLE_TIMEOUT_MIN}",mrx-branch="${MRX_BRANCH}"
+        )
+        [[ "${model}" == "SPOT" ]] && args+=(--spot)
+        if data_disk_exists "${zone}"; then
+            args+=("--data-disk=source=projects/${PROJECT}/zones/${zone}/disks/${DATA_DISK},mode=read-write")
+        fi
+
+        if gcloud compute tpus queued-resources create "${args[@]}" >"${errlog}" 2>&1; then
+            filed=$(( filed + 1 ))
+            continue
+        fi
+
+        if rg -q "already exists|ALREADY_EXISTS" "${errlog}"; then
+            already=$(( already + 1 ))
+        else
+            # NO_QUEUEING is the expected answer for rungs whose accelerator
+            # cannot be queued in that location; it says nothing about capacity
+            # and is not worth a line each pass.
+            kind="$(classify_failure "${errlog}")"
+            refused=$(( refused + 1 ))
+            [[ "${kind}" == "NO_QUEUEING" ]] || \
+                printf '  %-16s %-14s %-8s %s\n' "${zone}" "${mt}" "${model}" "${kind}"
+        fi
+    done
+
+    rm -f "${errlog}"
+    log "queued requests: ${filed} filed, ${already} already standing, ${refused} refused"
+}
+
+# Delete every request we filed. Deliberately without --force: the API refuses
+# to delete a request that holds a node, so a request that has just been
+# fulfilled survives this untouched and cannot be cancelled out from under the
+# node it won.
+cancel_queued_requests() {
+    local entry gen mt zone model api name
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        name="$(queue_request_name "${mt}" "${model}")"
+        gcloud compute tpus queued-resources delete "${name}" --zone="${zone}" \
+            --quiet >/dev/null 2>&1 &
+    done
+    wait
+}
+
+# First fulfilment wins; everything else is torn down at once.
+#
+# Requests are only cancelled by the EXIT trap, so between a fulfilment and the
+# daemon exiting every other request is still standing and can be filled too.
+# That window is not theoretical: on 2026-09-05 a v5litepod-1 came up in
+# us-east1-c while a v5litepod-4 was coming up in us-west1-c, and two nodes
+# billed at once. Cancelling on the spot closes it.
+#
+# The winner's own request is left alone. cancel_queued_requests deletes
+# without --force and the API refuses to delete a request holding a node, so
+# the winner survives that call; the losers are deleted here by name, since a
+# request that has already produced a node cannot be cancelled out of it.
+claim_first_node() {
+    local winner="$1"
+    local entry gen mt zone model api seen=""
+
+    cancel_queued_requests
+
+    for entry in "${CANDIDATES[@]}"; do
+        IFS=':' read -r gen mt zone model api <<<"${entry}"
+        [[ "${api}" == "tpuapi" ]] || continue
+        [[ "${zone}" == "${winner}" ]] && continue
+        case " ${seen} " in *" ${zone} "*) continue ;; esac
+        seen="${seen} ${zone}"
+        if gcloud compute tpus tpu-vm describe "${VM_NAME}" --zone="${zone}" \
+             --format="value(name)" >/dev/null 2>&1; then
+            log "Tearing down a second node in ${zone} (${winner} won)"
+            gcloud compute tpus tpu-vm delete "${VM_NAME}" --zone="${zone}" \
+                --quiet >/dev/null 2>&1 &
+        fi
+    done
+    wait
 }
 
 announce_success() {
@@ -352,6 +498,14 @@ log "acquire_tpu.sh starting (max ${MAX_HOURS}h, ${MAX_SESSIONS} session(s))"
 build_candidates
 log "${#CANDIDATES[@]} candidates; best is ${CANDIDATES[0]}"
 
+if (( QUEUE )); then
+    # Replaces the lock-file trap rather than adding to it, so both actions are
+    # restated here.
+    trap 'cancel_queued_requests; rm -f "${LOCK_FILE}"' EXIT INT TERM
+    log "Filing standing queued-resource requests (valid ${QUEUE_VALID_FOR})"
+    file_queued_requests
+fi
+
 while true; do
     elapsed=$(( $(date +%s) - START_EPOCH ))
     if (( elapsed > MAX_HOURS * 3600 )); then
@@ -366,6 +520,16 @@ while true; do
 
     # Something may already exist from a previous loop or a manual launch.
     zone="$(running_zone)"
+    if [[ -z "${zone}" ]] && (( QUEUE )); then
+        # A fulfilled request arrives as a Cloud TPU API node named VM_NAME,
+        # which the GCE listing above cannot see.
+        zone="$(tpu_running_zone "${VM_NAME}" 1)"
+        if [[ -n "${zone}" ]]; then
+            export TPU_API=1
+            log "A queued request was fulfilled in ${zone}"
+            claim_first_node "${zone}"
+        fi
+    fi
     if [[ -n "${zone}" ]]; then
         run_session "${zone}"
         (( ONCE )) && exit 0
@@ -403,6 +567,11 @@ while true; do
         log "--once given; not looping."
         exit 1
     fi
+
+    # Re-filing is a no-op for a request already standing, so this costs one
+    # ALREADY_EXISTS per rung and keeps the set whole as requests expire or are
+    # cancelled Google-side.
+    (( QUEUE )) && file_queued_requests
 
     log "Sleeping ${SWEEP_INTERVAL}s before the next attempt"
     sleep "${SWEEP_INTERVAL}"
