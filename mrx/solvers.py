@@ -63,6 +63,23 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     if M is None:
         def M(x): return x
 
+    # The iteration is closed under b's dtype. 64-bit mode is always on (see
+    # mrx.precision), so an operator that holds a single float64 array widens
+    # its output, and then the while_loop carry stops matching its own input:
+    # x0 stays float32 while r, z and p come back float64, which JAX rejects
+    # outright. Casting the two callables at the boundary keeps CG in the
+    # precision it was asked for, whatever the operator does internally, and
+    # is a no-op when the two already agree.
+    dtype = b.dtype
+    x0 = x0.astype(dtype)
+    _A_unpinned, _M_unpinned = A_matvec, M
+
+    def A_matvec(x):
+        return _A_unpinned(x).astype(dtype)
+
+    def M(x):
+        return _M_unpinned(x).astype(dtype)
+
     # ||b||_M for relative tolerance.
     #
     # No abs(): b^T M^-1 b is an inner product and CG requires M SPD. If it

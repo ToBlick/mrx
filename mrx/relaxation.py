@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.precision import DTYPE, RESIDUAL_DTYPE
+from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -387,6 +387,13 @@ PICARD_RESTARTS = 4
 #: The Picard tolerance in units of ``seq.tol``: the inner solves define the
 #: map, so a tighter fixed point means nothing (and in float32 is unreachable).
 PICARD_TOL_FACTOR = 10.0
+#: The same tolerance's floor in units of roundoff, which is what
+#: "unreachable" above means and what this factor makes true rather than only
+#: documented. The defect is formed in the working precision, so at float32 it
+#: bottoms out a few eps up -- 6.4e-7, about 5 eps, on li383 (2026-09-05) --
+#: while refinement takes ``PICARD_TOL_FACTOR * seq.tol`` down to 1e-7. Inert
+#: at float64, where the floor is 2e-15 against a tolerance of 1e-9.
+PICARD_TOL_EPS_FACTOR = 10.0
 
 
 class IntegrationScheme(Enum):
@@ -480,7 +487,8 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         if self.history_size < 0:
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
-        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol
+        self.picard_tol = max(PICARD_TOL_FACTOR * self.seq.tol,
+                              eps(PICARD_TOL_EPS_FACTOR))
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,

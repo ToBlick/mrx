@@ -13,6 +13,7 @@ import pytest
 
 import mrx
 from mrx.nullspace import get_nullspace
+from mrx.precision import eps
 
 # The polar strong derivative carries the Gram inverse of the axis
 # extraction: 1e4 eps (2.2e-12 f64 / 1.2e-3 f32).
@@ -38,11 +39,16 @@ def test_polar_complex_is_exact(seq, k, dirichlet):
 @pytest.mark.parametrize(("k", "dirichlet"), ((1, False), (2, True)))
 def test_harmonic_forms(seq, k, dirichlet):
     """The stored forms of the two non-trivial cohomologies are harmonic to
-    roundoff in the Rayleigh quotient and mass-orthonormal to solver tolerance."""
+    roundoff in the Rayleigh quotient, and mass-orthonormal to solver
+    tolerance or to roundoff, whichever of the two is looser."""
     vs = get_nullspace(seq.operators, k, dirichlet)
     assert vs.shape[0] == 1, f"k={k} dirichlet={dirichlet}: {vs.shape[0]} harmonic forms"
     mass_vs = jax.vmap(lambda v: seq.apply_mass_matrix(v, k, dirichlet=dirichlet))(vs)
-    npt.assert_allclose(vs @ mass_vs.T, jnp.eye(1), atol=seq.tol)
+    # The Gram entry is formed in the working precision, so it cannot be
+    # resolved below roundoff whatever seq.tol is: at float32 refinement takes
+    # seq.tol to 1e-8 while these land one and two eps off 1. The eps floor is
+    # 2e-15 at float64 and inert there.
+    npt.assert_allclose(vs @ mass_vs.T, jnp.eye(1), atol=max(seq.tol, eps(10)))
     v = vs[0]
     rayleigh = float(v @ seq.apply_laplacian(v, k, dirichlet=dirichlet)) / float(v @ mass_vs[0])
     assert abs(rayleigh) < HARMONIC, f"k={k} dirichlet={dirichlet}: Rayleigh {rayleigh:.2e}"
