@@ -53,7 +53,7 @@ def main(cli):
 
     from mrx.derham_sequence import DeRhamSequence
     from mrx.geometry import parse_r_refine, radial_knots
-    from mrx.gvec import build_gvec_map
+    from mrx.gvec import build_gvec_map, read_equilibrium
     from mrx.plotstyle import LEFT, SECTION_CMAP, house_style
     from mrx.plotting import save_figure
 
@@ -68,7 +68,7 @@ def main(cli):
         T = radial_knots(ns[0], cli.p, windows)
         seq = DeRhamSequence(ns, (cli.p,) * 3, cli.p + 1, ("clamped", "periodic", "periodic"),
                              polar=True, knots=(T, None, None) if windows else None)
-        F, info = build_gvec_map(cli.geometry, seq, nfp=cli.nfp)
+        F, info = build_gvec_map(read_equilibrium(cli.geometry), seq, nfp=cli.nfp)
         label = f"({ns[0]}, {ns[1]}, {ns[2]})" + (" refined" if windows else "")
         print(f"[mesh] {label}: nfp={info['nfp']} radial cells {ns[0] - cli.p}, windows {windows}", flush=True)
         meshes.append((label, ns, np.unique(np.asarray(T)), windows, jax.jit(jax.vmap(F)), info["nfp"]))

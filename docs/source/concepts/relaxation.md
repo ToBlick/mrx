@@ -295,7 +295,12 @@ a VMEC wout (`.nc`) (`build_gvec_map` in `mrx/gvec.py`), or of an analytic
 geometry file (`.json`, `read_analytic`: a map of `mrx/mappings.py`,
 `torus`, `cylinder` or `rot-ellipse`, with its parameters and the profiles
 of the analytic initial condition; `data/torus.json` and its siblings are
-the shipped ones). Anything else raises. `nfp` overrides an equilibrium
+the shipped ones). Anything else raises. The file is parsed once and kept
+on the sequence as `seq.equilibrium` (the state dict of
+`read_equilibrium`, with `kind`, or the analytic file's dict), which
+`initial_field(seq, seed)` and `load_clebsch(seq.equilibrium)` read; a
+VMEC wout's refit into the GVEC blocks is therefore done once per run.
+`nfp` overrides an equilibrium
 file's value for a file that declares it wrong. `geometry_kind(geometry)`
 returns `vmec`, `gvec` or the map's name, `geometry_nfp(geometry, nfp)` the
 field periods. `build_gvec_map`

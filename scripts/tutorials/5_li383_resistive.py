@@ -113,7 +113,7 @@ if B0 is None:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
         print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
-    B0, ic = initial_field(seq, cli.geometry, seed)
+    B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
 

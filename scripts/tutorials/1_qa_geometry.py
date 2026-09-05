@@ -88,7 +88,7 @@ print(f"[file] {cli.geometry}: nfp = {nfp}, radial B-splines of degree {st['deg'
 # load_clebsch tabulates the profile splines on 401 uniform radii: the
 # flux derivative dPhi, chi' = iota Phi' and the pressure. The same dict
 # feeds the relaxation's initial condition (tutorial 4, on li383).
-cb = load_clebsch(cli.geometry)
+cb = load_clebsch(st)
 iota = cb["dchi"][1:] / cb["dPhi"][1:]
 print(f"[file] profiles: Phi_edge = {2 * np.pi * st['profiles']['phi'][-1]:.4f} Wb, "
       f"iota {iota[0]:+.4f} -> {iota[-1]:+.4f} (per full turn), "

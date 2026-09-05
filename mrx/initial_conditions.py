@@ -259,10 +259,11 @@ def leray_clean(seq, B):
 # The initial field of a run
 # ---------------------------------------------------------------------------
 
-def initial_field(seq, geometry, seed=None):
+def initial_field(seq, seed=None):
     """The initial field of a relaxation run and what was measured on the way.
 
-    The geometry file decides (:func:`mrx.geometry.geometry_kind`): an
+    The sequence's geometry file decides (``seq.equilibrium``, parsed once
+    by :func:`mrx.geometry.build_sequence`): an
     equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
     through the histopolated Clebsch potential, exactly divergence-free,
     optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
@@ -276,12 +277,14 @@ def initial_field(seq, geometry, seed=None):
     ``lambda_norm_sq``, ``lambda_dirichlet_energy`` and, with a seed,
     ``seed_rho`` (the file's resonant surface).
     """
-    from mrx.geometry import geometry_kind, read_analytic  # noqa: PLC0415  (imports this module)
     from mrx.gvec import load_clebsch  # noqa: PLC0415
 
-    kind = geometry_kind(geometry)
+    eq = seq.equilibrium
+    if eq is None:
+        raise ValueError("the sequence has no geometry file: build it with mrx.geometry.build_sequence")
+    kind = eq["kind"]
     if kind in ("gvec", "vmec"):
-        cb = load_clebsch(geometry)
+        cb = load_clebsch(eq)
         lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
         info = dict(kind=kind, nfp=int(cb["nfp"]),
                     iota_axis=float(cb["dchi"][1] / cb["dPhi"][1]),
@@ -296,7 +299,7 @@ def initial_field(seq, geometry, seed=None):
         return B, info
     if seed is not None:
         raise ValueError("a resonant seed needs an equilibrium file")
-    prof = read_analytic(geometry)["profile"]
+    prof = eq["profile"]
     iota, dPhi = make_profiles(prof["iota"][0], prof["iota"][1], prof["iota_exp"], prof["flux_exp"])
     modes = [(int(m), int(n), float(a)) for m, n, a in prof.get("lambda", [])]
     B, norm = project_reference_two_form(seq, analytic_profile_form(iota, dPhi, make_lambda(modes)))

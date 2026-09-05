@@ -248,7 +248,7 @@ def run_rung(cli):
     # --- the wout field in V_2^h --------------------------------------------
     t3 = time.perf_counter()
     from mrx.relaxation import compute_divergence_norm  # noqa: PLC0415
-    cb = load_clebsch(cli.geometry)
+    cb = load_clebsch(seq.equilibrium)
     Bw_hat, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
     div_w = float(compute_divergence_norm(Bw_hat, seq))
     Bw = Bw_hat * norm                                           # Tesla, one field period

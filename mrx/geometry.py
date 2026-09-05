@@ -383,14 +383,17 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
-        preconditioner built (``seq.operators is ops``).
+        preconditioner built (``seq.operators is ops``); the parsed file is
+        ``seq.equilibrium`` (the state dict of :func:`mrx.gvec.read_equilibrium`
+        with ``kind``, or the analytic file's dict with ``kind`` the map's
+        name), read once, for :func:`mrx.initial_conditions.initial_field`.
 
     Raises:
         ValueError: if ``geometry`` is not a file, is of another kind, or
             (from ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
-    from mrx.gvec import build_gvec_map  # noqa: PLC0415
+    from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
     knots = (radial_knots(ns[0], p, r_windows), None, None) if r_windows else None
@@ -399,12 +402,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
                          betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
     if kind in ("gvec", "vmec"):
-        map_func, info = build_gvec_map(geometry, seq, nfp=nfp)
+        seq.equilibrium = read_equilibrium(geometry)
+        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
         seq.set_map(map_func)
     else:
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
-        seq.set_map(maps[kind](**read_analytic(geometry)["map_params"]))
+        seq.equilibrium = dict(read_analytic(geometry), kind=kind)
+        seq.set_map(maps[kind](**seq.equilibrium["map_params"]))
     return seq, seq.build_preconditioners()

@@ -310,20 +310,23 @@ def series_spline_dofs(block, sp, nfp, seq):
 
 def read_equilibrium(path):
     """The state dict of a GVEC state (``.dat``) or a VMEC wout (``.nc``,
-    refit into the same blocks by :func:`mrx.vmec.read_wout`); any other
-    extension raises."""
+    refit into the same blocks by :func:`mrx.vmec.read_wout`), with
+    ``kind`` (``"gvec"`` or ``"vmec"``) and ``path``; any other extension
+    raises. Read once per run: :func:`mrx.geometry.build_sequence` keeps
+    it on the sequence (``seq.equilibrium``) for the initial field."""
     if path.endswith(".dat"):
-        return read_state(path)
+        return dict(read_state(path), kind="gvec", path=path)
     if path.endswith(".nc"):
         from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
-        return read_wout(path)
+        return dict(read_wout(path), kind="vmec", path=path)
     raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
                      "files (.dat) and VMEC wout files (.nc)")
 
 
-def build_gvec_map(path, seq, sign=None, nfp=None):
-    """Build the stellarator map of a GVEC state or a VMEC wout as a C1
-    polar spline map on ``seq.basis_0``.
+def build_gvec_map(st, seq, sign=None, nfp=None):
+    """Build the stellarator map of a GVEC state or a VMEC wout (``st``,
+    the parsed file of :func:`read_equilibrium`) as a C1 polar spline map
+    on ``seq.basis_0``.
 
     A ``.dat`` state or a ``.nc`` wout (refit into the same blocks by
     :mod:`mrx.vmec`) supplies ``R`` and ``Z`` as radial-spline x Fourier
@@ -334,7 +337,6 @@ def build_gvec_map(path, seq, sign=None, nfp=None):
     ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
     file that is degenerate under both signs raises.
     """
-    st = read_equilibrium(path)
     nfp = st["nfp"] if nfp is None else int(nfp)
     R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
     Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
@@ -351,12 +353,13 @@ def build_gvec_map(path, seq, sign=None, nfp=None):
         if np.isfinite(d).all() and d.min() > 0:
             return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
                        "nfp": nfp, "sign": s, "det_range": tried[s]}
-    raise RuntimeError(f"{path}: no handedness gives det DF > 0; "
+    raise RuntimeError(f"{st['path']}: no handedness gives det DF > 0; "
                        f"sampled ranges {tried}")
 
 
-def load_clebsch(path):
-    """Read the radial profiles, a lambda callable and p(rho) from a file.
+def load_clebsch(st):
+    """The radial profiles, a lambda callable and p(rho) of a parsed
+    equilibrium ``st`` (:func:`read_equilibrium`).
 
     The reference 2-form components of ``mrx.initial_conditions`` are exactly
     GVEC's ``sqrt(g) B^i``, verified against the pyGVEC export's own B:
@@ -376,8 +379,7 @@ def load_clebsch(path):
     state of :func:`read_equilibrium` (a GVEC state or a VMEC wout, whose
     profile splines live in ``rho = sqrt(s)``, :func:`mrx.vmec.profile_spline`).
     """
-    st = read_equilibrium(path)
-    if path.endswith(".nc"):
+    if st["kind"] == "vmec":
         from mrx.vmec import profile_spline as spline  # noqa: PLC0415  (imports this module)
     else:
         spline = profile_spline

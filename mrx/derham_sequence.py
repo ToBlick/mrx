@@ -198,6 +198,8 @@ class DeRhamSequence():
         self.maxiter = maxiter
         self.n_inner = n_inner
         self.geometry = None
+        #: the parsed geometry file of :func:`mrx.geometry.build_sequence`
+        self.equilibrium = None
         self.operators = None
         #: The dtype of the sequence's arrays and of its solves' results: the
         #: working dtype; the residual dtype on the float64 view.

@@ -63,7 +63,7 @@ def b0(seq):
     from mrx.gvec import load_clebsch
     from mrx.initial_conditions import clebsch_potential_form, potential_two_form
 
-    B, _, _ = potential_two_form(seq, clebsch_potential_form(load_clebsch(GEOMETRY)))
+    B, _, _ = potential_two_form(seq, clebsch_potential_form(load_clebsch(seq.equilibrium)))
     return B
 
 
