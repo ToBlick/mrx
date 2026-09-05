@@ -72,16 +72,15 @@ def main() -> None:
         return
 
     ns = tuple(int(v) for v in cli.ns.split(","))
-    scale = 0.064 / ns[0] ** 2
     t0 = time.perf_counter()
-    seq, ops = build_sequence(cli.geometry, ns, cli.p)
-    seq.set_operators(compute_nullspaces(seq, ops))
+    seq, _ = build_sequence(cli.geometry, ns, cli.p)
+    compute_nullspaces(seq)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(
         load_clebsch(seq.equilibrium)))
     print(f"[setup] ns={ns} p={cli.p}  {time.perf_counter() - t0:.1f}s")
 
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                     velocity_smoothing_order=1, velocity_smoothing_scale=scale)
+                     velocity_smoothing_order=1, velocity_smoothing_scale=None)
 
     # A sweep of n_dev nearby initial fields: same geometry, perturbed IC. Any
     # real sweep would vary a physical parameter instead; what matters for the

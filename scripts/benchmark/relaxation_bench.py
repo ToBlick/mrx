@@ -34,6 +34,11 @@ import time
 # single apply is tens of microseconds, below one clock reading.
 MICRO_INNER = 50
 
+# Compile-free relaxation calls timed per chunk length. One is enough when the
+# machine is quiet and useless when it is not, and the difference between the
+# two cases is exactly what a per-step figure has to survive.
+REPEATS = 3
+
 H100_REFERENCE = {
     "relax_step": 0.41,
 }
@@ -474,7 +479,7 @@ def bench_phases(bench, args, dtype):
     # gap_sweeps=0 throughout: the lambda_1 estimate is a diagnostic, it is not
     # part of the construction, and it cost 6.8 of 9 minutes here.
     t0 = time.perf_counter()
-    ops0 = compute_nullspaces(seq, ops, gap_sweeps=0, verbose=False)
+    ops0 = compute_nullspaces(seq, gap_sweeps=0, verbose=False)
     gap0_s = time.perf_counter() - t0
     bench.rows["nullspace_gap_sweeps_0"] = {
         "first_s": gap0_s, "steady_s": None, "compile_s": None,
@@ -482,7 +487,8 @@ def bench_phases(bench, args, dtype):
     print(f"  {'compute_nullspaces gap_sweeps=0':<38} {gap0_s:9.3f}s"
           f"   construction only", flush=True)
 
-    seq.set_operators(ops0)
+    # compute_nullspaces installs the bundle as each form lands; there is
+    # nothing to set afterwards.
     return seq, ops0
 
 
@@ -492,63 +498,103 @@ def bench_relaxation(bench, seq, args, dtype):
     from mrx.initial_conditions import clebsch_potential_form, potential_two_form
     from mrx.relaxation import TimeStepper, chunk_runner, initial_state
 
-    ns = tuple(int(v) for v in args.ns.split(","))
     print("\n[phase] relaxation", flush=True)
 
     cb = load_clebsch(seq.equilibrium)
     B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
 
+    # The scale is the stepper's own default, SMOOTHING_C / n_r^2, so a
+    # benchmark cannot drift from what production runs; it is recorded below
+    # because the cost per step grows with it.
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
                      velocity_smoothing_order=1,
-                     velocity_smoothing_scale=0.064 / ns[0] ** 2)
+                     velocity_smoothing_scale=None)
     state0 = initial_state(B0, ts, 1.0)
     _sync(state0.B_n)
 
     inner = args.relax_steps
 
-    def time_calls(n_steps):
-        """First and second call of one compiled chunk. ``chunk_runner``
-        builds the jit once; the second call is compile-free."""
+    def time_calls(n_steps, repeats=REPEATS):
+        """First call of one compiled chunk, then ``repeats`` compile-free
+        ones. ``chunk_runner`` builds the jit once, so only the first pays
+        the compile; the repeats are what a steady call costs, and reporting
+        all of them is what shows whether the machine was quiet."""
         run = chunk_runner(ts, n_steps)
         t0 = time.perf_counter()
         state, _ = run(state0, 0)
         _sync(state.B_n)
         first = time.perf_counter() - t0
-        t0 = time.perf_counter()
-        state, _ = run(state0, 0)
-        _sync(state.B_n)
-        return first, time.perf_counter() - t0
+        steady = []
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            state, _ = run(state0, 0)
+            _sync(state.B_n)
+            steady.append(time.perf_counter() - t0)
+        return first, min(steady), steady
 
-    first_s, steady_s = time_calls(inner)
+    first_s, steady_s, steady_all = time_calls(inner)
 
     # Per step from the slope between two lengths, not from steady / inner.
     # Each call still pays a fixed launch cost, and dividing by the step
     # count would charge all of that to the steps. Differencing cancels it.
-    # The doubled length compiles its own scan, so take its second call too.
-    _, long_s = time_calls(2 * inner)
+    # The doubled length compiles its own scan, so take its steady call too.
+    _, long_s, long_all = time_calls(2 * inner)
     per_step = (long_s - steady_s) / inner
     overhead_s = steady_s - inner * per_step
+
+    # A negative overhead is arithmetically impossible and says the two calls
+    # were not measured under the same conditions -- the v5e produced -17 s on
+    # 2026-09-05, the doubled call having warmed something the short one paid
+    # for. The slope is then not a measurement, and the honest per-step figure
+    # is steady / inner, which is an upper bound (it charges the steps for the
+    # call's fixed work) rather than an unbounded error in either direction.
+    slope_ok = overhead_s >= 0.0
+    per_step_upper = steady_s / inner
 
     bench.rows["relax_compile"] = {
         "first_s": first_s, "steady_s": steady_s,
         "compile_s": first_s - steady_s,
-        "note": f"{inner} inner steps"}
+        "note": f"{inner} inner steps, {len(steady_all)} steady repeats "
+                + " ".join(f"{s:.3f}" for s in steady_all)}
     bench.rows["relax_step"] = {
-        "first_s": None, "steady_s": per_step, "compile_s": None,
-        "note": f"per step, slope {inner}->{2 * inner}"}
+        "first_s": None, "steady_s": per_step if slope_ok else None,
+        "compile_s": None,
+        "note": (f"per step, slope {inner}->{2 * inner}" if slope_ok else
+                 f"WITHDRAWN: slope {inner}->{2 * inner} implies "
+                 f"{overhead_s:.1f}s of call overhead, which is impossible; "
+                 f"use relax_step_upper")}
+    bench.rows["relax_step_upper"] = {
+        "first_s": None, "steady_s": per_step_upper, "compile_s": None,
+        "note": f"steady / {inner}, includes the call's fixed work"}
     bench.rows["relax_call_overhead"] = {
         "first_s": None, "steady_s": overhead_s, "compile_s": None,
-        "note": "per call, outside the scan"}
+        "note": "per call, outside the scan"
+                + ("" if slope_ok else " -- NEGATIVE, see relax_step")}
+    bench.rows["relax_steady_repeats"] = {
+        "first_s": None, "steady_s": None, "compile_s": None,
+        "note": (f"{inner}: " + " ".join(f"{s:.3f}" for s in steady_all)
+                 + f" | {2 * inner}: " + " ".join(f"{s:.3f}" for s in long_all))}
+    bench.rows["relax_smoothing_scale"] = {
+        "first_s": None, "steady_s": None, "compile_s": None,
+        "note": f"mu = {ts.velocity_smoothing_scale:.6g} (the stepper's default)"}
 
     print(f"  {'relaxation ' + str(inner) + ' steps':<38} first {first_s:9.3f}s"
           f"   steady {steady_s:9.4f}s", flush=True)
     print(f"  {'relaxation ' + str(2 * inner) + ' steps':<38} "
           f"{'':>15} steady {long_s:9.4f}s", flush=True)
-    print(f"  {'-> per step (slope)':<38} {'':>15} {per_step:15.4f}s", flush=True)
+    if slope_ok:
+        print(f"  {'-> per step (slope)':<38} {'':>15} {per_step:15.4f}s", flush=True)
+    else:
+        print(f"  {'-> per step (slope) WITHDRAWN':<38} {'':>15} "
+              f"{per_step:15.4f}s   negative call overhead", flush=True)
+    print(f"  {'-> per step (steady / ' + str(inner) + ', upper bound)':<38} "
+          f"{'':>15} {per_step_upper:15.4f}s", flush=True)
     print(f"  {'-> compile, once':<38} {'':>15} "
           f"{first_s - steady_s:15.4f}s", flush=True)
     print(f"  {'-> per-call overhead outside the scan':<38} {'':>15} "
           f"{overhead_s:15.4f}s", flush=True)
+    print(f"  {'-> velocity smoothing scale':<38} {'':>15} "
+          f"{ts.velocity_smoothing_scale:15.6f}", flush=True)
 
 
 # ------------------------------------------------------------- reporting ---
