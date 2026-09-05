@@ -137,9 +137,11 @@ or when the step or wall-clock budget runs out. The relaxation guarantees
 $dE/dt \le 0$ only, so the residual is not monotone; the window mean is
 the quantity, never the last value. On the W7-X Clebsch run at `(8,16,8)`,
 `p = 3`, float64, the residual reaches $1.7 \times 10^{-3}$ at step 500
-and floors around $10^{-3}$ by step 1000-3000. In float32 it floors at the
-solve-tolerance level ($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), so a
-`--floor-tol` below that never fires.
+and floors around $10^{-3}$ by step 1000-3000. A float32 run's solves are
+refined against a float64 residual ([Precision](concepts/precision.md)),
+so its floor is no longer the solve tolerance; until 2026-09-04 it was
+($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), and a `--floor-tol` below it
+never fired.
 
 ## Output
 
@@ -270,8 +272,9 @@ the runtime (relaxation time reached per wall hour, seconds per step).
 ## float32
 
 The default. `--precision float64` exports `MRX_DTYPE` before `mrx` is
-imported. A 200-step CG relaxation on W7-X runs at half the time per step
-in float32, with the energy agreeing to five digits. The force residual in
-float32 floors at the solve-tolerance level, $\sim 2 \times 10^{-3}$ at
-tol $10^{-5}$, so a `--floor-tol` below that never fires and the run ends
-on `--steps` or `--seconds`. See [Precision](concepts/precision.md).
+imported. In float32 the fields and the Krylov iterations are float32
+and every solve is refined against a float64 residual to `--solve-tol`,
+so the force is accurate beyond float32's own tolerance and the residual
+floor is set by the storage of `B`, not by the solver (until 2026-09-04
+it floored at the solve tolerance, $\sim 2 \times 10^{-3}$). See
+[Precision](concepts/precision.md).

@@ -336,8 +336,9 @@ mean over the last `W` steps of the relative force residual
 monotone, so the window mean is the quantity, never the last value.
 Calibration: on the W7-X Clebsch run at `(8,16,8)`, `p = 3`, float64, the
 residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
-1000-3000. In float32 the residual floors at the solve-tolerance level
-(`~2e-3` at tol `1e-5`), so a `--floor-tol` below that never fires.
+1000-3000. A float32 run's solves are refined against a float64 residual
+(`precision.md`), so its floor is no longer the solve tolerance (until
+2026-09-04 it was, `~2e-3` at tol `1e-5`).
 
 Output: `relax.json` with the parameters, the per-step trace (`dE` the
 exact energy change of the step, `dE_ls` the line search's prediction,
