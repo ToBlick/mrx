@@ -57,8 +57,7 @@ def main() -> None:
 
     import mrx
     from mrx.geometry import build_sequence
-    from mrx.gvec import load_clebsch
-    from mrx.initial_conditions import clebsch_potential_form, potential_two_form
+    from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import TimeStepper, initial_state
 
@@ -75,8 +74,7 @@ def main() -> None:
     t0 = time.perf_counter()
     seq, _ = build_sequence(cli.geometry, ns, cli.p)
     compute_nullspaces(seq)
-    B0, _, _ = potential_two_form(seq, clebsch_potential_form(
-        load_clebsch(seq.equilibrium)))
+    B0, _ = initial_field(seq)
     print(f"[setup] ns={ns} p={cli.p}  {time.perf_counter() - t0:.1f}s")
 
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,

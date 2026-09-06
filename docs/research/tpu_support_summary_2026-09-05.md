@@ -198,6 +198,17 @@ Verified after the merge, in the `mrx` conda environment: **56 passed in each
 of refined float32 (bare `pytest`), plain float64, and plain float32**, being
 upstream's 54 plus this branch's `_shift_plan` and `refine` tests.
 
+**This bounds what a TPU can be used for, and the bound is physical rather
+than operational.** ToBlick/mrx#21 works it out: the gradient remnant the
+Leray projection fails to remove is `tol / residuum` relative to the force, so
+at `tol = 3.5e-4` a plain float32 relaxation is pollution-limited near a force
+residual of **6e-3**. A TPU has no float64, so it cannot take the refined path
+that solves the same systems to 1e-14, and no amount of speed changes where
+that run stops descending. Emulated double-single arithmetic for the residual,
+or a velocity Leray projection for this configuration only, are the two
+candidates in that issue. Until one of them lands, the per-step figures in §3
+are the cost of steps that stop mattering below 6e-3.
+
 ## 5. Operational: first fulfilment wins
 
 A `--queue` run on 2026-09-05 left **four nodes billing at once**, in
@@ -253,6 +264,10 @@ the same four-node incident, prevented.
 - `compute_nullspaces` is the one phase where the v5e is worst of the three
   backends, at 3.2x the same VM's CPU. Nothing here was aimed at it, and it
   includes its own compile, so part of the gap is not arithmetic.
+- The float32 accuracy floor of ToBlick/mrx#21 is the one that decides whether
+  a TPU is worth using at all, and it is not this branch's to close. A machine
+  that cannot hold a float64 residual is pollution-limited near a force
+  residual of 6e-3 whatever it costs per step.
 
 ## Sources
 

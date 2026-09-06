@@ -494,14 +494,14 @@ def bench_phases(bench, args, dtype):
 
 def bench_relaxation(bench, seq, args, dtype):
     """Time the relaxation loop: compile cost, then cost per step."""
-    from mrx.gvec import load_clebsch
-    from mrx.initial_conditions import clebsch_potential_form, potential_two_form
+    from mrx.initial_conditions import initial_field
     from mrx.relaxation import TimeStepper, chunk_runner, initial_state
 
     print("\n[phase] relaxation", flush=True)
 
-    cb = load_clebsch(seq.equilibrium)
-    B0, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
+    # The sequence's own geometry file decides the initial field, so the
+    # benchmark starts a run from exactly where relax.py would.
+    B0, _ = initial_field(seq)
 
     # The scale is the stepper's own default, SMOOTHING_C / n_r^2, so a
     # benchmark cannot drift from what production runs; it is recorded below

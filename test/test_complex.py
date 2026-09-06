@@ -44,11 +44,12 @@ def test_harmonic_forms(seq, k, dirichlet):
     vs = get_nullspace(seq.operators, k, dirichlet)
     assert vs.shape[0] == 1, f"k={k} dirichlet={dirichlet}: {vs.shape[0]} harmonic forms"
     mass_vs = jax.vmap(lambda v: seq.apply_mass_matrix(v, k, dirichlet=dirichlet))(vs)
-    # The Gram entry is formed in the working precision, so it cannot be
-    # resolved below roundoff whatever seq.tol is: at float32 refinement takes
-    # seq.tol to 1e-8 while these land one and two eps off 1. The eps floor is
-    # 2e-15 at float64 and inert there.
-    npt.assert_allclose(vs @ mass_vs.T, jnp.eye(1), atol=max(seq.tol, eps(10)))
+    # The Gram entry is formed in the working dtype: 1 to 2 eps measured in
+    # every configuration (2026-09-05), on top of the tolerance of the solves
+    # that built the form. Refinement takes seq.tol to 1e-8, below the 1.2e-7
+    # that one float32 eps already costs, so the roundoff term is what carries
+    # this at float32; at float64 it is 2e-15 and inert.
+    npt.assert_allclose(vs @ mass_vs.T, jnp.eye(1), atol=seq.tol + eps(10))
     v = vs[0]
     rayleigh = float(v @ seq.apply_laplacian(v, k, dirichlet=dirichlet)) / float(v @ mass_vs[0])
     assert abs(rayleigh) < HARMONIC, f"k={k} dirichlet={dirichlet}: Rayleigh {rayleigh:.2e}"
