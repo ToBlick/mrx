@@ -167,7 +167,10 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
     the residual's space, the h-independent norm of a dual vector (the
     plain 2-norm of the coefficients when no norm is given) -- and the
     correction added, until ``norm(b - A x) <= tol norm(b)`` or
-    ``max_passes`` corrections were taken. In mixed precision each pass
+    ``max_passes`` corrections were taken. The inner solve receives the
+    residual at unit norm and the correction is scaled back, so the
+    working precision's range never limits what the loop can ask for. In
+    mixed precision each pass
     takes the residual down by about the inner tolerance, so a warm start
     with a 1% defect meets 1e-8 in two; in a plain configuration the inner
     solve runs at ``tol`` and the loop is the check that its own criterion,
@@ -207,8 +210,16 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
 
     def body(carry):
         x, r, k, its = carry
-        d, info = solve(r.astype(inner_dtype))
-        x = x + d.astype(RESIDUAL_DTYPE)
+        # The inner solve sees the residual at unit norm: the residual of a
+        # small right-hand side at a tight tolerance (1e-12 at 1e-10) lies
+        # below the working precision's range -- squared float32 norms of a
+        # 1e-22 vector are denormal, and the CG divides by a p^T A p that
+        # rounded to zero (measured 2026-09-05, (16,32,32) p=2 at tol 1e-10:
+        # NaN at step 64). The scale is positive here: the loop only enters
+        # on norm(r) > tol bnorm_safe.
+        s = norm(r)
+        d, info = solve((r / s).astype(inner_dtype))
+        x = x + s * d.astype(RESIDUAL_DTYPE)
         return x, residual(x), k + 1, its + jnp.abs(info)
 
     x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))

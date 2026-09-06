@@ -44,8 +44,13 @@ M^-1`: the L2 norm of the residual's Riesz representative up to a
 mesh-independent factor, so the criterion is h-independent; a mass solve
 would be exact and cost a solve per check, the atom is the middle
 ground); the correction by `solve` from zero, `x` accumulated in float64,
-until `norm(b - A x) <= tol norm(b)` or `MAX_PASSES` passes. In mixed
-precision the inner solve runs to `INNER_TOL` per pass, so a cold solve
+until `norm(b - A x) <= tol norm(b)` or `MAX_PASSES` passes. The inner
+solve receives the residual at unit norm and the correction is scaled
+back: the residual of a small right-hand side at a tight tolerance
+(1e-12 at 1e-10) is a 1e-22 vector whose squared float32 norms are
+denormal, and a CG on it divides by a `p^T A p` that rounded to zero
+(the NaN of the tol 1e-10 sweep arm, 2026-09-05). In mixed
+precision the inner solve runs to `inner_tol(tol) = sqrt(tol)` per pass, so a cold solve
 meets 1e-8 in two passes and a warm start with a 1% defect in two as
 well; in a plain configuration it runs at `tol` and the loop is the check
 that its own preconditioned criterion did not stop short of the true
