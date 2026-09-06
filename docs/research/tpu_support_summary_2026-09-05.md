@@ -114,26 +114,56 @@ Re-measured with both backends plain float32 at `1e-6` on the same tree
 9.6x: it made the TPU look worse. The identical iteration counts are what say
 the tolerance is no longer the variable.
 
-Each backend at its own production default, same call, same method:
+Each backend at its own production default. These two are **not** a
+like-for-like pair -- they differ in tolerance, in refinement, and the TPU one
+was taken after `8297c83` made the smoothing scale `0.02 / n_r^2` where the
+matched pair used `0.064 / n_r^2` -- so they say what each machine costs as
+configured and nothing about a ratio:
 
-| configuration | per step |
+| configuration | per step (5-step call) |
 |---|---|
-| H200, refined float32, `SOLVE_TOL = 1e-8` (the GPU default) | 0.410 s |
-| H200, plain float32, `1e-6` (matched to the TPU) | 0.298 s |
-| v5e, plain float32, `1e-6` | 2.862 s |
+| H200, refined float32, `SOLVE_TOL = 1e-8` -- the GPU default | 0.410 s |
+| v5e, plain float32, `3.5e-4` -- the TPU default since 2026-09-05 | 1.130 s |
 
-**A method note that matters.** Per step above is one compile-free call
-divided by its steps, not the slope between a 5-step and a 10-step call that
-the earlier tables used. The slope is the better estimator when it works,
-since differencing cancels the fixed per-call cost. It did not work here: on
-the v5e it implied a per-call overhead of **-17 s**, which is arithmetically
-impossible and means the two calls were not measured under the same
-conditions. The H200's slope was mildly contaminated the same way (-0.10 s and
--0.08 s). Dividing by the step count charges the steps for the call's fixed
-work, so every figure is an upper bound rather than an error of unknown sign,
-and it is the same method on both machines. The v5e call was repeated three
-times at 14.308 s to the millisecond. `relaxation_bench.py` now withdraws its
-own slope row when the implied overhead is negative, and prints every repeat.
+Moving the v5e from `1e-6` to the reachable `3.5e-4` takes it from 2.862 s to
+1.130 s a step, **2.5x**, and its inverse-mass CG from 95 and 98 iterations to
+22 and 26. An unreachable tolerance was not a small tax on this machine.
+
+**A method note that matters, because it turned into a result.** Per step
+above is one compile-free call divided by its steps, not the slope between a
+5-step and a 10-step call that the earlier tables used. The slope is the
+better estimator when it works, since differencing cancels the fixed per-call
+cost -- but it implied a per-call overhead of **-17 s** on the v5e, which is
+arithmetically impossible.
+
+What that says is that the steps are not equal: the second half of the
+trajectory costs more than the first, and the slope charges the difference to
+the steps and the remainder to a fixed cost that must then come out below
+zero. Every configuration shows some of this, and one shows a lot:
+
+| | steps 1-5, per step | steps 6-10, per step | ratio |
+|---|---|---|---|
+| v5e, `1e-6` | <= 2.862 s | 6.270 s | **2.19x** |
+| v5e, `3.5e-4` | <= 1.130 s | 1.263 s | 1.12x |
+| H200, `1e-6` | <= 0.298 s | 0.318 s | 1.07x |
+| H200, `1e-8` refined | <= 0.410 s | 0.425 s | 1.04x |
+
+The stepper is adaptive and its inner solves are iterative, so some rise is
+expected. The v5e at `1e-6` is the outlier, and the cause is the tolerance
+rather than the machine: float32 cannot reach `1e-6`, so solves burn their
+maximum passes, and more of them do the further into the trajectory the run
+gets -- the same effect `ae7293b` measures on the Poisson cases, seen from the
+other end. At `3.5e-4` the same machine falls to 1.12x, the GPU's shape.
+
+Dividing by the step count charges the steps for the call's fixed work, so
+every figure is an upper bound on the steps it averages rather than an error
+of unknown sign, and comparing the same chunk length across machines compares
+the same work. The matched ratio is 9.6x on the same 5-step call and **14.8x
+on the same 10-step call**, widening for the reason above. Every call was
+repeated three times and agreed to the millisecond.
+`relaxation_bench.py` now withdraws its own slope row when the implied
+overhead is negative, reports the ratio that caused it, and prints every
+repeat.
 
 **Where the 9.6x lives.** Not in iteration counts, which are equal, and not in
 any one kernel: a single inverse-mass CG iteration is 1.7x apart (4.73 ms

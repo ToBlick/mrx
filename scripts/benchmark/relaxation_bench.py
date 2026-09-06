@@ -542,12 +542,21 @@ def bench_relaxation(bench, seq, args, dtype):
     per_step = (long_s - steady_s) / inner
     overhead_s = steady_s - inner * per_step
 
-    # A negative overhead is arithmetically impossible and says the two calls
-    # were not measured under the same conditions -- the v5e produced -17 s on
-    # 2026-09-05, the doubled call having warmed something the short one paid
-    # for. The slope is then not a measurement, and the honest per-step figure
-    # is steady / inner, which is an upper bound (it charges the steps for the
-    # call's fixed work) rather than an unbounded error in either direction.
+    # A negative overhead is arithmetically impossible for equal steps, so it
+    # says the steps are not equal: the second half of the trajectory costs
+    # more than the first, and the slope attributes that to the steps and the
+    # difference to a fixed cost that then has to come out below zero. The
+    # stepper is adaptive and its inner solves are iterative, so this is a real
+    # property of the run rather than a measurement fault -- measured on the
+    # v5e on 2026-09-05 at -17.0 s (steps 6-10 costing 2.2x steps 1-5, at a
+    # tolerance float32 could not reach, so the solves burned their passes) and
+    # at -0.7 s once the tolerance was reachable (1.1x), which is the ratio the
+    # H200 shows too.
+    #
+    # steady / inner is then the honest figure. It charges the steps for the
+    # call's fixed work, so it is an upper bound on the cost of the steps it
+    # averages, rather than an error of unknown sign; and comparing the same
+    # chunk length across machines compares the same work.
     slope_ok = overhead_s >= 0.0
     per_step_upper = steady_s / inner
 
@@ -561,8 +570,10 @@ def bench_relaxation(bench, seq, args, dtype):
         "compile_s": None,
         "note": (f"per step, slope {inner}->{2 * inner}" if slope_ok else
                  f"WITHDRAWN: slope {inner}->{2 * inner} implies "
-                 f"{overhead_s:.1f}s of call overhead, which is impossible; "
-                 f"use relax_step_upper")}
+                 f"{overhead_s:.1f}s of call overhead, which is impossible for "
+                 f"equal steps; steps {inner + 1}-{2 * inner} cost "
+                 f"{(long_s - steady_s) / steady_s:.2f}x steps 1-{inner}. "
+                 f"Use relax_step_upper")}
     bench.rows["relax_step_upper"] = {
         "first_s": None, "steady_s": per_step_upper, "compile_s": None,
         "note": f"steady / {inner}, includes the call's fixed work"}
@@ -586,7 +597,8 @@ def bench_relaxation(bench, seq, args, dtype):
         print(f"  {'-> per step (slope)':<38} {'':>15} {per_step:15.4f}s", flush=True)
     else:
         print(f"  {'-> per step (slope) WITHDRAWN':<38} {'':>15} "
-              f"{per_step:15.4f}s   negative call overhead", flush=True)
+              f"{per_step:15.4f}s   steps {inner + 1}-{2 * inner} cost "
+              f"{(long_s - steady_s) / steady_s:.2f}x steps 1-{inner}", flush=True)
     print(f"  {'-> per step (steady / ' + str(inner) + ', upper bound)':<38} "
           f"{'':>15} {per_step_upper:15.4f}s", flush=True)
     print(f"  {'-> compile, once':<38} {'':>15} "

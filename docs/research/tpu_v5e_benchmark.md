@@ -133,32 +133,70 @@ Re-measured 2026-09-05, `(12,24,24)` p=3, **both backends plain float32 with
 say the tolerance is no longer the variable: the two machines are now doing
 the same arithmetic, and one of them does it nine times faster.
 
-Per step here is one compile-free call divided by its five steps, not the
-slope between a 5-step and a 10-step call that this note used before. The
-slope is the better estimator when it works, because differencing cancels the
-fixed per-call cost; it did not work here. It implied a per-call overhead of
-**-17 s** on the v5e, which is arithmetically impossible and means the two
-calls were not measured under the same conditions. Dividing by the step count
-instead charges the steps for the call's fixed work, so every figure in the
-table is an upper bound rather than an error of unknown sign, and the same
-method is applied to both machines. The v5e call was repeated three times at
-14.308 s to the millisecond. `relaxation_bench.py` now withdraws its own slope
-row when the implied overhead is negative.
+### Why per step is a call divided by its steps, and not a slope
 
-For completeness, each backend at its own production default rather than the
-matched one -- the same call, measured the same way:
+This note used to read per step off the slope between a 5-step and a 10-step
+call. Differencing cancels the fixed per-call cost, so the slope is the better
+estimator -- when the steps it averages cost the same. They do not.
 
-| configuration | per step |
+The slope implied a per-call overhead of **-17 s** on the v5e, which is
+arithmetically impossible. What it actually says is that the second half of
+the trajectory costs more than the first, and the slope charges the difference
+to the steps and the remainder to a fixed cost that then has to come out
+below zero. Measured, on identical calls repeated three times each:
+
+| | steps 1-5, per step | steps 6-10, per step | ratio |
+|---|---|---|---|
+| v5e, `1e-6` | <= 2.862 s | 6.270 s | **2.19x** |
+| v5e, `3.5e-4` | <= 1.130 s | 1.263 s | 1.12x |
+| H200, `1e-6` | <= 0.298 s | 0.318 s | 1.07x |
+| H200, `1e-8` refined | <= 0.410 s | 0.425 s | 1.04x |
+
+Some rise is expected: the stepper is adaptive and its inner solves are
+iterative. The v5e at `1e-6` is the outlier by a wide margin, and the reason
+is the tolerance rather than the machine -- at `1e-6` float32 solves cannot
+reach the criterion and burn their maximum passes, and more of them do so the
+further into the trajectory the run gets. At `3.5e-4`, which float32 can
+reach, the same machine's ratio falls to 1.12x, in line with the GPU's.
+
+So per step in the tables here is one compile-free call divided by its steps.
+It charges the steps for the call's fixed work, making it an upper bound on
+the steps it averages rather than an error of unknown sign, and comparing the
+same chunk length across machines compares the same work. The matched ratio is
+9.6x on the same 5-step call and **14.8x on the same 10-step call** (45.66 s
+against 3.08 s), the gap widening for the reason above. Every call above was
+repeated three times and agreed to the millisecond.
+`relaxation_bench.py` now withdraws its own slope row when the implied
+overhead is negative, reports the ratio that caused it, and prints every
+repeat.
+
+### Each backend at its own production default
+
+The matched table is the hardware comparison. Neither row is what either
+machine actually runs, so both defaults are measured too:
+
+| configuration | per step (5-step call) |
 |---|---|
-| H200, refined float32, `SOLVE_TOL = 1e-8` (the GPU default) | 0.410 s |
-| H200, plain float32, `1e-6` (matched to the TPU above) | 0.298 s |
-| v5e, plain float32, `1e-6` | 2.862 s |
+| H200, refined float32, `SOLVE_TOL = 1e-8` -- the GPU default | 0.410 s |
+| v5e, plain float32, `3.5e-4` -- the TPU default since 2026-09-05 | 1.130 s |
+| H200, plain float32, `1e-6` (matched pair above) | 0.298 s |
+| v5e, plain float32, `1e-6` (matched pair above) | 2.862 s |
+
+These two production rows are **not** a like-for-like comparison: they differ
+in tolerance, in refinement, and the TPU one was taken after the smoothing
+scale became `0.02 / n_r^2` (`8297c83`) where the matched pair used
+`0.064 / n_r^2`. They say what each machine costs to run as configured, and
+nothing about the ratio; the matched pair is the only row that carries that.
+
+The TPU production row is worth having for one other reason. Moving from
+`1e-6` to the reachable `3.5e-4` takes the v5e from 2.862 s to 1.130 s a step,
+**2.5x**, and its inverse-mass CG from 95 and 98 iterations to 22 and 26. An
+unreachable tolerance was not a small tax on this machine.
 
 Refinement costs the H200 38% per step and buys a tolerance two orders
-tighter. Since 2026-09-05 the plain-float32 default is `sqrt(eps) = 3.5e-4`
-rather than `1e-6` (`mrx/precision.py`), because five of the eight Poisson
-solves could not reach `1e-6` in float32 arithmetic at all; the TPU row above
-is therefore stricter than what a TPU run now does by default.
+tighter. The plain-float32 default is `sqrt(eps) = 3.5e-4` rather than `1e-6`
+since 2026-09-05 (`mrx/precision.py`), because five of the eight Poisson
+solves could not reach `1e-6` in float32 arithmetic at all.
 
 **Four chips buy nothing, measured rather than assumed.** The same benchmark on
 a `v5litepod-4` (`device_count` 4) and on a `v5litepod-1`, both at the
