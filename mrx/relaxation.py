@@ -469,7 +469,14 @@ class TimeStepper(eqx.Module):
             per force evaluation and ``H_t = 0`` on the wall.
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``.
-            0 (the default) leaves the direction as it is.
+            0 (the default) leaves the direction as it is -- and is fragile:
+            the explicit step with the unsmoothed velocity stops conserving
+            helicity after ~1e4 steps at (16,32,32) p=2 on li383 (the drift
+            grows a hundredfold, the field reconnects numerically, the
+            energy release accelerates and the force residual climbs), in
+            float64 as in float32; order 1 holds the drift at 5e-8 over the
+            same run (docs/research/floor_study_2026-09-05.md). Use order 1
+            for any long ideal run; order 0 only for short smoke runs.
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
             is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
@@ -890,6 +897,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
     ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
     first step's secant ``y = F_prev - F`` sees the true previous gradient.
+    Every leaf is an array of the working dtype, the scalars included: the
+    state is the carry of :func:`chunk_runner`'s scan, and a Python-float
+    leaf here against a float32 array out of the scan gave the scan two
+    carry signatures, i.e. a second compile at the second chunk of every run
+    (30-55 s, measured 2026-09-05).
     """
     seq = ts.seq
     n = seq.n(2, True)
@@ -898,8 +910,11 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
         B_n=B_dof,
-        dt=dt,
-        dt_star=dt,
+        dt=jnp.asarray(dt, dtype=DTYPE),
+        dt_star=jnp.asarray(dt, dtype=DTYPE),
+        cfl_max=jnp.zeros((), dtype=DTYPE),
+        v_norm=jnp.zeros((), dtype=DTYPE),
+        lbfgs_sy=jnp.zeros((), dtype=DTYPE),
         v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
@@ -1000,12 +1015,17 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     ``F_prev`` are the step's values at the previous one; they warm-start it
     and are refreshed from it), the weak pressure and its diagnostics
     (:func:`pressure_diagnostics`), the helicity (``state.A`` refreshed),
-    ``||J|| / ||B||`` and the pairing ``int J . B`` that sets a
-    reconnection dose. ``scalars`` are Python floats. The first call of a
+    ``||J|| / ||B||``, the pairing ``int J . B`` that sets a reconnection
+    dose, and the energy ``E = <B, M B> / 2`` of the stored field in the
+    residual precision (exact to the field's own rounding, 3e-8 on E = 0.5
+    in float32 storage; the trace's per-step ``dE`` is formed in the
+    working precision and its sum over 1e4 steps drifts by that much).
+    ``scalars`` are Python floats. The first call of a
     run goes ``eager`` (the 1->2 projection builds a host-side core on
     first use); the loop uses the compiled one.
     """
     aux = ts.auxiliary_B_field
+    on = seq if seq.residual is None else seq.residual      # the energy, in the residual precision
 
     def probe(B, p, H, JxH, J, F_prev, pw_guess, A):
         F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
@@ -1024,7 +1044,8 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
         p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
             state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
         state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
-        scalars = dict(helicity=float(h), JoverB=float(JoverB), JB=float(JB),
+        E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
+        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB),
                        **{k: float(v) for k, v in diag.items()})
         return state, p_w, scalars
 
@@ -1075,9 +1096,11 @@ class RelaxResult(NamedTuple):
     differ by ``-dt <u, grad p>_M``, zero for a divergence-free velocity
     --, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``, ``cos``,
     ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
-    start of the run (``E0 + cumsum(dE)`` is the energy after every step),
-    ``qoi`` the per-chunk samples (``it``, ``wall``,
-    ``F``, ``resid``, ``helicity``, ``JoverB``, ``JB`` and the pressure
+    start of the run (``E0 + cumsum(dE)`` is the trace's energy after every
+    step, to the working precision's rounding per step), ``qoi`` the
+    per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
+    field in the residual precision, ``F``, ``resid``, ``helicity``,
+    ``JoverB``, ``JB`` and the pressure
     diagnostics; the first entry is the start of the run, a reconnection
     adds a second sample at its step), ``reconnect`` one record per
     reconnection, ``reconnect_every`` the interval actually used (rounded to
@@ -1112,9 +1135,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count, on ``floor_tol`` (the last chunk's mean of the
-    relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
-    residual is not monotone, the window mean is the quantity) or on
+    Stops on the step count, on ``floor_tol`` (the last
+    chunk's mean of the relative force residual ``||F||_M / ||grad(B^2/2)||``
+    below it; the residual is not monotone, the window mean is the quantity)
+    or on
     ``seconds`` of wall time in the steps. ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of
@@ -1151,12 +1175,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
-    E0 = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
-    E_removed = 0.0
     pw = jnp.zeros(seq.n(0, True), dtype=DTYPE)
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
-    h0 = scalars["helicity"]
+    E0, h0 = scalars["E"], scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
         # The force's gradient-part remnant is the pressure solve's residual,
@@ -1185,7 +1207,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
             trace[k].extend(ch[k].tolist())
-        E_removed -= float(ch["dE"].sum())
         resid_now = float(ch["resid"].mean())
 
         tq = time.perf_counter()
@@ -1193,7 +1214,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         state, pw, scalars = sample(state, pw)
         record(it, wall, scalars)
         if verbose:
-            print(f"  it {it:>5d}  E_0-E={E_removed:.4e}  |F|={ch['F'][-1]:.4e}  "
+            print(f"  it {it:>5d}  E_0-E={E0 - scalars['E']:.4e}  |F|={ch['F'][-1]:.4e}  "
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
@@ -1247,7 +1268,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     n = res.steps
     E0 = res.E0
     dE, dE_ls = np.array(tr["dE"]), np.array(tr["dE_ls"])
-    removed = -dE.sum()
+    removed = E0 - q["E"][-1]
     ident = np.abs(dE - dE_ls) / E0
     resid = np.array(tr["resid"])
     print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
