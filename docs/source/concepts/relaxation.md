@@ -343,6 +343,7 @@ method per run. Flags, defaults in brackets:
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |
+| `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 = one `vmap` over all points; needed at (64,128,128) |
 
 The initial condition is always Leray-projected. The run stops when the
 mean over the last `W` steps of the relative force residual

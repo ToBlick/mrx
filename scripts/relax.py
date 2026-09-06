@@ -83,6 +83,12 @@ Flags, defaults in brackets:
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision
+      --map-batch N [0]            cells per batch of the quadrature loops
+                                   (mrx.MAP_BATCH_SIZE_INNER); 0 evaluates
+                                   all points in one vmap. Bound it at high
+                                   resolution: the initial field's Greville
+                                   histopolation asks for 17 GiB at
+                                   (64,128,128) p=2 unbounded (8192 there)
 
 Output (``--out``):
     relax.json           ``params`` (every flag, ``geometry_path`` resolved,
@@ -166,7 +172,12 @@ def parse_args(argv=None):
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
                          "mesh, degree and precision")
+    ap.add_argument("--map-batch", type=int, default=0,
+                    help="cells per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER); "
+                         "0 = all points in one vmap; bound it at high resolution")
     cli = ap.parse_args(argv)
+    if cli.map_batch < 0:
+        ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
@@ -189,7 +200,8 @@ def main(cli):
 
     if cli.precision != str(mrx.DTYPE):
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE}")
-    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}", flush=True)
+    mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
+    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}  map batch {cli.map_batch or 'all'}", flush=True)
     ns = tuple(int(v) for v in cli.ns.split(","))
     out = cli.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"),
                                   time.strftime("%H-%M-%S"))

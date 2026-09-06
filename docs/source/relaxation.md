@@ -117,6 +117,7 @@ Flags, defaults in brackets:
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
+| `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 evaluates all points in one `vmap`. Bound it at high resolution: the initial field's Greville histopolation asks for 17 GiB at (64,128,128) p=2 unbounded, 8192 runs it in 7 s |
 
 `python scripts/relax.py --help` prints the same list. The script is the
 command line of `mrx.relaxation.relax`, the chunked loop with the floor,
