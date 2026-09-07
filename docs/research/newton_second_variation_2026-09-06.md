@@ -1098,6 +1098,26 @@ Readings.
    would need many hours for; the floor at 32 is still unknown because the
    arm had not reached it.
 
+**The sandwich arm at (32,32,32) (job 18067197, `anchor32_newton_harm`,
+66 minutes, 160 steps at 24.8 s).** No divergence this time. Against the
+Laplacian-atom arm from the same state and hour (140 steps at 26.3 s):
+
+| arm | energy removed | sq. resid, lowest chunk / last | helicity drift | fallbacks |
+|---|---|---|---|---|
+| Laplacian atom | 7.7e-8 | 1.7e-9 / 1.7e-9 | +1.9e-7 | 0 |
+| harmonic sandwich | 1.44e-7 | 8.4e-9 / 8.4e-9 | -1.2e-6 | 16% of the steps |
+
+The sandwich removes 1.9x the energy in the hour and sits at a 5x higher
+residual: the same split as in the fixed-norm curves (7c), energy in the flat
+modes, residual in the stiff ones, now in a relaxation. Its per-step residual
+is noisy (jumps of up to 7x on the steps where the truncated MINRES iterate
+was not a descent direction and the step fell back to the smoothed force;
+16% of the steps), so its lowest 20-step chunk is the last one, and the
+helicity drift is six times the Laplacian arm's. For the floor the Laplacian
+atom is the better arm; for the energy the sandwich; a converged sandwich
+solve (1000 iterations, 7c) would presumably give both, at 3x the step cost,
+and is the arm to run if the sandwich is pursued.
+
 ## 10b. The potential route against the Leray route
 
 Three arms from the initial field at the anchor's settings (li383 (16,32,32)
