@@ -38,7 +38,7 @@ harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.operators import _dual_norm, _outer
+from mrx.operators import _dual_norm
 from mrx.solvers import minres, refine
 
 #: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
@@ -185,23 +185,23 @@ def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=1e-3, maxiter=100,
     preconditioner's apply itself (a callable),
     ``inner_tol`` the tolerance of the Hessian's mass solves.
 
-    Stops like every solve in the code (:func:`mrx.solvers.refine`): on the
-    true residual of the system in the mass-atom norm of the dual 1-forms,
-    evaluated on the residual view, ``tol`` relative to the right-hand side,
-    the inner MINRES to the inner tolerance within ``maxiter`` iterations, ONE
-    pass: the Newton solve is truncated by design (measured 2026-09-07 on
-    li383 (16,32,32) from the step-5000 state: no preconditioner brings the
-    true residual below 0.3 in 300 iterations, while the direction's energy
-    differs 7x between them -- they differ in which modes they resolve first,
-    not in how far they get), so a second pass would only double the cost.
-    The outer loop is the criterion: ``tol`` means the same thing whatever
-    the preconditioner (MINRES's own test is the residual in the
-    preconditioner's norm, not comparable across preconditioners). Returns
-    ``(u, a, info)`` with ``info`` the signed inner iteration count (negative
-    when the true residual met ``tol``).
+    A truncated solve by design: MINRES runs the ``maxiter`` budget with no
+    criterion of its own (its residual is in the preconditioner's norm, not
+    comparable across preconditioners, and for one that is small on the
+    energy-carrying modes it stops far short of them: the harmonic
+    preconditioner met sqrt(0.1) after 62 of 1000 iterations), and ONE pass
+    of :func:`mrx.solvers.refine` measures the true residual like every
+    solve in the code, in the mass-atom norm of the dual 1-forms on the
+    residual view, ``tol`` relative to the right-hand side. One pass because
+    no preconditioner brings that residual below 0.3 in 300 iterations
+    (measured 2026-09-07 on li383 (16,32,32) from the step-5000 state) while
+    the directions' energies differ 7x: they differ in which modes they
+    resolve first, not in how far they get, and a second pass would only
+    double the cost. Returns ``(u, a, info)`` with ``info`` the iteration
+    count, negative when the true residual met ``tol``.
     """
     ops = seq._require_operators(None)
-    on, inner = _outer(seq, tol)
+    on = seq if seq.residual is None else seq.residual
 
     def chain(s):
         Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype), tol=inner_tol)
@@ -221,7 +221,7 @@ def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=1e-3, maxiter=100,
     curl, curl_t, A = chain(seq)
     A_res = chain(on)[2]
     P = _preconditioner(seq, precond)
-    a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=inner, maxiter=maxiter),
+    a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=0.0, maxiter=maxiter),
                      curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
                      max_passes=1, inner_dtype=seq.dtype)
     a = a.astype(seq.dtype)
