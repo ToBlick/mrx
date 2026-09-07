@@ -1119,6 +1119,22 @@ Readings.
    would need many hours for; the floor at 32 is still unknown because the
    arm had not reached it.
 
+**The Newton arm at (32,32,32) continued to four hours (job 18062278,
+`anchor32_newton/cont`, 440 more steps at 25.5 s from the step-5140
+checkpoint; 580 steps and 4.14 h in all).** The floor at 32 radial cells is
+1.6e-9 (lowest chunk, at step 5192, 52 steps into the continuation), against
+2.0e-9 at 16: a fifth lower for double the radial resolution. Past it the
+residual creeps up, to 2.3e-9 at the end (a chunk-to-chunk rise of 3-12% at
+a time, never a jump), while the energy keeps going: 1.31e-7 removed in all,
+0.54e-7 of it after the floor. The helicity drift stays small, -1.5e-7 at the
+floor and -7.4e-7 after four hours, a tenth of the (16,32,32) arm's drift at
+its floor and 30x smaller than that arm's drift after one hour: the leak of
+10d is gone at 32 radial cells, and what remains is the projection error at
+the rate of the descent. So at 32 the post-floor stepping is not a
+reconnection, it is the valley of 10c, walked at a helicity cost that is
+tolerable and an energy gain that is real; the result of the run is still
+the floor checkpoint, by the paper's convention.
+
 **The sandwich arm at (32,32,32) (job 18067197, `anchor32_newton_harm`,
 66 minutes, 160 steps at 24.8 s).** No divergence this time. Against the
 Laplacian-atom arm from the same state and hour (140 steps at 26.3 s):
