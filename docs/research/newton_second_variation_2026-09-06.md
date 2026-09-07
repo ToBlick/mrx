@@ -680,6 +680,27 @@ allocate more MINRES iterations?"):**
    the cost does too; with the sandwich, 600-1000 iterations buy the whole
    decrement and anything beyond is waste; the floor itself moves with neither.
 
+**The factored preconditioner with the same budget (job 18071871,
+`curve_probe_factored_long.log`; Tobias: "how about the factored atom, how
+does that do with more MINRES iterations?"):** fraction of the exact Newton
+decrement (1.13e-7) recovered, and the true residual in the mass-atom norm.
+
+| iterations | Laplacian atom | sandwich | factored, $\epsilon$ = 0.1 | factored, $\epsilon$ = 0.01 |
+|---|---|---|---|---|
+| 300 | 8% / 0.34 | 58% / 0.36 | 6% / 0.39 | 4% / 0.53 |
+| 1000 | 24% / 0.16 | 93% / 0.16 | 16% / 0.20 | 9% / 0.33 |
+| 4000 | 83% / 0.075 | 99% / 0.090 | 59% / 0.10 | 25% / 0.155 |
+
+Worse than the plain Laplacian atom at every count in both measures, by a
+factor 1.4 ($\epsilon$ = 0.1) to 3 ($\epsilon$ = 0.01) in the energy; the
+recovery climbs linearly like the atom's and does not saturate like the
+sandwich's, so the factored operator captures nothing of the flat modes that
+the Laplacian atom does not, it only slows the atom down (its application
+costs two Laplacian atoms and two cross products, 0.145 s per iteration
+against 0.12). The smaller $\epsilon$, the worse: the $\epsilon P_L$ term is
+what does the work. Closed: the factored preconditioner is a negative at every
+budget.
+
 **The sandwich in a relaxation** (Tobias: "diverged pretty early"): its 16-cell
 arm did not diverge, it reconnected faster than the Laplacian-atom arm (10d):
 a better direction resolves the flat modes sooner. The consistent test is
