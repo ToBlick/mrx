@@ -1119,6 +1119,18 @@ Readings.
    would need many hours for; the floor at 32 is still unknown because the
    arm had not reached it.
 
+**The descent at (32,32,32) continued four hours (job 18063290,
+`anchor32/cont`, 12000 steps at 1.21 s, to step 17000).** Energy removed
+0.40e-7 against the Newton arm's 1.31e-7 in the same four hours; lowest
+chunk 1.23e-8 at step 16784, last chunk 2.05e-8 (the zigzag), helicity
++4.1e-7 at its minimum and +3.7e-7 at the end. So after four hours the
+descent stands at 7.7x the Newton floor of this mesh. Between step 5000
+(9.65e-8) and 16784 the squared residual falls like $t^{-1.7}$; at that rate
+the floor is another 40 000 steps, some 13 hours, away, against the Newton
+arm's 52 minutes. The helicity drifts of the two arms are the same size and
+opposite sign (+3.7e-7 against -7.4e-7 after four hours), which is what "no
+leak at 32 radial cells" means quantitatively.
+
 **The Newton arm at (32,32,32) continued to four hours (job 18062278,
 `anchor32_newton/cont`, 440 more steps at 25.5 s from the step-5140
 checkpoint; 580 steps and 4.14 h in all).** The floor at 32 radial cells is
