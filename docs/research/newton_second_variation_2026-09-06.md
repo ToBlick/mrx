@@ -736,6 +736,49 @@ section 10c stands (the float64 arm at tol 1e-10 reproduced the mixed floor,
 "floor finder" reading of Newton stands; what changes is the diagnosis of what
 happens past it.
 
+## 10e. Radial resolution at the surfaces: the floor and the leak (2026-09-07)
+
+Tobias: "then we need to launch another run at higher radial resolution";
+three anchors, each the anchor descent (5000 steps, mixed, m=1, smoothed) on
+its mesh, then the capped shift-0 Newton with the Laplacian atom for one hour
+(jobs 18045954/18050908, 18046137/18050714, 18046424/18051672;
+`outputs/newton_relax/anchor32*`, `anchor_ref35*`, `anchor_ref3*`). The
+rational surfaces from the VMEC profile ($\rho = \sqrt s$): $\iota = 1/2$ at
+$\rho = 0.544$, $6/11$ at $0.674$, $3/5$ at $0.794$ (the seeded arms sit on the
+first and third).
+
+| mesh | descent s/step | descent sq. resid at 5000 | Newton steps / s/step | sq. resid min / end | helicity drift at min / end |
+|---|---|---|---|---|---|
+| (16,32,32) uniform (the anchor) | 0.67 | 5.7e-8 | 220 / 16.6 | 2.3e-9 / 8.7e-9 | -3.3e-6 / +2.4e-5 |
+| (32,32,32) uniform | 1.20 | 9.7e-8 | 140 / 26.3 | 1.7e-9 / 1.7e-9 (still falling) | +1.9e-7 / +1.9e-7 |
+| (28,32,32), 12 cells in [0.74, 0.85] around 3/5 | 1.13 | 7.5e-7 | 160 / 22.8 | 5.6e-9 / 7.6e-9 | -2.9e-6 / -5.6e-6 |
+| (40,32,32), 8/8/12 cells around 1/2, 6/11, 3/5 | 1.33 | 6.6e-7 | 140 / 28.8 | 4.5e-9 / 4.8e-9 | -2.2e-6 / -3.2e-6 |
+
+Readings.
+
+1. **Doubling the radial resolution uniformly removes the pathology.** At
+   (32,32,32) the residual descends monotonically through the hour, the last
+   chunk is the minimum (1.7e-9, below the (16,32,32) floor and not yet a
+   floor), and the helicity drift is +1.9e-7, the size of the descent's own
+   drift and 160x smaller than at (16,32,32). No turnaround. The leak and the
+   reconnection of 10/10d are under-resolved radial structure at the surfaces,
+   and $n_r = 32$ resolves it on li383 at this beta.
+2. **Windows alone do not.** Both refined-window meshes reach floors above the
+   uniform (16,32,32) one (5.6e-9 and 4.5e-9 against 2.3e-9) from descents
+   whose residuals are 10x higher at step 5000 (the fine cells resolve force
+   structure the uniform mesh smooths over, and the descent, CFL-bound by the
+   smallest cell, is slower there), and leak helicity at a fifth to a tenth
+   of the uniform (16,32,32) rate. The three-window mesh is between the
+   single window and the uniform 32 in every column. So the leak is not
+   confined to the 3/5 surface, nor to the three named surfaces: it is
+   everywhere the radial resolution is 16, which is what a uniform 32 fixes.
+   Whether a window set that follows more surfaces, or a $p = 3$ radial
+   basis, does the same at lower cost is the sweep this leaves open.
+3. **Cost.** A Newton step at 32 radial cells is 26 s in mixed precision
+   (against 1.2 s per descent step), and the hour reached what the descent
+   would need many hours for; the floor at 32 is still unknown because the
+   arm had not reached it.
+
 ## 10b. The potential route against the Leray route
 
 Three arms from the initial field at the anchor's settings (li383 (16,32,32)
