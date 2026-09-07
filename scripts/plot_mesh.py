@@ -7,7 +7,10 @@ and where the knots land.
 Writes ``mesh_2d.png``: one column per mesh, one row per plane of ``--planes``,
 the poloidal cross-section with the radial breakpoints as closed curves (a
 ``--r-refine`` window shows as denser lines, see ``mrx.geometry.radial_knots``)
-and the poloidal knots as spokes. With ``--sections`` a panel is split at the
+and the poloidal knots as spokes. Panels carry no axes or frame; the two
+innermost rings are omitted and the spokes start at the first surviving ring,
+so the near-axis polar patch (the ``ring_depth=2`` -> three C1 basis functions
+surgery of ``mrx.extraction_operators``) reads as one region. With ``--sections`` a panel is split at the
 magnetic axis like the section pages: the grid above, the Poincaré crossings
 of that mesh's field below, coloured by iota (``scripts/poincare_relax.py``'s
 ``sections.npz``; the plane must be one it traced). ``mesh_3d.png``: the boundary surface
@@ -119,19 +122,25 @@ def main(cli):
                         return R, Z
                     return np.where(Z >= z_split, R, np.nan), np.where(Z >= z_split, Z, np.nan)
 
+                # The polar surgery (mrx.extraction_operators) fuses the two
+                # innermost radial rings into three C1 basis functions, so the
+                # patch near the axis is one region, not nested rings: drop those
+                # inner breakpoint circles and start the poloidal spokes at the
+                # first surviving ring rather than fanning them into the patch.
+                ring_depth = 2
+                r_inner = float(bp[min(1 + ring_depth, len(bp) - 1)])
                 th = np.linspace(0.0, 1.0, n_t)
-                for r in bp[1:]:
+                for r in bp[1 + ring_depth:]:
                     R, Z = half(*RZ(F, np.full(n_t, min(r, 1.0 - 1e-6)), th, np.full(n_t, ze)))
                     ax.plot(R, Z, color=black, lw=0.5)
-                rr = np.linspace(0.0, 1.0 - 1e-6, n_r)
+                rr = np.linspace(r_inner, 1.0 - 1e-6, n_r)
                 for j in range(ns[1]):
                     R, Z = half(*RZ(F, rr, np.full(n_r, j / ns[1]), np.full(n_r, ze)))
                     ax.plot(R, Z, color=grey, lw=0.3)
                 if z_split is not None:
                     ax.axhline(z_split, color=black, lw=0.4, ls=":")
                 ax.set_aspect("equal")
-                ax.set_xlabel(r"$R$")
-                ax.set_ylabel(r"$Z$")
+                ax.set_axis_off()
                 ax.set_title(f"{label}, $\\zeta = {ze:g}$")
         save_figure(fig, os.path.join(cli.out, "mesh_2d.png"))
         plt.close(fig)
