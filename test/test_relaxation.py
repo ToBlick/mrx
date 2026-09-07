@@ -102,3 +102,30 @@ def test_midpoint_conserves_helicity(seq, b0):
     assert max(resid) < ts.picard_tol, f"Picard did not converge: {max(resid)}"
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
+
+
+def test_potential_force_is_the_leray_force(seq, b0):
+    """``curl a + c h`` from the k=1 Hodge solve of ``curl^T load(J x B)`` is
+    the Leray projection of ``J x B``, divergence-free to roundoff, and the
+    smoothing through the potential is the smoothing of the velocity:
+    ``curl (M_1 + mu L_1)^-1 M_1 a = (M_2 + mu L_2)^-1 M_2 curl a``."""
+    from mrx.relaxation import compute_force
+
+    F, _, _, _, JxB = compute_force(b0, seq)
+    ts = TimeStepper(seq=seq, history_size=0, potential_velocity=True, velocity_smoothing_order=1)
+    Fp, _, Fs, _, _, _ = ts._potential_force(b0, jnp.zeros(seq.n(1, True), dtype=DTYPE), None)
+    Fs_leray = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+        seq.apply_mass_matrix(F, 2), 2, ts.velocity_smoothing_scale, dirichlet=True)
+    rel = float(seq.l2_norm(Fp - F, 2) / seq.l2_norm(F, 2))
+    rel_s = float(seq.l2_norm(Fs - Fs_leray, 2) / seq.l2_norm(Fs_leray, 2))
+    div = float(seq.l2_norm(seq.apply_incidence_matrix(Fp, 2), 3) / seq.l2_norm(Fp, 2))
+    # both routes solve to tol relative to |J x B|, the force is a fraction of
+    # it; in float32 storage the potential's rounding, amplified by the curl,
+    # is the larger term (3e-5 measured in the mixed configuration, 3e-8 in
+    # float64, li383 (8,12,12) p=2)
+    band = max(1e2 * seq.tol * float(seq.l2_norm(JxB, 2) / seq.l2_norm(F, 2)), 1e4 * eps())
+    print(f"\n  |F_pot - F_leray| / |F| {rel:.2e}, smoothed {rel_s:.2e}, |div F_pot| / |F| {div:.1e}, "
+          f"band {band:.1e}")
+    assert rel < band
+    assert rel_s < band
+    assert div < 1e2 * eps()

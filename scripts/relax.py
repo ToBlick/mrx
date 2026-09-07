@@ -63,6 +63,13 @@ Flags, defaults in brackets:
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
                                    disables it
+      --potential-velocity {false,true} [false]
+                                   the projected force as curl a + c h from
+                                   the k=1 Hodge solve of curl^T load(J x B)
+                                   instead of the Leray saddle solve
+                                   (divergence-free to roundoff), the
+                                   smoothing on the potential, L-BFGS on
+                                   the smoothed forces
       --newton {false,true} [false]
                                    the Newton direction of the second
                                    variation instead of L-BFGS, u = curl a
@@ -78,6 +85,8 @@ Flags, defaults in brackets:
                                    atom, its square, or the k=1 mass atom
       --newton-inner-tol TOL [solve tol]
                                    tolerance of the Hessian's mass solves
+      --newton-dt-cap C [inf]      cap the line-search step along a Newton
+                                   direction (1 = the Newton step)
     Budgets and output:
       --steps N [3000]             maximum number of steps
       --seconds S [none]           wall-clock budget of the descent loop
@@ -171,6 +180,8 @@ def parse_args(argv=None):
     ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
                     help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
     ap.add_argument("--cfl", type=float, default=0.5)
+    ap.add_argument("--potential-velocity", default="false", choices=("false", "true"),
+                    help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve")
     ap.add_argument("--newton", default="false", choices=("false", "true"),
                     help="the Newton direction of the second variation instead of L-BFGS (needs --history 0)")
     ap.add_argument("--newton-shift", type=float, default=0.0,
@@ -183,6 +194,8 @@ def parse_args(argv=None):
                     help="preconditioner of the Newton solve")
     ap.add_argument("--newton-inner-tol", type=float, default=None,
                     help="tolerance of the Hessian's mass solves [the solve tolerance]")
+    ap.add_argument("--newton-dt-cap", type=float, default=float("inf"),
+                    help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
     ap.add_argument("--chunk", type=int, default=500,
@@ -207,6 +220,7 @@ def parse_args(argv=None):
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.newton = cli.newton == "true"
+    cli.potential_velocity = cli.potential_velocity == "true"
     if cli.newton and cli.history:
         ap.error("--newton replaces the L-BFGS direction: pass --history 0")
     if cli.history < 0:
@@ -270,9 +284,10 @@ def main(cli):
         cfl=cli.cfl, history_size=cli.history,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
+        potential_velocity=cli.potential_velocity,
         newton=cli.newton, newton_shift=cli.newton_shift, newton_tol=cli.newton_tol,
         newton_maxiter=cli.newton_maxiter, newton_precond=cli.newton_precond,
-        newton_inner_tol=cli.newton_inner_tol)
+        newton_inner_tol=cli.newton_inner_tol, newton_dt_cap=cli.newton_dt_cap)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -281,7 +296,7 @@ def main(cli):
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
-    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if cli.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

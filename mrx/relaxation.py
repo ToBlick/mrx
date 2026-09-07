@@ -343,10 +343,16 @@ class State(eqx.Module):
         Fixed-point defect of the last midpoint sweep, ``||g(x) - x||_M``
         relative to the predictor's increment ``||dt dB(B_n)||_M`` (0
         explicit). Above ``picard_tol`` means the step went out unconverged.
+    Fs_prev, MFs_prev : jnp.ndarray (optional)
+        The smoothed force of the previous step and ``M_2`` times it, the
+        gradient the L-BFGS secant pairs on the potential route
+        (``TimeStepper.potential_velocity``); equal to ``F_prev``,
+        ``MF_prev`` on the Leray route.
     a : jnp.ndarray (optional)
-        The Dirichlet 1-form potential of the Newton direction, ``u = curl
-        a`` (:func:`mrx.hessian.newton_direction`): the warm start of the
-        next step's MINRES solve. Zeros without ``TimeStepper.newton``.
+        A Dirichlet 1-form potential: of the Newton direction, ``u = curl
+        a`` (:func:`mrx.hessian.newton_direction`), or of the force on the
+        potential route, ``F = curl a + c h``. The warm start of the next
+        step's solve. Zeros on the plain Leray route.
     newton_it : int
         The signed MINRES iteration count of the Newton solve (negative when
         it converged to ``newton_tol``; 0 without ``newton``).
@@ -364,6 +370,8 @@ class State(eqx.Module):
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
     MF_prev: Optional[jnp.ndarray] = None
+    Fs_prev: Optional[jnp.ndarray] = None
+    MFs_prev: Optional[jnp.ndarray] = None
     s_history: Optional[jnp.ndarray] = None
     y_history: Optional[jnp.ndarray] = None
     Ms_history: Optional[jnp.ndarray] = None
@@ -433,6 +441,8 @@ class Increment(NamedTuple):
     Mu: jnp.ndarray
     F: jnp.ndarray
     MF: jnp.ndarray
+    Fs: jnp.ndarray
+    MFs: jnp.ndarray
     p: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
@@ -510,6 +520,19 @@ class TimeStepper(eqx.Module):
             O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
             the cap and leaves the trajectory untouched.
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
+        potential_velocity: Compute the projected force as ``F = curl a +
+            c h`` instead of by the Leray saddle solve: ``a`` from the k=1
+            Hodge Laplacian solve of ``curl^T load(J x B)`` (the curl-curl
+            equation in the Coulomb gauge; the gradient part of ``J x B`` is
+            annihilated by ``curl^T`` exactly) and ``c = (J x B, h) / (h,
+            h)`` on the harmonic 2-form ``h``. ``F`` is divergence-free to
+            roundoff. The velocity smoothing acts on the potential through
+            the k=1 shifted solve, ``curl (M_1 + mu L_1)^-1 M_1 a =
+            (M_2 + mu L_2)^-1 M_2 curl a`` exactly, and the L-BFGS
+            direction combines the SMOOTHED forces (the preconditioned-CG
+            order; the Leray route combines the forces and smooths the
+            result). No pressure comes out of it; ``State.p`` keeps the
+            sampler's. Excludes ``newton`` and the auxiliary field.
         newton: Replace the L-BFGS direction by the Newton direction of the
             second variation, ``u = curl a`` with ``curl^T (H + newton_shift
             M_2) curl a = curl^T M_2 F`` solved by MINRES
@@ -525,6 +548,14 @@ class TimeStepper(eqx.Module):
         newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`.
         newton_inner_tol: Tolerance of the Hessian's three k=1 mass solves
             per MINRES iteration; ``None`` is the sequence's.
+        newton_dt_cap: Cap on the line-search step along a Newton direction,
+            ``dt = min(dt_star, cfl / cfl_max, newton_dt_cap)``. A truncated
+            MINRES direction mixes resolved modes, whose energy minimum is at
+            ``dt = 1`` (the Newton step), with unresolved flat ones that want
+            a longer step; the exact line search settles near 2, where the
+            resolved modes' residual is reflected rather than removed
+            (measured: dt* 1.95-2.0 on li383 from step 5000). 1 takes the
+            Newton step; ``inf`` (the default) leaves the line search alone.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
             ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
@@ -538,14 +569,18 @@ class TimeStepper(eqx.Module):
     history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
+    potential_velocity: bool = False
     newton: bool = False
     newton_shift: float = 0.0
     newton_tol: float = 1e-3
     newton_maxiter: int = 100
     newton_precond: str = "laplacian"
     newton_inner_tol: float = None
+    newton_dt_cap: float = float("inf")
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
+    harmonic: jnp.ndarray = None
+    harmonic_norm_sq: jnp.ndarray = None
 
     def __post_init__(self):
         if self.history_size < 0:
@@ -554,6 +589,13 @@ class TimeStepper(eqx.Module):
             raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
         if self.newton and self.auxiliary_B_field:
             raise ValueError("newton reads the 2-form B in the cross products (no auxiliary field).")
+        if self.potential_velocity and (self.newton or self.auxiliary_B_field):
+            raise ValueError("potential_velocity is the Leray route's replacement on the 2-form B: "
+                             "it excludes newton and the auxiliary field.")
+        if self.potential_velocity:
+            h = self.seq.nullspace(2, True)[0]
+            self.harmonic = h
+            self.harmonic_norm_sq = h @ self.seq.apply_mass_matrix(h, 2)
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
         self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
@@ -672,6 +714,33 @@ class TimeStepper(eqx.Module):
         E_dual = seq.cross_product_load_values(u_jk, X_jk, 1, 2, k, True)
         return seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
 
+    def _potential_force(self, B: jnp.ndarray, a_guess: jnp.ndarray, J_guess: jnp.ndarray):
+        """The projected force as ``F = curl a + c h`` and its smoothed version.
+
+        ``a`` solves ``L_1 a = curl^T load(J x B)`` (the k=1 Hodge split,
+        warm-started from ``a_guess``): the right-hand side is orthogonal
+        to gradients, so ``a`` is in the Coulomb gauge and ``curl a`` is the
+        exact part of the Leray projection of ``J x B``; ``c h`` is its
+        harmonic part. The smoothing solves ``(M_1 + mu L_1) a_s = M_1 a``
+        ``velocity_smoothing_order`` times. Returns ``(F, M F, F_s, M F_s,
+        J, a)``.
+        """
+        seq = self.seq
+        J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
+        JxB_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
+        rhs = seq.apply_incidence_matrix(JxB_dual, 1, dirichlet_in=True, dirichlet_out=True,
+                                         transpose=True)
+        a = seq.apply_inverse_laplacian(rhs, 1, dirichlet=True, guess=a_guess)
+        ch = ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq) * self.harmonic
+        F = seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True) + ch
+        a_s = a
+        for _ in range(self.velocity_smoothing_order):
+            a_s = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+                seq.apply_mass_matrix(a_s, 1, True), 1, self.velocity_smoothing_scale,
+                dirichlet=True, guess=a_s)
+        Fs = seq.apply_incidence_matrix(a_s, 1, dirichlet_in=True, dirichlet_out=True) + ch
+        return F, seq.apply_mass_matrix(F, 2), Fs, seq.apply_mass_matrix(Fs, 2), J, a
+
     def _ideal_increment(self, B: jnp.ndarray, state: State,
                          p_guess: jnp.ndarray,
                          H_guess: jnp.ndarray, JxH_guess: jnp.ndarray,
@@ -697,15 +766,20 @@ class TimeStepper(eqx.Module):
         field ``H_guess`` passes through untouched.
         """
         seq = self.seq
-        F, p, J, X, JxX = compute_force(
-            B, seq, self.auxiliary_B_field,
-            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
-            J_guess=J_guess, F_guess=state.F_prev)
-        # M F ONCE.  It serves ||F||_M and the L-BFGS secant
-        # M y = M F_prev - M F; the increment applies M_2 three times in total
-        # (M F, M u, M dB) whichever method is running -- L-BFGS used to
-        # apply it 4m + 6 times.
-        MF = seq.apply_mass_matrix(F, 2)
+        if self.potential_velocity:
+            F, MF, Fs, MFs, J, a = self._potential_force(B, state.a, J_guess)
+            p, X, JxX = p_guess, B, JxH_guess     # not computed on this route
+        else:
+            F, p, J, X, JxX = compute_force(
+                B, seq, self.auxiliary_B_field,
+                p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
+                J_guess=J_guess, F_guess=state.F_prev)
+            # M F ONCE.  It serves ||F||_M and the L-BFGS secant
+            # M y = M F_prev - M F; the increment applies M_2 three times in total
+            # (M F, M u, M dB) whichever method is running -- L-BFGS used to
+            # apply it 4m + 6 times.
+            MF = seq.apply_mass_matrix(F, 2)
+            Fs, MFs, a = F, MF, state.a
 
         # The secant history exists only for history_size > 0 (a static
         # branch: steepest descent carries (0, n) arrays and never touches
@@ -722,8 +796,8 @@ class TimeStepper(eqx.Module):
             # Under the midpoint rule every sweep re-pushes it against the
             # SAME state history, so the pair is (s_{k-1}, F_prev - F(B_mid))
             # of the converged sweep and never an inner iterate's.
-            y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.F_prev - F)
-            My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
+            y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.Fs_prev - Fs)
+            My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MFs_prev - MFs)
         if self.newton:
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_shift, self.newton_tol, self.newton_maxiter,
@@ -735,9 +809,10 @@ class TimeStepper(eqx.Module):
             u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
             sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
         else:
-            u, sy = self._lbfgs_direction(F, state.s_history, y_hist, state.Ms_history, My_hist)
-            u = self.smooth_velocity(u)
-            a, newton_it, newton_fallback = state.a, jnp.int32(0), jnp.int32(0)
+            u, sy = self._lbfgs_direction(Fs, state.s_history, y_hist, state.Ms_history, My_hist)
+            if not self.potential_velocity:     # the potential route smoothed the force
+                u = self.smooth_velocity(u)
+            newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -767,7 +842,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist,
+        return Increment(dB, u, Mu, F, MF, Fs, MFs, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist,
                          a, newton_it, newton_fallback)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -778,7 +853,10 @@ class TimeStepper(eqx.Module):
         The cap: ``cfl = inf`` gives ``min(dt_star, inf) = dt_star`` exactly.
         """
         dt_star = inc.F @ inc.Mu / self.seq.l2_norm_sq(inc.dB, 2)
-        return jnp.minimum(dt_star, self.cfl / inc.cfl_max), dt_star
+        dt = jnp.minimum(dt_star, self.cfl / inc.cfl_max)
+        if self.newton:
+            dt = jnp.minimum(dt, self.newton_dt_cap)
+        return dt, dt_star
 
     def _midpoint_solve(self, state: State):
         """Midpoint-implicit induction with the explicit descent velocity.
@@ -934,14 +1012,14 @@ class TimeStepper(eqx.Module):
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
-                       s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
+                       s.F_prev, s.MF_prev, s.Fs_prev, s.MFs_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
                        s.a, s.newton_it, s.newton_fallback),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
-             inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
+             inc.F, inc.MF, inc.Fs, inc.MFs, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
              n_eval, restarts, resid,
@@ -981,6 +1059,8 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
         MF_prev=MF0,
+        Fs_prev=F0,
+        MFs_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),
         s_history=jnp.zeros((m, n), dtype=DTYPE),
         y_history=jnp.zeros((m, n), dtype=DTYPE),

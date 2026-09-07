@@ -201,6 +201,60 @@ Newton: it is spectrally equivalent to the $|B|^2$ curl-curl part of $H$ but
 knows nothing about $B$. What Newton adds is the anisotropy and the $J \times Q$
 term.
 
+## 7b. The potential form for the descent itself (Tobias's question)
+
+Should the descent also write $v = \mathrm{curl}\,a$ and skip the Leray solve?
+It can, but it trades one solve for another. The Leray projection of
+$f = J \times B$ onto the normal-trace-free divergence-free fields is, by the
+Hodge decomposition $f = \nabla q + \mathrm{curl}\,a + h$,
+
+$$P f = \mathrm{curl}\,a + c\,h, \qquad (\mathrm{curl}\,a, \mathrm{curl}\,w) = (f, \mathrm{curl}\,w)\ \ \forall w,\quad c = (f, h) / (h, h),$$
+
+i.e. $\mathrm{curl}\,\mathrm{curl}\,a = \mathrm{curl}\,f$ weakly with $a \times n = 0$, and
+$h$ the one harmonic 2-form (the net toroidal flux). Discretely this is exact:
+the spline complex is exact, so $\ker D_2 = \mathrm{range}\, G_1 \oplus \mathrm{span}\, h$,
+and the $M_2$-orthogonal projection onto it has the normal equations
+$S_1 a = G_1^T M_2 f$ and $c$ as above, because $G_1^T M_2 h = 0$ defines the
+discrete harmonic form. The right-hand side $G_1^T M_2 f$ is orthogonal to
+gradients, so the k=1 Hodge Laplacian solve $L_1 a = G_1^T M_2 f$ returns the
+curl-curl solution in the Coulomb gauge: the same call `compute_helicity`
+makes for the vector potential of $B$. One k=1 Hodge-split solve replaces the
+k=3 saddle solve; no pressure comes out of it.
+
+Do not descend in $a$ with the $M_1$ metric instead: that gives
+$v = \mathrm{curl}(\mathrm{curl}_w f)$, the force differentiated twice, an
+anti-smoothing that collapses the CFL step.
+
+**Smoothing the potential.** The Hodge Laplacians commute with the curl,
+$\Delta_2\,\mathrm{curl} = \mathrm{curl}\,\Delta_1$ (both are $\mathrm{curl}\,\delta\,\mathrm{curl}$),
+so
+
+$$(M_2 + \mu L_2)^{-1} M_2\, \mathrm{curl}\, a = \mathrm{curl}\,(M_1 + \mu L_1)^{-1} M_1\, a$$
+
+exactly in the discrete complex (the proof: apply $M_2 G_1 M_1^{-1}$ to the k=1
+equation and use $G_1 G_0 = 0$ on the weak half). The smoother maps gradients
+to gradients, so the gauge stays harmless, and $h$ passes through unchanged.
+The smoothing is therefore the k=1 shifted solve on $a$ followed by the free
+curl: the same shifted-split machinery one level down.
+
+**Implemented as `TimeStepper(potential_velocity=True)`** (`--potential-velocity
+true`): the force $F = \mathrm{curl}\,a + c\,h$ from the k=1 Hodge solve
+(warm-started from the previous potential), the smoothing on $a$, and L-BFGS on
+the *smoothed* forces. That last point is an ordering difference to the Leray
+route, which combines the unsmoothed forces and smooths the result (and thereby
+smooths the already-smooth history vector a second time); the potential order
+is the preconditioned-CG one. `test_potential_force_is_the_leray_force` checks
+both identities on the fixture. The comparison against the sweep's anchor is in
+section 10b; the m = 0 arms isolate the projection route from the ordering,
+since steepest descent has no history to order.
+
+**The harmonic direction.** $h$ is one degree of freedom, orthogonal to every
+curl. At a fixed point $(J \times B, h) = (\nabla p, h) = -\int p\,\mathrm{div}\,h + \oint p\, h\cdot n = 0$,
+so near the floor the force has no component along it anyway; the toroidal
+flux of $B$ is conserved by every curl update whatever $u$ is. The descent
+route carries $c\,h$ because it is one inner product; the Newton route drops it
+and relies on the sign test.
+
 ## 8. The experiment
 
 Job A, `scripts/newton_probe.py`, float64, li383 (16,32,32) p=2, at the initial
@@ -232,7 +286,65 @@ section 7 is to blame.
 
 ## 9. Results of job A (probe)
 
-*(pending)*
+Jobs 18032142 (initial field) and 18032143 (the anchor's step-5000 field,
+residual 2.3e-4), float64, li383 (16,32,32) p=2, 11 min each;
+`outputs/newton_second_variation/probe_{ic,relaxed5000}.json`.
+
+**Identities** (relative differences): gradient against the force's pairing
+5e-9 / 7e-8, quadratic form against $\|Q\|^2 + (B, R)$ 8e-12 / 8e-12, symmetry
+6e-9 / 6e-9, $(B, HB)/|B|^2$ 1e-20 / 1e-21. $|HB| / |Hu|$ for a random unit
+$u$: 2.2e-4 at the initial field, 4.7e-6 at step 5000: the field's own direction
+enters the kernel as the state relaxes.
+
+**Spectrum** of $P M_2^{-1} H$ on divergence-free velocities, 150 Lanczos steps
+with full reorthogonalisation, at both fields alike:
+
+| | initial field | step 5000 |
+|---|---|---|
+| largest Ritz value | 3.93e4 | 3.89e4 |
+| smallest | 0.117 | 0.123 |
+| negative | 0 | 0 |
+| condition number | 3.4e5 | 3.2e5 |
+| next smallest | 1.7, 4.6, 9.1, 15, 23, 32, 42 | 1.7, 4.6, 9.1, 15, 22, 31, 42 |
+
+The Hessian is positive definite on divergence-free velocities at both
+fields (no ideally unstable direction on this mesh, at the initial VMEC field
+as at the relaxed one), and its low end is a clean discrete ladder, not a dense
+near-kernel. $(u, Hu) / \|Q_u\|^2 = 1.00$ to 1.5% for every direction tried:
+the Hessian is the Gauss-Newton operator $\|\mathrm{curl}(u \times B)\|^2$ to
+that accuracy, the $J \times Q$ terms are a percent.
+
+**Direction quality.** $\Delta E^*$ is the energy the exact line search removes
+along the direction (first-order path; the second-order path and the Newton
+model agree with it to three digits everywhere). Cost is MINRES iterations,
+three k=1 mass solves each, 0.12-0.13 s per iteration in float64 in the steady
+state (a descent step is 0.69 s in mixed precision, 1.44 s in float64).
+
+At the initial field (residual 1.6e-2): force $-9.4$e-7, smoothed force
+$-9.2$e-7; Newton shift 0 at 139 iterations $-1.33$e-6, shift 1e-3 at 84
+$-1.16$e-6, shift 1e-2 at 45 $-1.00$e-6. Newton buys 1.4x per step there and
+nothing per second: the initial descent is not the problem.
+
+At step 5000 (residual 2.3e-4):
+
+| direction | iterations | cos | $\Delta t^*$ | $\Delta E^*$ | per smoothed step | per wall second |
+|---|---|---|---|---|---|---|
+| force | 0 | 1.00 | 7.5e-4 | $-1.8$e-11 | 0.7 | 2.6e-11 |
+| smoothed force | 0 | 0.87 | 1.8e-3 | $-2.6$e-11 | 1 | 3.7e-11 |
+| Newton, shift 0, tol 0.1 | 300 (not converged) | 0.48 | 1.67 | $-1.06$e-8 | 410 | 2.9e-10 |
+| shift 39 (1e-3 of top), tol 0.1 | 89 | 0.69 | 6.2 | $-1.39$e-9 | 54 | 8.4e-11 |
+| shift 39, tol 0.01 | 273 | 0.70 | 6.9 | $-1.82$e-9 | 70 | 5.3e-11 |
+| shift 389 (1e-2), tol 0.1 | 35 | 0.85 | 5.6 | $-1.90$e-10 | 7 | 4.2e-11 |
+| shift 389, tol 0.001 | 172 | 0.86 | 5.9 | $-2.28$e-10 | 9 | 1.1e-11 |
+
+No Newton direction was CFL-bound: $\Delta t^*$ of 1.7 to 7 was taken in
+full, against 1.8e-3 for the smoothed force. The Laplacian atom beats its
+square at every shift and tolerance (the square needs 2-3x the iterations for
+the same residual and never reached 1e-2 in 300). The full Newton direction,
+even truncated at 300 iterations, removes 400 times the energy of a smoothed
+step at 50 times its cost: 8x per wall second in the float64 accounting; the
+shift-39 direction 2x; shift 389 breaks even. Section 10 says whether that
+holds over a run.
 
 ## 10. Results of job B (Newton arms)
 
