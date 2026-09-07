@@ -70,6 +70,10 @@ Flags, defaults in brackets:
                                    (divergence-free to roundoff), the
                                    smoothing on the potential, L-BFGS on
                                    the smoothed forces
+      --smooth-first {false,true} [false]
+                                   Leray route: smooth the force before the
+                                   L-BFGS combination (the preconditioned-CG
+                                   order) instead of the combination after
       --newton {false,true} [false]
                                    the Newton direction of the second
                                    variation instead of L-BFGS, u = curl a
@@ -182,6 +186,8 @@ def parse_args(argv=None):
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--potential-velocity", default="false", choices=("false", "true"),
                     help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve")
+    ap.add_argument("--smooth-first", default="false", choices=("false", "true"),
+                    help="Leray route: smooth the force before the L-BFGS combination, not the combination after")
     ap.add_argument("--newton", default="false", choices=("false", "true"),
                     help="the Newton direction of the second variation instead of L-BFGS (needs --history 0)")
     ap.add_argument("--newton-shift", type=float, default=0.0,
@@ -221,6 +227,7 @@ def parse_args(argv=None):
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.newton = cli.newton == "true"
     cli.potential_velocity = cli.potential_velocity == "true"
+    cli.smooth_first = cli.smooth_first == "true"
     if cli.newton and cli.history:
         ap.error("--newton replaces the L-BFGS direction: pass --history 0")
     if cli.history < 0:
@@ -284,7 +291,7 @@ def main(cli):
         cfl=cli.cfl, history_size=cli.history,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
-        potential_velocity=cli.potential_velocity,
+        potential_velocity=cli.potential_velocity, smooth_first=cli.smooth_first,
         newton=cli.newton, newton_shift=cli.newton_shift, newton_tol=cli.newton_tol,
         newton_maxiter=cli.newton_maxiter, newton_precond=cli.newton_precond,
         newton_inner_tol=cli.newton_inner_tol, newton_dt_cap=cli.newton_dt_cap)
@@ -296,7 +303,7 @@ def main(cli):
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
-    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if cli.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if cli.potential_velocity else ''}{'  smooth-first' if cli.smooth_first else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

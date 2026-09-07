@@ -255,6 +255,75 @@ flux of $B$ is conserved by every curl update whatever $u$ is. The descent
 route carries $c\,h$ because it is one inner product; the Newton route drops it
 and relies on the sign test.
 
+## 7c. One family: the shift, the potential route, and a $B$-aware preconditioner
+
+**The descent is the infinite-shift Newton.** Divide the Newton system by
+$\lambda$ and let $\lambda \to \infty$: $S_1 a = \mathrm{curl}^T M_2 F / \lambda$,
+whose solution is $\mathrm{curl}\,a = P F / \lambda$ up to the harmonic mode. That
+is the potential route's projection solve, scale aside, and the line search
+removes the scale. With $\lambda (M_2 + \mu L_2)$ in place of $\lambda M_2$ the
+same limit is the smoothed force, by the commutation of 7b. So one system with
+one parameter and one metric covers everything: $\lambda = 0$ Newton, $\lambda
+= \infty$ in the $L^2$ metric the force, in the $H^1$ metric the smoothed
+force, finite $\lambda$ in between. What differs at the two ends is the
+solver: at $\lambda = 0$ the operator is symmetric indefinite and singular
+(MINRES with the atom), at $\lambda = \infty$ it is the SPD curl-curl modulo
+the gauge (the Hodge-split PCG). The finite shifts were the worst members in
+the tail (section 9, 10): they keep the flat modes gradient-like while the
+line search stretches the step to twice the Newton length for the resolved
+ones.
+
+**The Newton step can omit the Leray solve.** The direction never used it.
+The right-hand side $\mathrm{curl}^T M_2 F$ equals $\mathrm{curl}^T \mathrm{load}(J \times B)$
+exactly, and the line search $(F, u)_M / \|Q_u\|^2$ equals
+$(\mathrm{load}(J \times B), u) / \|Q_u\|^2$ because $u$ is divergence-free. The
+per-step residual and the fallback direction can come from the potential
+route's force. So `potential_velocity` and `newton` together make a step with
+no saddle solve anywhere; for the experiment it changes nothing (the Leray
+solve is two percent of a Newton step), for the descent it is the 30% of 10b.
+
+**The split identities do not apply; the tensor-atom idea does.** Both splits
+(Hodge, shifted) live on $d \circ d = 0$. The Newton operator's core is, to a
+percent, the Gauss-Newton form
+$\mathrm{curl}^T L_B^T M_1^{-1} S_1 M_1^{-1} L_B\, \mathrm{curl}$ with
+$L_B u = \mathrm{load}_1(u \times B)$: the curl-curl stiffness sandwiched by a
+$B$-dependent map that respects no exact/co-exact decomposition. The only
+split structure left is the gauge, which the potential form already uses
+exactly. What transfers is the metric-lumping construction. For
+$B = \nabla\psi \times \nabla(\theta - \iota\zeta)$ the map
+$u \mapsto \mathrm{curl}(u \times B) = B \cdot \nabla u - u \cdot \nabla B$ acts on a Fourier
+mode $(m, n)$ like $\iota(r) m + n$ times the mode, so per radial layer
+
+$$\mathrm{curl}^T H\, \mathrm{curl} \;\approx\; \mathrm{curl}^T\, |B|^2 (\iota m + n)^2\, \mathrm{curl},$$
+
+separable in the angles with the resonance denominators as eigenvalues, and
+our logical coordinates are the VMEC flux coordinates, close to straight
+field lines. A parallel-derivative atom (lumped $|B|^2$ and $\iota$, exact
+Fourier diagonalisation in the angles, dense polar core like the other atoms)
+is the $B$-aware preconditioner the Laplacian atom lacks, and the modes it
+addresses are the resonant ones, $\iota m + n \approx 0$, the rational
+surfaces, which are the near-kernel of the Hessian and the slow directions
+of the descent.
+
+Two approximations are stacked in it, to be kept apart. (i) *Gauss-Newton*:
+only $(\delta B(u), \delta B(v))$ is kept, the cross term
+$\tfrac12[(B, \mathrm{curl}(u \times Q_v)) + (B, \mathrm{curl}(v \times Q_u))]$, at an
+equilibrium the $J \times Q$ part of the force operator, is dropped. The probe
+measured $(u, Hu) / \|Q_u\|^2 = 1.00$ to 1.015 at both fields, so on li383 the
+dropped term is a percent. That is not general: $J \times Q$ carries the
+current-driven physics (kink, tearing), it is small here because li383 at this
+beta is far from any ideal instability, which the empty negative spectrum also
+says; near marginal stability it is the whole story. The operator MINRES
+applies stays the full $H$, only the preconditioner approximates. (ii) *The
+mode structure*: only the parallel derivative $B \cdot \nabla u$ is kept and
+$u \cdot \nabla B$ dropped, valid when $u$ varies on scales shorter than the
+equilibrium's, and least accurate exactly on the resonant modes where the
+kept term vanishes. A preconditioner that also sees the cross term is
+block-tridiagonal in the mode index (the equilibrium's spectrum couples
+neighbouring $(m, n)$), which is SIESTA's construction and the other end of
+the effort scale. First measurement for either: the MINRES count on the
+step-5000 field against the 300 of the Laplacian atom.
+
 ## 8. The experiment
 
 Job A, `scripts/newton_probe.py`, float64, li383 (16,32,32) p=2, at the initial
@@ -348,7 +417,118 @@ holds over a run.
 
 ## 10. Results of job B (Newton arms)
 
-*(pending)*
+All arms restart from the anchor's step-5000 state (residual 2.1e-4, helicity
+5.011146e-3), li383 (16,32,32) p=2, mixed precision, CFL 0.5, one hour of
+stepping (`--seconds 3600`, chunks of 20), MINRES tolerance 0.1, the Laplacian
+atom, `outputs/newton_relax/<arm>/`, jobs 18033081/83/88, 18034296, 18037672.
+Reference: the anchor's own continuation, 5000 descent steps in 53 min.
+Residuals are chunk means; "min" is the lowest chunk mean of the run; the
+helicity drift is relative. Figure `outputs/newton_second_variation/newton_tail.png`.
+
+| arm | steps | s/step | energy removed | residual first / min / last | helicity drift | dt |
+|---|---|---|---|---|---|---|
+| anchor continuation (descent) | 5000 | 0.64 | 6.3e-8 | 2.2e-4 / 1.5e-4 / 1.5e-4 | -1.2e-6 | 2.4 |
+| shift 0, 300 it, uncapped | 300 | 12.2 | 7.3e-7 | 2.4e-4 / 6.5e-5 / 6.6e-4 | +4.0e-5 | 2.0 |
+| shift 0, 100 it, uncapped (cancelled at 15 min) | 140 | 6.4 | 1.5e-7 | 3.7e-4 / 6.1e-5 / 6.1e-5 | -3.9e-6 | 1.75 |
+| shift 39, 100 it | 4000 | 0.75 | 1.8e-7 | 7.6e-4 / 2.1e-4 / 4.1e-4 | -3.2e-6 | 2.0 |
+| shift 0, 300 it, dt capped at 1 | 220 | 16.6 | 6.5e-7 | 5.5e-5 / 4.4e-5 / 9.7e-5 | +2.4e-5 | 1.0 |
+| the same, midpoint induction on B | *(running)* | | | | | |
+
+(A midpoint arm with the auxiliary field was started and cancelled after 60
+steps: its helicity was exact to the digit, but the auxiliary force $J \times H$
+has a residual of 3.4e-3 at this state, which was relaxed under the
+$J \times B$ force, so its Newton direction was fifteen times larger, the CFL
+cap bound at dt = 2e-3, and the run relaxed a different functional from far
+away from its floor. Not comparable.)
+
+What the arms say.
+
+1. **Newton reaches the mesh's residual floor in minutes.** Every shift-0
+   arm drops the residual from 2.1e-4 to 4.4e-5..6.5e-5 within 40 to 100
+   steps, i.e. 8 to 15 minutes, against the continuation's 1.5e-4 after 53
+   minutes and a power-law tail that would need hours for the same. The
+   lowest chunk mean of every Newton arm is the same number, 4.4e-5 to
+   6.5e-5: that is this mesh's floor, which the descent approaches as
+   $t^{-0.2}$ and Newton hits directly.
+2. **Beyond the floor the explicit induction breaks the topology.** Once
+   there, every uncapped or capped arm shows the same sequence: the energy
+   removal accelerates (7e-7 per hour against the continuation's 6e-8), the
+   helicity drifts linearly (2e-5 to 4e-5 relative, twenty to forty times the
+   continuation's), and the residual climbs back to and above its start.
+   That is numerical reconnection: forward Euler leaves the ideal flow at
+   second order in the displacement per step, and a Newton step displaces the
+   field thirty times further than a descent step. The line search sees the
+   energy and not the topology; at the floor the direction is driven by the
+   discretisation remainder of the force, and the energy it finds to remove
+   is the energy that reconnection releases. The 100-iteration arm, cancelled
+   at 15 minutes, had reached 6.1e-5 with a drift of 4e-6 and had not entered
+   this phase yet.
+3. **The step cap helps and does not cure.** With dt = 1 the residual reaches
+   4.4e-5 at 12 minutes instead of 20 and the drift is half the uncapped
+   arm's, but it is still twenty times the descent's and it still grows.
+   The line search wanted dt* = 8 on average: the unresolved flat modes.
+4. **The LM shift is the worst member of the family.** Shift 39 (1e-3 of the
+   top of the spectrum) makes MINRES converge in six iterations and the step
+   cost 0.75 s, and leaves the residual at 4e-4, above the descent, because
+   the flat modes stay gradient-like while the line search stretches to twice
+   the Newton length for the resolved ones.
+5. **Cost.** A shift-0 Newton step costs 6 to 17 s (100 to 300 Hessian
+   actions at 0.06 to 0.12 s in mixed precision, the direction warm-started
+   from the previous potential; MINRES converged to 0.1 on about half the
+   steps of the 300-iteration arm and never on the capped one). The
+   Hessian-action count per unit of residual removed is what the $B$-aware
+   preconditioner of 7c would lower.
+
+**Conclusion for the method.** Used as it is, Newton is a floor finder: from
+a descended state it reaches the discretisation floor of the force residual
+in ten minutes where the descent needs hours, and it must stop there (a floor
+test on the residual, which the driver has, or a helicity budget). Used past
+the floor with the explicit induction it reconnects. The two ways to make it a
+relaxation rather than a floor finder are on the time integration, not the
+direction: the midpoint induction (the last arm, running) or substeps along
+the frozen direction, so that a Newton-sized displacement is taken as an ideal
+flow; and on the direction, a preconditioner that resolves the flat modes so
+that fewer, more accurate steps are taken.
+
+## 10b. The potential route against the Leray route
+
+Three arms from the initial field at the anchor's settings (li383 (16,32,32)
+p=2, mixed precision, CFL 0.5, 5000 steps), `outputs/potential_relax/`, jobs
+18033055-57, against the sweep arms of 2026-09-05 (`h16_p2`, `h16_p2_m0`) and
+the mu sweep's order-0 arm (`mu_sweep/g0`, verified to be on the same method:
+its `c0.02` twin reproduces the anchor block for block). Residuals are
+1000-step block means; figure `outputs/newton_second_variation/potential_route.png`.
+
+| arm | route | s/step | blocks 1..5 | energy removed | helicity drift |
+|---|---|---|---|---|---|
+| m=1, gamma=0 | Leray | 0.398 | 3.12e-3 1.24e-3 6.31e-4 6.78e-4 6.27e-4 | | |
+| | potential | 0.318 | 3.12e-3 1.25e-3 6.31e-4 6.79e-4 6.28e-4 | 2.010e-6 | -8.5e-8 |
+| m=0, smoothed | Leray | 0.645 | 1.24e-3 5.78e-4 4.50e-4 3.82e-4 3.37e-4 | 1.633e-6 | |
+| | potential | 0.452 | 1.24e-3 5.78e-4 4.50e-4 3.82e-4 (running) | 1.624e-6 (4500) | |
+| m=1, smoothed | Leray (anchor) | 0.672 | 9.45e-4 4.34e-4 3.32e-4 2.77e-4 2.37e-4 | 1.819e-6 | -4.4e-8 |
+| | potential | 0.451 | 1.23e-3 4.98e-4 3.41e-4 1.59e-4 1.08e-4 | 1.974e-6 | -5.5e-8 |
+
+Three findings.
+
+1. **The routes are the same method.** Without smoothing (m=1, gamma=0) and
+   with smoothing at m=0 the potential arm reproduces the Leray arm's
+   residual to three digits in every block: the curl-curl solve plus the
+   harmonic coefficient is the Leray projection, as section 7b proves, and
+   the smoothing through the potential is the smoothing of the velocity.
+2. **It is cheaper.** 20% per step without smoothing (the k=1 Hodge split
+   against the k=3 saddle solve) and 30% with it (the k=1 shifted solve
+   against the k=2 one on top). The velocity is divergence-free to roundoff
+   by construction.
+3. **The ordering is worth a factor two in the tail.** The only difference
+   left, at m=1 with smoothing, is that the potential route smooths the
+   force and lets L-BFGS combine the smoothed forces (the preconditioned-CG
+   order), while the Leray route combines the raw forces and smooths the
+   combination, which smooths the already smooth history vector a second
+   time. The potential arm ends at 1.08e-4 against the anchor's 2.37e-4 at
+   step 5000, removes 8% more energy, in two thirds of the wall time. The
+   helicity drift is the same to 25%. This is a change the Leray route can
+   adopt on its own (smooth before the recursion); the m=0 identity says the
+   projection route has nothing to do with it.
 
 ## 11. Corrections to the paper's second-variation section
 

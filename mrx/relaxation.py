@@ -520,6 +520,12 @@ class TimeStepper(eqx.Module):
             O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
             the cap and leaves the trajectory untouched.
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
+        smooth_first: On the Leray route, smooth the force and let L-BFGS
+            combine the smoothed forces (the preconditioned-CG order, the
+            potential route's order) instead of combining the raw forces
+            and smoothing the combination, which smooths the already smooth
+            previous step a second time. Off by default (the production
+            order); the potential route always smooths first.
         potential_velocity: Compute the projected force as ``F = curl a +
             c h`` instead of by the Leray saddle solve: ``a`` from the k=1
             Hodge Laplacian solve of ``curl^T load(J x B)`` (the curl-curl
@@ -536,8 +542,12 @@ class TimeStepper(eqx.Module):
         newton: Replace the L-BFGS direction by the Newton direction of the
             second variation, ``u = curl a`` with ``curl^T (H + newton_shift
             M_2) curl a = curl^T M_2 F`` solved by MINRES
-            (:mod:`mrx.hessian`). Needs ``history_size = 0`` and the 2-form
-            ``B`` in the cross products (no auxiliary field). The line
+            (:mod:`mrx.hessian`). Needs ``history_size = 0``. The Hessian
+            reads the 2-form ``B``; the force and the induction follow
+            ``auxiliary_B_field`` and ``scheme`` as usual, so the midpoint
+            scheme with the auxiliary field conserves the helicity exactly
+            along Newton directions too (the explicit step's drift grows with
+            the displacement per step, thirty times the descent's). The line
             search's sign decides: a direction with ``(u, F)_M <= 0`` is
             replaced by the smoothed force of ``velocity_smoothing_order``,
             and ``State.newton_fallback`` says so.
@@ -570,6 +580,7 @@ class TimeStepper(eqx.Module):
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = False
+    smooth_first: bool = False
     newton: bool = False
     newton_shift: float = 0.0
     newton_tol: float = 1e-3
@@ -587,8 +598,6 @@ class TimeStepper(eqx.Module):
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
         if self.newton and self.history_size:
             raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
-        if self.newton and self.auxiliary_B_field:
-            raise ValueError("newton reads the 2-form B in the cross products (no auxiliary field).")
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
             raise ValueError("potential_velocity is the Leray route's replacement on the 2-form B: "
                              "it excludes newton and the auxiliary field.")
@@ -779,7 +788,9 @@ class TimeStepper(eqx.Module):
             # (M F, M u, M dB) whichever method is running -- L-BFGS used to
             # apply it 4m + 6 times.
             MF = seq.apply_mass_matrix(F, 2)
-            Fs, MFs, a = F, MF, state.a
+            Fs = self.smooth_velocity(F) if self.smooth_first else F
+            MFs = seq.apply_mass_matrix(Fs, 2) if self.smooth_first else MF
+            a = state.a
 
         # The secant history exists only for history_size > 0 (a static
         # branch: steepest descent carries (0, n) arrays and never touches
@@ -810,7 +821,7 @@ class TimeStepper(eqx.Module):
             sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
         else:
             u, sy = self._lbfgs_direction(Fs, state.s_history, y_hist, state.Ms_history, My_hist)
-            if not self.potential_velocity:     # the potential route smoothed the force
+            if not (self.potential_velocity or self.smooth_first):   # else the force was smoothed
                 u = self.smooth_velocity(u)
             newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
