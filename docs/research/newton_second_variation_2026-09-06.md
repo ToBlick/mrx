@@ -644,6 +644,42 @@ criterion, the residual in the preconditioner's norm, is what made the
 counts of the earlier probes incomparable across preconditioners; the
 direction-quality columns were the comparable ones throughout.
 
+**The curves to 4000 iterations (job 18070181, `curve_probe_long.log`, same
+state, float64, 0.12 s per iteration; Tobias: "what would happen if we
+allocate more MINRES iterations?"):**
+
+| iterations | atom: mass-atom norm | atom: $\Delta E^*$ | sandwich: mass-atom norm | sandwich: $\Delta E^*$ |
+|---|---|---|---|---|
+| 300 | 0.34 | 9.2e-9 | 0.36 | 6.6e-8 |
+| 600 | 0.22 | 1.6e-8 | 0.29 | 9.8e-8 |
+| 1000 | 0.16 | 2.7e-8 | 0.16 | 1.05e-7 |
+| 2000 | 0.11 | 5.0e-8 | 0.11 | 1.09e-7 |
+| 4000 | 0.075 | 9.4e-8 | 0.090 | 1.12e-7 |
+
+1. **The exact Newton decrement at this state is 1.13e-7.** The sandwich's
+   $\Delta E^*$ saturates there (93% at 1000 iterations, 99% at 4000); the
+   Laplacian atom has 8% of it at 300 and 83% at 4000, still climbing. So
+   with the sandwich the exact Newton direction is within reach at about
+   1000 iterations (two minutes per step in float64 at (16,32,32)); with the
+   Laplacian atom it is not at any affordable budget.
+2. **The residual norms say nothing of this.** In the mass-atom norm both
+   preconditioners follow the same power law, roughly $N^{-1/2}$ (0.34 at 300,
+   0.075-0.09 at 4000), and the sandwich still stands at 0.09 when its
+   direction carries 99% of the decrement: that norm is the stiff modes, which
+   carry no energy. The exponential rate guessed from the 25-300 window
+   (halving per 275 iterations) does not hold; the decay is algebraic.
+3. **Scale of the decrement.** The Newton arms remove 1.43e-7 from step 5000 to
+   the floor in total; one exact Newton step from the step-5000 state removes
+   1.13e-7 of that. An exact step would reach the floor in a handful of steps;
+   the Laplacian-atom arm at 8% per step needs the observed 35-40; the
+   sandwich arm at 58% per step should need a few, if its truncated iterate
+   is a descent direction (16% fallbacks at 32^3, see 10e).
+4. **More iterations, then:** with the Laplacian atom, cost-neutral to the floor
+   (measured: 100 vs 300 iterations, 118 vs 37 steps, 12.7 vs 10.3 minutes),
+   because the energy per direction grows about linearly with the budget while
+   the cost does too; with the sandwich, 600-1000 iterations buy the whole
+   decrement and anything beyond is waste; the floor itself moves with neither.
+
 **The sandwich in a relaxation** (Tobias: "diverged pretty early"): its 16-cell
 arm did not diverge, it reconnected faster than the Laplacian-atom arm (10d):
 a better direction resolves the flat modes sooner. The consistent test is
