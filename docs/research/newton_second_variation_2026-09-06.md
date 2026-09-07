@@ -455,12 +455,18 @@ What the arms say.
    removal accelerates (7e-7 per hour against the continuation's 6e-8), the
    helicity drifts linearly (2e-5 to 4e-5 relative, twenty to forty times the
    continuation's), and the residual climbs back to and above its start.
-   That is numerical reconnection: forward Euler leaves the ideal flow at
-   second order in the displacement per step, and a Newton step displaces the
-   field thirty times further than a descent step. The line search sees the
-   energy and not the topology; at the floor the direction is driven by the
-   discretisation remainder of the force, and the energy it finds to remove
-   is the energy that reconnection releases. The 100-iteration arm, cancelled
+   That is numerical reconnection, and it is not a matter of large steps: the
+   CFL cap held in every arm (it never bound), no step moved the field more
+   than half a cell. Forward Euler's topology error per step is second order
+   in that step's displacement $d$, so over a run it accumulates as
+   $\sum d_i^2$; the descent covers the path to the tail in 5000 steps of
+   about 1/60 of a cell, Newton in 300 steps of 0.3-0.5 cells, a comparable
+   path in thirty times longer steps, and $5000 (1/60)^2 \approx 1.4$ against
+   $300 \cdot 0.3^2 \approx 27$ is the measured drift ratio of 20-40. The cap
+   bounds each step; the error is the step length integrated along the path,
+   and Newton spends its path in the fewest, longest legal steps. Once the
+   accumulated error is a small reconnection, the direction finds the energy
+   that reconnection releases and the line search takes it. The 100-iteration arm, cancelled
    at 15 minutes, had reached 6.1e-5 with a drift of 4e-6 and had not entered
    this phase yet.
 3. **The step cap helps and does not cure.** With dt = 1 the residual reaches
@@ -485,10 +491,52 @@ in ten minutes where the descent needs hours, and it must stop there (a floor
 test on the residual, which the driver has, or a helicity budget). Used past
 the floor with the explicit induction it reconnects. The two ways to make it a
 relaxation rather than a floor finder are on the time integration, not the
-direction: the midpoint induction (the last arm, running) or substeps along
-the frozen direction, so that a Newton-sized displacement is taken as an ideal
-flow; and on the direction, a preconditioner that resolves the flat modes so
-that fewer, more accurate steps are taken.
+direction: the midpoint induction (the last arm), or substeps along the frozen
+direction (one direction, ten induction steps of a tenth of the length at one
+k=1 solve each: the same path at a tenth of the summed square, for the price
+of ten cheap solves instead of ten Newton directions); and on the direction, a
+preconditioner that resolves the flat modes so that fewer, more accurate
+steps are taken. A run from the initial field would be cap-bound step by step
+too; its cost is the whole relaxation's path instead of the tail's, at the
+same error per unit path, so it needs one of the two fixes first.
+
+## 10c. What happens once the force is small: why the descent slows and what the floor is
+
+1. **The descent's step is set by the flat modes.** The anchor's line search takes
+   $\Delta t^* \approx 2.4$ throughout the tail. For a quadratic energy the exact
+   line-search step is the inverse curvature along the direction, so the force it
+   descends along has curvature about 0.4 in the velocity metric: the bottom of
+   the measured spectrum (0.12, 1.7, 4.6, ...). By step 5000 the force lives in
+   the flattest modes, the ones with $\iota m + n \approx 0$.
+2. **A step of that size over-relaxes everything stiff.** With $\Delta t \approx 2.4$
+   every mode with curvature above 1 is stepped past its minimum, the stiffest
+   by $\Delta t \lambda \sim 10^5$. The exact line search keeps the energy from
+   rising, so this is stable, but each flat-mode step kicks the stiff modes, and
+   the residual norm, which the stiff modes dominate, records the kick and not
+   the progress. Hence the non-monotone residual, the energy rising on half the
+   steps in the tail, and the slow power law of the residual while the energy
+   keeps falling: the descent zigzags, memoryless BFGS damps the zigzag without
+   removing it, and the residual measures the zigzag.
+3. **Newton removes the zigzag and exposes the real floor.** Solving the stiff
+   modes exactly, it reaches a squared residual of 2.3-4.6e-9 in every shift-0
+   arm, whatever the iteration budget or the cap, and cannot go lower. That
+   common value is a floor of the problem, not of the direction. Two candidates,
+   which the data cannot yet separate: the discretisation, since the ideal
+   minimum at fixed topology carries current sheets at the rational surfaces
+   that the mesh cannot represent, leaving a force of the sheet's truncation
+   error; or the solve tolerance, since at 1e-8 the force's gradient-part
+   remnant equals the descent at a residual of about 3e-5 (the
+   $0.1\,\mathrm{tol}/\mathrm{resid}^2$ law of the velocity-Leray A/B), which is
+   where Newton bottoms out. One float64 Newton arm at tolerance 1e-10 from the
+   same state decides it: a floor an order of magnitude lower means the
+   tolerance, the same floor means the sheets. Not run (budget).
+4. **Past the floor the force is remainder, and Newton amplifies remainder.** The
+   direction is the inverse Hessian applied to the force; once the force is
+   noise, the direction is noise scaled by the inverse of the smallest
+   curvatures, i.e. concentrated in the flat modes, which are the motions of
+   rational surfaces. The descent applies $\Delta t$ times the same noise and
+   moves nothing; Newton moves up to half a cell per step along it, and the
+   explicit induction turns that into the reconnection of section 10.
 
 ## 10b. The potential route against the Leray route
 
@@ -519,6 +567,16 @@ Three findings.
    against the k=3 saddle solve) and 30% with it (the k=1 shifted solve
    against the k=2 one on top). The velocity is divergence-free to roundoff
    by construction.
+3b. **Confirmed on the Leray route** (`--smooth-first true`, job 18037645,
+   `outputs/potential_relax/leray_m1_sf`): the saddle-point route with the
+   potential route's order ends at a squared residual of 2.08e-8 (blocks
+   1.23e-3, 5.49e-4, 3.34e-4, 2.40e-4, 1.43e-4 in the residual) against the
+   anchor's 5.72e-8 and the potential arm's 1.18e-8, with the potential arm's
+   energy removed (1.97e-6) and helicity drift (-1.14e-5) to the digit, at
+   the anchor's 0.64 s/step. The ordering accounts for the bulk of the gain;
+   the remaining 2.08 against 1.18 is within the scatter of single m=1
+   trajectories (their block means swing by tens of percent). Making the PCG
+   order the production default is a one-line change on either route.
 3. **The ordering is worth a factor two in the tail.** The only difference
    left, at m=1 with smoothing, is that the potential route smooths the
    force and lets L-BFGS combine the smoothed forces (the preconditioned-CG
