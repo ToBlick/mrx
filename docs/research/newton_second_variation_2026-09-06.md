@@ -580,7 +580,7 @@ helicity drift is relative. Figure `outputs/newton_second_variation/newton_tail.
 | shift 0, 300 it, dt capped at 1 | 220 | 16.6 | 6.5e-7 | 5.5e-5 / 4.4e-5 / 9.7e-5 | +2.4e-5 | 1.0 |
 | the same, midpoint induction on B: the Picard iteration halves dt four times to 1/16 and stays unconverged (sweep limit) on every step, so this is Newton at dt = 1/16 | 220 | 17.6 | 1.7e-7 | 2.2e-4 / 5.8e-5 / 1.2e-4 | -5.9e-6 | 0.03-0.06 |
 | the same, float64, tol 1e-10 (is the floor the tolerance?) | 200 | 29.5 | 7.8e-7 | 2.3e-4 / 4.2e-5 / 1.3e-4 | +3.1e-5 | 1.0 |
-| the same, midpoint induction, float64 (does the Picard iteration converge at the full step?) | *(running)* | | | | | |
+| the same, midpoint induction, float64 (Picard converged, 5 sweeps, defect 3e-15) | 200 | 29.7 | 7.9e-7 | 2.3e-4 / 4.2e-5 / 1.2e-4 | +3.1e-5 | 1.0 |
 
 (The dt = 1/16 arm's 17.6 s/step is 16.6 s of Newton direction plus the 101
 failed Picard evaluations, so it paid a full direction for a sixteenth of a
@@ -686,9 +686,11 @@ same error per unit path, so it needs one of the two fixes first.
    error; or the solve tolerance, since at 1e-8 the force's gradient-part
    remnant equals the descent at a residual of about 3e-5 (the
    $0.1\,\mathrm{tol}/\mathrm{resid}^2$ law of the velocity-Leray A/B), which is
-   where Newton bottoms out. One float64 Newton arm at tolerance 1e-10 from the
-   same state decides it: a floor an order of magnitude lower means the
-   tolerance, the same floor means the sheets. Not run (budget).
+   where Newton bottoms out. Decided 2026-09-07: the float64 arm at tolerance 1e-10
+   reproduced the mixed floor to the digit (squared 2.03e-9 vs 2.34e-9): the
+   sheets, not the tolerance. The refined-mesh anchors (32^3, and (16,32,32)
+   refined around the 3/5 and the 1/2, 6/11, 3/5 surfaces) test whether the
+   floor drops with radial resolution at the surfaces.
 4. **Past the floor the force is remainder, and Newton amplifies remainder.** The
    direction is the inverse Hessian applied to the force; once the force is
    noise, the direction is noise scaled by the inverse of the smallest
