@@ -615,6 +615,35 @@ hands to the shift. The preconditioner chapter closes here: the sandwich is
 the best available (6-8x the Laplacian atom per iteration), and nothing
 cheaper than field-aligned angles or the dense-in-r block improves on it.
 
+**Convergence curves in fixed norms (job 18068950, `curve_probe.log`; the
+true residual $\|rhs - K a\|$ of the true system relative to the right-hand
+side, 2-norm and k=1 mass-atom norm, and $\Delta E^*$, after 25..300 MINRES
+iterations):**
+
+| preconditioner, 300 it | 2-norm | mass-atom norm | $\Delta E^*$ |
+|---|---|---|---|
+| Laplacian atom | 0.52 | 0.34 | 9.2e-9 |
+| harmonic sandwich | 0.71 | 0.36 | 6.6e-8 |
+| factored, $\epsilon$ = 0.1 | 0.61 | 0.39 | 6.7e-9 |
+| factored, $\epsilon$ = 0.01 | 0.78 | 0.53 | 4.2e-9 |
+
+No preconditioner converges the Newton system in any fixed norm in 300
+iterations (a factor 1.3-3 on the residual); the sandwich's true residual is
+the LARGEST in the 2-norm at every count while its direction removes 7x the
+energy: residual norms are dominated by the stiff modes, energy removal by the
+flat ones, and the preconditioners differ in which modes they resolve first,
+not in how far they get. The factored one is worse than the Laplacian atom in
+every measure on the true system: a genuine negative (transposes exact,
+symmetry 5e-16). Consequences for the code: the Newton solve is a truncated
+solve by design, with the iteration budget as the knob; its stopping test now
+follows the house criterion (`refine` as the outer loop, the true residual
+in the mass-atom norm of the dual 1-forms on the residual view), one pass --
+a second pass would only double the cost (Tobias 2026-09-07: the Laplacian
+solves measure in the mass norm, the Hessian solve did not). MINRES's own
+criterion, the residual in the preconditioner's norm, is what made the
+counts of the earlier probes incomparable across preconditioners; the
+direction-quality columns were the comparable ones throughout.
+
 **The sandwich in a relaxation** (Tobias: "diverged pretty early"): its 16-cell
 arm did not diverge, it reconnected faster than the Laplacian-atom arm (10d):
 a better direction resolves the flat modes sooner. The consistent test is
