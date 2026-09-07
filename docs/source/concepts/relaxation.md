@@ -17,11 +17,16 @@ returns `(F, p, J, X, JxX)`:
    k=1 mass solve (`apply_projection_matrix`, `apply_inverse_mass_matrix`),
    the auxiliary variable of the helicity-conserving scheme below.
 3. `JxX = M_2^{-1} cross_product_load(J, X, ...)`: a k=2 mass solve.
-4. `F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess)`: removes
-   the gradient part with one k=3 Hodge solve; `p` is the pressure.
+4. `F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess,
+   sigma_guess=sigma_guess)`: removes the gradient part with one k=3 Hodge
+   solve; `p` is the pressure. The solve is the saddle MINRES in `(p,
+   sigma)` and its lower unknown `sigma = M_2^{-1} D_2^T p` IS the gradient
+   part, so `F = JxX - sigma` costs no further mass solve.
 
 `F` is the Riesz representative of `-∇E` in the `M_2` inner product. Every
-solve is warm-started from the previous step's value.
+solve is warm-started from the previous step's value: `J`, `H`, `JxX`, `p`,
+and `sigma` as the previous `JxX - F` (a warm start on `p` alone leaves
+`D^T p` in the initial residual's lower block, so the two go together).
 
 ## 2. The step
 
@@ -45,14 +50,23 @@ chunks (section 2a).
      is the velocity: `s = dt · u`, `y = F_prev - F`.
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
    `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
-   smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0.
-4. `u, p_v = seq.apply_leray_projection(u, k=2)`: the flow is
-   incompressible.
-5. `E = M_1^{-1} cross_product_load(u, X, ...)`: the ideal electric
+   smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0. The
+   default scale is `SMOOTHING_C / n_r^2 = 0.02 / n_r^2`: the two-cell
+   mode damped by 1/1.2, nothing resolved touched; swept 2026-09-05 at
+   (16,32,32) p=2 (flat optimum 0.02-0.064 per step, 0.02 cheapest per
+   second, the helicity drift independent of the scale).
+   The flow is incompressible without a projection of its own: the
+   force is Leray-projected, the L-BFGS direction combines projected
+   forces and their steps, and the smoothing commutes with the
+   divergence. A second Leray projection of the velocity was measured to
+   change nothing in float64 and in mixed precision and to cost 1.5-4x
+   the step (`docs/research/velocity_leray_ab_2026-09-04.md`); until
+   2026-09-05 it was step 4.
+4. `E = M_1^{-1} cross_product_load(u, X, ...)`: the ideal electric
    field, one k=1 mass solve (`X` as in section 1).
-6. `dB = seq.apply_incidence_matrix(E, 1)`: the topological curl, so
+5. `dB = seq.apply_incidence_matrix(E, 1)`: the topological curl, so
    `div B` is conserved to `1e-16` along the trajectory.
-7. `dt_star = F·Mu / ||dB||²_M`, the minimiser of the energy along the
+6. `dt_star = F·Mu / ||dB||²_M`, the minimiser of the energy along the
    direction and the largest step that still lowers `E` (the analytic line
    search). Then the CFL cap, `dt = min(dt_star, cfl / cfl_max)`:
    `cfl_max = max_{q,i} |u_ref^i(x_q)| / (J(x_q) h_i)` is the largest
@@ -65,7 +79,7 @@ chunks (section 2a).
    raise the energy, but a large `dt_star` leaves the ideal-induction flow
    (frozen-in topology violated at `O(dt²)`) and diverges when `||dB||`
    collapses. `state.dt_star` and `state.cfl_max` record the cap's activity.
-8. `B_{n+1} = B_n + dt · dB`.
+7. `B_{n+1} = B_n + dt · dB`.
 
 `M_2` is applied three times per step (`M F`, `M u`, `M dB`) whatever the
 history. With the line search `dE/dt <= 0` is a guarantee: the step is the
@@ -164,15 +178,15 @@ the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
 Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `E`, without the auxiliary field).
 
-`State` holds `B_n`, the warm-start guesses (`p`, `p_v`, `H`, `JxH`, `E`,
-`A`), `F_prev`, `MF_prev`, the four history arrays, `dt`, `dt_star`,
-`cfl_max`, `eta`, `resistive_info`, `resistive_delta`, `resistive_count`,
-`resistive_time`, `F_norm`, `v_norm`, `lbfgs_sy`, `picard_iterations`,
-`picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
+`State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
+`H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`, the four history arrays,
+`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`, `lbfgs_sy`,
+`picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first secant and CG coefficient see a true
 previous gradient. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
-once per chunk (`make_sampler`: helicity, the two pressures, beta), applies
+once per chunk (`make_sampler`: the energy of the stored field in the
+residual precision, helicity, the two pressures, beta), applies
 the floor, wall-budget and reconnection rules and returns a `RelaxResult`
 (the state, the per-step trace, the per-chunk samples, the reconnection
 records); `write_checkpoint` / `read_checkpoint` store and restore a state.
@@ -269,10 +283,9 @@ energy, not fluxes, `ι`, or helicity.
 | `make_profiles(iota0, iota1, iota_exp, flux_exp)` | `ι = ι₀ + (ι₁-ι₀) ρ^e`, `Φ' = ρ^q` |
 | `make_lambda(modes)` | `λ` from `[(m, n, amp), ...]` |
 | `analytic_profile_form(iota, dPhi, dlam)` | the reference 2-form above; the initial condition of an analytic geometry file, whose `profile` block supplies the numbers |
-| `clebsch_form(cb)` | the same pointwise 2-form from an equilibrium file's `dPhi_dr`, `dchi_dr`, `LA` (`load_clebsch(path)` in `mrx/gvec.py`: a GVEC state or a VMEC wout, profiles and lambda in closed form) -- the reference the tests check the potential route against; not the production IC |
 | `clebsch_potential_form(cb)`, `potential_two_form(seq, A_ref)` | the reference 1-form `A' = (-LA dPhi_dr, 2π Φ, -(2π/nfp) χ)` (the GVEC potential with the gauge term `d(Φ LA)` dropped; `Φ`, `χ` integrated from the profiles) histopolated on the FREE 1-form space -- its wall trace `2π Φ_edge` is the toroidal flux, the Dirichlet harmonic content -- and `B = dA'` by the exact incidence curl into the Dirichlet 2-form space: `div B = 0` to round-off, no Leray step, and no derivative of the sampled `LA` is ever taken (the discrete `d` differentiates), so a coarse export cannot inject grid-scale current through its interpolant; the initial condition of every equilibrium file |
 | `project_reference_two_form(seq, omega_ref)` | pushes forward `B = DF ω / J` and L²-projects onto the Dirichlet k=2 space |
-| `leray_clean(seq, B)`, `divergence_norm(seq, B)` | remove and measure the projection's divergence |
+| `leray_clean(seq, B)`, `compute_divergence_norm(B, seq)` (`mrx.relaxation`) | remove and measure the projection's divergence |
 
 Units from a GVEC file: `Φ' = 2π dPhi_dr`, `ι = dchi_dr / (nfp · dPhi_dr)`,
 `λ = LA / 2π`, because MRX's `ζ` spans one field period and the file's
@@ -287,7 +300,12 @@ a VMEC wout (`.nc`) (`build_gvec_map` in `mrx/gvec.py`), or of an analytic
 geometry file (`.json`, `read_analytic`: a map of `mrx/mappings.py`,
 `torus`, `cylinder` or `rot-ellipse`, with its parameters and the profiles
 of the analytic initial condition; `data/torus.json` and its siblings are
-the shipped ones). Anything else raises. `nfp` overrides an equilibrium
+the shipped ones). Anything else raises. The file is parsed once and kept
+on the sequence as `seq.equilibrium` (the state dict of
+`read_equilibrium`, with `kind`, or the analytic file's dict), which
+`initial_field(seq, seed)` and `load_clebsch(seq.equilibrium)` read; a
+VMEC wout's refit into the GVEC blocks is therefore done once per run.
+`nfp` overrides an equilibrium
 file's value for a file that declares it wrong. `geometry_kind(geometry)`
 returns `vmec`, `gvec` or the map's name, `geometry_nfp(geometry, nfp)` the
 field periods. `build_gvec_map`
@@ -311,20 +329,21 @@ method per run. Flags, defaults in brackets:
 | `--nfp N [file value]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--r-refine a:b:m,... [""]` | radial refinement windows, `m` uniform cells in each `[a, b]` (`radial_knots`) |
-| `--solve-maxiter N [2000]`, `--solve-tol TOL [sqrt(eps)]` | budget and tolerance of every inner solve |
+| `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`precision.md`) |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |
 | `--history M [1]` | L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG) |
-| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.0]` | `v = (I - MU L)^{-G} F` |
+| `--velocity-smoothing-order G [0]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | `v = (I - MU L)^{-G} F` |
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_relax.py --fields snapshots`, which traces every stored step at the chosen plane and writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--steps N [3000]`, `--seconds S [none]` | outer guards |
-| `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
+| `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it; below a residual of `sqrt(solve tol)` the force's gradient-part remnant is more than a tenth of the descent (0.1 tol / resid², `precision.md`); `relax` prints that residual at the start |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |
+| `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 = one `vmap` over all points; needed at (64,128,128) |
 
 The initial condition is always Leray-projected. The run stops when the
 mean over the last `W` steps of the relative force residual
@@ -333,12 +352,14 @@ mean over the last `W` steps of the relative force residual
 monotone, so the window mean is the quantity, never the last value.
 Calibration: on the W7-X Clebsch run at `(8,16,8)`, `p = 3`, float64, the
 residual reaches `1.7e-3` at step 500 and floors around `1e-3` by step
-1000-3000. In float32 the residual floors at the solve-tolerance level
-(`~2e-3` at tol `1e-5`), so a `--floor-tol` below that never fires.
+1000-3000. A float32 run's solves are refined against a float64 residual
+(`precision.md`), so its floor is no longer the solve tolerance (until
+2026-09-04 it was, `~2e-3` at tol `1e-5`).
 
-Output: `relax.json` with the parameters, the per-step trace (`E`, `F`,
-`resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `eta`, `res_it`,
-`res_delta`, `dE_meas`, `dE_pred`), the sampled quantities of interest
+Output: `relax.json` with the parameters, the per-step trace (`dE` the
+exact energy change of the step, `dE_ls` the line search's prediction,
+`F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`,
+`picard_resid`), the sampled quantities of interest
 `qoi` (`it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB`, and the
 pressure diagnostics of section 3: `gradp_cmp`, `p_cmp`, `weak_resid`,
 `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`), the initial field's

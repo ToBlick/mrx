@@ -49,7 +49,11 @@ shifted solve `(M_k + eps S_k)` its shifted-stiffness form
 (`shifted_stiffness_apply`), and a saddle solve (`k >= 1` shifted, and
 `k = 3`) the Laplacian atom of level `k` on the upper block with the mass
 atom of level `k - 1` on the lower block, block-diagonal, never coupled
-through a Schur complement. A missing atom raises at the solve; nothing is
+through a Schur complement; the harmonic forms are deflated from the upper
+block only, since a harmonic `v` has `D^T v = 0` and the saddle matrix's
+nullspace is `(v, 0)`. The saddle solve returns its lower unknown too
+(`apply_inverse_laplacian_saddle`), the weak codifferential of the
+solution, which the Leray projection uses as its gradient part. A missing atom raises at the solve; nothing is
 built on demand and nothing is substituted. (Until 2026-09-04 the same
 mechanism was spread over kind strings, three spec dataclasses and a probed
 Jacobi option that nothing used.)
@@ -82,10 +86,22 @@ pointwise divide per apply (`_fd_apply_3d`). Cost per apply is
 
 **Core.** The polar rows, where the extraction fuses a ring of raw functions,
 are not tensor-product functions. `core_rows` lists them; `probe_core_block`
-forms `L_k` on those rows by one operator apply per row;
+forms `L_k` on those rows by one operator apply per row, on the
+residual-precision sequence (the float64 view in a float32 process);
 `_dense_symmetric_inverse` inverts the block on device by `eigh`, dropping
-eigenvalues below `CORE_TOL` relative to the largest. Bulk and core are
-applied independently; they are not coupled through a Schur complement.
+eigenvalues below `CORE_TOL` relative to the largest, 4096 machine epsilons
+of the residual precision (1e-12). Probed in float32 the same cut-off was
+5e-4 and zeroed real modes of the k=1 core on li383 (12,24,24) p=3: a
+singular preconditioner, whose norm is blind to the residual on those
+modes, so the CG reported convergence at 1e-8 with a true residual of
+2e-6 (2026-09-05). The shifted-stiffness
+form of the atom needs `(M_k + eps S_k)^{-1}` on the same rows for an `eps`
+known only at the solve: the pair `(M_k, S_k)` on the core is diagonalised
+once at build (`_simultaneous_diagonalize_pair`, `V^T M V = I`, `V^T S V =
+diag(mu)`) and the block is `V diag(1 / (1 + eps mu)) V^T`, two small
+matmuls per solve (until 2026-09-04 an `eigh` of `M + eps S` per solve,
+twice per relaxation step inside the scan). Bulk and core are applied
+independently; they are not coupled through a Schur complement.
 
 **Natural boundary term.** Under a free condition at `r = 1` the weak block's
 integration by parts leaves a surface term `alpha (e e^T) ⊗ M_t ⊗ M_z` with
@@ -145,8 +161,10 @@ Requirement: `n_r >= p + 2`; a one-element radial mesh has no separable atom.
 Same file, same shape, simpler algebra: a mass is a single Kronecker product,
 so the bulk inverse is three 1D dense solves with no fast diagonalisation
 (`_kron_mass_model_1d`, `_apply_mass_payload`). The polar core is probed
-with `apply_mass_matrix` and inverted densely; there is no pseudoinverse of
-the extraction anywhere. Built by `assemble_mass_metric_lumping_preconditioner`
+with `apply_mass_matrix` on the residual-precision sequence and inverted
+densely; there is no pseudoinverse of the extraction anywhere. `apply_in(dtype)`
+is the atom as part of an operator of that precision (the hat Laplacian's
+weak term, the approximate Laplacian the Laplacian cores are probed with). Built by `assemble_mass_metric_lumping_preconditioner`
 (inside `build_preconditioners`) and stored on `operators.mass_lumping`,
 keyed `(k, dirichlet)`; nothing builds one on first use.
 
@@ -175,7 +193,7 @@ epsilon (`mrx.eps`), so they scale with `MRX_DTYPE` (see
 
 | constant | value | gates |
 |---|---|---|
-| `CORE_TOL` | `eps(4096)` | eigenvalues of the probed core treated as zero |
+| `CORE_TOL` | 4096 eps of the residual dtype | eigenvalues of the probed core treated as zero |
 | `PSEUDOINVERSE_TOL` | `eps(2^25)` | singular-value floor in `_symmetric_pseudoinverse` |
 | `PROJECTOR_SVD_TOL` | `eps(2^19)` | rank cut of the extraction projector |
 | `PROJECTOR_PLANE_TOL` | `eps(2^22)` | per-zeta-plane block equality |
