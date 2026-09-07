@@ -724,10 +724,17 @@ smaller drift (a half at a fourteenth of the path) is consistent with a
 per-step leak set by the direction's grid-scale content rather than by the
 step.
 
-Consequences: (i) the exact fix is the auxiliary-field formulation,
-$E^T M_1 H = 0$ for any $u$, which needs its own anchor (the $J \times H$
-force has its own fixed point, 3.4e-3 away from the $J \times B$ state):
-auxiliary descent, then harmonic Newton with the auxiliary midpoint; (ii) the
+Consequences: (i) the auxiliary-field formulation, $E^T M_1 H = 0$ for any
+$u$, is exact but not consistent for our fields (Tobias 2026-09-07): the
+identity needs $H$ in the Dirichlet space of $E$, i.e. $H \times n = 0$,
+while the state has $|B| \sim 1$ tangential at the wall, so the proxy
+$H = M_1^{-1} P B$ differs from $B$ by order one in a one-cell wall layer
+($h^{1/2}$ in $L^2$), the force $J \times H$ has a different fixed point
+(the 3.4e-3 residual of the auxiliary arm at the $J \times B$ state is
+that layer), and a natural $H$ leaks through the same wall DoFs (midpoint
+session). Not the remedy for the Newton leak; kept for fields with
+$B \times n = 0$. The remedy is resolution: at 32 radial cells the leak is
+the descent's own drift (10e); (ii) the
 cheap fix is not to excite those modes: smooth the Newton direction with
 $(M + \mu L)^{-1} M$ before stepping (one line), or a Levenberg-Marquardt
 shift in the $H^1$ metric inside the solve; (iii) the residual floor of
@@ -878,6 +885,11 @@ explicit step (the arms) < sixteen explicit substeps ~ one implicit full step
 (the latter helicity-exact) < many implicit substeps. In code: replace the
 Picard loop of the midpoint solve by a normal-equations CG on the same
 increment map. Not now.
+
+**The auxiliary-field pair is off the plan** (the $H \times n = 0$ inconsistency
+above); the plan for exact-enough helicity along Newton paths is radial
+resolution at the surfaces, 10e, with the (32,32,32) continuation (job
+18062278, three hours) as the number behind it.
 
 **Newton in its own file.** `mrx/hessian.py` -> `mrx/newton.py`: the second
 variation, the direction solve, a small config (shift, tol, maxiter, precond,
