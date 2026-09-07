@@ -551,6 +551,76 @@ first-derivative term). Net: the model is right, its flat directions are wave
 packets in these angles, and the mode-diagonal constructions can at best get
 the stiff end right.
 
+**The coarse space, measured (job 18065847, `coarse_probe.log`).** Tobias:
+"we can afford to compute the stiff (harmonic) modes at the start of the run
+once". Preconditioned Lanczos (250 steps, 51 s) on the sandwich-preconditioned
+model $P_h A_h$: $\theta \in [7.4\text{e-}5, 7.9\text{e}3]$, 3 Ritz values below
+0.1, 8 below 0.5, 234 above 2. Adding the $k$ lowest Ritz pairs as a coarse
+space, $P = P_h + W \mathrm{diag}(1/\theta) W^T$: MINRES to 0.1 on the true system
+269 / 266 / 266 / 264 iterations for $k$ = 0 / 10 / 30 / 100, direction quality
+unchanged. The flat packets are three modes and cost nothing; the spread is at
+the STIFF end -- the sandwich mis-scales the stiff modes by up to 3 orders
+(bulk spread 4e3, against 7e4 for the Laplacian atom on the same model), i.e.
+the commutation failures and the metric bookkeeping, not the resonances. A
+coarse space is the wrong fix; the symbol variants (bundled weights, half
+power) are the last cheap probe (job 18066512).
+
+**Symbol variants, measured (job 18066512, `symbol_probe.log`; Lanczos of the
+preconditioned model, spread = max / 10th Ritz value; MINRES to 0.1 on the true
+system):** Laplacian atom spread 1.1e3, 300 (not reached); current sandwich
+(averages, power 1) 2.1e3, 269; bundled weights power 1: 9.6e3, 300; averages
+power 1/2: 1.1e3, 300; bundled 1/2: 1.1e3, 300; bundled 3/4: 1.2e3, 300. No
+symbol or power beats the current one, and the whole "scaling in the angles
+around the Laplacian atom" family sits at a bulk spread of 1e3-1e4: the
+stiff-end mismatch is the commutation, not the averaging or the metric. Family
+closed.
+
+**The factored preconditioner (Tobias 2026-09-07: "apply the Laplacian twice
+and figure out h").** The Gauss-Newton operator factors exactly,
+$K = C^T X^T S_1 X C$ ($C$ = curl, $X: u \mapsto M_1^{-1} \mathrm{load}(u \times h)$,
+$S_1 = \mathrm{curl}^T M_2 \mathrm{curl}$ on the 1-forms), so
+$P = C^+ X^+ S_1^+ (X^+)^T (C^+)^T + \epsilon P_L$ with $S_1^+ = P_L$ (the k=1
+Laplacian atom), $C^+ = P_L \mathrm{curl}^T M_2$, $X^+ E = M^{atom}_2 \mathrm{load}_2(h \times E / |h|^2)$
+(pointwise, no averaging; $h$ or $B$ itself), $(X^+)^T y = \mathrm{load}_1((v \times h)/|h|^2)$
+with $v = M^{atom}_2 y$; $\epsilon P_L$ for the kernel of $X$ (flows along $h$).
+Three atoms, two mass atoms, two loads, no solve, no commutation assumption,
+no coordinates. Probe: job 18066978 (`factored_probe.log`), Lanczos spread and
+MINRES counts, $X$ from $h$ and from $B$, $\epsilon$ = 1e-2 / 1e-4.
+
+**Factored, measured (jobs 18066978, 18067686; `factored_probe*.log`).** Raw:
+at $\epsilon$ = 1e-2 the shift swallows the factored part (= the Laplacian atom);
+at 1e-4 the spread of the preconditioned model is 3.7e2, MINRES reaches 0.1
+in 243-246 iterations (best count of the study), but the direction removes
+1.2e-8 (the Laplacian atom's, not the sandwich's 6.9e-8). Normalised (factored
+part scaled to the atom on a random vector, $s \approx 1.1\text{e}3$), spread
+and energy of the direction at fixed budgets:
+
+| preconditioner | spread max/10th | $\Delta E^*$ at 100 it | at 300 it |
+|---|---|---|---|
+| Laplacian atom | 5.9e2 | 3.2e-9 | 1.07e-8 |
+| harmonic sandwich | 1.2e3 | 2.5e-8 | 7.6e-8 |
+| factored ($h$ or $B$), $\epsilon$ = 0.1 | 2.0e2 | 2.6e-9 | 7.6e-9 |
+| factored, $\epsilon$ = 1e-2, 1e-3, 0 | 1.0e2 | 2.0e-9 | 3.7-4.6e-9 |
+
+The best spread of the study on the model and the worst directions on the
+true system, $h$ or $B$, any $\epsilon$. Either the true operator's difference
+from the Gauss-Newton model (the parallel flows, the cross terms) is where the
+energy lives, or the transposes are not exact and $P$ is not symmetric (then
+MINRES converges in a meaningless norm). Symmetry check (job 18068767): asymmetry 5e-16 for the factored part, 2e-15
+for the X+ transpose pair, 5e-14 / 5e-15 for the atoms -- the transposes are
+exact, the result is a property. The energy-removing directions live in what
+the true operator has and the model's inverse does not weigh: the nearly
+parallel flows and the cross terms, the subspace the factored construction
+hands to the shift. The preconditioner chapter closes here: the sandwich is
+the best available (6-8x the Laplacian atom per iteration), and nothing
+cheaper than field-aligned angles or the dense-in-r block improves on it.
+
+**The sandwich in a relaxation** (Tobias: "diverged pretty early"): its 16-cell
+arm did not diverge, it reconnected faster than the Laplacian-atom arm (10d):
+a better direction resolves the flat modes sooner. The consistent test is
+(32,32,32), where the Laplacian-atom arm ran an hour without a leak: job
+18067197 (`anchor32_newton_harm`).
+
 **Why the sandwich falls short of the model, and the fix (Tobias 2026-09-07).**
 The model was validated on Ritz vectors (condition 13); the sandwich is not
 its inverse: (i) the symbol $(a(r) m + b(r) n)^2$ passes through zero on each
@@ -952,6 +1022,12 @@ Readings.
    everywhere the radial resolution is 16, which is what a uniform 32 fixes.
    Whether a window set that follows more surfaces, or a $p = 3$ radial
    basis, does the same at lower cost is the sweep this leaves open.
+2b. **The descents continued for the same wall time** (jobs 18063291/98;
+   the (32,32,32) one, four hours, still running): 3/5-refined, 3500 more steps
+   in the hour, last-chunk residual 6.4e-4 (squared 4.1e-7) against its Newton
+   arm's floor 5.6e-9, helicity -1.0e-6; three-window, 3000 steps, 6.3e-4
+   (squared 4.0e-7) against 4.5e-9, helicity -8.4e-7. Seventy to ninety times
+   the Newton floor after an hour of descent from the same state.
 3. **Cost.** A Newton step at 32 radial cells is 26 s in mixed precision
    (against 1.2 s per descent step), and the hour reached what the descent
    would need many hours for; the floor at 32 is still unknown because the
