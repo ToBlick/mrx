@@ -36,7 +36,7 @@ Flags, defaults in brackets:
                                    gaps (mrx.geometry.radial_knots)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --solve-maxiter N [2000]     iteration budget of every inner solve
-      --solve-tol TOL [sqrt(eps)]  inner solve tolerance
+      --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
       --precision {float32,float64} [float32]  exported as MRX_DTYPE before
                                    mrx is imported
       --seed m,n,rho0,width [""], --seed-eps EPS [0]
@@ -58,7 +58,7 @@ Flags, defaults in brackets:
                                    blow-up; mrx.relaxation.PICARD_*)
       --history M [1]              L-BFGS secant pairs: 0 is steepest
                                    descent, 1 memoryless BFGS (= CG)
-      --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.0]
+      --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.02 / n_r^2]
                                    descent direction v = (I - MU L)^-G F
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
@@ -83,6 +83,12 @@ Flags, defaults in brackets:
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision
+      --map-batch N [0]            cells per batch of the quadrature loops
+                                   (mrx.MAP_BATCH_SIZE_INNER); 0 evaluates
+                                   all points in one vmap. Bound it at high
+                                   resolution: the initial field's Greville
+                                   histopolation asks for 17 GiB at
+                                   (64,128,128) p=2 unbounded (8192 there)
 
 Output (``--out``):
     relax.json           ``params`` (every flag, ``geometry_path`` resolved,
@@ -144,9 +150,11 @@ def parse_args(argv=None):
     ap.add_argument("--history", type=int, default=1,
                     help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
     ap.add_argument("--velocity-smoothing-order", type=int, default=0,
-                    help="descent direction v = (I - scale L)^-order F; 0 is off")
-    ap.add_argument("--velocity-smoothing-scale", type=float, default=0.0,
-                    help="length scale of the velocity smoothing")
+                    help="descent direction v = (I - scale L)^-order F; 0 is off and fragile: the "
+                         "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
+                         "reconnection), use 1 for any long ideal run")
+    ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
+                    help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
@@ -164,7 +172,12 @@ def parse_args(argv=None):
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
                          "mesh, degree and precision")
+    ap.add_argument("--map-batch", type=int, default=0,
+                    help="cells per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER); "
+                         "0 = all points in one vmap; bound it at high resolution")
     cli = ap.parse_args(argv)
+    if cli.map_batch < 0:
+        ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
@@ -187,7 +200,8 @@ def main(cli):
 
     if cli.precision != str(mrx.DTYPE):
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE}")
-    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}", flush=True)
+    mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
+    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}  map batch {cli.map_batch or 'all'}", flush=True)
     ns = tuple(int(v) for v in cli.ns.split(","))
     out = cli.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"),
                                   time.strftime("%H-%M-%S"))
@@ -201,7 +215,7 @@ def main(cli):
     t0 = time.perf_counter()
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
                               nfp=cli.nfp, r_windows=parse_r_refine(cli.r_refine))
-    seq.set_operators(compute_nullspaces(seq, ops))
+    compute_nullspaces(seq)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)
@@ -212,7 +226,7 @@ def main(cli):
     if cli.seed:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
-    B0, ic = initial_field(seq, cli.geometry, seed)
+    B0, ic = initial_field(seq, seed)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
@@ -233,8 +247,9 @@ def main(cli):
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
+    params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     print(f"\n=== L-BFGS m={cli.history}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{cli.velocity_smoothing_scale} "
+          f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",
@@ -249,7 +264,7 @@ def main(cli):
             trace=res.trace, qoi=res.qoi, reconnect=res.reconnect,
             summary=dict(steps=res.steps, stop=res.stop, wall=res.wall,
                          reconnect_every=res.reconnect_every,
-                         E_final=res.trace["E"][-1], F_final=res.trace["F"][-1],
+                         E0=res.E0, E_removed=res.E0 - res.qoi["E"][-1], F_final=res.trace["F"][-1],
                          resid_final=res.trace["resid"][-1],
                          resid_window_mean=float(sum(res.trace["resid"][-res.chunk:]) / res.chunk),
                          **last))

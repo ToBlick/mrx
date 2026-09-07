@@ -112,10 +112,9 @@ def descent_figure(arms, figdir):
     for col, (key, group) in enumerate(panels.items()):
         for arm, j in group:
             tr = j["trace"]
-            E = np.array(tr["E"])
-            E0 = j["ic"]["E"]
+            E0 = j["summary"]["E0"]
             plot_trace(axes[0, col], tr["resid"], log=True, **style(arm))
-            axes[1, col].plot(wall_of_step(j), (E0 - E) / E0, **style(arm))
+            axes[1, col].plot(wall_of_step(j), np.cumsum(-np.array(tr["dE"])) / E0, **style(arm))
         axes[0, col].set(xscale="log", yscale="log", title=PANELS[key])
         axes[1, col].set(xscale="log", yscale="log", xlabel="wall-clock [s]")
         axes[0, col].legend()
@@ -178,18 +177,18 @@ def summary(arms):
     for arm, j in arms:
         tr, s = j["trace"], j["summary"]
         n = s["steps"]
-        E0 = j["ic"]["E"]
+        E0 = j["summary"]["E0"]
         h = np.array(j["qoi"]["helicity"])
         dh = h[-1] - j["ic"]["H"]
         pit = np.array(tr.get("picard_it", [1] * n))
         prs = np.array(tr.get("picard_restarts", [0] * n))
         prd = np.array(tr.get("picard_resid", [0.0] * n))
         tol = j["params"].get("picard_tol") or 0.0
-        ident = np.abs(np.array(tr["dE_meas"]) - np.array(tr["dE_pred"])) / E0
+        ident = np.abs(np.array(tr["dE"]) - np.array(tr["dE_ls"])) / E0
         rows.append(
             f"| {arm} | {n} | {s['stop']} | {s['wall'] / max(n, 1):.2f} | {pit.mean():.2f} "
             f"| {int((prs > 0).sum())} | {int((prd > tol).sum()) if tol else 0} "
-            f"| {(E0 - tr['E'][-1]) / E0:.4%} | {tr['resid'][-1]:.3e} ({np.mean(tr['resid'][-100:]):.3e}) "
+            f"| {-sum(tr['dE']) / E0:.4%} | {tr['resid'][-1]:.3e} ({np.mean(tr['resid'][-100:]):.3e}) "
             f"| {ident.max():.2e} | {dh:+.3e} | {dh / j['ic']['H']:+.3e} |")
     return "\n".join(rows)
 

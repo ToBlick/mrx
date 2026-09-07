@@ -1,7 +1,7 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
-from typing import Callable, Literal, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional
 
 import time
 
@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -69,6 +70,8 @@ def compute_force(
     p_guess: jnp.ndarray | None = None,
     H_guess: jnp.ndarray | None = None,
     JxH_guess: jnp.ndarray | None = None,
+    J_guess: jnp.ndarray | None = None,
+    F_guess: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """The Leray-projected Lorentz force at ``B`` and what it was built from.
 
@@ -79,9 +82,12 @@ def compute_force(
     conserve helicity exactly (:class:`IntegrationScheme`). Returns ``(F,
     p, J, X, JxX)``: ``p`` the Leray multiplier, ``X`` the field the cross
     products read (``H``, or ``B`` itself) and ``JxX`` the unprojected
-    force; the last two warm-start the next call.
+    force. The guesses are the previous call's ``p``, ``X``, ``JxX`` and
+    ``J``, and ``F_guess`` its force: with ``JxH_guess`` it gives the
+    previous gradient part ``JxX - F``, which warm-starts the lower block
+    of the Leray saddle solve next to ``p_guess`` on its upper one.
     """
-    J = seq.apply_weak_curl(B, dirichlet=True)
+    J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
     if auxiliary_B_field:
         H_dual = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
         X = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H_guess)
@@ -89,9 +95,13 @@ def compute_force(
     else:
         X = B
         JxX_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
-    JxX = seq.apply_inverse_mass_matrix(JxX_dual, 2, guess=JxH_guess)
-    F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess)
-    return F, p, J, X, JxX
+    # JxX in the residual precision: the Leray projection forms the force
+    # as JxX - sigma, the small difference of two large fields, before it
+    # rounds to the working dtype.
+    JxX = seq.apply_inverse_mass_matrix(JxX_dual, 2, guess=JxH_guess, dtype=RESIDUAL_DTYPE)
+    sigma_guess = None if F_guess is None else JxH_guess - F_guess
+    F, p = seq.apply_leray_projection(JxX, k=2, p_guess=p_guess, sigma_guess=sigma_guess)
+    return F, p, J, X, JxX.astype(DTYPE)
 
 
 def weak_pressure(
@@ -188,9 +198,7 @@ def pressure_diagnostics(
     """
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import map_jacobian_at
-    from mrx.quadrature import evaluate_at_xq
 
-    quad_shape = seq.quad.shape
     wJ = seq.quad.w * seq.jacobian_j
 
     # (a) the gauge-free comparisons: gradients in the Dirichlet 2-form
@@ -200,10 +208,8 @@ def pressure_diagnostics(
         seq.apply_projection_matrix(gpw, 1, 2, dirichlet_in=False, dirichlet_out=True), 2)
     gp = seq.apply_weak_grad(p, True)
     gradp_cmp = seq.l2_norm(gpw2 - gp, 2) / seq.l2_norm(gpw2, 2)
-    ci0, cs0 = seq._form_comp_info(0)
-    ci3, cs3 = seq._form_comp_info(3)
-    pw_q = evaluate_at_xq(seq.E(0, True).T @ p_w, ci0, cs0, quad_shape, 1)[:, 0]
-    p_q = evaluate_at_xq(seq.E(3, True).T @ p, ci3, cs3, quad_shape, 1)[:, 0] / seq.jacobian_j
+    pw_q = seq.evaluate_at_quadrature(p_w, 0, True)[:, 0]
+    p_q = seq.evaluate_at_quadrature(p, 3, True)[:, 0] / seq.jacobian_j
     pw_c = pw_q - jnp.sum(wJ * pw_q) / jnp.sum(wJ)
     p_c = p_q - jnp.sum(wJ * p_q) / jnp.sum(wJ)
     p_cmp = jnp.sqrt(jnp.sum(wJ * (p_c - pw_c) ** 2) / jnp.sum(wJ * pw_c ** 2))
@@ -274,7 +280,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     h = np.array(h)
     weights = 1.0 / (np.asarray(seq.jacobian_j)[:, None] * h[None, :])
     weights[:, 1] *= np.asarray(seq.quad.x[:, 0]) >= h[0]
-    return jnp.asarray(weights)
+    return jnp.asarray(weights, dtype=DTYPE)
 
 
 # %%
@@ -340,10 +346,10 @@ class State(eqx.Module):
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
     p: Optional[jnp.ndarray] = None
-    p_v: Optional[jnp.ndarray] = None
     v: Optional[jnp.ndarray] = None
     H: Optional[jnp.ndarray] = None
     JxH: Optional[jnp.ndarray] = None
+    J: Optional[jnp.ndarray] = None
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
     MF_prev: Optional[jnp.ndarray] = None
@@ -379,8 +385,12 @@ PICARD_MAX = 20
 #: unconverged, ``state.picard_residual`` above the tolerance.
 PICARD_RESTARTS = 4
 #: The Picard tolerance in units of ``seq.tol``: the inner solves define the
-#: map, so a tighter fixed point means nothing (and in float32 is unreachable).
+#: map, so a tighter fixed point means nothing.
 PICARD_TOL_FACTOR = 10.0
+#: ... plus this many roundoffs of the working dtype: the defect is formed in
+#: the stored precision and floors there (11 eps measured on li383 (8,12,12)
+#: p=2 in float32, 2026-09-05; 4e-15 in float64, inert).
+PICARD_EPS_FACTOR = 20.0
 
 
 class IntegrationScheme(Enum):
@@ -410,9 +420,9 @@ class Increment(NamedTuple):
     F: jnp.ndarray
     MF: jnp.ndarray
     p: jnp.ndarray
-    p_v: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
+    J: jnp.ndarray
     E: jnp.ndarray
     cfl_max: jnp.ndarray
     sy: jnp.ndarray
@@ -420,12 +430,32 @@ class Increment(NamedTuple):
     My_history: jnp.ndarray
 
 
+#: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
+#: logical): ``mu = SMOOTHING_C / n_r^2`` damps a mode of wavenumber ``k``
+#: by ``1 / (1 + mu k^2)``, the two-cell mode by 1/1.2 and a four-cell mode
+#: by 1/1.05 -- the edge of the last octave, no resolved physics. Swept
+#: 2026-09-05 on li383 (16,32,32) p=2 in mixed precision, 5000 steps,
+#: ``SMOOTHING_C`` in {0.0064, 0.02, 0.064, 0.2, 0.64} against no
+#: smoothing (``outputs/mu_sweep``): the residual per step has a flat
+#: optimum over 0.02-0.064, per wall second 0.02 is the cheapest of them
+#: (the shifted solve's cost grows with the scale), the helicity drift is
+#: the same for every smoothed arm (it is the time discretisation's, not
+#: the smoother's), and the unsmoothed descent is a factor 2 behind at
+#: equal wall time. 0.064 before, from one sweep at 8^3 p=3.
+SMOOTHING_C = 0.02
+
+
+def smoothing_scale(seq) -> float:
+    """``SMOOTHING_C / n_r^2``: the smoothing scale of the sequence's mesh."""
+    return SMOOTHING_C / seq.ns[0] ** 2
+
+
 class TimeStepper(eqx.Module):
     """One step of the energy descent, ``B_{n+1} = B_n + dt curl(u x X)``.
 
     Force and descent direction (L-BFGS on the velocity), velocity
-    smoothing, Leray projection, the analytic line search with its CFL cap,
-    and the induction, forward Euler or midpoint-implicit
+    smoothing, the analytic line search with its CFL cap, and the
+    induction, forward Euler or midpoint-implicit
     (:class:`IntegrationScheme`). The step is ideal; reconnection is a
     separate :func:`resistive_step` between chunks.
 
@@ -439,9 +469,17 @@ class TimeStepper(eqx.Module):
             per force evaluation and ``H_t = 0`` on the wall.
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``.
-            0 (the default) leaves the direction as it is.
+            0 (the default) leaves the direction as it is -- and is fragile:
+            the explicit step with the unsmoothed velocity stops conserving
+            helicity after ~1e4 steps at (16,32,32) p=2 on li383 (the drift
+            grows a hundredfold, the field reconnects numerically, the
+            energy release accelerates and the force residual climbs), in
+            float64 as in float32; order 1 holds the drift at 5e-8 over the
+            same run (docs/research/floor_study_2026-09-05.md). Use order 1
+            for any long ideal run; order 0 only for short smoke runs.
         velocity_smoothing_scale: Length scale of the smoothing,
-            the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``.
+            the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
+            is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
         history_size: Stored secant pairs of the L-BFGS direction. 0 is
             steepest descent, ``u = F``; 1 (the default) is memoryless
             BFGS, which under the exact line search IS Polak-Ribiere CG
@@ -457,14 +495,14 @@ class TimeStepper(eqx.Module):
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
-            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``,
-            set by ``__post_init__``.
+            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
+            plus ``PICARD_EPS_FACTOR`` roundoffs, set by ``__post_init__``.
         cfl_weights: ``logical_cfl_weights(seq)``, built by ``__post_init__``.
     """
     seq: DeRhamSequence
     auxiliary_B_field: bool = False
     velocity_smoothing_order: int = 0
-    velocity_smoothing_scale: float = 0.0
+    velocity_smoothing_scale: float = None
     history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
@@ -474,7 +512,9 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         if self.history_size < 0:
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
-        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol
+        if self.velocity_smoothing_scale is None:
+            self.velocity_smoothing_scale = smoothing_scale(self.seq)
+        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
@@ -581,13 +621,6 @@ class TimeStepper(eqx.Module):
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
-    def update_field(self, state: State, field_name: Literal['B_n', 'B_nplus1', 'v', 'p_v', 'H', 'JxH', 'E', 's_history', 'y_history', 'F_prev', 'MF_prev', 'Ms_history', 'My_history', 'A', 'dt', 'dt_star', 'cfl_max', 'F_norm', 'v_norm', 'lbfgs_sy', 'picard_iterations', 'picard_restarts', 'picard_residual'], value) -> State:  # noqa: E501
-        return eqx.tree_at(
-            lambda s: getattr(s, field_name),
-            state,
-            value
-        )
-
     def _induction_field(self, u_jk: jnp.ndarray, X: jnp.ndarray, E_guess: jnp.ndarray) -> jnp.ndarray:
         """``E = M_1^-1 load(u x X)`` with ``u`` at the quadrature points and
         ``X`` the auxiliary 1-form ``H`` or the 2-form ``B`` itself."""
@@ -598,24 +631,34 @@ class TimeStepper(eqx.Module):
         return seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
 
     def _ideal_increment(self, B: jnp.ndarray, state: State,
-                         p_guess: jnp.ndarray, p_v_guess: jnp.ndarray,
+                         p_guess: jnp.ndarray,
                          H_guess: jnp.ndarray, JxH_guess: jnp.ndarray,
-                         E_guess: jnp.ndarray) -> Increment:
+                         J_guess: jnp.ndarray, E_guess: jnp.ndarray) -> Increment:
         """The ideal increment ``dB = curl(u x X)`` evaluated at the field ``B``.
 
         Force, descent direction (the L-BFGS secant ``y = F_prev - F`` is
         pushed against ``state``'s history here, see part 1 below), velocity
-        smoothing, Leray projection, the cross product and the topological
-        curl. The explicit step evaluates it once at ``B_n``; the midpoint
-        step's Picard sweeps re-evaluate only the induction at the midpoint
-        field (``_midpoint_solve``). The five guesses warm-start the five
-        Krylov solves; they come from ``state`` (the previous step). Without
-        the auxiliary field ``H_guess`` passes through untouched.
+        smoothing, the cross product and the topological curl. The velocity
+        is divergence-free without a projection of its own: the force is
+        Leray-projected, the L-BFGS direction combines projected forces and
+        their steps, and the smoothing ``(M + mu L)^-1 M`` commutes with
+        the divergence; a second Leray projection of the velocity was
+        measured to change nothing in float64 and in mixed precision and
+        to cost 1.5-4x the step (``docs/research/velocity_leray_ab_2026-09-04.md``;
+        in float32 with a solve tolerance relative to ``J x B`` it was what
+        kept the step a descent). The explicit step evaluates the increment
+        once at ``B_n``; the midpoint step's Picard sweeps re-evaluate only
+        the induction at the midpoint field (``_midpoint_solve``). The five
+        guesses, and ``state.F_prev`` for the gradient part of the force,
+        warm-start the Krylov solves;
+        they come from ``state`` (the previous step). Without the auxiliary
+        field ``H_guess`` passes through untouched.
         """
         seq = self.seq
-        F, p, _, X, JxX = compute_force(
+        F, p, J, X, JxX = compute_force(
             B, seq, self.auxiliary_B_field,
-            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess)
+            p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
+            J_guess=J_guess, F_guess=state.F_prev)
         # M F ONCE.  It serves ||F||_M and the L-BFGS secant
         # M y = M F_prev - M F; the increment applies M_2 three times in total
         # (M F, M u, M dB) whichever method is running -- L-BFGS used to
@@ -641,7 +684,6 @@ class TimeStepper(eqx.Module):
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
         u, sy = self._lbfgs_direction(F, state.s_history, y_hist, state.Ms_history, My_hist)
         u = self.smooth_velocity(u)
-        u, p_v = seq.apply_leray_projection(u, k=2, p_guess=p_v_guess)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -671,7 +713,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, p, p_v, H, JxX, E, cfl_max, sy, y_hist, My_hist)
+        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
@@ -688,7 +730,7 @@ class TimeStepper(eqx.Module):
 
         The step is ``B_{n+1} = B_n + dt curl(u x X_mid)`` with ``u`` the
         descent velocity of the explicit predictor at ``B_n`` (direction,
-        smoothing, Leray projection, line-search ``dt``, CFL cap: all of
+        smoothing, line-search ``dt``, CFL cap: all of
         ``_ideal_increment``) and ``X_mid`` the MIDPOINT field ``(B_n +
         B_{n+1}) / 2`` itself or, with ``auxiliary_B_field``, its 1-form
         proxy ``H_mid = M_1^-1 P (B_n + B_{n+1}) / 2``: the
@@ -766,7 +808,8 @@ class TimeStepper(eqx.Module):
         """
         B_n = state.B_n
         seq = self.seq
-        inc0 = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+        inc0 = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
+                                     state.J, state.E)
         dt0, dt_star = self._step_size(inc0)
         dB0 = inc0.dB
         dB0_norm = seq.l2_norm(dB0, 2)
@@ -807,7 +850,8 @@ class TimeStepper(eqx.Module):
         the implicit midpoint rule (``scheme``)."""
         B_n = state.B_n
         if self.scheme == IntegrationScheme.EXPLICIT:
-            inc = self._ideal_increment(B_n, state, state.p, state.p_v, state.H, state.JxH, state.E)
+            inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
+                                        state.J, state.E)
             dt, dt_star = self._step_size(inc)
             B_nplus1 = B_n + dt * inc.dB
             n_eval, restarts, resid = jnp.int32(1), jnp.int32(0), jnp.zeros((), B_n.dtype)
@@ -834,13 +878,13 @@ class TimeStepper(eqx.Module):
             Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * inc.Mu)
 
         return eqx.tree_at(
-            lambda s: (s.B_nplus1, s.v, s.p, s.p_v, s.H, s.JxH, s.E,
+            lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual),
             state,
-            (B_nplus1, inc.u, inc.p, inc.p_v, inc.H, inc.JxH, inc.E,
+            (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
@@ -851,32 +895,40 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     """Build the state at ``B_dof`` with its force already evaluated.
 
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
-    ``H``, ``JxH`` are seeded from one ``compute_force`` here, so the first
-    step's secant ``y = F_prev - F`` sees the true previous gradient.
+    ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
+    first step's secant ``y = F_prev - F`` sees the true previous gradient.
+    Every leaf is an array of the working dtype, the scalars included: the
+    state is the carry of :func:`chunk_runner`'s scan, and a Python-float
+    leaf here against a float32 array out of the scan gave the scan two
+    carry signatures, i.e. a second compile at the second chunk of every run
+    (30-55 s, measured 2026-09-05).
     """
     seq = ts.seq
     n = seq.n(2, True)
     m = ts.history_size
-    F0, p0, _, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
+    F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
     MF0 = seq.apply_mass_matrix(F0, 2)
     return State(
         B_n=B_dof,
-        dt=dt,
-        dt_star=dt,
-        v=jnp.zeros(n),
+        dt=jnp.asarray(dt, dtype=DTYPE),
+        dt_star=jnp.asarray(dt, dtype=DTYPE),
+        cfl_max=jnp.zeros((), dtype=DTYPE),
+        v_norm=jnp.zeros((), dtype=DTYPE),
+        lbfgs_sy=jnp.zeros((), dtype=DTYPE),
+        v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
-        p_v=jnp.zeros(seq.n(3, True)),
-        H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True)),
+        H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
         JxH=JxX0,
-        E=jnp.zeros(seq.n(1, True)),
-        A=jnp.zeros(seq.n(1, True)),
+        J=J0,
+        E=jnp.zeros(seq.n(1, True), dtype=DTYPE),
+        A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
         MF_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),
-        s_history=jnp.zeros((m, n)),
-        y_history=jnp.zeros((m, n)),
-        Ms_history=jnp.zeros((m, n)),
-        My_history=jnp.zeros((m, n)),
+        s_history=jnp.zeros((m, n), dtype=DTYPE),
+        y_history=jnp.zeros((m, n), dtype=DTYPE),
+        Ms_history=jnp.zeros((m, n), dtype=DTYPE),
+        My_history=jnp.zeros((m, n), dtype=DTYPE),
         picard_iterations=jnp.int32(0),
         picard_restarts=jnp.int32(0),
         picard_residual=jnp.zeros((), B_dof.dtype),
@@ -892,10 +944,14 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     The state (B, the L-BFGS pair, the warm-start guesses) is the carry and
     comes out once; the per-step scalars are the scan's stacked output,
     ``trace[name]`` an array of length ``n_chunk`` over the steps
-    ``it0 + 1 .. it0 + n_chunk``: ``E`` (``||B||_M^2 / 2``), ``F``
-    (``||F||_M``), ``v`` (``||u||_M``), ``dt``, ``dt_star``, ``cfl`` (the
-    velocity's largest logical CFL number), ``div`` (``||div B||``), ``Fu``
-    (``<F_prev, u>_M``: the line search predicts ``dE = -dt Fu / 2``),
+    ``it0 + 1 .. it0 + n_chunk``: ``dE`` (the step's change of the energy
+    ``||B||_M^2 / 2``, exactly: ``<B_{n+1} - B_n, M (B_{n+1} + B_n)> / 2``,
+    a small increment against an O(1) field at the increment's own
+    precision -- the energy itself has none at the level of one step in
+    float32), ``F`` (``||F||_M``), ``v`` (``||u||_M``), ``dt``,
+    ``dt_star``, ``cfl`` (the velocity's largest logical CFL number),
+    ``div`` (``||div B||``), ``Fu`` (``<F_prev, u>_M``: the line search
+    predicts ``dE = -dt Fu (1 - dt / 2 dt_star)``),
     ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
     evaluations and final defect; 1 and 0 for the explicit step), plus
     ``extra[name](state)`` for every extra probe.
@@ -909,9 +965,11 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
 
     def body(state, it):
         state = ts.relaxation_step(state)
-        state = eqx.tree_at(lambda s: s.B_n, state, state.B_nplus1)
+        B_n, B_new = state.B_n, state.B_nplus1
+        dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
+        state = eqx.tree_at(lambda s: s.B_n, state, B_new)
         trace = dict(
-            E=0.5 * seq.l2_norm_sq(state.B_n, 2), F=state.F_norm, v=state.v_norm,
+            dE=dE, F=state.F_norm, v=state.v_norm,
             dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
@@ -953,33 +1011,41 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     """``sample(state, pw_guess, eager=False) -> (state, p_w, scalars)``: the
     diagnostics of a state's field.
 
-    The force at the CURRENT field (``state.p``, ``H``, ``JxH`` are the
-    step's values at the previous one; they warm-start it and are refreshed
-    from it), the weak pressure and its diagnostics
+    The force at the CURRENT field (``state.p``, ``H``, ``JxH``, ``J``,
+    ``F_prev`` are the step's values at the previous one; they warm-start it
+    and are refreshed from it), the weak pressure and its diagnostics
     (:func:`pressure_diagnostics`), the helicity (``state.A`` refreshed),
-    ``||J|| / ||B||`` and the pairing ``int J . B`` that sets a
-    reconnection dose. ``scalars`` are Python floats. The first call of a
+    ``||J|| / ||B||``, the pairing ``int J . B`` that sets a reconnection
+    dose, and the energy ``E = <B, M B> / 2`` of the stored field in the
+    residual precision (exact to the field's own rounding, 3e-8 on E = 0.5
+    in float32 storage; the trace's per-step ``dE`` is formed in the
+    working precision and its sum over 1e4 steps drifts by that much).
+    ``scalars`` are Python floats. The first call of a
     run goes ``eager`` (the 1->2 projection builds a host-side core on
     first use); the loop uses the compiled one.
     """
     aux = ts.auxiliary_B_field
+    on = seq if seq.residual is None else seq.residual      # the energy, in the residual precision
 
-    def probe(B, p, H, JxH, pw_guess, A):
-        F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH)
+    def probe(B, p, H, JxH, J, F_prev, pw_guess, A):
+        F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
+                                        J_guess=J, F_guess=F_prev)
         p_w, F_w, v = weak_pressure(J, X, seq, aux, p_guess=pw_guess)
         diag = pressure_diagnostics(B, p, p_w, F_w, v, seq)
         h, A_new = compute_helicity(B, seq, A)
         JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
         JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
-        return p, (X if aux else H), JxX, A_new, p_w, h, JoverB, JB, diag
+        return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag
 
     probe_jit = jax.jit(probe)
 
     def sample(state: State, pw_guess: jnp.ndarray, eager: bool = False):
         f = probe if eager else probe_jit
-        p, H, JxH, A, p_w, h, JoverB, JB, diag = f(state.B_n, state.p, state.H, state.JxH, pw_guess, state.A)
-        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.A), state, (p, H, JxH, A))
-        scalars = dict(helicity=float(h), JoverB=float(JoverB), JB=float(JB),
+        p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
+            state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
+        state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
+        E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
+        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB),
                        **{k: float(v) for k, v in diag.items()})
         return state, p_w, scalars
 
@@ -1006,7 +1072,6 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     stored field (one force evaluation), every leaf is then replaced by
     the stored one."""
     import h5py  # noqa: PLC0415
-    from mrx.precision import DTYPE  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
@@ -1026,10 +1091,16 @@ class RelaxResult(NamedTuple):
     (``it0 + steps`` is the absolute step), ``stop`` why it ended (``steps``,
     ``floor``, ``seconds``, or ``running``), ``wall`` the seconds in the
     compiled steps (sampling and callbacks excluded), ``trace`` the per-step
-    scalars (``E``, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``,
-    ``cos``, ``gain``, ``picard_it``, ``picard_resid``, ``dE_meas``,
-    ``dE_pred``), ``qoi`` the per-chunk samples (``it``, ``wall``,
-    ``F``, ``resid``, ``helicity``, ``JoverB``, ``JB`` and the pressure
+    scalars (``dE`` the exact energy change of the step, ``dE_ls`` the line
+    search's prediction ``-dt <F, u>_M (1 - dt / 2 dt_star)`` -- the two
+    differ by ``-dt <u, grad p>_M``, zero for a divergence-free velocity
+    --, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``, ``cos``,
+    ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
+    start of the run (``E0 + cumsum(dE)`` is the trace's energy after every
+    step, to the working precision's rounding per step), ``qoi`` the
+    per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
+    field in the residual precision, ``F``, ``resid``, ``helicity``,
+    ``JoverB``, ``JB`` and the pressure
     diagnostics; the first entry is the start of the run, a reconnection
     adds a second sample at its step), ``reconnect`` one record per
     reconnection, ``reconnect_every`` the interval actually used (rounded to
@@ -1044,6 +1115,7 @@ class RelaxResult(NamedTuple):
     reconnect: list
     reconnect_every: int
     chunk: int
+    E0: float
 
 
 def pressure_line(d: dict) -> str:
@@ -1063,9 +1135,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count, on ``floor_tol`` (the last chunk's mean of the
-    relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
-    residual is not monotone, the window mean is the quantity) or on
+    Stops on the step count, on ``floor_tol`` (the last
+    chunk's mean of the relative force residual ``||F||_M / ||grad(B^2/2)||``
+    below it; the residual is not monotone, the window mean is the quantity)
+    or on
     ``seconds`` of wall time in the steps. ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of
@@ -1086,13 +1159,13 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     sample = make_sampler(seq, ts)
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
-    trace = {k: [] for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "dE_meas", "dE_pred")}
+    trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
+                             "gain", "picard_it", "picard_resid")}
     qoi: dict = {}
     events: list = []
 
     def result(n_done, stop, wall):
-        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk)
+        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk, E0)
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
@@ -1102,16 +1175,23 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
-    E_prev = 0.5 * float(seq.l2_norm_sq(state.B_n, 2))
-    pw = jnp.zeros(seq.n(0, True))
+    pw = jnp.zeros(seq.n(0, True), dtype=DTYPE)
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
-    h0 = scalars["helicity"]
+    E0, h0 = scalars["E"], scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
-        print(f"[start] it {it0}  E={E_prev:.8e}  |F|={float(state.F_norm):.4e}  "
+        # The force's gradient-part remnant is the pressure solve's residual,
+        # relative to |J x B| while the force is resid times that: its
+        # energy term is 0.1 tol / resid^2 of the descent (li383, float64,
+        # docs/research/velocity_leray_ab_2026-09-04.md), a tenth of it at
+        # resid = sqrt(tol). Reported, not enforced: the tolerance and the
+        # floor are the caller's choices.
+        print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
               f"resid={float(state.F_norm / scale(state.B_n)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
-              f"        {pressure_line(scalars)}", flush=True)
+              f"        {pressure_line(scalars)}\n"
+              f"        solve tol {seq.tol:.1e}: the force's gradient-part term is a tenth of the "
+              f"descent at resid {seq.tol ** 0.5:.1e} (0.1 tol / resid^2)", flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"
@@ -1124,11 +1204,9 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             cos = ch["Fu"] / (ch["F"] * ch["v"])
             trace["cos"].extend(cos.tolist())
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
-        trace["dE_meas"].extend(np.diff(ch["E"], prepend=E_prev).tolist())
-        trace["dE_pred"].extend((-0.5 * ch["dt"] * ch["Fu"]).tolist())
-        for k in ("E", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
+            trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
+        for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
             trace[k].extend(ch[k].tolist())
-        E_prev = float(ch["E"][-1])
         resid_now = float(ch["resid"].mean())
 
         tq = time.perf_counter()
@@ -1136,7 +1214,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         state, pw, scalars = sample(state, pw)
         record(it, wall, scalars)
         if verbose:
-            print(f"  it {it:>5d}  E={E_prev:.8e}  |F|={ch['F'][-1]:.4e}  "
+            print(f"  it {it:>5d}  E_0-E={E0 - scalars['E']:.4e}  |F|={ch['F'][-1]:.4e}  "
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
@@ -1188,18 +1266,20 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     midpoint solve."""
     tr, q = res.trace, res.qoi
     n = res.steps
-    E0, E1 = tr["E"][0] - tr["dE_meas"][0], tr["E"][-1]
-    dEm, dEp = np.array(tr["dE_meas"]), np.array(tr["dE_pred"])
-    ident = np.abs(dEm - dEp) / E0
+    E0 = res.E0
+    dE, dE_ls = np.array(tr["dE"]), np.array(tr["dE_ls"])
+    removed = E0 - q["E"][-1]
+    ident = np.abs(dE - dE_ls) / E0
     resid = np.array(tr["resid"])
     print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
-    print(f"    E {E0:.8e} -> {E1:.8e}  ({(E0 - E1) / E0:.4%} of the initial energy removed)")
+    print(f"    E_0 {E0:.8e}, E_0 - E {removed:.4e}  ({removed / E0:.4%} of the initial energy removed)")
     print(f"    residual {resid[0]:.4e} -> {resid[-1]:.4e}  (mean over the last chunk of "
           f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
-    print(f"    linesearch identity |dE_meas - dE_pred| / E0: median {np.median(ident):.3e}  max {ident.max():.3e}"
+    print(f"    |dE - dE_ls| / E0 (the velocity's gradient part against grad p): median {np.median(ident):.3e}"
+          f"  max {ident.max():.3e}"
           + ("  (not an identity under the midpoint scheme)"
              if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT else ""))
-    print(f"    energy increases on {int((dEm > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
+    print(f"    energy increases on {int((dE > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
           f"||J||/||B|| {q['JoverB'][0]:.4e} -> {q['JoverB'][-1]:.4e}")
     h = np.array(q["helicity"])
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"

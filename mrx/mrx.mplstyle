@@ -24,7 +24,7 @@ legend.frameon: True
 # --- lines: black, teal, purple, grey, each with its own dash so a figure
 #     printed in greyscale still separates the arms; no default colour cycle
 #     (hex colours carry no # here: it would start a comment)
-axes.prop_cycle: cycler('color', ['black', 'teal', '6a3d9a', '0.5']) + cycler('linestyle', ['-', '--', '-.', ':'])
+axes.prop_cycle: cycler('color', ['black', 'teal', '6a3d9a', 'e69f00', 'cc79a7']) + cycler('linestyle', ['-', '--', '-.', ':', (0, (3, 1, 1, 1, 1, 1))])
 lines.linewidth: 1.0
 lines.markersize: 4
 errorbar.capsize: 2

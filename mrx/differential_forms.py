@@ -71,8 +71,6 @@ class DifferentialForm:
         else:
             self.dz = self.nz
 
-        self.vecs = jnp.eye(self.d)
-
         if k == 0:
             self.bases = (TensorBasis(self.Λ),)
             self.shape = ((self.nr, self.nt, self.nz),)
@@ -118,134 +116,10 @@ class DifferentialForm:
         self.n = self.n1 + self.n2 + self.n3
         self.ns = jnp.arange(self.n)
 
-    def _vector_index(self, idx):
-        """Return ``(component, local_index)`` for a global DOF index."""
-        if self.k == 0 or self.k == 3:
-            return jnp.int32(0), idx
-        elif self.k == 1 or self.k == 2:
-            n1, n2 = self.n1, self.n2
-            category = jnp.int32(idx >= n1) + jnp.int32(idx >= n1 + n2)
-            index = jnp.int32(idx - n1 * (idx >= n1) - n2 * (idx >= n1 + n2))
-            return category, index
-
-    def _ravel_index(self, c, i, j, k):
-        """Return the global DOF index for component ``c`` and grid indices ``(i,j,k)``."""
-        if self.k == 0:
-            rav = jnp.ravel_multi_index(
-                (i, j, k), (self.nr, self.nt, self.nz), mode="clip"
-            )
-        elif self.k == 1:
-            n1, n2 = self.n1, self.n2
-            rav = jnp.where(
-                c == 0,
-                jnp.ravel_multi_index(
-                    (i, j, k), (self.dr, self.nt, self.nz), mode="clip"
-                ),
-                jnp.where(
-                    c == 1,
-                    n1
-                    + jnp.ravel_multi_index(
-                        (i, j, k), (self.nr, self.dt, self.nz), mode="clip"
-                    ),
-                    n1
-                    + n2
-                    + jnp.ravel_multi_index(
-                        (i, j, k), (self.nr, self.nt, self.dz), mode="clip"
-                    ),
-                ),
-            )
-        elif self.k == 2:
-            n1, n2 = self.n1, self.n2
-            rav = jnp.where(
-                c == 0,
-                jnp.ravel_multi_index(
-                    (i, j, k), (self.nr, self.dt, self.dz), mode="clip"
-                ),
-                jnp.where(
-                    c == 1,
-                    n1
-                    + jnp.ravel_multi_index(
-                        (i, j, k), (self.dr, self.nt, self.dz), mode="clip"
-                    ),
-                    n1
-                    + n2
-                    + jnp.ravel_multi_index(
-                        (i, j, k), (self.dr, self.dt, self.nz), mode="clip"
-                    ),
-                ),
-            )
-        elif self.k == 3:
-            rav = jnp.ravel_multi_index(
-                (i, j, k), (self.dr, self.dt, self.dz), mode="clip"
-            )
-        return jnp.int32(rav)
-
-    def _unravel_index(self, idx):
-        """Return ``(component, i, j, k)`` for a global DOF index."""
-        if self.k == 0:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.nr, self.nt, self.nz))
-        elif self.k == 1:
-            c, ijk = self._vector_index(idx)
-            i, j, k = jnp.where(
-                c == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.dr, self.nt, self.nz))),
-                jnp.where(
-                    c == 1,
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.dt, self.nz))),
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.nr, self.nt, self.dz))),
-                ),
-            )
-            return c, i, j, k
-        elif self.k == 2:
-            c, ijk = self._vector_index(idx)
-            i, j, k = jnp.where(
-                c == 0,
-                jnp.array(jnp.unravel_index(ijk, (self.nr, self.dt, self.dz))),
-                jnp.where(
-                    c == 1,
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.nt, self.dz))),
-                    jnp.array(jnp.unravel_index(
-                        ijk, (self.dr, self.dt, self.nz))),
-                ),
-            )
-            return c, i, j, k
-        elif self.k == 3:
-            return jnp.int32(0), *jnp.unravel_index(idx, (self.dr, self.dt, self.dz))
-
-    def __call__(self, x, i):
-        """Alias for :meth:`evaluate` (so the form can be ``vmap``-ed)."""
-        return self.evaluate(x, i)
-
-    def evaluate(self, x, i):
-        """Value of basis function ``i`` at logical point ``x`` -- the DENSE
-        per-basis-function evaluator, ``O(n)`` per point.
-
-        Kept as the reference the local-support evaluator
-        (:class:`DiscreteFunction`, :func:`~mrx.spline_bases.contract_local`)
-        is tested against (``test_sequence``); nothing in production calls it.
-        """
-        category, index = self._vector_index(i)
-        if self.k == 0 or self.k == 3:
-            return jnp.ones(1) * self.bases[0](x, index)
-        elif self.k == 1 or self.k == 2:
-            e = jnp.zeros(3).at[category].set(1)
-            val = jnp.where(
-                category == 0,
-                self.bases[0](x, index),
-                jnp.where(
-                    category == 1, self.bases[1](
-                        x, index), self.bases[2](x, index)
-                ),
-            )
-            return e * val
-
     def raw_blocks(self, raw):
         """Split a raw (pre-extraction) coefficient vector into one tensor per
-        component, shaped as :attr:`shape` -- the layout :meth:`_unravel_index`
-        decodes: components in order, each raveled in C order."""
+        component, shaped as :attr:`shape`: components in order, each raveled in
+        C order."""
         blocks, start = [], 0
         for shape in self.shape:
             size = math.prod(shape)
@@ -402,43 +276,9 @@ def adj33(mat: jnp.ndarray) -> jnp.ndarray:
 def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     """Inverse of a 3×3 matrix via the explicit adjugate formula.
     """
-    m1, m2, m3 = mat[0]
-    m4, m5, m6 = mat[1]
-    m7, m8, m9 = mat[2]
-    det = (m1 * (m5 * m9 - m6 * m8)
-           + m4 * (m8 * m3 - m2 * m9)
-           + m7 * (m2 * m6 - m3 * m5))
-    return adj33(mat) / det
+    return adj33(mat) / det33(mat)
 
 
 def jacobian_determinant(f: Callable) -> Callable:
     """Return a function that computes ``det(jacfwd(f))`` at a point."""
     return lambda x: det33(jax.jacfwd(f)(x))
-
-
-def div(F: Callable) -> Callable:
-    """Return a function that computes the divergence of vector field ``F``."""
-    def div_F(x: jnp.ndarray) -> jnp.ndarray:
-        DF = jax.jacfwd(F)(x)
-        return jnp.trace(DF) * jnp.ones(1)
-    return div_F
-
-
-def curl(F: Callable) -> Callable:
-    """Return a function that computes the curl of vector field ``F`` in 3D."""
-    def curl_F(x: jnp.ndarray) -> jnp.ndarray:
-        DF = jax.jacfwd(F)(x)
-        return jnp.array([DF[2, 1] - DF[1, 2],
-                          DF[0, 2] - DF[2, 0],
-                          DF[1, 0] - DF[0, 1]])
-    return curl_F
-
-
-def grad(F: Callable) -> Callable:
-    """Return a function that computes the gradient of scalar field ``F``."""
-    def grad_F(x: jnp.ndarray) -> jnp.ndarray:
-        DF = jax.jacfwd(F)(x)
-        return jnp.ravel(DF)
-    return grad_F
-
-

@@ -33,8 +33,7 @@ from mrx.plotstyle import (FIELD_CMAP, FS, LEFT, PRESSURE_CMAP, RIGHT,
 # mrx.plotstyle now (re-exported here for callers that import them from plotting).
 __all__ = ["get_2d_grids", "plot_torus", "plot_crossections_separate",
            "plot_twin_axis", "render_section", "resonant_rationals",
-           "set_axes_equal", "FIELD_CMAP", "SECTION_CMAP", "PRESSURE_CMAP",
-           "SectionLimits"]
+           "set_axes_equal"]
 
 
 def get_2d_grids(
@@ -45,37 +44,23 @@ def get_2d_grids(
     ny: int = 64,
     nz: int = 64,
     tol1: float = 1e-6,
-    tol2: float = 0,
-    tol3: float = 0,
-    x_min: float = 0,
-    x_max: float = 1,
-    y_min: float = 0,
-    y_max: float = 1,
-    z_min: float = 0,
-    z_max: float = 1,
-    invert_x: bool = False,
-    invert_y: bool = False,
     invert_z: bool = False,
 ):
     """Sample the map ``F`` on the logical plane ``x_{cut_axis} = cut_value``.
 
-    The other two logical axes are ``linspace(min + tol, max - tol, n)``,
-    optionally reversed (``invert_*``) to orient a surface's normal. The
-    radial default ``tol1 = 1e-6`` keeps the sample off the polar axis and
-    off ``r = 1``, where the spline map's derivative is not defined.
+    The other two logical axes are ``linspace`` over ``[0, 1]``, the radial
+    one ``[tol1, 1 - tol1]`` (``1e-6`` keeps the sample off the polar axis
+    and off ``r = 1``, where the spline map's derivative is not defined);
+    ``invert_z`` reverses the toroidal axis to orient a surface's normal.
 
     Returns ``(x, y, (Y1, Y2, Y3), (x1, x2, x3))``: the flat logical points
     ``x`` (``(n1 n2, 3)``), their images ``y = F(x)``, the images reshaped
     to the ``(n1, n2)`` plane for ``plot_surface``/``contourf``, and the
     three 1-D logical axes.
     """
-    _x1 = jnp.linspace(x_min + tol1, x_max - tol1, nx)
-    _x2 = jnp.linspace(y_min + tol2, y_max - tol2, ny)
-    _x3 = jnp.linspace(z_min + tol3, z_max - tol3, nz)
-    if invert_x:
-        _x1 = _x1[::-1]
-    if invert_y:
-        _x2 = _x2[::-1]
+    _x1 = jnp.linspace(tol1, 1.0 - tol1, nx)
+    _x2 = jnp.linspace(0.0, 1.0, ny)
+    _x3 = jnp.linspace(0.0, 1.0, nz)
     if invert_z:
         _x3 = _x3[::-1]
     if cut_axis == 0:
@@ -108,27 +93,38 @@ def _values_on_cuts(p_h, grids_pol):
 
 
 @house_style()
+def _rotated(XYZ, angle):
+    """The ``(X, Y, Z)`` grid rotated about the z axis by ``angle``."""
+    X, Y, Z = XYZ
+    c, s = np.cos(angle), np.sin(angle)
+    return c * X - s * Y, s * X + c * Y, Z
+
+
 def plot_torus(
     p_h: Callable,
     grids_pol: list,
     grid_surface: tuple,
     figsize: tuple = (12, 8),
-    labelsize: float = FS.big,
-    ticksize: float = FS.tick,
     gridlinewidth: float = 0.01,
     cstride: int = 4,
     elev: float = 30,
     azim: float = 140,
-    noaxes: bool = False,
     cbar_label: Optional[str] = None,
+    nfp: int = 1,
+    sign: float = -1.0,
 ):
     """The boundary surface as a wireframe with poloidal cuts coloured by ``p_h``.
 
     ``p_h`` maps a logical point ``(3,)`` to a scalar (a 0-form's
     ``DiscreteFunction``, or a pushed-forward form); ``grids_pol`` are
     :func:`get_2d_grids` cuts at fixed zeta and ``grid_surface`` the
-    ``cut_axis=0, cut_value=1`` boundary sample. One colour scale over all
-    cuts; ``cbar_label`` adds the colour bar. Returns ``(fig, ax)``.
+    ``cut_axis=0, cut_value=1`` boundary sample, both over ONE field period
+    (the map's logical zeta). ``nfp > 1`` draws the whole device: the
+    surface and the cuts are repeated ``nfp`` times, rotated about the z
+    axis by ``sign * 2 pi j / nfp`` for period ``j`` (``-1`` for the
+    ``(R cos, -R sin)`` convention of the GVEC maps, ``+1`` for a map whose
+    angle increases with zeta). One colour scale over all cuts;
+    ``cbar_label`` adds the colour bar. Returns ``(fig, ax)``.
     """
     vals = _values_on_cuts(p_h, grids_pol)
     vmin, vmax = float(vals.min()), float(vals.max())
@@ -140,35 +136,34 @@ def plot_torus(
     fig = plt.figure(figsize=figsize)
     ax = fig.add_subplot(111, projection="3d")
 
-    X, Y, Z = grid_surface[2]
-    ax.plot_surface(X, Y, Z, edgecolors=(0, 0, 0, 0.2), rstride=cstride,
-                    cstride=cstride, shade=True, alpha=0.0, linewidth=gridlinewidth)
-
-    for grid, v in zip(grids_pol, vals):
-        X, Y, Z = grid[2]
-        ax.plot_surface(X, Y, Z, facecolors=cmap(norm(v)), rstride=1, cstride=1,
-                        shade=False, zsort="min", linewidth=0)
+    for j in range(nfp):
+        angle = sign * 2.0 * np.pi * j / nfp
+        X, Y, Z = _rotated(grid_surface[2], angle)
+        ax.plot_surface(X, Y, Z, edgecolors=(0, 0, 0, 0.2), rstride=cstride,
+                        cstride=cstride, shade=True, alpha=0.0, linewidth=gridlinewidth)
+        for grid, v in zip(grids_pol, vals):
+            X, Y, Z = _rotated(grid[2], angle)
+            ax.plot_surface(X, Y, Z, facecolors=cmap(norm(v)), rstride=1, cstride=1,
+                            shade=False, zsort="min", linewidth=0)
 
     if cbar_label is not None:
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array(vals)
         cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.08)
-        cbar.set_label(cbar_label, fontsize=labelsize)
-        cbar.ax.tick_params(labelsize=ticksize)
+        cbar.set_label(cbar_label, fontsize=FS.big)
+        cbar.ax.tick_params(labelsize=FS.tick)
 
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.set_pane_color((1.0, 1.0, 1.0, 1.0))
     set_axes_equal(ax)
 
-    ax.set_xlabel(r"$x_1$", fontsize=labelsize, labelpad=14)
-    ax.set_ylabel(r"$x_2$", fontsize=labelsize, labelpad=14)
-    ax.set_zlabel(r"$x_3$", fontsize=labelsize, labelpad=-30)
+    ax.set_xlabel(r"$x_1$", fontsize=FS.big, labelpad=14)
+    ax.set_ylabel(r"$x_2$", fontsize=FS.big, labelpad=14)
+    ax.set_zlabel(r"$x_3$", fontsize=FS.big, labelpad=-30)
     for name in ("x", "y", "z"):
-        ax.tick_params(axis=name, labelsize=ticksize, pad=6)
+        ax.tick_params(axis=name, labelsize=FS.tick, pad=6)
 
     ax.view_init(elev=elev, azim=azim)
-    if noaxes:
-        ax.set_axis_off()
     return fig, ax
 
 
@@ -287,14 +282,6 @@ def plot_twin_axis(
     right_label: str = "",
     left_log: bool = True,
     right_log: bool = False,
-    left_color: str = LEFT["color"],
-    right_color: str = RIGHT["color"],
-    left_marker: str = LEFT["marker"],
-    right_marker: str = RIGHT["marker"],
-    left_linestyle: str = LEFT["linestyle"],
-    right_linestyle: str = RIGHT["linestyle"],
-    left_markersize: int = LEFT["markersize"],
-    right_markersize: int = RIGHT["markersize"],
     num_iters_inner: int = 1,
     x_label: str = "iteration",
     figsize: tuple = (8, 3),
@@ -309,8 +296,9 @@ def plot_twin_axis(
 
     Each side is log (``semilogy``) or linear on its own; the y label and
     ticks take the series colour. Without ``x_*`` the abscissa is
-    ``arange(len(y)) * num_iters_inner``. The explicit style arguments are
-    defaults that ``left_plot_kwargs``/``right_plot_kwargs`` override.
+    ``arange(len(y)) * num_iters_inner``. The house styles ``LEFT`` and
+    ``RIGHT`` (colour, marker, line style, marker size) are the defaults
+    that ``left_plot_kwargs``/``right_plot_kwargs`` override.
     With ``ax`` the pair is drawn into that existing axes (a panel of a
     larger figure, whose layout is then the caller's), otherwise into a new
     ``figsize`` figure. Returns ``(fig, (ax_left, ax_right))``.
@@ -322,11 +310,11 @@ def plot_twin_axis(
     ax2 = ax1.twinx()
     sides = (
         (ax1, left_y, x_left, left_log, left_label,
-         {"color": left_color, "linestyle": left_linestyle, "marker": left_marker,
-          "markersize": left_markersize, **(left_plot_kwargs or {})}),
+         {**{k: LEFT[k] for k in ("color", "linestyle", "marker", "markersize")},
+          **(left_plot_kwargs or {})}),
         (ax2, right_y, x_right, right_log, right_label,
-         {"color": right_color, "linestyle": right_linestyle, "marker": right_marker,
-          "markersize": right_markersize, **(right_plot_kwargs or {})}),
+         {**{k: RIGHT[k] for k in ("color", "linestyle", "marker", "markersize")},
+          **(right_plot_kwargs or {})}),
     )
     for ax, y, x, log, label, kwargs in sides:
         y = np.asarray(y)
@@ -434,19 +422,20 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
-                   cmap=SECTION_CMAP, iota_lim=None, limits=None, iota_scatter=None,
+                   cmap=SECTION_CMAP, limits=None, iota_scatter=None,
                    profile_coord="logical", profile_rays=3):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
     rebuilding the map -- which is the expensive half of producing it.
 
-    ``limits`` pins everything else a movie must hold fixed between frames:
-    a dict with any of ``RZ`` (``((R0, R1), (Z0, Z1))`` of the section
+    ``limits`` (a :class:`~mrx.plotstyle.SectionLimits`) pins what a movie or
+    a side-by-side set must hold fixed between frames: ``iota`` the colour
+    and profile scale, ``RZ`` (``((R0, R1), (Z0, Z1))`` of the section
     panel), ``z_split`` (the split line), ``x`` (the profiles' abscissa) and
-    ``p`` (the pressure panel's ordinate, in drawn units).
-    ``iota_lim`` pins the colour scale instead of taking it from this figure's
-    own lines.  Two sections drawn on limits fitted separately are not
+    ``p`` (the pressure panel's ordinate, in drawn units); any field left
+    ``None`` is fitted from this figure's own lines.  Two sections drawn on
+    iota limits fitted separately are not
     comparable by colour at all -- the same hue means a different transform in
     each -- so any caller producing a set that is meant to be read side by side
     (two relaxation states, a plane scan) must pass one shared pair.
@@ -490,9 +479,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         raise ValueError("split_iota_p=True needs axis_RZ: the split is at the "
                          "magnetic axis, not at Z = 0.")
 
-    # Movie/side-by-side pinning: one object, whether the caller passed a
-    # SectionLimits, the legacy dict, or a bare iota_lim (all coerced here).
-    lim = SectionLimits.coerce(limits, iota_lim)
+    lim = SectionLimits() if limits is None else limits
     has_p = pressure is not None
     # The pressure is drawn at ``pressure_scale`` times its value (the natural
     # scale of p in code units is ~1e-2, and 100 p reads in units).

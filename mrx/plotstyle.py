@@ -55,11 +55,14 @@ STYLE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mrx.mplst
 BLACK = "black"
 TEAL = "teal"
 PURPLE = "#6a3d9a"
+ORANGE = "#e69f00"
+PINK = "#cc79a7"
 GREY = "0.5"
-#: The line cycle of the style sheet: (colour, dash) pairs, in order.
-CYCLE = ((BLACK, "-"), (TEAL, "--"), (PURPLE, "-."), (GREY, ":"))
+#: The line cycle of the style sheet: (colour, dash) pairs, in order
+#: (black, teal, purple, orange, pink since 2026-09-06; grey is for events).
+CYCLE = ((BLACK, "-"), (TEAL, "--"), (PURPLE, "-."), (ORANGE, ":"), (PINK, (0, (3, 1, 1, 1, 1, 1))))
 #: Dashes for a second factor in :func:`arm_style`.
-DASHES = ("-", "--", "-.", ":")
+DASHES = ("-", "--", "-.", ":", (0, (3, 1, 1, 1, 1, 1)))
 #: iota on a section page and its profile.
 IOTA_COLOR = BLACK
 #: Pressure on a section page, the beta line, the second profile.
@@ -76,8 +79,9 @@ RIGHT = dict(color=TEAL, marker="d", linestyle="--", markersize=4)
 def arm_style(colour: int = 0, dash: int = 0, **kw) -> dict:
     """Line keywords for arm ``(colour, dash)`` of a two-factor comparison.
 
-    ``colour`` indexes the palette (black, teal, purple, grey), ``dash`` the
-    dashes (solid, dashed, dash-dot, dotted); a one-factor comparison passes
+    ``colour`` indexes the palette (black, teal, purple, orange, pink),
+    ``dash`` the dashes (solid, dashed, dash-dot, dotted, dash-dot-dot); a
+    one-factor comparison passes
     the same index to both and follows the style sheet's cycle. ``kw`` adds
     or overrides (``label``, ``lw``, ...).
     """
@@ -162,17 +166,3 @@ class SectionLimits:
     x: Optional[tuple] = None
     p: Optional[tuple] = None
     iota: Optional[tuple] = None
-
-    @classmethod
-    def coerce(cls, limits=None, iota_lim=None):
-        """Normalise the legacy ``(limits dict, iota_lim)`` call into one object."""
-        if isinstance(limits, cls):
-            lim = cls(limits.RZ, limits.z_split, limits.x, limits.p, limits.iota)
-        elif limits:
-            lim = cls(**{k: limits[k] for k in ("RZ", "z_split", "x", "p", "iota")
-                         if k in limits})
-        else:
-            lim = cls()
-        if iota_lim is not None and lim.iota is None:
-            lim.iota = tuple(iota_lim)
-        return lim

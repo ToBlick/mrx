@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import equinox as eqx
 import jax
@@ -71,25 +71,6 @@ def map_jacobian_at(map: Callable, x: jnp.ndarray) -> jnp.ndarray:
     return jax.lax.map(jax.jacfwd(map), x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
 
 
-def compute_geometry_terms(map: Callable, quad_x: jnp.ndarray):
-    """Compute metric and Jacobian terms for an arbitrary map.
-
-    Args:
-        map: Differentiable logical-to-physical map ``F: R^3 -> R^3``.
-        quad_x: Quadrature points, shape ``(N_q, 3)``.
-
-    Returns:
-        Tuple ``(metric_jkl, metric_inv_jkl, jacobian_j)``:
-
-        - ``metric_jkl``: ``(N_q, 3, 3)`` — metric tensor ``DF^T DF`` at each
-          quadrature point.
-        - ``metric_inv_jkl``: ``(N_q, 3, 3)`` — inverse metric.
-        - ``jacobian_j``: ``(N_q,)`` — Jacobian determinant ``det(DF)``.
-    """
-    geometry = SequenceGeometry.from_map(map, quad_x)
-    return geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
-
-
 # ---------------------------------------------------------------------------
 # SequenceGeometry
 # ---------------------------------------------------------------------------
@@ -119,6 +100,12 @@ class SequenceGeometry(eqx.Module):
     metric_jkl: jnp.ndarray = None
     metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
+    # The mass weights per degree and the projection masses' reference
+    # weight in the element layout, attached by ``mrx.mass.attach_weights``
+    # when the geometry is installed on a sequence: geometry-derived data
+    # that rides with the geometry pytree instead of closing over it.
+    mass_weights: Optional[dict] = None
+    reference_weights: Optional[tuple] = None
 
     @classmethod
     def from_DF(cls, map, DF_jkl: jnp.ndarray) -> "SequenceGeometry":
@@ -152,51 +139,23 @@ class SequenceGeometry(eqx.Module):
     def from_spline_map(cls, spline_map, seq) -> "SequenceGeometry":
         """Sum-factorized geometry builder for tensor-product spline maps.
 
-        Uses ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` and needs
-        ``spline_map.extraction_T`` set.
+        Uses ``seq.basis_{r,t,z}_jk`` / ``seq.d_basis_{r,t,z}_jk`` on the
+        map's raw coefficient grid.
 
         Args:
-            spline_map: A :class:`~mrx.mappings.SplineMap` with
-                ``coefficients`` and ``extraction_T`` populated.
+            spline_map: A :class:`~mrx.mappings.SplineMap`.
             seq: A :class:`~mrx.derham_sequence.DeRhamSequence` with.
 
         Returns:
             A fully populated :class:`SequenceGeometry`.
         """
-        if spline_map.extraction_T is None:
-            raise ValueError(
-                "SplineMap.extraction_T must be set for the sum-factorized "
-                "geometry path; construct the map via "
-                "seq.build_spline_map(coefficients) or pass seq.E(0).T.")
-        _, DF_jkl = spline_map_F_DF_at_quad(
-            spline_map.coefficients, spline_map.extraction_T, seq)
+        DF_jkl = spline_map_DF_at_quad(spline_map, seq)
         return cls.from_DF(spline_map, DF_jkl)
 
 
 # ---------------------------------------------------------------------------
 # Sum-factorized spline fast path
 # ---------------------------------------------------------------------------
-
-def _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz):
-    """Undo the extraction operator and reshape to the raw TP grid.
-
-    Args:
-        coefficients: ``(3, n_dof)`` Cartesian spline coefficients in the
-            extracted basis.
-        extraction_T: :class:`~mrx.extraction_operators.MatrixFreeExtraction`
-            of shape ``(n_raw, n_dof)`` — the transpose of the extraction
-            operator ``E`` (usually ``seq.E(0).T``).
-        nr: Raw tensor-product size in the r direction.
-        nt: Raw tensor-product size in the t direction.
-        nz: Raw tensor-product size in the z direction.
-
-    Returns:
-        ``(3, nr, nt, nz)`` array of coefficients in the raw TP spline basis.
-    """
-    # C_raw = coefficients @ E   (shape (3, n_raw)), written via E^T.
-    C_raw_flat = (extraction_T @ coefficients.T).T
-    return C_raw_flat.reshape(3, nr, nt, nz)
-
 
 def _tp_evaluate(C_raw, M1, M2, M3):
     """Sum-factorized evaluation of a tensor-product spline.
@@ -219,27 +178,12 @@ def _tp_evaluate(C_raw, M1, M2, M3):
     return jnp.einsum("iIJc,cK->iIJK", T2, M3)
 
 
-def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
-    """Evaluate ``F`` and ``DF`` at the sequence's quadrature grid.
-
-    Uses the precomputed 1D basis / derivative values
-    ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk`` (built by the
-    sequence).
-
-    Args:
-        coefficients: ``(3, n_dof)`` spline coefficients of the map.
-        extraction_T: Transpose of the extraction operator, shape
-            ``(n_raw, n_dof)``.
-        seq: :class:`~mrx.derham_sequence.DeRhamSequence` with.
-
-    Returns:
-        Tuple ``(F_q, DF_q)``:
-
-        - ``F_q``: ``(N_q, 3)`` physical position at each quadrature point.
-        - ``DF_q``: ``(N_q, 3, 3)`` Jacobian of F; axis 1 = Cartesian
-          component, axis 2 = logical direction.
+def spline_map_DF_at_quad(spline_map, seq):
+    """``DF`` at the sequence's quadrature grid, ``(N_q, 3, 3)`` (axis 1 the
+    Cartesian component, axis 2 the logical direction), by sum factorisation
+    of ``spline_map.raw`` against the precomputed 1D basis / derivative
+    values ``seq.basis_{r,t,z}_jk`` and ``seq.d_basis_{r,t,z}_jk``.
     """
-    nr, nt, nz = seq.basis_0.shape[0]
     Br, Bt, Bz = seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk
     # The stored d_basis_*_jk live in the (p-1)-degree derived space and
     # have a different leading dimension than basis_*_jk; grad_1d lifts
@@ -250,20 +194,17 @@ def spline_map_F_DF_at_quad(coefficients, extraction_T, seq):
     Dt = grad_1d(seq.d_basis_t_jk, types[1])
     Dz = grad_1d(seq.d_basis_z_jk, types[2])
 
-    C_raw = _coeffs_to_raw_grid(coefficients, extraction_T, nr, nt, nz)
+    C_raw = spline_map.raw
 
-    F = _tp_evaluate(C_raw, Br, Bt, Bz)         # (3, nqr, nqt, nqz)
     dF_dx1 = _tp_evaluate(C_raw, Dr, Bt, Bz)
     dF_dx2 = _tp_evaluate(C_raw, Br, Dt, Bz)
     dF_dx3 = _tp_evaluate(C_raw, Br, Bt, Dz)
 
     # (3, nqr, nqt, nqz) flattens straight into the r-major seq.quad.x order.
-    F_q = F.reshape(3, -1).T                               # (N_q, 3)
-    DF_q = jnp.stack(
+    return jnp.stack(
         [dF_dx1.reshape(3, -1), dF_dx2.reshape(3, -1), dF_dx3.reshape(3, -1)],
         axis=-1,
     ).transpose(1, 0, 2)                                   # (N_q, 3, 3)
-    return F_q, DF_q
 
 
 # ---------------------------------------------------------------------------
@@ -442,14 +383,20 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
-        preconditioner built (``seq.operators is ops``).
+        preconditioner built (``seq.operators is ops``); the harmonic forms
+        are a separate, explicit step, ``compute_nullspaces(seq)``
+        (:func:`mrx.nullspace.compute_nullspaces`: a chain of solves, only
+        where a run deflates against them); the parsed file is
+        ``seq.equilibrium`` (the state dict of :func:`mrx.gvec.read_equilibrium`
+        with ``kind``, or the analytic file's dict with ``kind`` the map's
+        name), read once, for :func:`mrx.initial_conditions.initial_field`.
 
     Raises:
         ValueError: if ``geometry`` is not a file, is of another kind, or
             (from ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
-    from mrx.gvec import build_gvec_map  # noqa: PLC0415
+    from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
     knots = (radial_knots(ns[0], p, r_windows), None, None) if r_windows else None
@@ -458,12 +405,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
                          betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
     if kind in ("gvec", "vmec"):
-        map_func, info = build_gvec_map(geometry, seq, nfp=nfp)
+        seq.equilibrium = read_equilibrium(geometry)
+        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
         seq.set_map(map_func)
     else:
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
-        seq.set_map(maps[kind](**read_analytic(geometry)["map_params"]))
+        seq.equilibrium = dict(read_analytic(geometry), kind=kind)
+        seq.set_map(maps[kind](**seq.equilibrium["map_params"]))
     return seq, seq.build_preconditioners()

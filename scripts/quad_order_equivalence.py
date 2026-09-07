@@ -61,7 +61,7 @@ def dump(out, geometry, ns, p):
         print(f"[apply] {tag} done", flush=True)
 
     # (3) harmonic forms and their Rayleigh quotients / lambda_1 lines
-    ops = seq.set_operators(compute_nullspaces(seq, ops, gap_sweeps=5, verbose=True))
+    ops = compute_nullspaces(seq, gap_sweeps=5, verbose=True)
     for k, dbc in ((3, True), (2, True), (0, False), (1, False)):
         v = get_nullspace(ops, k, dbc)
         tag = f"k{k}_{'dbc' if dbc else 'free'}"

@@ -252,7 +252,7 @@ def main(cli):
         tag = f"{ns[0]}x{ns[1]}x{ns[2]}_p{cli.p}"
         t0 = time.perf_counter()
         seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol)
-        ops = seq.set_operators(compute_nullspaces(seq, ops, gap_sweeps=cli.gap_sweeps))
+        ops = compute_nullspaces(seq, gap_sweeps=cli.gap_sweeps)
         rec = run_rung(seq, ops, routes, cli.field, cli.lam, tag, gap_sweeps=cli.gap_sweeps)
         rec.update(ns=list(ns), p=cli.p, h=1.0 / (ns[0] - cli.p),
                    n_elements=ns[0] - cli.p, tol=float(seq.tol),

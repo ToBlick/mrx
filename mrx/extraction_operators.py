@@ -34,12 +34,13 @@ class MatrixFreeExtraction(eqx.Module):
     transposed: bool = eqx.field(static=True)
 
     @classmethod
-    def from_coo(cls, rows, cols, vals, shape):
-        """Build the operator from host COO triplets and a ``(n_row, n_col)`` shape."""
+    def from_coo(cls, rows, cols, vals, shape, dtype=None):
+        """Build the operator from host COO triplets and a ``(n_row, n_col)``
+        shape; ``dtype`` of the values, the working dtype by default."""
         return cls(
             rows=jnp.asarray(np.asarray(rows, dtype=np.int32)),
             cols=jnp.asarray(np.asarray(cols, dtype=np.int32)),
-            vals=jnp.asarray(np.asarray(vals), dtype=mrx.DTYPE),
+            vals=jnp.asarray(np.asarray(vals), dtype=mrx.DTYPE if dtype is None else dtype),
             forward_shape=(int(shape[0]), int(shape[1])),
             transposed=False,
         )
@@ -234,8 +235,10 @@ class PolarExtractionOperator:
             component, i + i_offset, j, k), dtype=np.int32))
         data.append(np.ones(n, dtype=np.float64))
 
-    def build_extraction(self):
-        """Build the MatrixFreeExtraction from the explicit tensor-product sparsity pattern."""
+    def build_extraction(self, dtype=None):
+        """Build the MatrixFreeExtraction from the explicit tensor-product
+        sparsity pattern; ``dtype`` of the values, the working dtype by default."""
+        dtype = mrx.DTYPE if dtype is None else dtype
         xi = np.asarray(self.ξ)
         rows = []
         cols = []
@@ -426,11 +429,11 @@ class PolarExtractionOperator:
         if data:
             rows_arr = jnp.asarray(np.concatenate(rows), dtype=jnp.int32)
             cols_arr = jnp.asarray(np.concatenate(cols), dtype=jnp.int32)
-            vals_arr = jnp.asarray(np.concatenate(data), dtype=mrx.DTYPE)
+            vals_arr = jnp.asarray(np.concatenate(data), dtype=dtype)
         else:
             rows_arr = jnp.zeros((0,), dtype=jnp.int32)
             cols_arr = jnp.zeros((0,), dtype=jnp.int32)
-            vals_arr = jnp.zeros((0,), dtype=mrx.DTYPE)
+            vals_arr = jnp.zeros((0,), dtype=dtype)
         return MatrixFreeExtraction(
             rows=rows_arr, cols=cols_arr, vals=vals_arr,
             forward_shape=(self.n, self.Lambda.n),
@@ -479,6 +482,7 @@ def bc_extraction_op(
     e,
     e_dbc,
     n_full: int,
+    dtype=None,
 ):
     """Build the extraction operator for Dirichlet boundary DOFs.
 
@@ -495,7 +499,7 @@ def bc_extraction_op(
     return MatrixFreeExtraction(
         rows=jnp.asarray(np.arange(n_bc, dtype=np.int32)),
         cols=jnp.asarray(bc_cols.astype(np.int32)),
-        vals=jnp.ones(n_bc, dtype=mrx.DTYPE),
+        vals=jnp.ones(n_bc, dtype=mrx.DTYPE if dtype is None else dtype),
         forward_shape=(n_bc, n_full),
         transposed=False,
     )

@@ -88,7 +88,7 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # the operators every solve and the Poincare tracing lean on.
 nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
-seq.set_operators(compute_nullspaces(seq, ops))
+compute_nullspaces(seq)
 
 # %%
 # Now we get the starting field: warm-start from Tutorial 3's relaxed B if its
@@ -113,7 +113,7 @@ if B0 is None:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
         print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
-    B0, ic = initial_field(seq, cli.geometry, seed)
+    B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
 
@@ -128,24 +128,22 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
 # %%
 # Now we relax ideally for another 500 steps to a clean floor. The ideal tail
 # conserves helicity and just settles the reconnected field.
-smoothing_scale = 0.064 / ns[0] ** 2
-ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                       velocity_smoothing_order=1, velocity_smoothing_scale=smoothing_scale)
+ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
 print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
 res = relax(initial_state(B_reconnected, ts_ideal), ts_ideal, steps=cli.outer * cli.inner,
             chunk=cli.inner, floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)
-E = np.asarray(res.trace["E"], dtype=float)
+dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
 print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
-      f"E_0 - E = {E[0] - E[-1]:.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
+      f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
       f"||div B|| {float(res.trace['div'][-1]):.1e}")
 B = res.state.B_n
 
 # %%
-# Now we plot the force residual against the energy over the ideal tail.
-fig, _ = plot_twin_axis(F, E, left_label=r"$\|F\|_M$", right_label=r"$E$",
-                        left_marker="", right_marker="")
+# Now we plot the force residual against the energy removed over the ideal tail.
+fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
+                        left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 path = os.path.join(cli.out, "trace.png")
 fig.savefig(path, dpi=200)
 if _INTERACTIVE:

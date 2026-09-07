@@ -38,9 +38,10 @@ GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 # floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
 # there): let --steps / --seconds end the run and show whether it bottoms out.
 COMMON="--floor-tol 1e-4 --steps 6000"
-G1_12="--velocity-smoothing-order 1 --velocity-smoothing-scale 4.4e-4"   # mu = 0.064 / n_r^2
-G1_16="--velocity-smoothing-order 1 --velocity-smoothing-scale 2.5e-4"
-G1_32="--velocity-smoothing-order 1 --velocity-smoothing-scale 6.25e-5"
+G1="--velocity-smoothing-order 1"   # mu = 0.02 / n_r^2, the driver's default (SMOOTHING_C)
+G1_12=$G1
+G1_16=$G1
+G1_32=$G1
 AUX="--auxiliary-B-field true"
 
 submit() {  # submit KIND NAME SCRIPT ARGS TIMEOUT_MIN
@@ -110,16 +111,16 @@ anchor_sweeps() {
 
 hsweep_p2() {
     # 2026-09-02: gamma = 1 under h-refinement at fixed p = 2 on the ns = 49
-    # reference, mesh (n, 2n, 2n), mu = 0.064 / n^2, floor 1e-5 so the 5000-step
+    # reference, mesh (n, 2n, 2n), mu = 0.02 / n^2 (the default), floor 1e-5 so the 5000-step
     # cap (or the wall cap) ends the run and the floor versus h is what is measured.
     # Wall caps sum to 18.5 GPU-h; the n = 32 rung takes about 10 h of it.
     # These follow COMMON on the command line, so they override its floor and step cap.
     local common="--p 2 --floor-tol 1e-5 --steps 5000 --velocity-smoothing-order 1"
-    arm h8_p2_g1  "$GEOM_HI" "--ns 8,16,16  $common --velocity-smoothing-scale 1.0e-3 --seconds 1800"    90
-    arm h12_p2_g1 "$GEOM_HI" "--ns 12,24,24 $common --velocity-smoothing-scale 4.44e-4 --seconds 3600"   150
-    arm h16_p2_g1 "$GEOM_HI" "--ns 16,32,32 $common --velocity-smoothing-scale 2.5e-4 --seconds 7200"    300
-    arm h24_p2_g1 "$GEOM_HI" "--ns 24,48,48 $common --velocity-smoothing-scale 1.11e-4 --seconds 18000"  660
-    arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --velocity-smoothing-scale 6.25e-5 --seconds 36000" 1260
+    arm h8_p2_g1  "$GEOM_HI" "--ns 8,16,16  $common --seconds 1800"    90
+    arm h12_p2_g1 "$GEOM_HI" "--ns 12,24,24 $common --seconds 3600"   150
+    arm h16_p2_g1 "$GEOM_HI" "--ns 16,32,32 $common --seconds 7200"    300
+    arm h24_p2_g1 "$GEOM_HI" "--ns 24,48,48 $common --seconds 18000"  660
+    arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --seconds 36000" 1260
 }
 
 psweep_p16() {
@@ -151,7 +152,7 @@ aux() {  # aux [smoke|pairs]
         for st in B H; do
             flag=""; [ $st = H ] && flag=$AUX
             submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 $flag --out $PUB/h12_p2_f64_$st" 300
-            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 --velocity-smoothing-scale 1.0e-3 $flag --out $PUB/h8_p1_$st" 120
+            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 $flag --out $PUB/h8_p1_$st" 120
         done
     else
         submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/aux_h16_p2_g1" 300

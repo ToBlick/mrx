@@ -1,12 +1,19 @@
 """Matrix-free Krylov solvers: :func:`preconditioned_cg`, :func:`solve_singular_cg`
-and :func:`solve_saddle_point_minres`.
+and :func:`solve_saddle_point_minres`, and :func:`refine`, the iterative
+refinement that runs them in mixed precision.
 
-Every solver takes a relative tolerance ``tol``.  ``tol=None`` -- the default
-everywhere -- resolves to :func:`mrx.precision.sqrt_eps`, the square root of
-the working dtype's machine epsilon (1.5e-8 at float64, 3.5e-4 at float32):
-the residual of a matrix-free solve is limited by roundoff in the matvec, and
-that is the tightest tolerance which does not send the loop to ``maxiter``.
-Anything tighter or looser is an ALGORITHMIC choice and is passed explicitly.
+Every solver takes a relative tolerance ``tol``; ``tol=None`` is
+:data:`mrx.precision.SOLVE_TOL`. Given the outer operator (``A_res`` /
+``saddle_res``: the float64 view of the sequence, or the operator itself
+in a plain configuration) and the norm of its residual's space, the
+singular CG and the saddle MINRES run under :func:`refine`, the one
+stopping criterion of the package: the true residual of the outer
+equation in the mass-atom norm, the correction solved by the Krylov
+iteration in the working precision, the solution accumulated in the
+residual precision and returned in it. Until 2026-09-04 the default was sqrt(eps) of the working
+dtype with a docstring claiming it was the tightest tolerance that did not
+send the loop to ``maxiter``; measured on li383 (16,32,32) p=3 in float32,
+every production solve converges to 1e-7 (``docs/research/velocity_leray_ab_2026-09-04.md``).
 """
 
 from typing import NamedTuple
@@ -14,7 +21,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from mrx.precision import sqrt_eps
+from mrx.precision import DTYPE, MAX_PASSES, RESIDUAL_DTYPE, solve_tol
+from mrx.precision import inner_tol as default_inner_tol
 
 
 def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
@@ -33,7 +41,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         b: Right-hand side vector.
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M @ x (approx A^{-1}, SPD).
-        tol: Relative tolerance in M-norm; ``None`` is ``mrx.sqrt_eps()``.
+        tol: Relative tolerance in M-norm; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -50,7 +58,7 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     n = b.shape[0]
     if tol is None:
-        tol = sqrt_eps()
+        tol = solve_tol()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -124,7 +132,104 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
-def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None, maxiter=None, tol=None):
+def deflation_projectors(vs, mass_matvec):
+    """``(project_primal, project_dual)`` against the ``(m, n)`` rows of ``vs``,
+    ``M``-orthonormal kernel vectors: ``x - (vs M x) vs`` on a primal vector,
+    ``f - (vs f) (M vs)`` on a dual one, with ``M vs`` formed once. With no
+    rows both are the identity."""
+    vs = jnp.asarray(vs)
+    if vs.ndim != 2:
+        raise ValueError(f"vs must be an (m, n) array, got shape {vs.shape}")
+    if vs.shape[0] == 0:
+        return (lambda x: x), (lambda f: f)
+    mass_vs = jax.vmap(mass_matvec)(vs)
+
+    def project_primal(x):
+        return x - (vs @ mass_matvec(x)) @ vs
+
+    def project_dual(f):
+        return f - (vs @ f) @ mass_vs
+
+    return project_primal, project_dual
+
+
+def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
+           max_passes=MAX_PASSES, inner_dtype=DTYPE, residual=None):
+    """The outer loop of every solve: the true residual of ``A x = b`` in
+    the norm of its space, corrected until it is below ``tol``.
+
+    ``apply_res(x)`` applies ``A`` in the residual precision
+    (:data:`mrx.precision.RESIDUAL_DTYPE`; the operator itself when the
+    working precision is the residual one), ``solve(r)`` solves ``A d = r``
+    in the working precision from zero to its own inner tolerance and
+    returns ``(d, info)``. The residual ``b - A x`` is evaluated in the
+    residual precision and measured by ``norm`` -- the mass-atom norm of
+    the residual's space, the h-independent norm of a dual vector (the
+    plain 2-norm of the coefficients when no norm is given) -- and the
+    correction added, until ``norm(b - A x) <= tol norm(b)`` or
+    ``max_passes`` corrections were taken. The inner solve receives the
+    residual at unit norm and the correction is scaled back, so the
+    working precision's range never limits what the loop can ask for. In
+    mixed precision each pass
+    takes the residual down by about the inner tolerance, so a warm start
+    with a 1% defect meets 1e-8 in two; in a plain configuration the inner
+    solve runs at ``tol`` and the loop is the check that its own criterion,
+    a preconditioned norm of some inner operator, did not stop short of the
+    true one (measured 2026-09-05: the k=1 Hodge split converged on its hat
+    operator at 1e-8 with a true residual of 2e-6). ``project_dual`` removes
+    the nullspace component of a singular system's residual. Returns ``(x,
+    info)`` with ``x`` in the residual precision and ``info`` the inner
+    iterations of all passes, negative when the residual test was met.
+    ``inner_dtype`` is the dtype the inner solve runs in: the working dtype,
+    or the residual dtype for a solve on the float64 view. A composite
+    solve whose residual is not ``b - A x`` of its own unknown -- the
+    Hodge Laplacian, measured as the saddle residual of the pair ``(x,
+    w)`` -- gives ``residual(x)`` instead of ``apply_res`` (and ``x0``, the
+    unknown's shape); ``b`` is then the right-hand side in the residual's
+    space, for the norm only, and ``solve`` receives the residual whole.
+    """
+    tol = solve_tol() if tol is None else tol
+    if project_dual is None:
+        def project_dual(r): return r
+    if norm is None:
+        norm = jnp.linalg.norm
+    b = b.astype(RESIDUAL_DTYPE)
+    if residual is None:
+        x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
+
+        def residual(x):
+            return project_dual(b - apply_res(x))
+    else:
+        x = x0.astype(RESIDUAL_DTYPE)
+    bnorm = norm(project_dual(b))
+    bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+
+    def cond(carry):
+        _, r, k, _ = carry
+        return jnp.logical_and(norm(r) > tol * bnorm_safe, k < max_passes)
+
+    def body(carry):
+        x, r, k, its = carry
+        # The inner solve sees the residual at unit norm: the residual of a
+        # small right-hand side at a tight tolerance (1e-12 at 1e-10) lies
+        # below the working precision's range -- squared float32 norms of a
+        # 1e-22 vector are denormal, and the CG divides by a p^T A p that
+        # rounded to zero (measured 2026-09-05, (16,32,32) p=2 at tol 1e-10:
+        # NaN at step 64). The scale is positive here: the loop only enters
+        # on norm(r) > tol bnorm_safe.
+        s = norm(r)
+        d, info = solve((r / s).astype(inner_dtype))
+        x = x + s * d.astype(RESIDUAL_DTYPE)
+        return x, residual(x), k + 1, its + jnp.abs(info)
+
+    x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
+    converged = norm(r) <= tol * bnorm_safe
+    return x, jnp.where(converged, -its, its)
+
+
+def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None,
+                      maxiter=None, tol=None, A_res=None, norm=None, inner_tol=None,
+                      inner_dtype=DTYPE):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
@@ -137,54 +242,55 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
             possibly 0 -- the shape the sequence stores its harmonic forms in
             (:func:`mrx.nullspace.get_nullspace`).
         maxiter: Maximum number of CG iterations.
-        tol: CG tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        tol: the outer tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
+        A_res: ``A`` in the residual precision. When given the solve runs
+            under :func:`refine` -- the true residual in ``norm`` decides --
+            and ``x`` comes back in that precision; without it the CG's own
+            preconditioned criterion decides.
+        norm: the norm of the residual for :func:`refine`.
+        inner_tol: the CG's tolerance per pass under :func:`refine`;
+            ``None`` is the square root of ``tol`` (:func:`mrx.precision.inner_tol`).
+        inner_dtype: the dtype the CG runs in under :func:`refine`.
     """
     if mass_matvec is None:
         def mass_matvec(x): return x
 
-    vs_stacked = jnp.asarray(vs, dtype=b.dtype)
-    if vs_stacked.ndim != 2:
-        raise ValueError(f"vs must be an (m, n) array, got shape {vs_stacked.shape}")
+    if A_res is None:
+        project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=b.dtype), mass_matvec)
 
-    def inner_product(x, y):
-        return jnp.dot(x, mass_matvec(y))
+        def A_matvec_safe(x):
+            return project_dual(A_matvec(project_primal(x)))
 
-    if vs_stacked.shape[0] == 0:
-        def project_primal(x):
-            return x
+        def precond_matvec_safe(x):
+            return project_primal(precond_matvec(project_dual(x)))
 
-        def project_dual(f):
-            return f
-    else:
-        mass_vs = jax.vmap(mass_matvec)(vs_stacked)
+        x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
+        x, info = preconditioned_cg(A_matvec_safe, project_dual(b), x0=x0,
+                                    M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+        return project_primal(x), info
 
-        def project_primal(x):
-            coeffs = vs_stacked @ mass_matvec(x)
-            return x - coeffs @ vs_stacked
-
-        def project_dual(f):
-            coeffs = vs_stacked @ f
-            return f - coeffs @ mass_vs
-
-    b_proj = project_dual(b)
+    # The inner iteration's projectors in its own dtype, the outer loop's in
+    # the residual precision.
+    project_primal_in, project_dual_in = deflation_projectors(
+        jnp.asarray(vs, dtype=inner_dtype), mass_matvec)
+    project_primal, project_dual = deflation_projectors(
+        jnp.asarray(vs, dtype=RESIDUAL_DTYPE), mass_matvec)
 
     def A_matvec_safe(x):
-        x = project_primal(x)
-        # Apply the bilinear form (output is Dual)
-        Ax = A_matvec(x)
-        return project_dual(Ax)
+        return project_dual_in(A_matvec(project_primal_in(x)))
 
     def precond_matvec_safe(x):
-        return project_primal(precond_matvec(project_dual(x)))
+        return project_primal_in(precond_matvec(project_dual_in(x)))
 
-    if x0 is None:
-        x0 = jnp.zeros_like(b_proj)
-    else:
-        x0 = project_primal(x0)
+    tol = solve_tol() if tol is None else tol
+    inner = default_inner_tol(tol) if inner_tol is None else inner_tol
 
-    x, info = preconditioned_cg(A_matvec_safe, b_proj, x0=x0,
-                                M=precond_matvec_safe, tol=tol, maxiter=maxiter)
+    def solve(r):
+        return preconditioned_cg(A_matvec_safe, r, M=precond_matvec_safe,
+                                 tol=inner, maxiter=maxiter)
 
+    x, info = refine(lambda x: A_res(project_primal(x)), solve, b, x0=x0, tol=tol,
+                     project_dual=project_dual, norm=norm, inner_dtype=inner_dtype)
     return project_primal(x), info
 
 
@@ -219,7 +325,7 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         x0: Optional initial guess.
         M: Optional preconditioner callable, x -> M^{-1} @ x.
            Must be symmetric positive definite.
-        tol: Relative residual tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        tol: Relative residual tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
 
     Returns:
@@ -232,7 +338,7 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     """
     n = b.shape[0]
     if tol is None:
-        tol = sqrt_eps()
+        tol = solve_tol()
     if maxiter is None:
         maxiter = n
     if x0 is None:
@@ -384,9 +490,10 @@ def solve_saddle_point_minres(
         mass_lower_matvec, b_upper, n_upper, n_lower,
         precond_upper=None, precond_lower=None,
         mass_upper_matvec=None,
-        vs_upper=None, vs_lower=None,
-        x0_upper=None,
-        tol=None, maxiter=None):
+        vs_upper=None,
+        x0_upper=None, x0_lower=None,
+        tol=None, maxiter=None, saddle_res=None, norm_upper=None, norm_lower=None,
+        inner_tol=None, inner_dtype=DTYPE):
     """
     Solve the saddle-point system using preconditioned MINRES::
 
@@ -409,11 +516,23 @@ def solve_saddle_point_minres(
         precond_lower: Callable, approximate inverse for lower block
             (mass matrix). Must be linear and SPD.
         mass_upper_matvec: u -> M_k @ u (k-form mass, for nullspace projection).
-        vs_upper: List of nullspace vectors for the k-form block.
-        vs_lower: List of nullspace vectors for the (k-1)-form block.
+        vs_upper: ``(m, n_upper)`` M-orthonormal nullspace vectors of the
+            k-form block, deflated from ``u``. The lower block needs none:
+            a harmonic ``v`` has ``D^T v = 0`` (both halves of ``L_k`` are
+            semidefinite), so the saddle matrix's nullspace is ``(v, 0)``.
         x0_upper: Initial guess for u.
-        tol: MINRES tolerance; ``None`` is ``mrx.sqrt_eps()``.
+        x0_lower: Initial guess for sigma. A guess on ``u`` alone leaves
+            ``D^T x0_upper`` in the lower block of the initial residual, so
+            the two go together.
+        tol: MINRES tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum iterations.
+        saddle_res: ``(u, sigma) -> (S u + D sigma, D^T u - M sigma)`` in the
+            residual precision. When given the solve runs under
+            :func:`refine` -- the true residual decides, in the block norm
+            ``sqrt(norm_upper(r_u)^2 + norm_lower(r_l)^2)`` of the two
+            residual spaces -- and ``u``, ``sigma`` come back in that
+            precision. ``inner_tol`` is MINRES's tolerance per pass;
+            ``None`` is the square root of ``tol`` (:func:`mrx.precision.inner_tol`).
 
     Returns:
         u: Solution k-form vector.
@@ -425,39 +544,16 @@ def solve_saddle_point_minres(
             after the two corrected on 2026-08-24 and 2026-08-25. Reading it
             as written turns a converged solve into a failure.
     """
-    if vs_upper is None:
-        vs_upper = []
-    if vs_lower is None:
-        vs_lower = []
     if mass_upper_matvec is None:
         def mass_upper_matvec(x): return x
 
     n_total = n_upper + n_lower
+    dtype = b_upper.dtype
 
-    # --- Nullspace projection helpers ---
-    # Pre-compute mass-applied nullspace vectors with vmap (O(n_null) matvecs),
-    # then use matrix ops for projection — matches solve_singular_cg convention.
-    if len(vs_upper) == 0:
-        def project_primal_upper(x): return x
-        def project_dual_upper(f): return f
-    else:
-        _vs_u = jnp.asarray(vs_upper)
-        _mass_vs_u = jax.vmap(mass_upper_matvec)(_vs_u)
-        def project_primal_upper(x):
-            return x - (_vs_u @ mass_upper_matvec(x)) @ _vs_u
-        def project_dual_upper(f):
-            return f - (_vs_u @ f) @ _mass_vs_u
+    def _rows(vs, n):
+        return jnp.zeros((0, n), dtype=dtype) if vs is None or len(vs) == 0 else jnp.asarray(vs)
 
-    if len(vs_lower) == 0:
-        def project_primal_lower(x): return x
-        def project_dual_lower(f): return f
-    else:
-        _vs_l = jnp.asarray(vs_lower)
-        _mass_vs_l = jax.vmap(mass_lower_matvec)(_vs_l)
-        def project_primal_lower(x):
-            return x - (_vs_l @ mass_lower_matvec(x)) @ _vs_l
-        def project_dual_lower(f):
-            return f - (_vs_l @ f) @ _mass_vs_l
+    project_primal_upper, project_dual_upper = deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec)
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -467,45 +563,59 @@ def solve_saddle_point_minres(
 
     def project_primal(x):
         u, s = unpack(x)
-        return pack(project_primal_upper(u), project_primal_lower(s))
+        return pack(project_primal_upper(u), s)
 
     # --- Saddle-point matvec ---
     def A_matvec(x):
         u, s = unpack(x)
         u = project_primal_upper(u)
-        s = project_primal_lower(s)
         # Upper block: S @ u + D @ s
         r_upper = stiffness_matvec(u) + derivative_matvec(s)
         # Lower block: D^T @ u - M @ s
         r_lower = derivative_T_matvec(u) - mass_lower_matvec(s)
-        result = pack(project_dual_upper(r_upper),
-                      project_dual_lower(r_lower))
-        return result
+        return pack(project_dual_upper(r_upper), r_lower)
 
     # --- Block-diagonal preconditioner ---
     def precond(x):
         u, s = unpack(x)
         u = project_dual_upper(u)
-        s = project_dual_lower(s)
         pu = precond_upper(u) if precond_upper is not None else u
         ps = precond_lower(s) if precond_lower is not None else s
-        return pack(project_primal_upper(pu), project_primal_lower(ps))
+        return pack(project_primal_upper(pu), ps)
 
-    # --- RHS ---
-    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
-
-    # --- Initial guess ---
+    # --- RHS and initial guess ---
+    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
     if x0_upper is None:
-        x0_upper = jnp.zeros(n_upper)
-    x0 = pack(project_primal_upper(x0_upper), jnp.zeros(n_lower))
+        x0_upper = jnp.zeros(n_upper, dtype=dtype)
+    if x0_lower is None:
+        x0_lower = jnp.zeros(n_lower, dtype=dtype)
+    x0 = pack(project_primal_upper(x0_upper), x0_lower)
 
     if maxiter is None:
         maxiter = n_total
 
-    x, info = minres(A_matvec, b, x0=x0, M=precond,
-                     tol=tol, maxiter=maxiter)
+    if saddle_res is None:
+        x, info = minres(A_matvec, b, x0=x0, M=precond, tol=tol, maxiter=maxiter)
+        u, sigma = unpack(project_primal(x))
+        return u, sigma, info
+
+    def apply_res(x):
+        u, s = unpack(x)
+        r_upper, r_lower = saddle_res(project_primal_upper(u), s)
+        return pack(project_dual_upper(r_upper), r_lower)
+
+    tol = solve_tol() if tol is None else tol
+    inner = default_inner_tol(tol) if inner_tol is None else inner_tol
+
+    def solve(r):
+        return minres(A_matvec, r, M=precond, tol=inner, maxiter=maxiter)
+
+    def norm(r):
+        r_u, r_l = unpack(r)
+        nu = jnp.linalg.norm(r_u) if norm_upper is None else norm_upper(r_u)
+        nl = jnp.linalg.norm(r_l) if norm_lower is None else norm_lower(r_l)
+        return jnp.sqrt(nu ** 2 + nl ** 2)
+
+    x, info = refine(apply_res, solve, b, x0=x0, tol=tol, norm=norm, inner_dtype=inner_dtype)
     u, sigma = unpack(project_primal(x))
-
     return u, sigma, info
-
-
