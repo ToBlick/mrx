@@ -470,6 +470,177 @@ the study; the iteration counts to a given tolerance are not comparable across
 preconditioners (each measures the residual in its own norm), the direction
 quality is. Default `HARMONIC_FLOOR` = 1e-2.
 
+**Lumping $u \cdot \nabla h$ instead of dropping it (Tobias 2026-09-07).** Per
+mode the lumped derivative is $i k_\parallel I$ (anti-Hermitian) and the
+angle-averaged strain $\bar S(r) = \langle \nabla h \rangle$ is real symmetric
+($\mathrm{curl}\,h = 0$), so
+$(i k_\parallel I - \bar S)^H (i k_\parallel I - \bar S) = k_\parallel^2 I + \bar S^2$:
+the cross terms cancel and the lumped strain is a plain addition, a positive
+$3 \times 3$ matrix per radial layer, the same for every mode -- the floor,
+computed instead of tuned, $r$-dependent and anisotropic; within the
+per-component atom its diagonal, $\varphi_c(r) = \langle (\nabla h)^T \nabla h \rangle_{cc}$,
+and no $\kappa$. Needs $\nabla h$ at the quadrature points in the atom's
+representation (a `jacfwd` of the discrete field, or grid differences: a
+floor tolerates crudeness) and the angle average of $S^T S$ per layer; ~20
+lines in the harmonic atom. Cannot restore the kernel cancellation (harmless
+for a preconditioner) nor the mode coupling of the un-averaged strain. To be
+built into the harmonic atom once the bands verdict is in, and measured with
+it on the Newton count.
+
+**The averaging must bundle the product (Tobias 2026-09-07).** For the $r$
+component with $h^r \approx 0$ and $k = 2\pi(m, n)$,
+$\int (g_{rr}/J) |(h \cdot \nabla) u^r|^2 = (2\pi)^2 [w_{\theta\theta} m^2 + 2 w_{\theta\zeta} m n + w_{\zeta\zeta} n^2]$
+with $w_{ij}(r) = \langle (g_{rr}/J)(h^i/J)(h^j/J) \rangle_{\theta\zeta}$: three
+bundled profiles per component and radius, a quadratic form in $(m, n)$ equal
+to the Fourier-diagonal of the true operator (its Galerkin projection on one
+mode, coupling dropped). The atom's $(\langle h^\theta/J \rangle m + \langle h^\zeta/J \rangle n)^2$
+is a product of averages with the $g_{cc}/J$ left to the Laplacian atom: not
+the same. Consequences: (i) $w_{\theta\zeta}^2 \le w_{\theta\theta} w_{\zeta\zeta}$
+with equality only for a pitch $h^\theta/h^\zeta$ constant on the surface, so
+$\langle k_\parallel^2 \rangle$ on a rational surface is positive -- the
+resonance is smeared by the pitch variation and part of the floor is already
+in the bundled coefficients; the number to compute per surface is
+$1 - w_{\theta\zeta}^2/(w_{\theta\theta} w_{\zeta\zeta})$; (ii) the sandwich
+multiplies the Laplacian atom's denominator (the $g^{aa}J$ curl-curl weights)
+by a dimensionless symbol, but the model's weight sits inside the curl-curl
+per component; that factorisation does not hold. The construction in which the
+lumping is done right is the per-mode radial assembly with the bundled
+weights as radial mass weights per component (+ the bundled strain, + $h^r$
+terms if kept): the block-Jacobi of the true operator in Fourier space.
+
+**The outer curls (Tobias 2026-09-07).** Per mode the incidence curl is a
+$3 \times 3$ operator with radial derivatives,
+$(\mathrm{curl}\,a)^r = D_\theta a_\zeta - D_\zeta a_\theta$,
+$(\mathrm{curl}\,a)^\theta = D_\zeta a_r - \partial_r a_\zeta$,
+$(\mathrm{curl}\,a)^\zeta = \partial_r a_\theta - D_\theta a_r$ ($D_\theta, D_\zeta$ the
+incidence stencils' discrete Fourier symbols, $\partial_r$ the banded radial
+incidence), so $\mathrm{curl}^T H\,\mathrm{curl}$ per mode is
+$\mathrm{curl}_{mn}^T \mathrm{diag}_c(W_c(r; m, n))\, \mathrm{curl}_{mn}$: a $3 n_r \times 3 n_r$
+block coupling the components through $\partial_r$ and the $r$ component.
+The sandwich carries the curls through the Laplacian atom, one Kronecker sum
+per component with the off-diagonal component blocks dropped -- an
+approximation before the symbol enters. The per-mode assembly keeps the
+coupling exactly; its gauge kernel ($n_r$ radial profiles of $\nabla \phi_{mn}$
+per mode, $\mathrm{curl}\,\nabla = 0$ on the incidences) is completed to SPD by
+the weak half $\nabla \mathrm{div}$ per mode as the Hodge Laplacian does (MINRES
+never uses the gradient part of a consistent solve). Full block:
+$\mathrm{curl}_{mn}^T W \mathrm{curl}_{mn} + (\text{weak half})_{mn}$, bandwidth
+$\sim 3(2p+1)$, from the 1-D incidence, mass and stiffness routines the atoms
+own; the only approximation left is the angle averaging.
+
+**Measured (job 18065315, `pitch_probe.log`, li383 (16,32,32) p=2).** Lumped
+pitch $w_{\theta\zeta}/w_{\zeta\zeta}$ = 0.16-0.20 = $\iota_h / n_{fp}$ (the logical
+$\zeta$ covers one period), i.e. $\iota_h$ = 0.49-0.59. Smearing
+$1 - w_{\theta\zeta}^2/(w_{\theta\theta} w_{\zeta\zeta})$ = 0.10-0.25 across the bulk
+for all three components (0.21/0.25/0.31 at $r$ = 0.25, 0.11/0.16/0.24 at the
+3/5 surface): the local pitch of $h$ varies by that much over a surface because
+the logical $\theta$ is VMEC's angle, not straight-field-line ($\lambda$ is not
+in the map). Hence a resonant direction is a packet of Fourier modes
+$(m, n), (m, n \pm n_{fp}), \ldots$, each carrying 10-25% of a non-resonant
+curvature in the Fourier diagonal: every mode-diagonal preconditioner (the
+sandwich, the per-mode block, the bands) overestimates the flat packets'
+curvature by that factor and leaves them as low outliers for Krylov or
+deflation. A remedy at the preconditioner level is an internal change to the
+field-aligned angle of $h$ (no longer a plain FFT). The strain floor is moot
+for $m \gtrsim 3$: the bundling carries a floor of that size. And
+$|h^r|/|h|$ = 0.05-0.08 over most of the radius (the harmonic field's surfaces
+are not the VMEC surfaces): for the grid-scale-in-$r$ flat modes
+$(h^r/J)\partial_r u$ is of the order of the missing $k_\parallel$ term; the
+sandwich drops it, the per-mode block can assemble it (a radial
+first-derivative term). Net: the model is right, its flat directions are wave
+packets in these angles, and the mode-diagonal constructions can at best get
+the stiff end right.
+
+**Why the sandwich falls short of the model, and the fix (Tobias 2026-09-07).**
+The model was validated on Ritz vectors (condition 13); the sandwich is not
+its inverse: (i) the symbol $(a(r) m + b(r) n)^2$ passes through zero on each
+resonant surface, and a pointwise-in-$r$ scaling before and after the
+Laplacian atom's radial solve commutes with it only for $r$-independent
+$a, b$ -- crudest exactly on the flat modes; (ii) the symbol is applied per
+component of the potential $a$, i.e. $\mathrm{curl}(h \cdot \nabla a) = h \cdot \nabla(\mathrm{curl}\,a)$
+is assumed, false with shear; (iii) angle-averaged profiles ($|h^\zeta/J|$
+varies 2-3x over $\theta$), a scalar floor, the Laplacian's polar core. Each
+departs from the model where it earned its condition number; the 6-8x is the
+high end's share.
+
+The fix: keep the Fourier diagonalisation in the angles (the lumping earns
+it) and solve the radial direction exactly per mode. For a mode $(m, n)$ the
+model $\mathrm{curl}^T \Lambda\, \mathrm{curl}$ is a dense-banded $3 n_r \times 3 n_r$
+matrix in $r$ on the three components of $a$ (the mode's curl, the radial
+masses and metric weights, the symbol as a radial profile with its zero at
+the mode's resonant radius, the curl again): assemble the ~1000 mode matrices
+once (they depend on $h$, not on $B$), factor once (~20 MB), apply = two FFTs
++ a batched banded solve, SPD per mode. The polar core by the dense probe or
+the extraction as now. This is the field-line atom in the form the physics
+dictates, SIESTA's block structure with the modes decoupled by the lumping.
+Before building it (a day): two diagnostics, one job each -- MINRES with the
+exact model inverse inside (an inner solve, diagnostic only) to confirm the
+count the model promises; and the $(m, n, r)$ identification of the seven
+flat Ritz vectors to check the floor mode by mode.
+
+**Dense-in-$r$ for every atom (Tobias 2026-09-07).** The metric-lumping atoms
+are Kronecker sums, which need each term's weight to be a product of one-axis
+profiles: the $\theta$ term's $g^{\theta\theta} J \sim 1/r$ is averaged over
+$r$ and the axis geometry leaves the bulk atom -- the documented weak spot
+(k=0 $\kappa \sim n^{1.7}$ on the cylinder, k=1 counts $\sim n^{1.3}$). Fourier
+in the angles with angle-averaged coefficients (today's lumping) and a
+banded radial matrix per mode $(m, n)$ with the exact radial dependence of
+every weight, $K_r + (2\pi m)^2 M_r[w_\theta(r)] + (2\pi n)^2 M_r[w_\zeta(r)]$
+for a scalar, components coupled in the block, contains the Kronecker sum as
+the $r$-independent special case and removes exactly that error; the polar
+core stays the dense probe. One construction for the masses, the Laplacians,
+the shifted $M + \epsilon L$ (a radial diagonal per mode) and the Newton
+model (its symbol is one more radial weight per mode). Storage
+$n_\theta n_\zeta (3 n_r)^2$ per atom (20 MB at (16,32,32); 300 MB dense,
+30 MB banded at (32,64,64) for a vector form); apply = two FFTs + a batched
+banded solve; build from the existing 1-D weighted assembly, no probing. The
+successor of the metric-lumping family, to earn its place on the counts mesh
+by mesh, the k=0 axis problem first, the harmonic model as the first customer.
+
+**Without dense-in-$r$ (Tobias 2026-09-07).** The sandwich earns the stiff
+end; what it misses is a low-dimensional, slowly varying set of flat
+directions. Deflation with recycling learns them: keep the 20-50 lowest Ritz
+vectors of the preconditioned operator from each MINRES solve and deflate
+them from the next (valid with the operator frozen per chunk, slowly varying
+even unfrozen). No atom, no model, no separability assumption; storage plus
+one orthogonalisation per iteration; adapts to shear, $u \cdot \nabla h$ and
+the polar rows alike. The first thing to try: one diagnostic job, MINRES with
+the sandwich plus the Lanczos-learned low space at the step-5000 field,
+against the 300. Radial bands / additive Schwarz (one Kronecker sum per band) are
+NOT an option: the 2-D ring atom of 2026-08-19 was that construction at its
+extreme and lost badly on the outer rings (toroid k=3 free 65 vs 24, W7-X k=2
+free 616 vs 200), because their value is the nonlocal radial coupling
+(Steklov/DtN) no separable factor carries (Tobias 2026-09-07). The dense
+radial block per mode is the opposite experience: the k=0 `radial_dense` atom
+(rank 2) was exact on the cylinder and converged in ~10 iterations with
+Dirichlet conditions everywhere; its free-BC stall on curved geometries was
+traced to the constant nullspace not being deflated in the per-mode inverse,
+a solver detail. The Newton system is the Dirichlet k=1 potential, the case
+where it worked. Coordinate
+changes cannot remove shear; least-squares Krylov on the induction operator
+has the same count in the end; an inner exact model solve moves the same
+difficulty one level down.
+
+**Radial bands, measured (2026-09-07, jobs 18064040/18064047, float64,
+li383, consistent random right-hand sides, iterations of `apply_inverse_laplacian`):**
+
+| bands | (12,24,24) p=3: k0F / k0D / k1F / k1D / k2F / k2D / k3F / k3D | (16,32,32) p=2 |
+|---|---|---|
+| 1 | 127 / 180 / 2968 / 830 / 3594 / 1012 / 1188 / 884 | 128 / 186 / 3122 / 883 / 3770 / 1200 / 1106 / 785 |
+| 2 | 143 / 173 / 2806 / 749 / 3573 / 925 / 1185 / 884 | 128 / 163 / 2924 / 766 / 3768 / 1027 / 1086 / 810 |
+| 3 | 150 / 88 / 2840 / 742 / 3631 / 926 / 1194 / 941 | 142 / 153 / 3030 / 750 / 3905 / 988 / 1088 / 798 |
+| 4 | 164 / 167 / 2728 / 725 / 3485 / 900 / 1111 / 989 | 159 / 76 / 3098 / 725 / 4107 / 973 / 1075 / 906 |
+
+Three bands: 10-18% fewer iterations on the Dirichlet k=1, 2 solves, nothing
+on the free ones, 10-30% more on k=0 free, k=3 flat; the k=0 Dirichlet drop (180 -> 88 at three bands on the p=3
+mesh, 186 -> 76 at four bands on the p=2 mesh) is real but erratic in the
+band count: the one place the bands find the axis geometry, and not
+reproducibly. Nothing on the k=0 axis problem the bands were meant
+for, and no reason to expect them to place the Hessian's resonances. Verdict:
+not worth extending to the Hessian; recommend removing the option (commit
+1451700 keeps it in the history). The harmonic atom's next steps are the
+lumped-strain floor and, for the shear, the per-mode radial solve.
+
 ## 8. The experiment
 
 Job A, `scripts/newton_probe.py`, float64, li383 (16,32,32) p=2, at the initial
