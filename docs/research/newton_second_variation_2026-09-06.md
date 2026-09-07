@@ -1167,6 +1167,46 @@ atom is the better arm; for the energy the sandwich; a converged sandwich
 solve (1000 iterations, 7c) would presumably give both, at 3x the step cost,
 and is the arm to run if the sandwich is pursued.
 
+**The sandwich at a converged budget (Tobias: "run that experiment"; job
+18086925, `anchor32_newton_harm1000`, 1000 MINRES iterations per step, the
+direction carrying >90% of the exact Newton decrement by 7c; 100 steps at
+83 s, 2.3 hours).** The prediction was a floor in a third of the steps. The
+result:
+
+| arm | steps, s/step | energy removed | sq. resid lowest chunk / last | helicity at min / end | fallbacks | mean dt |
+|---|---|---|---|---|---|---|
+| Laplacian atom, 300 it (four hours) | 580, 25.7 | 1.31e-7 | 1.6e-9 / 2.3e-9 | -1.5e-7 / -7.4e-7 | 0 | 0.77 |
+| sandwich, 300 it (one hour) | 160, 24.8 | 1.44e-7 | 8.4e-9 / 8.4e-9 | -1.2e-6 / -1.2e-6 | 16% | 0.73 |
+| sandwich, 1000 it (two hours) | 100, 83.0 | 1.30e-7 | 4.5e-8 / 8.1e-8 | -1.6e-6 / -1.2e-6 | 1% | 0.31 |
+| sandwich, sqrt(tol) stop, mean 62 it (two hours; job 18078295, `anchor32_newton_harm_sqrttol`) | 1160, 6.2 | 1.61e-7 | 1.3e-8 / 6.5e-8 | -1.8e-6 / +3.0e-6 | 2% | -- |
+
+1. **The converged direction is a descent direction** (fallbacks 16% -> 1%),
+   as it must be for a positive definite system. That part of the
+   prediction held.
+2. **It does not find the floor; it is the worst floor of any arm on this
+   mesh**, 28x the Laplacian atom's. The second step, at the full Newton
+   length, raised the squared residual 30x (1.1e-7 -> 3.5e-6) while lowering
+   the energy; after that the line search took a mean step of 0.31 and the
+   residual never came back below 2.4e-8 per step. This is 10c.4 at
+   full strength: the exact direction is the inverse Hessian on the force,
+   concentrated in the flat modes, and a full step along it moves the
+   sheet-scale structure by a cell, outside the validity of the quadratic
+   model. The truncated Laplacian-atom direction never contains those modes
+   and steps safely; the truncated sandwich contains them partly; the
+   converged one is nothing but them.
+3. **The ordering of the four arms is the ordering of their flat-mode content**:
+   the more of the decrement a direction carries, the more energy per step it
+   removes and the worse its floor and helicity. The sqrt(tol) arm (62 cheap
+   iterations, 1160 steps) removed the most energy of all and floored
+   nowhere, with a helicity that turned positive at the end (a reconnection
+   starting).
+4. **Closed.** For the floor the Laplacian atom at 300 iterations is the best
+   Newton arm at every budget tried; the harmonic preconditioner is a
+   documented result, not a candidate. What a converged Newton step would need
+   to be useful is a trust region on the flat modes, i.e. the shift family,
+   which was measured to leave the flat modes to the gradient and lose to the
+   descent (10). That circle is closed too.
+
 ## 10b. The potential route against the Leray route
 
 Three arms from the initial field at the anchor's settings (li383 (16,32,32)
