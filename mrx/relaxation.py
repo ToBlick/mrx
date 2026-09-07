@@ -11,6 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.hessian import newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -342,6 +343,16 @@ class State(eqx.Module):
         Fixed-point defect of the last midpoint sweep, ``||g(x) - x||_M``
         relative to the predictor's increment ``||dt dB(B_n)||_M`` (0
         explicit). Above ``picard_tol`` means the step went out unconverged.
+    a : jnp.ndarray (optional)
+        The Dirichlet 1-form potential of the Newton direction, ``u = curl
+        a`` (:func:`mrx.hessian.newton_direction`): the warm start of the
+        next step's MINRES solve. Zeros without ``TimeStepper.newton``.
+    newton_it : int
+        The signed MINRES iteration count of the Newton solve (negative when
+        it converged to ``newton_tol``; 0 without ``newton``).
+    newton_fallback : int
+        1 when the Newton direction was not a descent direction and the
+        smoothed force was stepped along instead, else 0.
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
@@ -367,6 +378,9 @@ class State(eqx.Module):
     picard_iterations: int = 0
     picard_restarts: int = 0
     picard_residual: float = 0.0
+    a: Optional[jnp.ndarray] = None
+    newton_it: int = 0
+    newton_fallback: int = 0
 
     def __post_init__(self):
         if self.B_nplus1 is None:
@@ -428,6 +442,9 @@ class Increment(NamedTuple):
     sy: jnp.ndarray
     y_history: jnp.ndarray
     My_history: jnp.ndarray
+    a: jnp.ndarray
+    newton_it: jnp.ndarray
+    newton_fallback: jnp.ndarray
 
 
 #: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
@@ -493,6 +510,21 @@ class TimeStepper(eqx.Module):
             O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
             the cap and leaves the trajectory untouched.
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
+        newton: Replace the L-BFGS direction by the Newton direction of the
+            second variation, ``u = curl a`` with ``curl^T (H + newton_shift
+            M_2) curl a = curl^T M_2 F`` solved by MINRES
+            (:mod:`mrx.hessian`). Needs ``history_size = 0`` and the 2-form
+            ``B`` in the cross products (no auxiliary field). The line
+            search's sign decides: a direction with ``(u, F)_M <= 0`` is
+            replaced by the smoothed force of ``velocity_smoothing_order``,
+            and ``State.newton_fallback`` says so.
+        newton_shift: The Levenberg-Marquardt shift of the Newton solve in
+            the velocity's L2 metric (0 is Newton).
+        newton_tol: Relative residual tolerance of the MINRES solve.
+        newton_maxiter: Its iteration budget per step.
+        newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`.
+        newton_inner_tol: Tolerance of the Hessian's three k=1 mass solves
+            per MINRES iteration; ``None`` is the sequence's.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
             ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
@@ -506,12 +538,22 @@ class TimeStepper(eqx.Module):
     history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
+    newton: bool = False
+    newton_shift: float = 0.0
+    newton_tol: float = 1e-3
+    newton_maxiter: int = 100
+    newton_precond: str = "laplacian"
+    newton_inner_tol: float = None
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
 
     def __post_init__(self):
         if self.history_size < 0:
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
+        if self.newton and self.history_size:
+            raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
+        if self.newton and self.auxiliary_B_field:
+            raise ValueError("newton reads the 2-form B in the cross products (no auxiliary field).")
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
         self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
@@ -682,8 +724,20 @@ class TimeStepper(eqx.Module):
             # of the converged sweep and never an inner iterate's.
             y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.F_prev - F)
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MF_prev - MF)
-        u, sy = self._lbfgs_direction(F, state.s_history, y_hist, state.Ms_history, My_hist)
-        u = self.smooth_velocity(u)
+        if self.newton:
+            u_newton, a, newton_it = newton_direction(
+                seq, B, J, MF, state.a, self.newton_shift, self.newton_tol, self.newton_maxiter,
+                self.newton_precond, self.newton_inner_tol)
+            # The line search's sign: a Newton direction that does not
+            # descend (H + shift M indefinite there, or a direction the
+            # potential cannot represent) is replaced by the smoothed force.
+            descent = (u_newton @ MF) > 0
+            u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
+            sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
+        else:
+            u, sy = self._lbfgs_direction(F, state.s_history, y_hist, state.Ms_history, My_hist)
+            u = self.smooth_velocity(u)
+            a, newton_it, newton_fallback = state.a, jnp.int32(0), jnp.int32(0)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -713,7 +767,8 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist)
+        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist,
+                         a, newton_it, newton_fallback)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
@@ -882,13 +937,15 @@ class TimeStepper(eqx.Module):
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
-                       s.picard_iterations, s.picard_restarts, s.picard_residual),
+                       s.picard_iterations, s.picard_restarts, s.picard_residual,
+                       s.a, s.newton_it, s.newton_fallback),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
-             n_eval, restarts, resid))
+             n_eval, restarts, resid,
+             inc.a, inc.newton_it, inc.newton_fallback))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
@@ -932,6 +989,9 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         picard_iterations=jnp.int32(0),
         picard_restarts=jnp.int32(0),
         picard_residual=jnp.zeros((), B_dof.dtype),
+        a=jnp.zeros(seq.n(1, True), dtype=DTYPE),
+        newton_it=jnp.int32(0),
+        newton_fallback=jnp.int32(0),
     )
 
 
@@ -953,7 +1013,9 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     ``div`` (``||div B||``), ``Fu`` (``<F_prev, u>_M``: the line search
     predicts ``dE = -dt Fu (1 - dt / 2 dt_star)``),
     ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
-    evaluations and final defect; 1 and 0 for the explicit step), plus
+    evaluations and final defect; 1 and 0 for the explicit step),
+    ``newton_it`` and ``newton_fallback`` (the Newton solve's signed MINRES
+    count and whether its direction was replaced; 0 without ``newton``), plus
     ``extra[name](state)`` for every extra probe.
 
     Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
@@ -974,6 +1036,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
+            newton_it=state.newton_it, newton_fallback=state.newton_fallback,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
 
@@ -1160,7 +1223,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback")}
     qoi: dict = {}
     events: list = []
 
@@ -1205,7 +1268,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["cos"].extend(cos.tolist())
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
-        for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid"):
+        for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
+                  "newton_it", "newton_fallback"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
@@ -1219,7 +1283,11 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
                   f"picard max={int(ch['picard_it'].max())}  [{wall:.0f}s steps +{t_out:.0f}s other]\n"
-                  f"           {pressure_line(scalars)}", flush=True)
+                  + (f"           newton: MINRES it mean {np.abs(ch['newton_it']).mean():.0f} max "
+                     f"{np.abs(ch['newton_it']).max()}, unconverged {int((ch['newton_it'] > 0).sum())}, "
+                     f"fallbacks {int(ch['newton_fallback'].sum())}, dt* mean {ch['dt_star'].mean():.3e}\n"
+                     if ts.newton else "")
+                  + f"           {pressure_line(scalars)}", flush=True)
         if resid_now < floor_tol:
             stop = "floor"
         elif seconds is not None and wall > seconds:
@@ -1290,6 +1358,12 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    CFL cap (C={ts.cfl}) bound on {int((dts < dt_star).sum())}/{n} steps;  "
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
+    if ts.newton:
+        nit = np.abs(np.array(tr["newton_it"]))
+        print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
+              f"unconverged on {int((np.array(tr['newton_it']) > 0).sum())}/{n} steps;  "
+              f"fallbacks to the smoothed force on {int(np.sum(tr['newton_fallback']))}/{n} steps;  "
+              f"dt* mean {dt_star.mean():.3e}", flush=True)
     if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
         pit, pres = np.array(tr["picard_it"]), np.array(tr["picard_resid"])
         print(f"    midpoint solve: increment evaluations mean {pit.mean():.2f}  max {pit.max()};  "
