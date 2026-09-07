@@ -579,7 +579,7 @@ helicity drift is relative. Figure `outputs/newton_second_variation/newton_tail.
 | shift 39, 100 it | 4000 | 0.75 | 1.8e-7 | 7.6e-4 / 2.1e-4 / 4.1e-4 | -3.2e-6 | 2.0 |
 | shift 0, 300 it, dt capped at 1 | 220 | 16.6 | 6.5e-7 | 5.5e-5 / 4.4e-5 / 9.7e-5 | +2.4e-5 | 1.0 |
 | the same, midpoint induction on B: the Picard iteration halves dt four times to 1/16 and stays unconverged (sweep limit) on every step, so this is Newton at dt = 1/16 | 220 | 17.6 | 1.7e-7 | 2.2e-4 / 5.8e-5 / 1.2e-4 | -5.9e-6 | 0.03-0.06 |
-| the same, float64, tol 1e-10 (is the floor the tolerance?) | *(running)* | | | | | |
+| the same, float64, tol 1e-10 (is the floor the tolerance?) | 200 | 29.5 | 7.8e-7 | 2.3e-4 / 4.2e-5 / 1.3e-4 | +3.1e-5 | 1.0 |
 | the same, midpoint induction, float64 (does the Picard iteration converge at the full step?) | *(running)* | | | | | |
 
 (The dt = 1/16 arm's 17.6 s/step is 16.6 s of Newton direction plus the 101
@@ -696,6 +696,43 @@ same error per unit path, so it needs one of the two fixes first.
    rational surfaces. The descent applies $\Delta t$ times the same noise and
    moves nothing; Newton moves up to half a cell per step along it, and the
    explicit induction turns that into the reconnection of section 10.
+
+## 10d. What the helicity loss is (float64 pair, 2026-09-07): the pairing's projection error, not the time error
+
+The float64 explicit arm (tol 1e-10) and the float64 midpoint-on-$B$ arm (Picard
+converged in 5-6 sweeps at $\Delta t \approx 1$) have identical helicity drifts
+at the same steps and path lengths: $-3.7$e-6 / $-3.8$e-6 at step 5040 (path
+35), $-1.44$e-5 / $-1.44$e-5 at 5080 (path 74); the mixed explicit arm the
+same. The time integrator makes no difference, so section 10's summed-square
+explanation is wrong and is retracted. What the midpoint scheme on $B$ does not
+remove is the projection error of the discrete helicity pairing, $E^T P B$
+instead of $E^T M_1 H$ (li383 note 5f found the same for the descent: the
+B-only midpoint isolates exactly this error). It is large along Newton paths
+and small along descent paths because of what moves: the flattest modes of
+the discrete Hessian are grid-scale oscillations aligned with the field (the
+lowest Ritz vector's Laplacian Rayleigh quotient is at the grid scale), the
+Newton direction resolves and excites them, and $u \times B$ with grid-scale
+$u$ is what the 1-form projection cannot represent; the smoothed descent
+direction never contains them. The harmonic atom resolves those modes best
+and its explicit arm leaked fastest (helicity +3.9e-7 in 40 steps, energy
+1.14e-6 removed, more than the whole descent from the initial field: job
+18045879, cancelled at 40 steps; the harmonic midpoint-on-$B$ arm 18046954
+was cancelled unstarted for the same reason). The $\Delta t = 1/16$ arm's
+smaller drift (a half at a fourteenth of the path) is consistent with a
+per-step leak set by the direction's grid-scale content rather than by the
+step.
+
+Consequences: (i) the exact fix is the auxiliary-field formulation,
+$E^T M_1 H = 0$ for any $u$, which needs its own anchor (the $J \times H$
+force has its own fixed point, 3.4e-3 away from the $J \times B$ state):
+auxiliary descent, then harmonic Newton with the auxiliary midpoint; (ii) the
+cheap fix is not to excite those modes: smooth the Newton direction with
+$(M + \mu L)^{-1} M$ before stepping (one line), or a Levenberg-Marquardt
+shift in the $H^1$ metric inside the solve; (iii) the residual floor of
+section 10c stands (the float64 arm at tol 1e-10 reproduced the mixed floor,
+4.5e-5, to the digit: the discretisation, not the tolerance), and the
+"floor finder" reading of Newton stands; what changes is the diagnosis of what
+happens past it.
 
 ## 10b. The potential route against the Leray route
 
