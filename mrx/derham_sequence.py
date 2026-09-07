@@ -405,7 +405,7 @@ class DeRhamSequence():
         return self._residual
 
     def build_preconditioners(self, *, ks=(0, 1, 2, 3), dirichlets=(False, True),
-                              bc_scale=None):
+                              bc_scale=None, bands=1, overlap=2):
         """Build the preconditioners of the installed geometry; install and return the bundle.
 
         A fresh :class:`~mrx.operators.SequenceOperators` with, for each
@@ -423,7 +423,11 @@ class DeRhamSequence():
 
         ``bc_scale`` overrides the natural-BC penalty scale of the Laplacian
         atoms (``metric_lumping_laplacian.PRODUCTION_BC_SCALE = 3.0``, a
-        measured balance point); ``None`` keeps it.
+        measured balance point); ``None`` keeps it. ``bands`` splits the
+        Laplacian atoms' radial window into that many overlapping bands
+        (``overlap`` DoFs each side), each with its own angular profiles,
+        combined by symmetric additive Schwarz (the module docstring of
+        :mod:`mrx.metric_lumping_laplacian`); 1 is the plain atom.
 
         Building a sequence WITHOUT preconditioners is a first-class path:
         for purely geometrical work ``set_map`` alone is the whole setup.
@@ -438,7 +442,7 @@ class DeRhamSequence():
         ops = op.assemble_mass_metric_lumping_preconditioner(
             self, ops, ks=ks, dirichlet_variants=dirichlets)
         ops = op.assemble_metric_lumping_laplacian_preconditioner(
-            self, ops, ks=ks, dirichlets=dirichlets,
+            self, ops, ks=ks, dirichlets=dirichlets, bands=bands, overlap=overlap,
             **({} if bc_scale is None else {"bc_scale": bc_scale}))
         ops = cast_arrays(ops)
         self.operators = ops

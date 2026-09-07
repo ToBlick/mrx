@@ -58,6 +58,23 @@ one number. It vanishes under Dirichlet and at k=0.
 Every atom is a pytree payload with one jitted apply per tree structure, built
 at construction (never on the first apply), so a rebuild for a new geometry
 does not recompile.
+
+**Radial bands** (``bands > 1``, 2026-09-07): the Kronecker sum needs each
+term's weight to be a product of axis profiles, so the angular profiles
+(``g^{tt} J ~ 1/r`` above all) are averaged over the whole radius and the bulk
+atom cannot see the axis geometry. With ``bands`` the radial window of every
+component is split into that many overlapping bands (``overlap`` DoFs on each
+side); each band is its own Kronecker sum, its radial factors cut to the band
+(homogeneous conditions on the band's ends, the standard restricted Schwarz
+block) and its angular profiles averaged over the band's radial support only;
+the bands are combined by the symmetric additive Schwarz sum
+``sum_b D_b^{1/2} R_b^T A_b^{-1} R_b D_b^{1/2}`` with ``D_b`` the partition of
+unity ``1 / (number of bands containing the row)``, SPD by construction. The
+polar core is unchanged. Memory ``bands`` times the radial factors, the angular
+factors per band; apply ``bands`` fast diagonalisations on shorter tensors.
+The many-band limit is the 2-D ring atom of 2026-08-19, which lost the
+nonlocal radial coupling of the outer rings, so the band count is a knob to
+be measured, not maximised.
 """
 
 from __future__ import annotations
@@ -104,7 +121,7 @@ def _polar_cut_weight(seq):
     return seq.quad.w_x * (jnp.asarray(seq.quad.x_x) >= xi1)
 
 
-def bundled_axis_profiles(seq, field):
+def bundled_axis_profiles(seq, field, r_mask=None):
     """Quad-weighted axis means of one BUNDLED weight field.
 
     ``field`` is a scalar quadrature field already reshaped to ``(qx, qy, qz)``.
@@ -112,9 +129,13 @@ def bundled_axis_profiles(seq, field):
     ``J`` separately: ``g^tt J ~ 1/r`` stays integrable where the bare
     ``g^tt ~ 1/r^2`` does not.  Arithmetic means, not harmonic -- harmonic
     profiles were measured to degrade badly off-axis (W7-X 88 -> 152 at
-    16x32x32).
+    16x32x32). ``r_mask`` (a weight over the radial quadrature points)
+    restricts the radial average of the ANGULAR profiles to a radial band;
+    the radial profile is not averaged over ``r`` and does not see it.
     """
     wx = _polar_cut_weight(seq)
+    if r_mask is not None:
+        wx = wx * jnp.asarray(r_mask, dtype=wx.dtype)
     wy, wz = seq.quad.w_y, seq.quad.w_z
     sx, sy, sz = jnp.sum(wx), jnp.sum(wy), jnp.sum(wz)
     pr = jnp.einsum('qrs,r,s->q', field, wy, wz) / (sy * sz)
@@ -381,7 +402,7 @@ def _boundary_entry_direct(seq, axis, weight_field, window, dirichlet,
     e = _edge_vector(seq, axis, window)
     return alpha * jnp.outer(e, e)
 def component_factors(seq, k, c, window=None, bc_entry="ibpd",
-                      dirichlet=False, bc_scale=PRODUCTION_BC_SCALE):
+                      dirichlet=False, bc_scale=PRODUCTION_BC_SCALE, profile_mask=None):
     """``(masses, stiffnesses)`` per axis for component ``c`` of ``L_k``.
 
     The component's basis is a derivative spline on the axes it is
@@ -440,7 +461,7 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
     #
     # Unlike scalar lumping (measured 2-8x worse, deleted) this keeps the
     # FIELD exactly and gives up only its correlation with the axis averages.
-    stiff_prof = [bundled_axis_profiles(seq, ginv[a] * jac)[a]
+    stiff_prof = [bundled_axis_profiles(seq, ginv[a] * jac, r_mask=profile_mask)[a]
                   for a in range(3)]
 
     def cut(mat, axis):
@@ -545,22 +566,60 @@ def component_diagonal(seq, k, c, shape):
 
 
 def build_bulk_atom(seq, k, c, window=None, bc_entry="ibpd", dirichlet=False,
-                    bc_scale=PRODUCTION_BC_SCALE):
+                    bc_scale=PRODUCTION_BC_SCALE, profile_mask=None):
     """Fast-diagonalisation factors for component ``c`` of ``L_k``.
 
     Returns ``(V_r, V_t, V_z, lam_r, lam_t, lam_z)`` ready for
-    :func:`mrx.operators._fd_apply_3d` with ``alpha = (1, 1, 1)``.
+    :func:`mrx.operators._fd_apply_3d` with ``alpha = (1, 1, 1)``. ``window``
+    is the radial DoF window (a band of the bulk), ``profile_mask`` the
+    radial quadrature weight its angular profiles are averaged with.
     """
     masses, stiffs, alpha = component_factors(seq, k, c, window=window,
                                               bc_scale=bc_scale,
                                               bc_entry=bc_entry,
-                                              dirichlet=dirichlet)
+                                              dirichlet=dirichlet,
+                                              profile_mask=profile_mask)
     vs, lams = [], []
     for a in range(3):
         v, lam = _simultaneous_diagonalize_pair(masses[a], stiffs[a])
         vs.append(v)
         lams.append(lam)
     return tuple(vs), tuple(lams), alpha
+
+
+# --------------------------------------------------------------------------- #
+# Radial bands                                                                 #
+# --------------------------------------------------------------------------- #
+
+def radial_bands(nr, bands, overlap):
+    """``[(lo, nb, w), ...]``: ``bands`` overlapping windows of the ``nr`` radial
+    rows, each ``overlap`` rows longer on each side where possible, and the
+    square root of the partition of unity on its rows (``1 / count`` per row,
+    so the symmetric Schwarz sum weighs every row once). ``bands = 1`` is the
+    whole window with unit weights."""
+    bands = max(1, min(int(bands), nr))
+    edges = np.linspace(0, nr, bands + 1).astype(int)
+    wins = [(max(0, int(edges[b]) - overlap), min(nr, int(edges[b + 1]) + overlap))
+            for b in range(bands)]
+    count = np.zeros(nr)
+    for lo, hi in wins:
+        count[lo:hi] += 1
+    return [(lo, hi - lo, np.sqrt(1.0 / count[lo:hi])) for lo, hi in wins]
+
+
+def band_profile_mask(seq, i0, nb):
+    """Radial quadrature weight of the support of radial DoFs ``[i0, i0 + nb)``:
+    the knots of the primal radial basis from ``T[i0]`` to ``T[i0 + nb + p]``
+    (generous by one knot for a derivative basis), or the whole radius when no
+    quadrature point falls inside."""
+    lam = seq.basis_0.Λ[0]
+    T = np.asarray(lam.T)
+    p = int(lam.p)
+    lo = T[min(i0, T.size - 1)]
+    hi = T[min(i0 + nb + p, T.size - 1)]
+    x = np.asarray(seq.quad.x_x)
+    mask = (x >= lo) & (x <= hi)
+    return jnp.asarray(mask if mask.any() else np.ones_like(mask), dtype=DTYPE)
 
 
 # --------------------------------------------------------------------------- #
@@ -693,14 +752,16 @@ class _LumpBlock(eqx.Module):
 
     rows: jnp.ndarray            # leaf: gather indices, tensor order
     vals: jnp.ndarray            # leaf: extraction weights, tensor order
-    v_r: jnp.ndarray             # leaf: per-axis eigenvectors
-    v_t: jnp.ndarray
-    v_z: jnp.ndarray
-    lam_r: jnp.ndarray           # leaf: per-axis eigenvalues
-    lam_t: jnp.ndarray
-    lam_z: jnp.ndarray
+    v_r: tuple                   # leaves: per-band, per-axis eigenvectors
+    v_t: tuple
+    v_z: tuple
+    lam_r: tuple                 # leaves: per-band, per-axis eigenvalues
+    lam_t: tuple
+    lam_z: tuple
+    w: tuple                     # leaves: per-band sqrt partition of unity on the band's rows
     alpha: jnp.ndarray           # leaf: was a tuple of Python floats
     dscale: jnp.ndarray          # leaf: ALWAYS an array (None was a treedef split)
+    lo: tuple = eqx.field(static=True)        # STATIC: per-band radial offset
     shape: tuple = eqx.field(static=True)     # STATIC: reshape target
     # STATIC: when the block's rows are the contiguous range starting at
     # ``offset`` with unit weights (a pure selector, e.g. every k=3 block)
@@ -757,12 +818,25 @@ def _apply_lump_payload(payload: _LumpPayload, x):
     parts = []
     for b in payload.blocks:
         buf = _block_input(b, x) * b.dscale
-        sol = _fd_apply_3d(b.v_r, b.v_t, b.v_z,
-                           b.lam_r, b.lam_t, b.lam_z, b.alpha, buf)
+        sol = _schwarz_sum(b, buf, lambda i, xb: _fd_apply_3d(
+            b.v_r[i], b.v_t[i], b.v_z[i], b.lam_r[i], b.lam_t[i], b.lam_z[i], b.alpha, xb))
         parts.append(_block_output(b, sol * b.dscale))
     if payload.has_core:
         parts.append(payload.core_inv @ x[payload.core])
     return _place(payload, parts)
+
+
+def _schwarz_sum(b, buf, solve):
+    """``sum_i D_i^{1/2} R_i^T solve(i, R_i D_i^{1/2} buf)`` over the block's
+    radial bands; one band with unit weights is the plain solve."""
+    if len(b.lo) == 1:
+        return solve(0, buf)
+    acc = jnp.zeros_like(buf)
+    for i, lo in enumerate(b.lo):
+        w = b.w[i][:, None, None]
+        nb = b.w[i].shape[0]
+        acc = acc.at[lo:lo + nb].add(w * solve(i, w * buf[lo:lo + nb]))
+    return acc
 
 
 class _ShiftedPayload(eqx.Module):
@@ -786,8 +860,8 @@ def _apply_shifted_payload(payload: _ShiftedPayload, core_inv, inv_eps, x):
     parts = []
     for b in payload.blocks:
         buf = _block_input(b, x) * b.dscale
-        sol = _fd_apply_3d_shifted(b.v_r, b.v_t, b.v_z,
-                                   b.lam_r, b.lam_t, b.lam_z, b.alpha, buf, inv_eps)
+        sol = _schwarz_sum(b, buf, lambda i, xb: _fd_apply_3d_shifted(
+            b.v_r[i], b.v_t[i], b.v_z[i], b.lam_r[i], b.lam_t[i], b.lam_z[i], b.alpha, xb, inv_eps))
         parts.append(inv_eps * _block_output(b, sol * b.dscale))
     if payload.has_core:
         parts.append(core_inv @ x[payload.core])
@@ -912,9 +986,10 @@ class MetricLumpingLaplacian:
     """
 
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL,
-                 bc_entry="ibpd", bc_scale=PRODUCTION_BC_SCALE):
+                 bc_entry="ibpd", bc_scale=PRODUCTION_BC_SCALE, bands=1, overlap=2):
         self.k, self.dirichlet = k, dirichlet
         self.bc_scale = bc_scale
+        self.bands, self.overlap = int(bands), int(overlap)
         self.shapes = [tuple(int(s) for s in sh)
                        for sh in getattr(seq, f"basis_{k}").shape]
 
@@ -928,9 +1003,16 @@ class MetricLumpingLaplacian:
                 self.blocks.append(None)
                 continue
             rows_t, vals_t, (r0, nr), shape, offset = blk
-            atom = build_bulk_atom(
-                seq, k, c, window=(r0, nr), dirichlet=dirichlet,
-                bc_scale=bc_scale, bc_entry=bc_entry)
+            # One separable atom per radial band (see the module docstring):
+            # the band's own radial window and its own angular profiles.
+            atoms, band_lo, band_w = [], [], []
+            for lo, nb, w in radial_bands(nr, self.bands, self.overlap):
+                atoms.append(build_bulk_atom(
+                    seq, k, c, window=(r0 + lo, nb), dirichlet=dirichlet,
+                    bc_scale=bc_scale, bc_entry=bc_entry,
+                    profile_mask=band_profile_mask(seq, r0 + lo, nb) if self.bands > 1 else None))
+                band_lo.append(int(lo))
+                band_w.append(jnp.asarray(w, dtype=DTYPE))
             # The natural-BC trace exists only on the components the
             # integration by parts actually touches:
             #   k=1  <u, grad tau>   -> +int (u.n) tau        -> NORMAL, c = r
@@ -950,8 +1032,8 @@ class MetricLumpingLaplacian:
                 0.0 if a in derivative_axes(k, c) else 1.0 for a in range(3))
             self.blocks.append({
                 "rows": rows_t, "vals": vals_t, "shape": shape,
-                "offset": offset, "atom": atom, "dscale": dscale,
-                "alpha_strong": alpha_strong})
+                "offset": offset, "atoms": atoms, "lo": tuple(band_lo), "w": tuple(band_w),
+                "dscale": dscale, "alpha_strong": alpha_strong})
 
         # Probe the whole core (polar ring + any extra/outer rings) and invert
         # it exactly. A separable 2-D ring atom was tried instead and dropped:
@@ -997,7 +1079,7 @@ class MetricLumpingLaplacian:
         reuses the compiled apply instead of paying ~287 ms to compile an
         identical program again.
         """
-        blocks, perm, identity = self._pack_blocks(lambda blk: blk["atom"][2])
+        blocks, perm, identity = self._pack_blocks(lambda blk: blk["atoms"][0][2])
         return _LumpPayload(
             blocks=tuple(blocks),
             core=jnp.asarray(self.probe_rows),
@@ -1019,14 +1101,18 @@ class MetricLumpingLaplacian:
         for blk in self.blocks:
             if blk is None:
                 continue
-            (v_r, v_t, v_z), (l_r, l_t, l_z), _alpha = blk["atom"]
+            atoms = blk["atoms"]
             blocks.append(_LumpBlock(
                 rows=jnp.asarray(blk["rows"]),
                 vals=jnp.asarray(blk["vals"], dtype=DTYPE),
-                v_r=v_r, v_t=v_t, v_z=v_z,
-                lam_r=l_r, lam_t=l_t, lam_z=l_z,
+                v_r=tuple(a[0][0] for a in atoms), v_t=tuple(a[0][1] for a in atoms),
+                v_z=tuple(a[0][2] for a in atoms),
+                lam_r=tuple(a[1][0] for a in atoms), lam_t=tuple(a[1][1] for a in atoms),
+                lam_z=tuple(a[1][2] for a in atoms),
+                w=blk["w"],
                 alpha=jnp.asarray(alpha_of(blk), dtype=DTYPE),
                 dscale=blk["dscale"],
+                lo=blk["lo"],
                 shape=blk["shape"],
                 offset=blk["offset"],
             ))
