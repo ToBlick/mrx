@@ -36,12 +36,87 @@ along. The one divergence-free direction ``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
 import jax.numpy as jnp
+import numpy as np
 
 from mrx.solvers import minres
 
 #: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
-#: square (the operator is fourth order in ``a``), or the k=1 mass atom.
-PRECONDITIONERS = ("laplacian", "laplacian2", "mass")
+#: square (the operator is fourth order in ``a``), the k=1 mass atom, or the
+#: harmonic atom (:func:`harmonic_preconditioner`).
+PRECONDITIONERS = ("laplacian", "laplacian2", "mass", "harmonic")
+
+#: The floor of the harmonic atom's parallel symbol, in units of
+#: ``(2 pi)^2 (h_theta^2 + h_zeta^2)``: stands in for the ``u . grad h`` term
+#: the symbol drops, which is what the flat (resonant) modes are left with.
+HARMONIC_FLOOR = 1e-2
+
+
+def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
+    """``x -> W P_L W^T x``: the harmonic atom, an approximate inverse of the Newton
+    operator ``curl^T H curl`` built from the harmonic 2-form ``h`` of the sequence.
+
+    The Hessian is, to a percent, the Gauss-Newton form ``||curl(u x B)||^2``,
+    and ``B`` is mostly harmonic (96% on li383), so ``||curl(u x c h)||^2``
+    with ``B = c h + curl A`` is the Hessian to a few percent on every mode
+    but the flattest (measured: within 3% above the seventh Ritz value, 0.08
+    at the lowest). With ``div u = 0``, ``curl(u x h) = h . grad u - u . grad h``;
+    the atom keeps the parallel derivative and lumps it: per component of the
+    1-form potential and per radial DoF layer, the symbol
+
+        lambda(r, m, n) = (2 pi)^2 (h_theta(r) m + h_zeta(r) n)^2 + floor(r),
+
+    ``h_theta, h_zeta`` the angle-averaged logical contravariant components
+    of ``h`` (the reference components over the Jacobian), ``(m, n)`` the
+    Fourier frequencies of the DoF grid in the two angles, and ``floor(r) =
+    floor * (2 pi)^2 (h_theta^2 + h_zeta^2)`` for the dropped ``u . grad h``
+    (:data:`HARMONIC_FLOOR`). ``h`` carries the rotational transform of the
+    vacuum field inside the boundary, so the symbol vanishes on the resonant
+    modes ``h_theta m + h_zeta n = 0`` and the floor is what they see.
+
+    Inverted as a sandwich of the Laplacian atom ``P_L`` (which approximates
+    the inverse of the curl-curl the potential form is quadratic in) with the
+    symbol's inverse square root: ``W = E C E^T`` with ``C`` the 2-D Fourier
+    scaling by ``(lambda + floor)^{-1/2}`` on the tensor DoF grid of each
+    component and ``E`` the Dirichlet 1-form extraction, so that in the bulk
+    ``W P_L W^T`` is the Laplacian atom with ``lambda + floor`` multiplied
+    into its denominator (the potential-form operator is the curl-curl times
+    the parallel symbol) and on the polar rows the extraction lumps it.
+    Symmetric positive definite for any ``C``, which is all MINRES needs;
+    the quality is the measurement. Two FFTs per component per apply.
+    """
+    h = seq.nullspace(2, True)[0]
+    h_jk = np.asarray(seq.evaluate_at_quadrature(h, 2, True)) / np.asarray(seq.jacobian_j)[:, None]
+    shape = tuple(int(v) for v in seq.quad.shape)
+    prof_t = h_jk[:, 1].reshape(shape).mean(axis=(1, 2))
+    prof_z = h_jk[:, 2].reshape(shape).mean(axis=(1, 2))
+    r_q = np.asarray(seq.quad.x_x)
+    shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
+    scale = []
+    for s1, s2, s3 in shapes:
+        r = (np.arange(s1) + 0.5) / s1
+        a, b = np.interp(r, r_q, prof_t), np.interp(r, r_q, prof_z)
+        m = np.fft.fftfreq(s2, d=1.0 / s2)
+        nn = np.fft.fftfreq(s3, d=1.0 / s3)
+        lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
+        flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
+        scale.append(jnp.asarray(1.0 / np.sqrt(lam + flo), dtype=seq.dtype))
+    E = seq.E(1, True)
+
+    def C(x):
+        out, off = [], 0
+        for sc, s in zip(scale, shapes):
+            n_c = s[0] * s[1] * s[2]
+            X = x[off:off + n_c].reshape(s)
+            out.append(jnp.fft.ifft2(jnp.fft.fft2(X, axes=(1, 2)) * sc, axes=(1, 2)).real.ravel())
+            off += n_c
+        return jnp.concatenate(out)
+
+    def apply(x):
+        y = E @ C(E.T @ x)
+        y = seq.apply_laplacian_preconditioner(y, 1, dirichlet=True)
+        return E @ C(E.T @ y)
+
+    return apply
 
 
 def second_variation(seq, B, J, tol=None):
@@ -81,6 +156,10 @@ def second_variation(seq, B, J, tol=None):
 
 
 def _preconditioner(seq, name):
+    if callable(name):
+        return name
+    if name == "harmonic":
+        return harmonic_preconditioner(seq)
     if name == "laplacian":
         return lambda x: seq.apply_laplacian_preconditioner(x, 1, dirichlet=True)
     if name == "laplacian2":
@@ -101,7 +180,8 @@ def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=1e-3, maxiter=100,
     ``a_guess`` the previous direction's potential (the warm start of the
     MINRES solve), ``shift`` the Levenberg-Marquardt shift, ``tol`` the
     relative residual of the solve in the preconditioner norm, ``maxiter``
-    its iteration budget, ``precond`` one of :data:`PRECONDITIONERS`,
+    its iteration budget, ``precond`` one of :data:`PRECONDITIONERS` or the
+    preconditioner's apply itself (a callable),
     ``inner_tol`` the tolerance of the Hessian's mass solves.
 
     Returns ``(u, a, info)`` with ``info`` the signed iteration count of

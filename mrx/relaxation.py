@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.hessian import newton_direction
+from mrx.hessian import harmonic_preconditioner, newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -588,6 +588,7 @@ class TimeStepper(eqx.Module):
     newton_precond: str = "laplacian"
     newton_inner_tol: float = None
     newton_dt_cap: float = float("inf")
+    newton_precond_apply: Callable = None
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -598,6 +599,9 @@ class TimeStepper(eqx.Module):
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
         if self.newton and self.history_size:
             raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
+        if self.newton and self.newton_precond == "harmonic":
+            # built once: the profiles of h and the Fourier symbols
+            self.newton_precond_apply = harmonic_preconditioner(self.seq)
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
             raise ValueError("potential_velocity is the Leray route's replacement on the 2-form B: "
                              "it excludes newton and the auxiliary field.")
@@ -812,7 +816,7 @@ class TimeStepper(eqx.Module):
         if self.newton:
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_shift, self.newton_tol, self.newton_maxiter,
-                self.newton_precond, self.newton_inner_tol)
+                self.newton_precond_apply or self.newton_precond, self.newton_inner_tol)
             # The line search's sign: a Newton direction that does not
             # descend (H + shift M indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.

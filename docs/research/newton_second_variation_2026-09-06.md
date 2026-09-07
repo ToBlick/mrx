@@ -305,6 +305,69 @@ addresses are the resonant ones, $\iota m + n \approx 0$, the rational
 surfaces, which are the near-kernel of the Hessian and the slow directions
 of the descent.
 
+**The harmonic version (Tobias 2026-09-07: "B in these states is mostly
+harmonic").** `compute_helicity` splits $B = \mathrm{curl}\,A + B_{\mathrm{harm}}$ and
+measures $\|B_{\mathrm{harm}}\| / \|B\|$ (0.974 on the quasr44970 initial field;
+li383 at this beta is the same kind of field; not tallied per chunk today, one
+line in the sampler). With $B \approx c\,h$, $h$ the harmonic 2-form the
+sequence carries as its nullspace vector, $\|\mathrm{curl}(u \times h)\|^2$ is a
+near-exact model of the Gauss-Newton operator (error: the $\mathrm{curl}\,A$
+fraction, a few percent), built from a field known at construction and never
+changing. And $h \propto R^{-1} e_\zeta$ is purely toroidal, so
+$\mathrm{curl}(u \times h) \approx h^\zeta \partial_\zeta u$: a Kronecker term with a
+lumped radial profile of $|h|^2$ and exact Fourier diagonalisation in $\zeta$
+(eigenvalue $n^2$), plus the dense polar core -- the existing Laplacian-atom
+construction with the $\zeta$-axis stiffness profile replaced. Blind spot: the
+$n = 0$ modes get zero parallel derivative whatever their $m$, while the real
+field gives them $\iota m$; promoting $n^2$ to $(\iota m + n)^2$ with the
+$\iota(r)$ profile the sweeps already produce is the second step. Ladder:
+Laplacian atom (every mode $k^2$, now) -> harmonic atom ($|h|^2 n^2$, everything
+at hand) -> field-line atom ($|B|^2 (\iota m + n)^2$, one more profile); all
+need the flat-mode floor below.
+
+**Freezing the operator and recycling the solve (Tobias 2026-09-07: SIESTA
+recomputes its operator every so many steps).** Matrix-free, freezing $H$ saves
+nothing per action (three k=1 solves either way; the warm start of the
+potential is already the zeroth-order reuse). What a frozen $H$ per chunk
+enables is Krylov recycling: keep the lowest 20-50 Ritz vectors of the
+preconditioned operator from one MINRES solve and deflate them from the next
+(GCRO-DR and relatives). Those vectors are the flat modes the Laplacian atom
+misses, learned rather than modelled, valid while the field changes slowly,
+i.e. in the tail; storage plus one orthogonalisation per iteration. Combines
+with the substeps along a frozen direction. Measurement: the MINRES count at
+fixed direction quality. Not code now.
+
+**Benchmark of the two models (job 18044754, float64, the step-5000 field,
+`outputs/newton_second_variation/harmonic_probe.log`).** The field is 96.4%
+harmonic ($\|B - c h\| / \|B\| = 0.036$, $c = 0.9994$; the harmonic part's
+current is $10^{-13}$). On the Ritz vectors of 150 Lanczos steps of
+$P M_2^{-1} H$, the ratio of the true quadratic form to the model's:
+
+| Ritz value | $(y, Hy) / (y, H_h y)$, harmonic model | $(y, Hy) / (y, L_2 y)$, Laplacian model |
+|---|---|---|
+| 0.147 (smallest) | 0.08 | 1.7e-6 |
+| 1.7, 4.6, 9.2, 15 | 0.52, 0.69, 0.83, 0.84 | 2e-5 .. 2e-4 |
+| 23 .. 116 | 0.93 .. 0.99 | 4e-4 .. 2e-3 |
+| 400 .. 3.9e4 (the rest) | 0.97 .. 1.03 | 7e-3 .. 0.11 |
+| **spread = condition an exact inverse leaves** | **12.7** | **6.8e4** |
+| no preconditioner | | 2.7e5 |
+
+Above $\theta \approx 30$ the harmonic Gauss-Newton model is the Hessian to 3%;
+it fails only on the seven lowest modes, down to 0.08 at the bottom: the
+missing $\iota m$ term and $u \cdot \nabla B$, exactly where predicted. An exact
+inverse of $\|\mathrm{curl}(u \times c h)\|^2$ would leave a condition number of
+13 against 6.8e4 for the Laplacian model (whose ratio spans five orders of
+magnitude: the anisotropy), i.e. MINRES in a handful of iterations instead of
+300 -- before the atom's own lumping error, which is the same kind of error the
+existing atoms carry. The remaining seven modes need no mechanism (Tobias 2026-09-07): isolated
+outliers cost a Krylov method about one iteration each, so with the harmonic
+model MINRES would need of the order of ten to fifteen iterations instead of
+300, before the atom's lumping error; deflation would save those seven and no
+more, and recycling becomes the fallback for the case where the flat end is a
+ladder rather than seven points (denser rational surfaces, more shear, finer
+meshes). This is the number that makes the harmonic atom the next thing to
+build.
+
 Two approximations are stacked in it, to be kept apart. (i) *Gauss-Newton*:
 only $(\delta B(u), \delta B(v))$ is kept, the cross term
 $\tfrac12[(B, \mathrm{curl}(u \times Q_v)) + (B, \mathrm{curl}(v \times Q_u))]$, at an
@@ -323,6 +386,89 @@ block-tridiagonal in the mode index (the equilibrium's spectrum couples
 neighbouring $(m, n)$), which is SIESTA's construction and the other end of
 the effort scale. First measurement for either: the MINRES count on the
 step-5000 field against the 300 of the Laplacian atom.
+
+## 7d. The harmonic atom: what it is and how it is inverted
+
+Built 2026-09-07 (Tobias: "build the harmonic atom and run, float64");
+`mrx.hessian.harmonic_preconditioner`, `--newton-precond harmonic`.
+
+**The model.** With $\mathrm{div}\,u = 0$ and $\mathrm{div}\,h = 0$,
+$\mathrm{curl}(u \times h) = h \cdot \nabla u - u \cdot \nabla h$. The Hessian is the
+Gauss-Newton form $\|\mathrm{curl}(u \times B)\|^2$ to a percent and $B = c\,h + \mathrm{curl}\,A$
+is 96% harmonic, so the benchmark of 7c: $\|\mathrm{curl}(u \times c h)\|^2$ is the
+Hessian to 3% on every Ritz vector but the seven lowest. The atom keeps the
+first term, the parallel derivative, and lumps it. $h$ is the vacuum field
+inside the boundary and carries its own rotational transform, so in the
+logical angles $h \cdot \nabla = (h^\theta/J)\,\partial_\theta + (h^\zeta/J)\,\partial_\zeta$
+(logical contravariant components), and on a Fourier mode $(m, n)$ of a
+radial layer its symbol is $(2\pi)^2 (\bar h^\theta(r)\, m + \bar h^\zeta(r)\, n)^2$
+with the angle-averaged profiles: the resonance denominators, zero on
+$\bar h^\theta m + \bar h^\zeta n = 0$. The dropped second term is a
+multiplication by the strain of $h$, a bounded operator of size
+$|\nabla h| \sim |h| / R$ (below); it enters as the floor
+$\varphi(r) = \kappa\, (2\pi)^2 (\bar h^{\theta 2} + \bar h^{\zeta 2})$, $\kappa$ the
+one knob (`HARMONIC_FLOOR` = 1e-2; swept in the probe), which is what the
+resonant modes see.
+
+**The inversion.** The Newton operator on the potential is
+$\mathrm{curl}^T H\,\mathrm{curl} \approx \mathrm{curl}^T (\text{parallel symbol})\,\mathrm{curl}$:
+the curl-curl of the potential form times the symbol. The Laplacian atom
+$P_L$ is the existing approximate inverse of the curl-curl (plus grad-div,
+harmless on the gauge). The harmonic atom is the sandwich
+
+$$P_h = W\, P_L\, W^T, \qquad W = E\, C\, E^T,$$
+
+with $C$ the diagonal scaling by $(\lambda_\parallel + \varphi)^{-1/2}$ in the
+2-D Fourier basis of the two angles on the tensor DoF grid of each component
+of the 1-form (two FFTs per component per apply) and $E$ the Dirichlet
+1-form extraction. In the bulk, where $E$ is the identity, $P_h$ is the
+Laplacian atom with $\lambda_\parallel + \varphi$ multiplied into its
+denominator, i.e. the fast-diagonalisation inverse of "curl-curl times the
+parallel symbol"; on the polar rows the extraction lumps the scaling. It is
+symmetric positive definite for any $C$, so MINRES stays correct whatever
+the profiles are, and the quality is the measurement. The profiles are the
+quadrature averages of $h/J$ over the angles, interpolated to the radial
+DoF index; the Fourier frequencies are those of the DoF grid; no metric
+factors beyond those in $P_L$. Cost: negligible next to the Hessian action.
+
+**What is known about $\nabla h$.** $\mathrm{curl}\,h = 0$ makes $\nabla h$
+symmetric, $\mathrm{div}\,h = 0$ makes it traceless, and together each
+Cartesian component of $h$ is harmonic ($\Delta h = \nabla \mathrm{div}\,h - \mathrm{curl}\,\mathrm{curl}\,h = 0$),
+so $|\nabla h|$ is bounded by $|h|$ over the scale of the geometry, $R$ for
+the $1/R$ toroidal field and the boundary shaping. Hence $u \cdot \nabla h$ is a
+bounded, mass-like term of size $|h||u|/R$, while $h \cdot \nabla u$ is
+$|h|\, k_\parallel |u|$: the ratio is $k_\parallel R$. Neither is "very
+small" in general: the derivative term dominates every stiff mode
+($k_\parallel R \sim n$ at the grid scale), the strain term is all that is
+left on a resonant mode, and on the exact kernel ($u = h$, the $E \times B$-type
+flows $u = h \times \nabla\phi / |h|^2$) the two cancel identically. That is the
+spectrum of 7c: a stiff end set by $k_\parallel$, a floor set by the strain,
+and a few near-kernel modes below the floor where the cancellation is
+partial.
+
+**Measured (job 18045878, float64, the step-5000 field,
+`harmonic_atom_probe.log`).** Direction quality per MINRES budget, the energy
+the exact line search removes along the direction ($\Delta E^*$), against the
+Laplacian atom:
+
+| preconditioner | iterations (cumulative) | $\Delta E^*$ | $\Delta t^*$ |
+|---|---|---|---|
+| Laplacian atom | 300 (tol 0.1 not reached) | 1.06e-8 | 1.67 |
+| harmonic, $\kappa$ = 1e-3 | 194 (tol 0.1) / 494 | 2.57e-8 / 6.19e-8 | 1.36 / 1.44 |
+| harmonic, $\kappa$ = 1e-2 | 269 (tol 0.1) / 569 | 6.87e-8 / 9.78e-8 | 1.44 / 0.85 |
+| harmonic, $\kappa$ = 0.1 | 300 | 8.55e-8 | 1.28 |
+| harmonic, $\kappa$ = 1 | 300 | 5.32e-8 | 1.51 |
+
+At 300 iterations the harmonic atom's direction removes 6-8x the energy of the
+Laplacian atom's ($\kappa$ = 1e-2..0.1); at 569 iterations with $\kappa$ = 1e-2
+the line search sits at $\Delta t^* = 0.85$, a nearly converged Newton
+direction, which no Laplacian-atom solve reached. Far from the factor an exact
+model inverse would give (condition 13 in 7c): the sandwich's lumping (radial
+averaging of the profiles, the polar rows, the interplay with the Laplacian
+atom's own approximations) eats most of it. Still the largest single gain of
+the study; the iteration counts to a given tolerance are not comparable across
+preconditioners (each measures the residual in its own norm), the direction
+quality is. Default `HARMONIC_FLOOR` = 1e-2.
 
 ## 8. The experiment
 
@@ -432,7 +578,20 @@ helicity drift is relative. Figure `outputs/newton_second_variation/newton_tail.
 | shift 0, 100 it, uncapped (cancelled at 15 min) | 140 | 6.4 | 1.5e-7 | 3.7e-4 / 6.1e-5 / 6.1e-5 | -3.9e-6 | 1.75 |
 | shift 39, 100 it | 4000 | 0.75 | 1.8e-7 | 7.6e-4 / 2.1e-4 / 4.1e-4 | -3.2e-6 | 2.0 |
 | shift 0, 300 it, dt capped at 1 | 220 | 16.6 | 6.5e-7 | 5.5e-5 / 4.4e-5 / 9.7e-5 | +2.4e-5 | 1.0 |
-| the same, midpoint induction on B | *(running)* | | | | | |
+| the same, midpoint induction on B: the Picard iteration halves dt four times to 1/16 and stays unconverged (sweep limit) on every step, so this is Newton at dt = 1/16 | 220 | 17.6 | 1.7e-7 | 2.2e-4 / 5.8e-5 / 1.2e-4 | -5.9e-6 | 0.03-0.06 |
+| the same, float64, tol 1e-10 (is the floor the tolerance?) | *(running)* | | | | | |
+| the same, midpoint induction, float64 (does the Picard iteration converge at the full step?) | *(running)* | | | | | |
+
+(The dt = 1/16 arm's 17.6 s/step is 16.6 s of Newton direction plus the 101
+failed Picard evaluations, so it paid a full direction for a sixteenth of a
+step: sixteen times the explicit arm's price per unit of path. Explicit
+stepping at dt = 1/16 would follow the same trajectory to solver noise at the
+same per-step cost, and the substep variant, one direction and sixteen explicit
+induction steps of 1/16 at one k=1 solve each, at about 17 s per full step.
+What the arm measured is the price of the shorter steps: helicity -0.26e-5 at
+the residual minimum and -0.60e-5 at the end against -0.33e-5 and +2.4e-5 for
+the full-step arm, a quarter of the drift at the end; and that even at 1/16
+the residual turns around after the floor, 3.4e-9 to 1.5e-8.)
 
 (A midpoint arm with the auxiliary field was started and cancelled after 60
 steps: its helicity was exact to the digit, but the auxiliary force $J \times H$
@@ -607,7 +766,62 @@ Three findings.
   regularisation is $\delta^2 E + \epsilon(-\Delta)$, which recovers the smoothed
   descent direction as $\epsilon \to \infty$.
 
-## 12. Files
+## 12. Towards production (thinking, not code; Tobias 2026-09-07)
+
+**The midpoint arm's Picard "failure" is a tolerance artefact.** The run file
+(140 steps): CFL number taken 0.003, contraction constant negligible, Picard
+defect stalled at 4e-6..2.5e-5 on every step, i.e. the inner solves' noise
+relative to a tiny increment; the tolerance 1.3e-6 (relative to $\|dt\, dB\|$)
+is unattainable, so every step burns 100 sweeps and four halvings and goes out
+at dt/16. A restrictive CFL would make it worse (smaller increment, larger
+relative noise). Fix when the code is touched again: a floor on the Picard
+tolerance relative to the field, not the increment. Until then midpoint +
+Newton is Newton at dt/16 by construction.
+
+**One long implicit induction step instead of many explicit substeps (Tobias
+2026-09-07).** With the velocity frozen the midpoint induction
+$(I - \tfrac{dt}{2} L_u) B_{n+1} = (I + \tfrac{dt}{2} L_u) B_n$, $L_u B = \mathrm{curl}(u \times B)$,
+is a linear system, the Cayley transform of the generator: helicity exact
+(auxiliary field; projection error on $B$ itself) at any step, topology error
+$(dt\,\|L_u\|)^3/12$ per step, about 1% of the displacement at the Newton
+length with CFL 0.5 -- equal to sixteen explicit Euler substeps of 1/32 in
+total and forty times better than the single explicit step. Picard is the
+Neumann series of that system (needs $dt\,\|L_u\| < 1$, stalls at noise in
+float32 at small increments: the dt/16 arm). A Krylov solve instead: the
+operator is $I$ minus something of norm ~0.5, condition ~3, CG on the normal
+equations (the operator is not $M_2$-symmetric; $L_u$ is skew only in the
+helicity pairing) in 10-20 iterations of one induction evaluation each, the
+cost of the sixteen substeps. Ranking for stepping a Newton direction: one
+explicit step (the arms) < sixteen explicit substeps ~ one implicit full step
+(the latter helicity-exact) < many implicit substeps. In code: replace the
+Picard loop of the midpoint solve by a normal-equations CG on the same
+increment map. Not now.
+
+**Newton in its own file.** `mrx/hessian.py` -> `mrx/newton.py`: the second
+variation, the direction solve, a small config (shift, tol, maxiter, precond,
+dt cap, inner tol). The stepper takes a direction strategy, L-BFGS (history,
+order) or Newton (config), each owning its state as one sub-pytree of `State`
+(histories / the potential warm start); no `newton_*` fields, no `if
+self.newton` branches. The Newton step uses the potential force and never calls
+the Leray solve; the per-step residual comes from that force. Stop at the floor
+with the driver's floor test. Defaults from the experiment: shift 0, tol 0.1,
+300 iterations, cap 1, Laplacian atom. One cheap relaxation test with a few
+Newton steps on the fixture; a concepts section on the floor-finder role and
+the reconnection caveat.
+
+**The potential route as the production velocity.** Same iterates, 20-30%
+cheaper, divergence-free to round-off, smooth-first order (validated on both
+routes). It generalises to the auxiliary field for free (rhs = curl^T load(J x
+X) for whichever X the cross product reads), so it can be the only route in the
+step for every scheme; the Leray projection moves to where its pressure is
+needed (sampler, weak pressure, diagnostics, tests). The step's Leray warm
+starts (p, JxH, sigma) leave the state, the potential warm start stays.
+Smooth-first becomes the only order, deleting the post-combination smoothing.
+Caveats: single m=1 trajectories scatter by tens of percent (the factor two is
+a trend, not a number); float32 storage puts the potential force 3e-5 off the
+Leray force.
+
+## 13. Files
 
 - `mrx/hessian.py`: `second_variation(seq, B, J)` (the Hessian action),
   `newton_direction(seq, B, J, MF, a_guess, shift, tol, maxiter, precond)`.

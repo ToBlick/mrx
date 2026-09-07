@@ -84,9 +84,12 @@ Flags, defaults in brackets:
       --newton-shift S [0]         its Levenberg-Marquardt shift (L2 metric)
       --newton-tol TOL [1e-3]      relative residual of the MINRES solve
       --newton-maxiter N [100]     its iteration budget per step
-      --newton-precond {laplacian,laplacian2,mass} [laplacian]
+      --newton-precond {laplacian,laplacian2,mass,harmonic} [laplacian]
                                    the preconditioner: the k=1 Laplacian
-                                   atom, its square, or the k=1 mass atom
+                                   atom, its square, the k=1 mass atom, or
+                                   the harmonic atom (the Laplacian atom with
+                                   the parallel symbol of the harmonic field
+                                   in its denominator, mrx.hessian)
       --newton-inner-tol TOL [solve tol]
                                    tolerance of the Hessian's mass solves
       --newton-dt-cap C [inf]      cap the line-search step along a Newton
@@ -196,7 +199,7 @@ def parse_args(argv=None):
                     help="relative residual tolerance of the Newton MINRES solve")
     ap.add_argument("--newton-maxiter", type=int, default=100,
                     help="iteration budget of the Newton MINRES solve per step")
-    ap.add_argument("--newton-precond", default="laplacian", choices=("laplacian", "laplacian2", "mass"),
+    ap.add_argument("--newton-precond", default="laplacian", choices=("laplacian", "laplacian2", "mass", "harmonic"),
                     help="preconditioner of the Newton solve")
     ap.add_argument("--newton-inner-tol", type=float, default=None,
                     help="tolerance of the Hessian's mass solves [the solve tolerance]")
