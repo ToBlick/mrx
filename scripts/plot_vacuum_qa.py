@@ -90,16 +90,20 @@ def main(cli):
                             rasterized=True)
             pts.append(np.stack([Xr, Yr, Z], axis=-1).reshape(-1, 3))
 
+        # The figure is meant for ~half-page width, so it is scaled down a lot in
+        # the document: oversize the colour-bar text and thicken the bar so both
+        # stay legible at that size.
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array(vals)
-        cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.02)
-        cbar.set_label(r"$|B|$")
+        cbar = fig.colorbar(sm, ax=ax, shrink=0.85, aspect=12, pad=0.01)
+        cbar.set_label(r"$|B|$", fontsize=26)
+        cbar.ax.tick_params(labelsize=22)
 
         lo, hi = np.concatenate(pts).min(0), np.concatenate(pts).max(0)
         ax.set_xlim(lo[0], hi[0])
         ax.set_ylim(lo[1], hi[1])
         ax.set_zlim(lo[2], hi[2])
-        ax.set_box_aspect(hi - lo, zoom=1.3)
+        ax.set_box_aspect(hi - lo, zoom=1.5)
         ax.view_init(elev=25, azim=40)
         ax.set_axis_off()
         save_figure(fig, os.path.join(cli.out, "vacuum_qa_Bmag.png"))
