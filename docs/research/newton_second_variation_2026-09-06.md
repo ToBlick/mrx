@@ -1423,3 +1423,70 @@ step; setup excluded for every arm), colour = tolerance or precision (left)
 and mesh (right), legends below the panels. The json holds every arm in the
 sweeps' collected format (params, trace, qoi with cumulative wall over the
 continuations, summary) plus `start_step` and `t0_min`.
+
+## 15. The warm start and the floor against h (2026-09-08)
+
+Tobias: "we really want a newton run that starts earlier than 5000 steps ...
+starting with newton at step 0 might be overkill, what do you think? 5000 is
+too late." and "Does the floor move with resolution?". Arms (jobs
+18149688/90/92, 18149487, 18149698/701/703, continuations 18153880,
+18174359; `outputs/newton_relax/n0_from{0,500,1000}`,
+`anchor32_newton_from500`, `h{12,24,32}_newton[/cont]`; the sweep
+checkpoints converted with `convert_ckpt.py` since they predate the Newton
+state leaves), all on the step-5000 protocol (mixed, Laplacian atom, 300
+iterations, dt <= 1). Rows by `conv_rows.py` (floor = lowest 20-step chunk;
+energy and helicity from the initial field):
+
+| arm | descent steps (min) | Newton steps to floor (min) | total min | floor | E removed | dH/H at floor |
+|---|---|---|---|---|---|---|
+| (16,32,32) from 0 | 0 | 58 (18.4) | 18.4 | 4.92e-9 | 19.4e-7 | -1.31e-5 |
+| (16,32,32) from 500 | 500 (6.6) | 54 (17.3) | 24.0 | 3.61e-9 | 19.3e-7 | -1.34e-5 |
+| (16,32,32) from 1000 | 1000 (12.2) | 53 (17.1) | 29.3 | 3.32e-9 | 19.3e-7 | -1.34e-5 |
+| (16,32,32) from 5000 | 5000 (56.0) | 49 (14.9) | 70.9 | 2.02e-9 | 19.6e-7 | -1.32e-5 |
+| (32,32,32) from 500 | 500 (11.7) | 322 (132) | 144 | 3.41e-9 | 16.7e-7 | -7.4e-6 |
+| (32,32,32) from 5000 | 5000 (100) | 192 (85.9) | 186 | 1.60e-9 | 17.0e-7 | -5.0e-6 |
+| (12,24,24) from 5000 | 5000 (28.3) | 24 (5.9) | 34.1 | 9.35e-9 | 35.7e-7 | -2.1e-5 |
+| (24,48,48) from 5000 | 5000 (167) | 185 (126) | 293 | 1.04e-9 | 17.1e-7 | -7.5e-6 |
+| (32,64,64) from 5000 | 5000 (458) | >240 (>318), falling | -- | <= 2.02e-9 | 16.9e-7 | -6.0e-6 |
+
+Readings.
+
+1. **Step 0 is not overkill on the coarse mesh.** The Hessian is positive
+   definite at the initial field (`probe_ic.json`: 150 Ritz values, lowest
+   0.117, none negative), one Newton step takes the VMEC field's residual
+   from 2.5e-4 to 9.4e-7 (500 descent steps, 7 min), and the floor comes
+   after 18 min in all with no fallbacks; the descent alone never gets
+   below 7.3e-9 in 18 000 steps / 3.2 h.
+2. **But the floor found depends on where Newton starts, systematically**:
+   4.9, 3.6, 3.3, 2.0e-9 after 0, 500, 1000, 5000 descent steps, at the
+   same total energy removed to 2%. Same valley, different point along it:
+   the truncated direction descends the valley walls wherever it is and does
+   not walk the valley (it never contains the flat modes); the smoothed
+   descent walks it, slowly, and the transverse floor is lower further
+   along. The knee on (16,32,32) is a few hundred steps.
+3. **On (32,32,32) the early start does not pay**: from step 500 Newton
+   needs 322 steps (2.2 h) to a floor twice the step-5000 route's, in the
+   same total wall time, then drifts up to 2.4e-8 with 3% fallbacks. The
+   descent's fast phase is longer on the finer mesh; the rule is "warm-start
+   where the descent's power law has set in", not a step count.
+4. **The floor falls with h at fixed aspect** (9.35, 2.02, 1.04e-9 for
+   n = 12, 16, 24; n = 32 still falling through 2.0e-9 after 240 steps and
+   5.3 h, continuation running), **and the Newton steps to reach it grow**
+   (24, 49, 185, >240): more flat modes below the truncation at finer
+   resolution. The exponent is not settled (factor 4.7 from 12 to 16, 1.9
+   from 16 to 24); n = 32 decides it. The descents alone reach 9.7, 7.3, 15,
+   57e-9 (lowest chunk in their 2, 3, 5.5, 7.6 hours).
+5. **The (12,24,24) arm is the leak at full strength**: floor at step 24,
+   then a reconnection (helicity -2%, residual to 1.2e-4). Twelve radial
+   cells are below what the Newton direction can be trusted on.
+6. **Tolerance: no panel.** Mixed at 1e-8 and float64 at 1e-10 differ by 15%
+   at the floor, the size of trajectory-to-trajectory variation (the
+   descent at 1e-10 sits 12% below 1e-8 at its lowest chunk and 13% above
+   at the end); 1e-6 changes the descent (the re-ordering event), not the
+   floor. One sentence in the section.
+
+The section (`convergence_section.tex`) is rewritten around these: the
+warm-start paragraph in "Newton's method", `tab:convergence` with a
+warm-start block and an h-sequence block, `fig:convergence` with the
+warm-start panel and the resolution panel (raw traces, all solid, descents
+grey, step counts in the legend as warm-start+Newton; Tobias 2026-09-08).
