@@ -255,6 +255,41 @@ flux of $B$ is conserved by every curl update whatever $u$ is. The descent
 route carries $c\,h$ because it is one inner product; the Newton route drops it
 and relies on the sign test.
 
+**The harmonic velocity the Newton solve omits (Tobias 2026-09-07: "our
+Hessian method is assuming u = curl w, no harmonic part. Is that a
+problem?"; jobs 18112659/18112660, `harmonic_velocity_probe.py`,
+`harmonic_velocity_probe_16.log`, `_32.log`, float64).** The div-free
+velocities with $u \cdot n = 0$ are $\mathrm{curl}\,V^1_0 \oplus \mathrm{span}(h)$,
+$h$ the harmonic 2-form (net toroidal flux); the descent's Leray force keeps
+the $h$ coefficient, the Newton solve on the potential drops it. Measured
+with $h^T M_2 h = 1$: the share of the projected force along $h$,
+$(h^T M F)^2 / (F^T M F)$; the Newton step on $\mathrm{span}(h)$ alone,
+$c_h = h^T M F / h^T H h$, and its energy $\Delta E_h = -\tfrac12 (h^T M F)^2 / h^T H h$;
+and, given the truncated direction $u_N$ (Laplacian atom, 300 iterations),
+the residual of the omitted equation $h^T M F - h^T H u_N$ and the energy it
+would add.
+
+| state | $|PF|^2$ | share along $h$ | $c_h$ | $\Delta E_h$ | $\Delta E_h / \Delta E_N(300)$ | $\Delta E$ of the $h$-equation given $u_N$ |
+|---|---|---|---|---|---|---|
+| (16,32,32) step 5000 | 4.9e-8 | 2.7e-6 | 3.1e-4 | -5.6e-11 | 5e-3 | -2.8e-11 |
+| (16,32,32) Newton floor (5040) | 2.8e-9 | 3.0e-9 | 2.5e-6 | -3.6e-15 | 2e-6 | -5.7e-15 |
+| (32,32,32) step 5000 | 1.1e-7 | 1.6e-11 | 1.1e-6 | -7.2e-16 | 3e-7 | -1.6e-15 |
+| (32,32,32) Newton floor (5200) | 5.4e-9 | 6.8e-10 | 1.6e-6 | -1.5e-15 | 3e-5 | -2.0e-15 |
+
+$h^T H h = 1.18 \times 10^{-3}$ on both meshes (against curvatures 0.12 to
+$4 \times 10^4$ on the curls): a velocity along $h$ is nearly parallel to
+$B$ (the field is 96% harmonic), so its induction $\mathrm{curl}(h \times B)$ and the
+work $h \cdot (J \times B)$ are both first order in the non-harmonic 4%, and their
+ratio $c_h$ is $10^{-6}$ to $3 \times 10^{-4}$. Against the exact Newton
+decrement of 1.13e-7 at the coarse step-5000 state the harmonic step is
+worth $5 \times 10^{-4}$ of it; at every floor it is $10^{-15}$ in energy and
+below $10^{-8}$ of the residual. Not a problem: the omission loses nothing
+the residual or the energy can see, and the Leray force's harmonic
+coefficient in the descent is a formality for the same reason. (If it ever
+mattered, the fix is one scalar per step: the harmonic block is a single
+coefficient with its own right-hand side and one inner product of coupling
+to the curl block.)
+
 ## 7c. One family: the shift, the potential route, and a $B$-aware preconditioner
 
 **The descent is the infinite-shift Newton.** Divide the Newton system by
