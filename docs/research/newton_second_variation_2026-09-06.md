@@ -1381,3 +1381,41 @@ Leray force.
 - `scripts/newton_probe.py`, `test/test_hessian.py`.
 - Outputs: `outputs/newton_probe/<arm>/probe.json`, `outputs/newton_relax/<arm>/relax.json`
   (copied to the main checkout's `outputs/newton_second_variation/`).
+
+## 14. The convergence section of the paper (2026-09-08)
+
+Tobias: "I want to write a section on the convergence of relaxation methods
+... 0) current sheets 1) the continuous case 2) the discrete case, the
+floor, precision, solver tolerance 3) Newton 4) numerical results ...
+Completely re-write it ... Be brief ... reduce the table to the main points
+(newton, tolerance, resolution)". Written as
+`outputs/newton_second_variation/convergence_section.tex` (five paragraphs,
+`tab:convergence` with 11 rows, `fig:convergence`), citing only keys the
+paper already uses (loizu_magnetic_2015, grad_toroidal_1967,
+constantin_flexibility_2021, hudson_computation_2012, parker_spontaneous_1994,
+moffatt_magnetostatic_1985, beekie_moffatts_2022, bae_local_2025,
+cieliebak_note_2017, enciso_obstructions_2025) and the appendix
+`sec:second_variation`; the hyperparameter-sweeps subsection has no label, so
+the tolerance-1e-6 event is referenced by its figure `fig:h_p_m_tol_sweep_F`.
+
+Results added there that the earlier block did not have: the descent rows at
+tol 1e-6 / 1e-8 / 1e-10 from step 5000 to 10000 (the 1e-6 arm's re-ordering
+event: energy 50.5e-7 against 0.63e-7, helicity +3.6e-5; 1e-8 and 1e-10 the
+same to the residual floor and the energy), the power-law exponents, the
+harmonic velocity's share, the converged-direction result, the sheet-width
+scaling $\|F\|_{L^2} \sim \delta^{-1/2}$. The tolerance rows use the collected
+sweep arms (`figures_2026-09/sweeps_tol.json`, `sweeps_h.json`) with the
+same 20-step-chunk convention as the Newton rows, which changes the
+descent-tol-1e-8 row's residual columns from the earlier 2.15 / 2.15 (a
+last-1000-step mean) to 1.68 / 2.20. The float64 descent (floor study
+`f64_g1`) is in the figure but not in the table: its run file predates the
+energy diagnostic.
+
+The figure (`newton_convergence_figure.py` -> `newton_convergence.json`,
+`.png`, `pgf/`; copies in `figures_2026-09/`): squared residual against
+stepping wall time in minutes (setup excluded for every arm, the Newton arms
+offset by the descent's wall at step 5000), 10-step block means with the band,
+descent solid / Newton dashed, colour = tolerance or precision (left) and
+mesh (right), legends below the panels. The json holds every arm in the
+sweeps' collected format (params, trace, qoi with cumulative wall over the
+continuations, summary) plus `start_step` and `t0_min`.
