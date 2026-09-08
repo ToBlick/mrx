@@ -86,7 +86,8 @@ def main(cli):
             c, s = np.cos(angle), np.sin(angle)
             Xr, Yr = c * X - s * Y, s * X + c * Y
             ax.plot_surface(Xr, Yr, Z, facecolors=colours, rstride=1, cstride=1,
-                            shade=False, linewidth=0, antialiased=False, zsort="min")
+                            shade=False, linewidth=0, antialiased=False, zsort="min",
+                            rasterized=True)
             pts.append(np.stack([Xr, Yr, Z], axis=-1).reshape(-1, 3))
 
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -101,7 +102,6 @@ def main(cli):
         ax.set_box_aspect(hi - lo, zoom=1.3)
         ax.view_init(elev=25, azim=40)
         ax.set_axis_off()
-        ax.set_title(f"QA vacuum field: $|B|$ on the boundary  ({ns[0]}, {ns[1]}, {ns[2]}), $p = {cli.p}$", y=0.97)
         save_figure(fig, os.path.join(cli.out, "vacuum_qa_Bmag.png"))
         plt.close(fig)
     print(f"  -> {cli.out}/vacuum_qa_Bmag.png (+ pgf/)", flush=True)
