@@ -103,6 +103,9 @@ def main(cli):
         ax.view_init(elev=25, azim=40)
         ax.set_axis_off()
         save_figure(fig, os.path.join(cli.out, "vacuum_qa_Bmag.png"))
+        # A self-contained vector PDF too: one file, rasterised surface embedded,
+        # vector text -- \includegraphics{...pdf} with no external rasters.
+        fig.savefig(os.path.join(cli.out, "vacuum_qa_Bmag.pdf"), bbox_inches="tight")
         plt.close(fig)
     print(f"  -> {cli.out}/vacuum_qa_Bmag.png (+ pgf/)", flush=True)
 
