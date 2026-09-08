@@ -1411,11 +1411,15 @@ last-1000-step mean) to 1.68 / 2.20. The float64 descent (floor study
 `f64_g1`) is in the figure but not in the table: its run file predates the
 energy diagnostic.
 
-The figure (`newton_convergence_figure.py` -> `newton_convergence.json`,
-`.png`, `pgf/`; copies in `figures_2026-09/`): squared residual against
-stepping wall time in minutes (setup excluded for every arm, the Newton arms
-offset by the descent's wall at step 5000), 10-step block means with the band,
-descent solid / Newton dashed, colour = tolerance or precision (left) and
-mesh (right), legends below the panels. The json holds every arm in the
+The figures (`newton_convergence_figure.py` -> `newton_convergence.json`,
+`newton_convergence_steps.png`, `newton_convergence_wall.png`, `pgf/`; copies
+in `figures_2026-09/`; Tobias's revision 2026-09-08: no tol-1e-6 arm, only
+(16,32,32) and (32,32,32) in the resolution panel, linear x, one figure
+against the step and one against the wall time, no block means "so it is
+clear that we start from the same run"): the squared residual per step, raw,
+descent solid / Newton dashed, the Newton arms branching off the descent at
+step 5000 (on the wall axis offset by the descent's stepping wall at that
+step; setup excluded for every arm), colour = tolerance or precision (left)
+and mesh (right), legends below the panels. The json holds every arm in the
 sweeps' collected format (params, trace, qoi with cumulative wall over the
 continuations, summary) plus `start_step` and `t0_min`.
