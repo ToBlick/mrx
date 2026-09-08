@@ -423,7 +423,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3):
+                   profile_coord="logical", profile_rays=3, legend_fontsize=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -468,6 +468,9 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     It needs ``axis_RZ`` and raises without it rather than quietly drawing a
     half-empty panel: 'above' and 'below' are defined against the MAGNETIC
     axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
+
+    ``legend_fontsize`` overrides the size of the profile panel's theta-ray
+    legend for this call only; the default keeps the house ``FS.annot``.
     """
 
     if split_iota_p is None:
@@ -701,7 +704,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         if lim.x is not None:
             bx.set_xlim(*lim.x)
         bx.grid(alpha=0.3)
-        bx.legend(loc="upper center", ncol=len(thetas), fontsize=FS.annot,
+        bx.legend(loc="upper center", ncol=len(thetas), fontsize=legend_fontsize or FS.annot,
                   columnspacing=1.0, handlelength=2.4)
     else:
         x = seed_r if profile_x is None else profile_x
