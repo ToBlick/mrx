@@ -419,7 +419,7 @@ def _ray_line(lr, lth, pressure, th0):
 @house_style()
 def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=None,
                    axis_RZ=None, profile_x=None,
-                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30, min_sep=0.06,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
@@ -556,7 +556,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if sel_p.any():
             psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
-    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
+    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max, min_sep)
                              if nfp else ([], []))
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,

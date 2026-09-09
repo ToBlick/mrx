@@ -7,9 +7,12 @@ renders the five toroidal planes with ``mrx.plotting.render_section`` -- the sam
 plotter ``scripts/poincare_relax.py`` drives -- but with ``pressure=None`` (a
 vacuum carries no pressure, so the pressure colour split, the below-axis scatter
 and the pressure profile are all omitted), no iota +-band ribbon and no title.
-One iota colour scale across all five planes. The house font hierarchy (label >
-tick > legend) is rescaled so the axis labels are ``--label-size`` when the figure
-is one page wide. Writes ``poincare_zeta*.pdf`` (and a ``.png`` for viewing) into ``--out``.
+One iota colour scale across all five planes; the colour bar is ticked at the
+resonant rationals, admitted by spacing (``--min-sep``). The house font hierarchy
+(label > tick > legend) is rescaled so the axis labels are ``--label-size`` when the
+figure is one page wide. Writes ``poincare_zeta*.pdf`` (and a ``.png`` for viewing)
+into ``--out``, plus ``trace.npz``: the traced lines, reused by every later call so a
+change to the figure never retraces.
 
     python scripts/poincare_vacuum_qa.py --geometry data/wout_LandremanPaul2021_QA_lowres.nc --out DIR
 
@@ -26,6 +29,11 @@ Options
     --profile-rays N     golden-angle poloidal rays on the profile panel [3]
     --label-size F       axis-label pt at --page-width; ticks/legend proportional [6]
     --page-width W       authored figure width in inches, 'one page wide' [6.5]
+    --dpi N              rasterised crossing-scatter resolution [600]
+    --field-npz PATH     stored harmonic 2-form DOFs (a vacuum_convergence rung) instead of solving
+    --inner-cells C      draw only lines seeded at r >= C / n_r; the rest are traced, not drawn [1.5]
+    --min-sep F          rational tick spacing, fraction of the iota range [0.12]
+    --trace-npz PATH     traced-line archive [<out>/trace.npz]
     --out DIR            figure directory
     --precision {float64,float32}
 """
@@ -58,11 +66,21 @@ def parse_args(argv=None):
                     help="load the harmonic 2-form DOF vector from this .npz instead of "
                          "solving (e.g. a vacuum_convergence rung's fields.npz); --geometry/--ns/--p must match")
     ap.add_argument("--field-key", default="h_dof", help="array name in --field-npz [h_dof]")
-    ap.add_argument("--drop-inner", type=int, default=0,
-                    help="omit the N innermost radial lines (near-axis outliers) entirely, "
-                         "from every panel and the colour scale [0]")
-    ap.add_argument("--cbar-ticks", type=int, default=10,
-                    help="max intervals for the numeric iota colour-bar ticks (MaxNLocator) [10]")
+    ap.add_argument("--inner-cells", type=float, default=1.5,
+                    help="lines seeded closer to the axis than this many radial cells (C / n_r) "
+                         "are traced and archived but not drawn: the iota fit is biased there "
+                         "(QA 32x64x32 p3: +1.6e-3 at r = 0.019, on trend from r ~ 1.5 h) [1.5]")
+    ap.add_argument("--min-sep", type=float, default=0.12,
+                    help="resonant-rational iota ticks: a rational is labelled only if it is at "
+                         "least this fraction of the iota range from every lower-order label "
+                         "already placed -- the spacing, not the denominator, decides; "
+                         "twice the house 0.06, i.e. ~6 labels on the bar [0.12]")
+    ap.add_argument("--denom-max", type=int, default=300,
+                    help="candidate pool for the rational ticks; large enough that --min-sep "
+                         "is the rule that stops them (the house 30 starves a narrow range) [300]")
+    ap.add_argument("--trace-npz", default=None,
+                    help="archive of the traced lines [<out>/trace.npz]; loaded instead of "
+                         "tracing when it exists, written after tracing otherwise")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     return ap.parse_args(argv)
@@ -74,7 +92,6 @@ def main(cli):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.ticker import MaxNLocator
     import numpy as np
 
     from mrx.geometry import build_sequence, geometry_nfp
@@ -84,50 +101,75 @@ def main(cli):
     from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
                               section_RZ, surface_label, trace_and_classify)
 
-    ns = tuple(int(v) for v in cli.ns.split(","))
     os.makedirs(cli.out, exist_ok=True)
-    nfp = geometry_nfp(cli.geometry)
-    seq, _ = build_sequence(cli.geometry, ns, cli.p)
+    planes = (0.0, 0.125, 0.25, 0.375, 0.5)
+    sec_names = ("R", "Z", "aR", "aZ", "lr", "lth")
 
-    # The vacuum field: the harmonic 2-form, L2-normalised (as in tutorial 2).
-    # --field-npz loads a stored harmonic DOF vector (e.g. a vacuum_convergence
-    # rung's fields.npz 'h_dof') so the ~9 min Hodge solve is skipped; --geometry,
-    # --ns and --p must then match the run that produced it.
-    if cli.field_npz:
-        B = jnp.asarray(np.load(cli.field_npz)[cli.field_key])
-        assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
-        print(f"[vacuum] loaded {cli.field_key} from {cli.field_npz}", flush=True)
+    # The traced lines AND their five (R, Z) sections are archived: tracing is
+    # the expensive step, and mapping the crossings to (R, Z) needs the built
+    # sequence, so with both stored a re-render is plain matplotlib -- no
+    # geometry, no field, no GPU: it runs on the login node. When the archive
+    # exists it is used as-is (--geometry/--ns/--p and the seeding/tracing
+    # options are then read from it, not the command line; delete it to retrace).
+    trace_npz = cli.trace_npz or os.path.join(cli.out, "trace.npz")
+    if os.path.exists(trace_npz):
+        z = np.load(trace_npz)
+        res = {k: z[k] for k in z.files}
+        ns, p, nfp = tuple(int(v) for v in res["ns"]), int(res["p"]), int(res["nfp"])
+        print(f"[vacuum] loaded {res['seeds'].shape[0]} traced lines + sections from {trace_npz} "
+              f"({ns} p={p}); --geometry/--ns/--p and the tracing options are not used", flush=True)
     else:
-        compute_nullspaces(seq)
-        B = get_nullspace(seq.get_operators(), 2, True)[0]
-    B = B / float(seq.l2_norm(B, 2))
+        ns, p = tuple(int(v) for v in cli.ns.split(",")), cli.p
+        nfp = geometry_nfp(cli.geometry)
+        seq, _ = build_sequence(cli.geometry, ns, p)
+        # The vacuum field: the harmonic 2-form, L2-normalised (as in tutorial 2).
+        # --field-npz loads a stored harmonic DOF vector (e.g. a vacuum_convergence
+        # rung's fields.npz 'h_dof') so the ~9 min Hodge solve is skipped; --geometry,
+        # --ns and --p must then match the run that produced it.
+        if cli.field_npz:
+            B = jnp.asarray(np.load(cli.field_npz)[cli.field_key])
+            assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
+            print(f"[vacuum] loaded {cli.field_key} from {cli.field_npz}", flush=True)
+        else:
+            compute_nullspaces(seq)
+            B = get_nullspace(seq.get_operators(), 2, True)[0]
+        B = B / float(seq.l2_norm(B, 2))
 
-    # Trace the field lines once; each plane is a different cut of the same lines.
-    field = logical_field(seq, jnp.asarray(B), 2, True)
-    info = require_zeta_parameterisation(field, name="vacuum")
-    seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max, n_rays=cli.rays,
-                           steps_per_period=cli.steps)
-    res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
-                             steps_per_period=cli.steps, saves_per_period=cli.saves)
+        # Trace the field lines once; each plane is a different cut of the same lines.
+        field = logical_field(seq, jnp.asarray(B), 2, True)
+        info = require_zeta_parameterisation(field, name="vacuum")
+        print(f"[vacuum] B^zeta/|B| in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]",
+              flush=True)
+        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max, n_rays=cli.rays,
+                               steps_per_period=cli.steps)
+        res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+                                 steps_per_period=cli.steps, saves_per_period=cli.saves)
+        res.update(ns=np.asarray(ns), p=p, nfp=nfp)
+        for plane in planes:
+            R, Z, aR, aZ, _cR, _cZ, lr, lth = section_RZ(seq, res["ys"], res["axis"], cli.saves, plane)
+            for name, arr in zip(sec_names, (R, Z, aR, aZ, lr, lth)):
+                res[f"zeta{plane:g}_{name}"] = np.asarray(arr)
+        np.savez_compressed(trace_npz, **res)
+        print(f"[vacuum] traced lines + sections archived in {trace_npz}", flush=True)
     keep = np.asarray(~(res["escaped"] | ~res["ok"]))
-    # Omit the N innermost radial lines ENTIRELY (near-axis outliers): drop them
-    # from every per-line array so they never appear -- not marked "lost".
-    line = np.ones(keep.shape[0], dtype=bool)
-    if cli.drop_inner > 0:
-        order = np.argsort(np.asarray(res["seeds"][:, 0]))
-        line[order[:cli.drop_inner]] = False
-        print(f"[vacuum] omitting {cli.drop_inner} innermost line(s) up to r = "
-              f"{float(np.asarray(res['seeds'][:, 0])[order[cli.drop_inner - 1]]):.4f}", flush=True)
+    # Lines seeded within --inner-cells radial cells of the axis are not DRAWN:
+    # the field is not resolved there (the polar patch) and their iota fit is
+    # biased high, a continuum that relaxes onto the profile by ~1.5 h. They are
+    # dropped from every per-line array and the colour scale, so they never
+    # appear -- not marked "lost". The archive keeps them.
+    r_min = cli.inner_cells / ns[0]
+    line = np.asarray(res["seeds"][:, 0]) >= r_min
+    print(f"[vacuum] drawing r >= {r_min:.4f} ({cli.inner_cells:g} radial cells): "
+          f"{int((~line).sum())} inner line(s) traced but not drawn", flush=True)
     iota_l = np.asarray(res["iota"])[line]
     iota_err_l = np.asarray(res["iota_err"])[line]
     iota_scat_l = np.asarray(res["iota_scatter"])[line]
     seed_r_l = np.asarray(res["seeds"][:, 0])[line]
     keep_l = keep[line]
     shown_l = keep_l & ~np.asarray(res["chaotic"])[line]
-    print(f"[vacuum] {ns} p={cli.p} nfp={nfp}: {int((~keep_l).sum())}/{keep_l.size} lost, "
+    print(f"[vacuum] {ns} p={p} nfp={nfp}: {int((~keep_l).sum())}/{keep_l.size} lost, "
           f"{int((keep_l & np.asarray(res['chaotic'])[line]).sum())} chaotic, drift {res['drift']:.2e}, "
-          f"iota in [{float(iota_l[shown_l].min()):.4f}, {float(iota_l[shown_l].max()):.4f}]; "
-          f"B^zeta/|B| in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]", flush=True)
+          f"iota in [{float(iota_l[shown_l].min()):.4f}, {float(iota_l[shown_l].max()):.4f}]", flush=True)
 
     # The house font hierarchy (label > tick > annotation/legend), rescaled so the
     # axis labels are --label-size at one page wide; the rest stay proportional.
@@ -136,9 +178,9 @@ def main(cli):
 
     # ONE iota colour + profile scale across all five planes (never rescaled).
     lo, hi = float(iota_l[shown_l].min()), float(iota_l[shown_l].max())
-    for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
-        R, Z, aR, aZ, _cR, _cZ, lr, lth = section_RZ(seq, res["ys"], res["axis"], cli.saves, plane)
-        R, Z, lr, lth = np.asarray(R)[line], np.asarray(Z)[line], np.asarray(lr)[line], np.asarray(lth)[line]
+    for plane in planes:
+        R, Z, aR, aZ, lr, lth = (res[f"zeta{plane:g}_{name}"] for name in sec_names)
+        R, Z, lr, lth = R[line], Z[line], lr[line], lth[line]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)
         fig, axes = render_section(
             R, Z, iota_l, iota_err_l, seed_r_l, keep_l,
@@ -147,7 +189,7 @@ def main(cli):
             profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
             logical=(lr, lth), limits=SectionLimits(iota=(lo, hi)),
             iota_scatter=iota_scat_l, profile_rays=cli.profile_rays,
-            legend_fontsize=annot_sz)
+            legend_fontsize=annot_sz, denom_max=cli.denom_max, min_sep=cli.min_sep)
         # render_section is @house_style-decorated (tick/label sizes come from the
         # house mplstyle), so scale the fonts AFTER it returns. Author the figure at
         # one page wide so the sizes above are read as-is when included at \linewidth.
@@ -176,15 +218,7 @@ def main(cli):
             else:
                 for txt in leg.get_texts():
                     txt.set_fontsize(annot_sz)
-        # Denser, numeric ticks on the iota colour bar (render_section labels it
-        # only at the resonant rationals, which are sparse over a narrow range).
-        cbar = axes["ax"].collections[0].colorbar
-        if cbar is not None:
-            ticks = MaxNLocator(nbins=cli.cbar_ticks).tick_values(lo, hi)
-            ticks = [float(t) for t in ticks if lo - 1e-9 <= t <= hi + 1e-9]  # keep within the colour range
-            cbar.set_ticks(ticks)
-            cbar.set_ticklabels([f"{t:.3f}" for t in ticks])
-            cbar.ax.tick_params(labelsize=tick_sz)
+        axes["ax"].collections[0].colorbar.ax.tick_params(labelsize=tick_sz)
         stem = os.path.join(cli.out, f"poincare_zeta{plane:g}")
         fig.savefig(stem + ".pdf", dpi=cli.dpi)     # dpi sets the rasterised crossing scatter
         fig.savefig(stem + ".png", dpi=cli.dpi)     # for quick viewing; the PDF is the deliverable

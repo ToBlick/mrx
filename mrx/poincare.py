@@ -501,14 +501,22 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     for :func:`axis_track`, and it has to keep a small ORBIT around the axis
     rather than sit on it, or its own angle is rounding noise.
 
-    ``n_rays`` rays are seeded, ``n_seeds`` each. ONE ray misses island
-    chains: a stellarator-symmetric field has X-points on the symmetry line
-    ``theta = 0``, a seed on the separatrix traces the separatrix, and every
-    chain the ray crosses shows as a kink in the iota profile with no lines
-    inside the islands. The extra rays are offset by multiples of the golden
-    angle, ``theta_j = j * 0.618...``, which no low-order chain's X-points can
-    all line up with -- equally spaced rays would, for every chain whose
-    poloidal mode number divides ``n_rays``.
+    ``n_rays * n_seeds`` lines are seeded on ``n_rays`` rays. ONE ray misses
+    island chains: a stellarator-symmetric field has X-points on the symmetry
+    line ``theta = 0``, a seed on the separatrix traces the separatrix, and
+    every chain the ray crosses shows as a kink in the iota profile with no
+    lines inside the islands. The extra rays are offset by multiples of the
+    golden angle, ``theta_j = j * 0.618...``, which no low-order chain's
+    X-points can all line up with -- equally spaced rays would, for every chain
+    whose poloidal mode number divides ``n_rays``.
+
+    Every line has its OWN radius: one ladder of ``n_rays * n_seeds`` radial
+    fractions is dealt round-robin to the rays (a spiral, not ``n_rays`` copies
+    of one ladder). Rays that share their radii trace every nested surface
+    ``n_rays`` times over -- ``n_rays`` lines that draw one curve and put
+    ``n_rays`` coincident points on the iota profile -- for no gain; only
+    inside an island does the angle matter, and a line on a different ray at a
+    nearby radius samples that chain just as well.
     """
     # Two passes. The first probe sits at logical r_axis, i.e. near the
     # COORDINATE axis; if the magnetic axis has moved (w7x-ini: 4.9 cm), its
@@ -536,9 +544,10 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     edge = r_edge * jnp.stack([jnp.cos(TWO_PI * thetas),
                                jnp.sin(TWO_PI * thetas)], axis=1)
 
-    t = jnp.linspace(t_min, 1.0, n_seeds)[None, :, None]
-    uv = (centre[None, None, :]
-          + t * (edge - centre[None, :])[:, None, :]).reshape(-1, 2)
+    n = n_rays * n_seeds
+    t = jnp.linspace(t_min, 1.0, n)[:, None]          # one radial ladder for ALL lines
+    ray = jnp.arange(n) % n_rays                        # dealt round-robin to the rays
+    uv = centre[None, :] + t * (edge[ray] - centre[None, :])
     r = jnp.sqrt(uv[:, 0] ** 2 + uv[:, 1] ** 2)
     th = jnp.arctan2(uv[:, 1], uv[:, 0]) / TWO_PI % 1.0
     seeds = jnp.stack([r, th], axis=1)
