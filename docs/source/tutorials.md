@@ -137,13 +137,14 @@ finds (`weak_pressure`). It runs in float32, the production precision.
 
 The script prints the traces, draws $\|F\|_M$ against $E$ on twin axes
 (`plot_twin_axis`) and the weak pressure on the torus, and writes the run in
-`scripts/relax.py`'s layout (`relax.json` and two checkpoints). `scripts/poincare_relax.py` then draws the
-Poincaré sections of the initial and relaxed fields at the standing three
-planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$ (half a field period; the other half follows by stellarator symmetry):
+`scripts/relax.py`'s layout (`relax.json` and two checkpoints). `scripts/poincare_trace.py` then traces the
+initial and relaxed fields at the standing five planes $\zeta = 0, 0.125, 0.25, 0.375, 0.5$
+(half a field period; the other half follows by stellarator symmetry) into the run's
+`trace.npz`, and `scripts/poincare_plot.py` draws the sections from it (no GPU):
 
 ```bash
-python -u scripts/poincare_relax.py outputs/tutorials/li383_relaxation \
-    --planes 0,0.125,0.25,0.375,0.5 --out outputs/tutorials/li383_relaxation
+python -u scripts/poincare_trace.py --run outputs/tutorials/li383_relaxation
+python scripts/poincare_plot.py outputs/tutorials/li383_relaxation
 ```
 
 ## 4. Seed a magnetic island (`4_li383_island_seed.py`)
@@ -198,7 +199,7 @@ res = relax(initial_state(B_reconnected, ts), ts, steps=500, chunk=50,
 
 The helicity drop across the resistive step is the reconnection; the ideal tail
 conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
-pressure on the torus, and writes the run for `poincare_relax.py`. Pass
+pressure on the torus, and writes the run for `poincare_trace.py`. Pass
 `--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 4 syntax) when it falls
 back to building the IC, to watch a seeded island reconnect.
 
@@ -207,5 +208,5 @@ back to building the IC, to watch a seeded island reconnect.
 The production driver `scripts/relax.py` is the command line of the same
 `mrx.relaxation.relax`: the checkpoints at every chunk (movies, restarts),
 the reconnection series and the island seeds as flags;
-`scripts/poincare_relax.py` and `scripts/plot_relaxation.py` draw from its
-run directory.
+`scripts/poincare_trace.py` + `scripts/poincare_plot.py` and
+`scripts/plot_relaxation.py` draw from its run directory.

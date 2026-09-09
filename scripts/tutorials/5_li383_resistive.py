@@ -217,7 +217,7 @@ print(f"  -> {path}")
 # %%
 # Now we archive the run the way scripts/relax.py does -- relax.json and the
 # checkpoints of the field before the reconnection and at the end -- so
-# scripts/poincare_relax.py can redraw the sections at any planes from it.
+# scripts/poincare_trace.py can trace the sections at any planes from it.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts_ideal), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)

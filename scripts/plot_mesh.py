@@ -12,8 +12,8 @@ innermost rings are omitted and the spokes start at the first surviving ring,
 so the near-axis polar patch (the ``ring_depth=2`` -> three C1 basis functions
 surgery of ``mrx.extraction_operators``) reads as one region. With ``--sections`` a panel is split at the
 magnetic axis like the section pages: the grid above, the Poincaré crossings
-of that mesh's field below, coloured by iota (``scripts/poincare_relax.py``'s
-``sections.npz``; the plane must be one it traced). ``mesh_3d.png``: the boundary surface
+of that mesh's field below, coloured by iota (``scripts/poincare_trace.py``'s
+``trace.npz``; the plane must be one it traced). ``mesh_3d.png``: the boundary surface
 of the first mesh over the full torus with its poloidal and toroidal knot
 lines. Both also as ``pgf/*.pgf``. Only the map is built (no preconditioners).
 
@@ -22,7 +22,7 @@ Options
     --meshes SPEC        ``n_r,n_t,n_z[|a:b:m,...]`` per mesh, ``;``-separated
     --p P                spline degree [2]
     --planes Z,...       logical toroidal planes of the cross-sections [0,0.5]
-    --sections S;...     per mesh ``path/sections.npz[:tag]`` (tag ``final`` by
+    --sections S;...     per mesh ``path/trace.npz[:tag]`` (tag ``final`` by
                          default) or ``-`` for none; one entry serves every mesh
     --nfp N              override the file's nfp
     --out DIR            figure directory

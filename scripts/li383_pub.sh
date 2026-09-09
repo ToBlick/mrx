@@ -195,19 +195,19 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     fi
 }
 
-# Sections and movies run THIS checkout's plotter (branch poincare-plotter merged
-# 2026-09-03: .pgf output, logical-r profile) in float32, as slurm/regen_poincare.sh
-# does; TeX for the .pgf comes from the same place as there.
-PLOTTER_ENV="PYTHONPATH=$WT PATH=$HOME/texlive/2026/bin/x86_64-linux:$PATH"
+# Sections and movies TRACE with THIS checkout's scripts/poincare_trace.py (a GPU
+# job, float32) into the arm's trace.npz; the pages are then drawn on the login
+# node: `python scripts/poincare_plot.py $PUB/NAME` (movie: `.../movie/trace.npz`).
+PLOTTER_ENV="PYTHONPATH=$WT"
 
 sections() {  # sections NAME [TIMEOUT_MIN]: ic, final and the reconnection series of an arm, one call, one colour scale
-    export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_relax.py" \
-        "$PUB/$1 --fields ic,final,reconnect --planes 0,0.125,0.25,0.375,0.5 --precision float32 --out $PUB/$1/poincare" "${2:-30}"
+    export EXTRA_ENV="$PLOTTER_ENV"; submit sec "$1" "$WT/scripts/poincare_trace.py" \
+        "--run $PUB/$1 --fields ic,final,reconnect --precision float32" "${2:-30}"
 }
 
 movie() {  # movie NAME PLANES STEPSPEC [TIMEOUT_MIN]
-    export EXTRA_ENV="$PLOTTER_ENV"; submit mov "$1" "$WT/scripts/poincare_relax.py" \
-        "$PUB/$1 --fields snapshots --snapshot-steps $3 --planes $2 --precision float32 --out $PUB/$1/movie" "${4:-120}"
+    export EXTRA_ENV="$PLOTTER_ENV"; submit mov "$1" "$WT/scripts/poincare_trace.py" \
+        "--run $PUB/$1 --fields snapshots --snapshot-steps $3 --planes $2 --precision float32 --out $PUB/$1/movie/trace.npz" "${4:-120}"
 }
 
 case ${1:-} in

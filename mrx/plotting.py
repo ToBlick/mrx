@@ -32,7 +32,7 @@ from mrx.plotstyle import (FIELD_CMAP, FS, LEFT, PRESSURE_CMAP, RIGHT,
 # FIELD_CMAP, SECTION_CMAP, PRESSURE_CMAP, FS, LEFT/RIGHT and house_style live in
 # mrx.plotstyle now (re-exported here for callers that import them from plotting).
 __all__ = ["get_2d_grids", "plot_torus", "plot_crossections_separate",
-           "plot_twin_axis", "render_section", "resonant_rationals",
+           "plot_twin_axis", "paper_fonts", "render_section", "resonant_rationals",
            "set_axes_equal"]
 
 
@@ -423,8 +423,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3, legend_fontsize=None,
-                   draw_ribbon=True):
+                   profile_coord="logical", profile_rays=3, draw_ribbon=True,
+                   axis_marker=True):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -469,9 +469,10 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     It needs ``axis_RZ`` and raises without it rather than quietly drawing a
     half-empty panel: 'above' and 'below' are defined against the MAGNETIC
     axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
+    ``axis_marker`` (default on) draws the axis itself -- a ``+`` at its mean
+    and a hairline through its wander; off for a figure that should show the
+    field alone, while ``axis_RZ`` still places the split.
 
-    ``legend_fontsize`` overrides the size of the profile panel's theta-ray
-    legend for this call only; the default keeps the house ``FS.annot``.
     ``draw_ribbon`` (default on) is the +-band around the iota (and p) profile
     lines; ``title=None`` omits the whole suptitle (a figure captioned in the
     document rather than titled in the image).
@@ -562,7 +563,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
         ax.legend(loc="upper right", fontsize=FS.annot, markerscale=4)
-    if axis_RZ is not None:
+    if axis_RZ is not None and axis_marker:
         # ONE marker at the mean, plus a hairline through the wander. Drawing a
         # "k+" at every save stacked 401 opaque markers into a black blob ~10%
         # of the minor radius across, which reads as a failed line at the axis
@@ -710,7 +711,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if lim.x is not None:
             bx.set_xlim(*lim.x)
         bx.grid(alpha=0.3)
-        bx.legend(loc="upper center", ncol=len(thetas), fontsize=legend_fontsize or FS.annot,
+        bx.legend(loc="upper center", ncol=len(thetas), fontsize=FS.annot,
                   columnspacing=1.0, handlelength=2.4)
     else:
         x = seed_r if profile_x is None else profile_x
@@ -779,6 +780,44 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     # Saving is the caller's: render_section is pure, so a run re-renders from
     # its archive and the caller owns the path (and the movie's frame naming).
     return fig, axes
+
+
+def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
+    """Rescale a :func:`render_section` figure for the paper.
+
+    The figure is resized to ``page_width`` inches so that, included at
+    ``\\linewidth``, every font reads at its authored size: axis labels at
+    ``label_size`` pt, ticks and legends proportionally smaller in the house
+    hierarchy (``FS.label : FS.tick : FS.annot``). Call it AFTER
+    :func:`render_section`: that one is ``@house_style``-decorated, so its sizes
+    are the mplstyle's until rescaled here. The profile panel's theta-ray legend
+    is restacked in its lower-left corner: at one page wide the 3-across
+    "upper center" legend runs over the iota curve (which sits high on the
+    left, with the Farey labels on the right).
+    """
+    scale = label_size / FS.label
+    label_sz, tick_sz, annot_sz = FS.label * scale, FS.tick * scale, FS.annot * scale
+    w0, h0 = fig.get_size_inches()
+    fig.set_size_inches(page_width, page_width * h0 / w0)
+    for a in fig.axes:                              # panels, twins and colour bars alike
+        a.tick_params(labelsize=tick_sz)
+        a.xaxis.label.set_size(label_sz)
+        a.yaxis.label.set_size(label_sz)
+        for t in a.texts:                           # Farey labels, in-axes notes
+            t.set_fontsize(annot_sz)
+        leg = a.get_legend()
+        if leg is None:
+            continue
+        labels = [t.get_text() for t in leg.get_texts()]
+        if any("theta" in lab for lab in labels):
+            handles = leg.legend_handles
+            leg.remove()
+            a.legend(handles, labels, loc="lower left", ncol=1, fontsize=annot_sz,
+                     handlelength=1.4, handletextpad=0.4, labelspacing=0.25,
+                     borderpad=0.3, borderaxespad=0.4, framealpha=0.85)
+        else:
+            for txt in leg.get_texts():
+                txt.set_fontsize(annot_sz)
 
 
 def _padded(v, pad=0.06, floor=0.0):

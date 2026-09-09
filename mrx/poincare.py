@@ -685,8 +685,8 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
                    title="", batch_size=None):
     """One Poincare section of the Dirichlet 2-form ``B`` at logical ``plane``.
 
-    The driver glue of ``scripts/poincare_relax.py`` for a single field and
-    plane -- seed from the magnetic axis, trace, classify, render -- for
+    The driver glue of ``scripts/poincare_trace.py`` + ``poincare_plot.py`` for
+    a single field and plane -- seed from the magnetic axis, trace, classify, render -- for
     callers that hold a DoF vector and no run directory. Returns ``(fig, res)``
     with ``res`` the :func:`trace_and_classify` dict (``iota`` per seed,
     ``chaotic``, ``drift``); the seeds' logical radii are ``res["seeds"][:, 0]``.

@@ -114,7 +114,7 @@ Flags, defaults in brackets:
 | `--steps N [3000]`, `--seconds S [none]` | outer budgets |
 | `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
 | `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
-| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_relax.py --fields ic,final,reconnect` traces the series on one colour scale |
+| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
 | `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 evaluates all points in one `vmap`. Bound it at high resolution: the initial field's Greville histopolation asks for 17 GiB at (64,128,128) p=2 unbounded, 8192 runs it in 7 s |
@@ -207,9 +207,9 @@ k=0 solve). Every qoi sample records, and `ic` / `summary` repeat:
 | `beta_vol` | $\int p_w \, dV / \int B^2/2 \, dV$; code units, the magnetic pressure is $B^2/2$ |
 | `beta_axis` | the same ratio on the coordinate axis (logical $r = 0$: the innermost radial quadrature layer, averaged over $\theta$ and $\zeta$) |
 
-`scripts/poincare_relax.py --pressure weak|strong` (default `weak`) draws
-either pressure on the sections. The details are in
-[Relaxation](concepts/relaxation.md), section 3.
+`scripts/poincare_trace.py --pressure weak|strong` (default `weak`) evaluates
+either pressure at the crossings, and `scripts/poincare_plot.py` draws it on
+the sections. The details are in [Relaxation](concepts/relaxation.md), section 3.
 
 To rebuild the field and evaluate it, load a checkpoint and the run's
 geometry:
@@ -235,20 +235,25 @@ an integration time and nothing is interpolated. The building blocks are
 `seed_from_axis` for the seeds, `trace` for the
 integration, and `rotational_transform` and `to_RZ` for the section.
 `step_convergence` justifies the fixed step count by refinement. The module
-docstring explains the three design choices. `scripts/poincare_relax.py`
-is the driver: it reads a run directory, traces the initial and the final
-checkpoint (`--fields ic,final,reconnect` adds the field before every
-reconnection, all on one colour scale), and renders one section per
-requested plane:
+docstring explains the three design choices. Two drivers split the work by
+cost. `scripts/poincare_trace.py` (a GPU job) reads a run directory, traces
+the initial and the final checkpoint (`--fields ic,final,reconnect` adds the
+field before every reconnection) at the five standing planes, and archives
+the crossings in the run's `trace.npz`; `scripts/poincare_plot.py` (plain
+matplotlib, the login node) renders that archive, every field and plane on
+one iota and one pressure colour scale, and is the only thing to rerun when
+the figure changes:
 
 ```bash
-python -u scripts/poincare_relax.py outputs/run --periods 400 --out outputs/run/poincare
+python -u scripts/poincare_trace.py --run outputs/run --periods 400
+python scripts/poincare_plot.py outputs/run            # -> outputs/run/poincare/
+python scripts/poincare_plot.py outputs/run --paper    # publication layout, PDF
 ```
 
-Its module docstring lists the flags.
+The module docstrings list the flags.
 
-A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_relax.py --fields snapshots --planes 0.5` renders one
-section per checkpoint with every axis held fixed, ready for `ffmpeg`.
+A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_trace.py --fields snapshots --planes 0.5` traces every
+checkpoint, and the plotter then renders one frame per checkpoint with every axis held fixed, ready for `ffmpeg`.
 
 ## Figures
 
