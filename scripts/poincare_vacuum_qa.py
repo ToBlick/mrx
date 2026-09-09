@@ -53,6 +53,11 @@ def parse_args(argv=None):
     ap.add_argument("--page-width", type=float, default=6.5,
                     help="authored figure width in inches ('one page wide'); the fonts "
                          "read at their pt size when the figure is included at this width [6.5]")
+    ap.add_argument("--dpi", type=int, default=600, help="rasterised crossing-scatter resolution [600]")
+    ap.add_argument("--field-npz", default=None,
+                    help="load the harmonic 2-form DOF vector from this .npz instead of "
+                         "solving (e.g. a vacuum_convergence rung's fields.npz); --geometry/--ns/--p must match")
+    ap.add_argument("--field-key", default="h_dof", help="array name in --field-npz [h_dof]")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     return ap.parse_args(argv)
@@ -77,10 +82,18 @@ def main(cli):
     os.makedirs(cli.out, exist_ok=True)
     nfp = geometry_nfp(cli.geometry)
     seq, _ = build_sequence(cli.geometry, ns, cli.p)
-    compute_nullspaces(seq)
 
     # The vacuum field: the harmonic 2-form, L2-normalised (as in tutorial 2).
-    B = get_nullspace(seq.get_operators(), 2, True)[0]
+    # --field-npz loads a stored harmonic DOF vector (e.g. a vacuum_convergence
+    # rung's fields.npz 'h_dof') so the ~9 min Hodge solve is skipped; --geometry,
+    # --ns and --p must then match the run that produced it.
+    if cli.field_npz:
+        B = jnp.asarray(np.load(cli.field_npz)[cli.field_key])
+        assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
+        print(f"[vacuum] loaded {cli.field_key} from {cli.field_npz}", flush=True)
+    else:
+        compute_nullspaces(seq)
+        B = get_nullspace(seq.get_operators(), 2, True)[0]
     B = B / float(seq.l2_norm(B, 2))
 
     # Trace the field lines once; each plane is a different cut of the same lines.
@@ -143,8 +156,8 @@ def main(cli):
                 for txt in leg.get_texts():
                     txt.set_fontsize(annot_sz)
         stem = os.path.join(cli.out, f"poincare_zeta{plane:g}")
-        fig.savefig(stem + ".pdf")
-        fig.savefig(stem + ".png", dpi=200)         # for quick viewing; the PDF is the deliverable
+        fig.savefig(stem + ".pdf", dpi=cli.dpi)     # dpi sets the rasterised crossing scatter
+        fig.savefig(stem + ".png", dpi=cli.dpi)     # for quick viewing; the PDF is the deliverable
         plt.close(fig)
         print(f"  -> {stem}.pdf", flush=True)
 

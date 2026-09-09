@@ -6,7 +6,7 @@ the same field ``scripts/analytic_vacuum.py`` / ``scripts/vacuum_convergence.py`
 converge to. This builds that field once (a Hodge decomposition, no eigen-
 iteration) and draws its magnitude on the boundary surface of the whole device,
 one colour scale, styled like the ``mesh_3d`` boundary render: full torus, no
-axes, ``plasma`` by ``|B|``. Writes ``vacuum_qa_Bmag.png`` (+ ``pgf/``).
+axes, ``plasma`` by ``|B|``. Writes ``vacuum_qa_Bmag.pdf`` (+ a ``.png`` for viewing).
 
     python scripts/plot_vacuum_qa.py --geometry data/wout_LandremanPaul2021_QA_lowres.nc --out DIR
 
@@ -28,6 +28,11 @@ def parse_args(argv=None):
     ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc")
     ap.add_argument("--ns", default="12,24,12")
     ap.add_argument("--p", type=int, default=3)
+    ap.add_argument("--dpi", type=int, default=600, help="rasterised-surface resolution [600]")
+    ap.add_argument("--field-npz", default=None,
+                    help="load the harmonic 2-form DOF vector from this .npz instead of "
+                         "solving (e.g. a vacuum_convergence rung's fields.npz); --geometry/--ns/--p must match")
+    ap.add_argument("--field-key", default="h_dof", help="array name in --field-npz [h_dof]")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
     return ap.parse_args(argv)
@@ -46,17 +51,24 @@ def main(cli):
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.nullspace import compute_nullspaces, get_nullspace
     from mrx.plotstyle import FIELD_CMAP, house_style
-    from mrx.plotting import get_2d_grids, save_figure, set_axes_equal
+    from mrx.plotting import get_2d_grids
 
     ns = tuple(int(v) for v in cli.ns.split(","))
     os.makedirs(cli.out, exist_ok=True)
     nfp = geometry_nfp(cli.geometry)
     seq, _ = build_sequence(cli.geometry, ns, cli.p)
-    compute_nullspaces(seq)
 
     # The vacuum field: the harmonic 2-form, L2-normalised, pushed forward by the
     # Piola map so ``B_mag`` is the physical |B| at a logical point (see tutorial 2).
-    B = get_nullspace(seq.get_operators(), 2, True)[0]
+    # --field-npz loads a stored harmonic DOF vector (e.g. a vacuum_convergence rung's
+    # fields.npz 'h_dof'), skipping the ~9 min Hodge solve; --geometry/--ns/--p must match.
+    if cli.field_npz:
+        B = jnp.asarray(np.load(cli.field_npz)[cli.field_key])
+        assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
+        print(f"[vacuum] loaded {cli.field_key} from {cli.field_npz}", flush=True)
+    else:
+        compute_nullspaces(seq)
+        B = get_nullspace(seq.get_operators(), 2, True)[0]
     B = B / float(seq.l2_norm(B, 2))
     B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
 
@@ -109,12 +121,13 @@ def main(cli):
         cbar = fig.colorbar(sm, cax=cax)
         cbar.set_label(r"$|B|$", fontsize=15)
         cbar.ax.tick_params(labelsize=12)
-        save_figure(fig, os.path.join(cli.out, "vacuum_qa_Bmag.png"))
-        # A self-contained vector PDF too: one file, rasterised surface embedded,
-        # vector text -- \includegraphics{...pdf} with no external rasters.
-        fig.savefig(os.path.join(cli.out, "vacuum_qa_Bmag.pdf"), bbox_inches="tight")
+        # A self-contained vector PDF (rasterised surface at --dpi, vector text):
+        # \includegraphics{...pdf} with no external rasters. A PNG alongside for viewing.
+        stem = os.path.join(cli.out, "vacuum_qa_Bmag")
+        fig.savefig(stem + ".pdf", dpi=cli.dpi, bbox_inches="tight")
+        fig.savefig(stem + ".png", dpi=cli.dpi, bbox_inches="tight")
         plt.close(fig)
-    print(f"  -> {cli.out}/vacuum_qa_Bmag.png (+ pgf/)", flush=True)
+    print(f"  -> {cli.out}/vacuum_qa_Bmag.pdf (+ .png)", flush=True)
 
 
 if __name__ == "__main__":
