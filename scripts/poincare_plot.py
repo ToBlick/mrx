@@ -35,8 +35,8 @@ Flags (defaults in brackets):
     --profile-rays N       golden-angle poloidal rays on the logical profile,
                            marked on both section panels [3]
     --dot-scale F          crossing-marker size relative to the house rule (which
-                           sets it from the point count); half, for a dense
-                           section on a page [0.5]
+                           sets it from the point count); a third, for a dense
+                           section on a page [0.33]
     --paper                publication layout: no title/subtitle, no axis marker,
                            the house font hierarchy at --label-size for a
                            --page-width figure, PDF + PNG at --dpi. Default is the
@@ -51,15 +51,15 @@ Flags (defaults in brackets):
                            numbered in plane order (trace with --saves N
                            --planes k/N, k = 0..N-1)
 
-Every page of one call shares every axis: the R/Z window, the profile
-abscissa and both colour scales are the union over all fields and planes, so
-the section box has one shape on every page (equal aspect) and the pages cut
-together as movie frames. Pages: ``poincare_<field>_zeta<plane>`` per field
-and plane -- ``poincare_zeta<plane>`` when the archive holds one field. For
-``ffmpeg -framerate 4 -i <pattern> -c:v mpeg4 -q:v 2 movie.mp4``: a snapshots
-archive writes ``frame_zeta<plane>_<i>.png`` (along time, the split line pinned
-to the first frame's axis), ``--fly`` writes ``fly_<field>_<k>.png`` (along
-zeta, the split following the axis). The ``.pgf`` is the same figure through the pgf
+Pages: ``poincare_<field>_zeta<plane>`` per field and plane --
+``poincare_zeta<plane>`` when the archive holds one field -- each section in
+the box that fits it, the iota and p colour scales shared across the call.
+Movies hold the R/Z window and the profile abscissa fixed across their frames
+too, from the union over all fields and planes, for ``ffmpeg -framerate 4 -i
+<pattern> -c:v mpeg4 -q:v 2 movie.mp4``: a snapshots archive writes
+``frame_zeta<plane>_<i>.png`` (along time, the split line pinned to the first
+frame's axis), ``--fly`` writes ``fly_<field>_<k>.png`` (along zeta, the split
+following the axis). The ``.pgf`` is the same figure through the pgf
 backend (vector LaTeX labels, the scatter as a high-dpi ``-img*.png`` beside it)
 under ``pgf/``; the including document needs ``\usepackage[strings]{underscore}``
 and ``\providecommand{\mathdefault}[1]{#1}``.
@@ -129,7 +129,7 @@ def main():
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
     ap.add_argument("--profile-rays", type=int, default=3)
-    ap.add_argument("--dot-scale", type=float, default=0.5)
+    ap.add_argument("--dot-scale", type=float, default=0.33)
     ap.add_argument("--paper", action="store_true")
     ap.add_argument("--label-size", type=float, default=6.0)
     ap.add_argument("--page-width", type=float, default=6.5)
@@ -194,34 +194,35 @@ def main():
         lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
         limits = {pl: {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
                   for pl in planes}
-    # EVERY page of a call shares every axis: the section window and the profile
-    # abscissa from the union over every field AND plane (the iota and p limits
-    # already are). The section panel has equal aspect and a box that fits its
-    # limits, so per-page limits would make the box taller on one plane and
-    # wider on the next -- unusable as movie frames, and hard to compare on a
-    # page. The split line is pinned to the FIRST field's axis only along time
-    # (a snapshots archive): along zeta the axis moves with the plane, and the
-    # split follows it.
-    def kept(n, pl, i):
-        return cuts[n, pl][i][drawn[n]][per[n]["keep"]]
-    Rs = np.concatenate([kept(n, pl, 0).ravel() for n in which for pl in planes])
-    Zs = np.concatenate([kept(n, pl, 1).ravel() for n in which for pl in planes])
-    span = np.ptp(Rs)
-    for pl in planes:
-        limits.setdefault(pl, {}).update({
-            "RZ": ((Rs.min() - 0.06 * span, Rs.max() + 0.06 * span),
-                   (Zs.min() - 0.06 * span, Zs.max() + 0.06 * span))})
-        if movie:
-            limits[pl]["z_split"] = float(np.mean(cuts[which[0], pl][3]))
-    if cli.profile_coord == "physical":
-        # The logical profile's abscissa is r in [0, 1] on every page already;
-        # only the physical one (R on the midplane) varies with the plane.
-        xs = np.concatenate([
-            surface_label(cuts[n, pl][0][drawn[n]], cuts[n, pl][1][drawn[n]],
-                          cuts[n, pl][2], cuts[n, pl][3])[0][per[n]["keep"]].ravel()
-            for n in which for pl in planes])
+    # Pages stand alone: each section gets the box that fits it (equal aspect).
+    # A MOVIE holds every axis fixed across its frames instead -- the section
+    # window and the profile abscissa from the union over every field AND plane
+    # of the call (the iota and p limits already are) -- so the eye can follow
+    # a surface from frame to frame: along time at one plane (a snapshots
+    # archive), or along zeta for one state (--fly). The split line is pinned
+    # to the FIRST field's axis only along time: along zeta the axis moves with
+    # the plane, and the split follows it.
+    if movie or cli.fly:
+        def kept(n, pl, i):
+            return cuts[n, pl][i][drawn[n]][per[n]["keep"]]
+        Rs = np.concatenate([kept(n, pl, 0).ravel() for n in which for pl in planes])
+        Zs = np.concatenate([kept(n, pl, 1).ravel() for n in which for pl in planes])
+        span = np.ptp(Rs)
         for pl in planes:
-            limits[pl]["x"] = (np.nanmin(xs), np.nanmax(xs))
+            limits.setdefault(pl, {}).update({
+                "RZ": ((Rs.min() - 0.06 * span, Rs.max() + 0.06 * span),
+                       (Zs.min() - 0.06 * span, Zs.max() + 0.06 * span))})
+            if movie:
+                limits[pl]["z_split"] = float(np.mean(cuts[which[0], pl][3]))
+        if cli.profile_coord == "physical":
+            # The logical profile's abscissa is r in [0, 1] on every frame already;
+            # only the physical one (R on the midplane) varies with the plane.
+            xs = np.concatenate([
+                surface_label(cuts[n, pl][0][drawn[n]], cuts[n, pl][1][drawn[n]],
+                              cuts[n, pl][2], cuts[n, pl][3])[0][per[n]["keep"]].ravel()
+                for n in which for pl in planes])
+            for pl in planes:
+                limits[pl]["x"] = (np.nanmin(xs), np.nanmax(xs))
     for frame, n in enumerate(which):
         for k, pl in enumerate(planes):
             R, Z, aR, aZ, lr, lth = cuts[n, pl]
