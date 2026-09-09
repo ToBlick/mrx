@@ -72,9 +72,11 @@ import os
 import sys
 import numpy as np
 
-#: Panel labels. The strong (Leray) multiplier is gauged so that its lowest
-#: kept line reads zero; the weak pressure is zero on the wall by construction.
-PRESSURE_LABELS = {"strong": r"$p - \min p$", "weak": r"$p$"}
+#: Panel labels. Both read plain $p$: the weak pressure is zero on the wall by
+#: construction; the strong (Leray) multiplier is defined up to a constant and
+#: is drawn shifted so its lowest kept line reads zero, but a constant offset
+#: is not worth a label (Tobias, 2026-09-09: "I do not want p - min p").
+PRESSURE_LABELS = {"strong": r"$p$", "weak": r"$p$"}
 
 #: Resolution of the raster layers embedded in the presentation ``.pgf`` (the
 #: scatter of ~10^4 crossings). Higher than the PNG's screen dpi: the .pgf goes
