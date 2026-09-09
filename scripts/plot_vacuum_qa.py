@@ -119,8 +119,8 @@ def main(cli):
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array(vals)
         cbar = fig.colorbar(sm, cax=cax)
-        cbar.set_label(r"$|B|$", fontsize=15)
-        cbar.ax.tick_params(labelsize=12)
+        cbar.set_label(r"$|B|$", fontsize=18.75)
+        cbar.ax.tick_params(labelsize=15)
         # A self-contained vector PDF (rasterised surface at --dpi, vector text):
         # \includegraphics{...pdf} with no external rasters. A PNG alongside for viewing.
         stem = os.path.join(cli.out, "vacuum_qa_Bmag")
