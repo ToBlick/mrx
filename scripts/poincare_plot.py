@@ -50,6 +50,9 @@ Flags (defaults in brackets):
     --fly                  a movie along zeta: one frame per plane of each field,
                            numbered in plane order (trace with --saves N
                            --planes k/N, k = 0..N-1)
+    --window R0,R1,Z0,Z1   pin the section box to this window on every page;
+                           give a time movie and the fly through its final
+                           state the same one so the two cut together
 
 Pages: ``poincare_<field>_zeta<plane>`` per field and plane --
 ``poincare_zeta<plane>`` when the archive holds one field -- each section in
@@ -136,6 +139,9 @@ def main():
     ap.add_argument("--dpi", type=int, default=600)
     ap.add_argument("--no-pgf", dest="pgf", action="store_false")
     ap.add_argument("--fly", action="store_true")
+    ap.add_argument("--window", default=None,
+                    help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page "
+                         "(e.g. the same window for a time movie and the fly that follows it)")
     cli = ap.parse_args()
 
     import matplotlib
@@ -223,6 +229,13 @@ def main():
                 for n in which for pl in planes])
             for pl in planes:
                 limits[pl]["x"] = (np.nanmin(xs), np.nanmax(xs))
+    if cli.window:
+        # An explicit box beats the union: two calls (a time movie, then the fly
+        # through its final state) cut together only if they are given the SAME
+        # window; each call's own union differs.
+        r0, r1, z0, z1 = (float(v) for v in cli.window.split(","))
+        for pl in planes:
+            limits.setdefault(pl, {})["RZ"] = ((r0, r1), (z0, z1))
     for frame, n in enumerate(which):
         for k, pl in enumerate(planes):
             R, Z, aR, aZ, lr, lth = cuts[n, pl]
