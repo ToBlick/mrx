@@ -34,11 +34,14 @@ Flags (defaults in brackets):
                            [logical], or physical R on the midplane through the axis
     --profile-rays N       golden-angle poloidal rays on the logical profile,
                            marked on both section panels [3]
+    --dot-scale F          crossing-marker size relative to the house rule (which
+                           sets it from the point count); half, for a dense
+                           section on a page [0.5]
     --paper                publication layout: no title/subtitle, no axis marker,
-                           no iota ribbon, the house font hierarchy at
-                           --label-size for a --page-width figure, PDF + PNG at
-                           --dpi. Default is the diagnostic look: titled PNG at
-                           200 dpi plus a presentation .pgf (see --no-pgf)
+                           the house font hierarchy at --label-size for a
+                           --page-width figure, PDF + PNG at --dpi. Default is the
+                           diagnostic look: titled PNG at 200 dpi plus a
+                           presentation .pgf (see --no-pgf)
     --label-size F         (--paper) axis-label pt at --page-width; ticks and
                            legends keep the house hierarchy [6]
     --page-width W         (--paper) authored width in inches, 'one page wide' [6.5]
@@ -125,6 +128,7 @@ def main():
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
     ap.add_argument("--profile-rays", type=int, default=3)
+    ap.add_argument("--dot-scale", type=float, default=0.5)
     ap.add_argument("--paper", action="store_true")
     ap.add_argument("--label-size", type=float, default=6.0)
     ap.add_argument("--page-width", type=float, default=6.5)
@@ -228,7 +232,7 @@ def main():
                 subtitle=None if cli.paper else
                          f"nfp = {nfp}   |   h/2 drift {float(sec[f'{n}_drift']):.1e}   |   "
                          f"traced in {str(sec['trace_precision'])}",
-                axis_RZ=(aR, aZ), axis_marker=not cli.paper, draw_ribbon=not cli.paper,
+                axis_RZ=(aR, aZ), axis_marker=not cli.paper, dot_scale=cli.dot_scale,
                 profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
                 denom_max=cli.denom_max, min_sep=cli.min_sep,
                 limits=SectionLimits(iota=(lo, hi), **limits.get(pl, {})),

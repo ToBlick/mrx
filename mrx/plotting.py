@@ -423,8 +423,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3, draw_ribbon=True,
-                   axis_marker=True):
+                   profile_coord="logical", profile_rays=3, axis_marker=True,
+                   dot_scale=1.0):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -471,10 +471,11 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
     ``axis_marker`` (default on) draws the axis itself -- a ``+`` at its mean
     and a hairline through its wander; off for a figure that should show the
-    field alone, while ``axis_RZ`` still places the split.
+    field alone, while ``axis_RZ`` still places the split. ``dot_scale``
+    multiplies the crossing-marker size the point count sets (1 = the house
+    size; 0.5 for a dense section on a page).
 
-    ``draw_ribbon`` (default on) is the +-band around the iota (and p) profile
-    lines; ``title=None`` omits the whole suptitle (a figure captioned in the
+    ``title=None`` omits the whole suptitle (a figure captioned in the
     document rather than titled in the image).
     """
 
@@ -524,7 +525,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     # One marker per crossing: ~10^4 points want a hairline to show the surface
     # texture, ~10^2 want something you can actually see.
     npts = max(int(keep.sum()) * R.shape[1], 1)
-    size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
+    size = dot_scale * float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
 
     # The split is per CROSSING, not per line: a surface straddles the axis, so
@@ -682,15 +683,13 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             rr = r_line[m][o]
             bx.plot(rr, iota_n[m][o], color=IOTA_COLOR, linestyle=ls, lw=1.2,
                     label=rf"$\theta = {th0:.2f}$")
-            if draw_ribbon:
-                bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
-                                color=IOTA_COLOR, alpha=0.10, lw=0)
+            bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
+                            color=IOTA_COLOR, alpha=0.10, lw=0)
             if has_p:
                 pm = pressure_scale * p_at
                 px.plot(rr, pm[m][o], color=P_COLOR, linestyle=ls, lw=1.2)
-                if draw_ribbon:
-                    px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
-                                    color=P_COLOR, alpha=0.10, lw=0)
+                px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
+                                color=P_COLOR, alpha=0.10, lw=0)
             if lx is not None:
                 lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
                            alpha=0.85, zorder=6)
@@ -791,9 +790,10 @@ def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
     hierarchy (``FS.label : FS.tick : FS.annot``). Call it AFTER
     :func:`render_section`: that one is ``@house_style``-decorated, so its sizes
     are the mplstyle's until rescaled here. The profile panel's theta-ray legend
-    is restacked in its lower-left corner: at one page wide the 3-across
-    "upper center" legend runs over the iota curve (which sits high on the
-    left, with the Farey labels on the right).
+    moves OUT of the axes, above the panel where the (absent) title would be:
+    inside, at one page wide, every corner is taken by one curve or another
+    -- iota low on the left for a rising profile (li383), high for a falling
+    one (QA), p on the opposite side, the Farey labels on the right.
     """
     scale = label_size / FS.label
     label_sz, tick_sz, annot_sz = FS.label * scale, FS.tick * scale, FS.annot * scale
@@ -812,9 +812,9 @@ def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
         if any("theta" in lab for lab in labels):
             handles = leg.legend_handles
             leg.remove()
-            a.legend(handles, labels, loc="lower left", ncol=1, fontsize=annot_sz,
-                     handlelength=1.4, handletextpad=0.4, labelspacing=0.25,
-                     borderpad=0.3, borderaxespad=0.4, framealpha=0.85)
+            a.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                     ncol=len(labels), fontsize=annot_sz, frameon=False,
+                     handlelength=1.8, handletextpad=0.4, columnspacing=1.2)
         else:
             for txt in leg.get_texts():
                 txt.set_fontsize(annot_sz)
