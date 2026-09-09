@@ -1490,3 +1490,33 @@ warm-start paragraph in "Newton's method", `tab:convergence` with a
 warm-start block and an h-sequence block, `fig:convergence` with the
 warm-start panel and the resolution panel (raw traces, all solid, descents
 grey, step counts in the legend as warm-start+Newton; Tobias 2026-09-08).
+
+## 16. The chain test: descent after a Newton floor, then Newton again (2026-09-08)
+
+Tobias: "launch these experiments, starting from the low-newton checkpoint".
+Jobs 18180472/3 (the smoothed descent for one hour from the floor checkpoints
+of the Newton arms from step 0 and from step 500, `descent_after_n0`,
+`descent_after_n500`) and 18182154/9 (Newton for one hour from the descents'
+ends, `newton_after_descent_n0`, `_n500`).
+
+| chain | first Newton floor | descent from it: first 500 steps | descent's lowest chunk (5800 steps, 1 h) | Newton again: floor |
+|---|---|---|---|---|
+| from 0 | 4.92e-9 | up to 1.6e-7 | 4.42e-9 | 4.44e-9 (step 20), then rising |
+| from 500 | 3.61e-9 | up to 1.2e-7 | 3.30e-9 | 3.79e-9 (step 20), then rising |
+
+1. The descent restarted from a Newton floor first raises the residual
+   thirtyfold (its long steps zigzag on the stiff modes Newton had solved),
+   then spends the hour coming back down its power law to 10% below the
+   inherited floor.
+2. Newton again from there finds the descent's own value and nothing lower,
+   then rises: the hour of descent bought nothing Newton could use. The
+   mechanism of section 15.2 ("the descent walks the valley and the
+   transverse floor is lower further along") is refuted in the form stated.
+   What the warm-start sequence (4.9, 3.6, 3.3, 2.6, 2.0e-9 after 0, 500,
+   1000, 2500, 5000 descent steps) measures is which corner of the orbit the
+   route ends in, selected by the descent's smoother path from the initial
+   field; once in a corner, neither method leaves it for a lower one.
+   Tobias: "The convergence chain approach evidently does not work."
+3. The section's warm-start sentences are rewritten accordingly; the
+   recommendation (descent through its fast phase, then Newton) stands, the
+   reason is the corner selection, not valley walking.
