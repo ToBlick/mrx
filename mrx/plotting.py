@@ -424,7 +424,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
                    profile_coord="logical", profile_rays=3, axis_marker=True,
-                   dot_scale=1.0):
+                   dot_scale=1.0, rationals=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -473,7 +473,10 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     and a hairline through its wander; off for a figure that should show the
     field alone, while ``axis_RZ`` still places the split. ``dot_scale``
     multiplies the crossing-marker size the point count sets (1 = the house
-    size; 0.5 for a dense section on a page).
+    size; 0.5 for a dense section on a page). ``rationals`` -- ``"n/m"``
+    strings -- fixes the resonant ticks (colour bar and profile lines) instead
+    of picking them from the iota range, so a movie's frames all carry the
+    same labels; ticks outside the range are simply not shown.
 
     ``title=None`` omits the whole suptitle (a figure captioned in the
     document rather than titled in the image).
@@ -558,8 +561,12 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if sel_p.any():
             psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
-    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max, min_sep)
-                             if nfp else ([], []))
+    if rationals is not None:
+        res_labels = list(rationals)
+        res_ticks = [int(r.split("/")[0]) / int(r.split("/")[1]) for r in res_labels]
+    else:
+        res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max, min_sep)
+                                 if nfp else ([], []))
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")

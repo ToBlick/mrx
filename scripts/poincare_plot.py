@@ -53,6 +53,11 @@ Flags (defaults in brackets):
     --window R0,R1,Z0,Z1   pin the section box to this window on every page;
                            give a time movie and the fly through its final
                            state the same one so the two cut together
+    --iota-lim LO,HI       fix the iota colour scale / profile axis across calls
+    --p-lim LO,HI          fix the pressure scale / profile axis (units of the
+                           colour bar, p x 100)
+    --rationals n/m,...    fix the resonant iota ticks so a movie's frames all
+                           carry the same labels (out-of-range ones are not shown)
 
 Pages: ``poincare_<field>_zeta<plane>`` per field and plane --
 ``poincare_zeta<plane>`` when the archive holds one field -- each section in
@@ -144,6 +149,16 @@ def main():
     ap.add_argument("--window", default=None,
                     help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page "
                          "(e.g. the same window for a time movie and the fly that follows it)")
+    ap.add_argument("--iota-lim", default=None,
+                    help="LO,HI: fix the iota colour scale and profile axis instead of the "
+                         "call's own range, so separate calls (time frames, then the fly) match")
+    ap.add_argument("--p-lim", default=None,
+                    help="LO,HI: fix the pressure colour scale and profile axis, in the units "
+                         "the colour bar shows (p x 100)")
+    ap.add_argument("--rationals", default=None,
+                    help="n/m,n/m,...: fix the resonant iota ticks (colour bar and profile "
+                         "lines) instead of picking them from the range; a movie's frames then "
+                         "all carry the same labels")
     cli = ap.parse_args()
 
     import matplotlib
@@ -186,6 +201,8 @@ def main():
     # final, a reconnection series and the planes are then comparable at a glance.
     lo = min(float(per[n]["iota"][per[n]["shown"]].min()) for n in which if per[n]["shown"].any())
     hi = max(float(per[n]["iota"][per[n]["shown"]].max()) for n in which if per[n]["shown"].any())
+    if cli.iota_lim:
+        lo, hi = (float(v) for v in cli.iota_lim.split(","))
     cuts = {(n, pl): tuple(np.asarray(sec[f"{n}_zeta{pl:g}_{k}"])
                            for k in ("R", "Z", "axisR", "axisZ", "logr", "logth"))
             for n in which for pl in planes}
@@ -202,6 +219,9 @@ def main():
         lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
         limits = {pl: {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
                   for pl in planes}
+    if cli.p_lim:
+        p_lim = tuple(float(v) for v in cli.p_lim.split(","))
+        limits = {pl: {**limits.get(pl, {}), "p": p_lim} for pl in planes}
     # Pages stand alone: each section gets the box that fits it (equal aspect).
     # A MOVIE holds every axis fixed across its frames instead -- the section
     # window and the profile abscissa from the union over every field AND plane
@@ -256,6 +276,7 @@ def main():
                 axis_RZ=(aR, aZ), axis_marker=not cli.paper, dot_scale=cli.dot_scale,
                 profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
                 denom_max=cli.denom_max, min_sep=cli.min_sep,
+                rationals=cli.rationals.split(",") if cli.rationals else None,
                 limits=SectionLimits(iota=(lo, hi), **limits.get(pl, {})),
                 iota_scatter=per[n]["iota_scatter"],
                 profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
