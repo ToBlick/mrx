@@ -417,13 +417,14 @@ def _ray_line(lr, lth, pressure, th0):
 
 
 @house_style()
-def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
+def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=None,
                    axis_RZ=None, profile_x=None,
                    profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3, legend_fontsize=None):
+                   profile_coord="logical", profile_rays=3, legend_fontsize=None,
+                   draw_ribbon=True):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -471,6 +472,9 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
 
     ``legend_fontsize`` overrides the size of the profile panel's theta-ray
     legend for this call only; the default keeps the house ``FS.annot``.
+    ``draw_ribbon`` (default on) is the +-band around the iota (and p) profile
+    lines; ``title=None`` omits the whole suptitle (a figure captioned in the
+    document rather than titled in the image).
     """
 
     if split_iota_p is None:
@@ -677,13 +681,15 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             rr = r_line[m][o]
             bx.plot(rr, iota_n[m][o], color=IOTA_COLOR, linestyle=ls, lw=1.2,
                     label=rf"$\theta = {th0:.2f}$")
-            bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
-                            color=IOTA_COLOR, alpha=0.10, lw=0)
+            if draw_ribbon:
+                bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
+                                color=IOTA_COLOR, alpha=0.10, lw=0)
             if has_p:
                 pm = pressure_scale * p_at
                 px.plot(rr, pm[m][o], color=P_COLOR, linestyle=ls, lw=1.2)
-                px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
-                                color=P_COLOR, alpha=0.10, lw=0)
+                if draw_ribbon:
+                    px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
+                                    color=P_COLOR, alpha=0.10, lw=0)
             if lx is not None:
                 lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
                            alpha=0.85, zorder=6)
@@ -760,13 +766,15 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             handles, labels_ = handles + h2, labels_ + l2
         bx.legend(handles, labels_, loc="center")
 
-    # One descriptive title for the whole figure, not a title per panel.
-    sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"
-    if subtitle:
-        sup = f"{sup}   |   {subtitle}"
-    if has_p:
-        sup = f"{sup}   |   {p_label}"     # states the p scaling once, here
-    fig.suptitle(sup, fontsize=FS.title)
+    # One descriptive title for the whole figure, not a title per panel;
+    # title=None omits it entirely (a figure captioned in the document).
+    if title is not None:
+        sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"
+        if subtitle:
+            sup = f"{sup}   |   {subtitle}"
+        if has_p:
+            sup = f"{sup}   |   {p_label}"     # states the p scaling once, here
+        fig.suptitle(sup, fontsize=FS.title)
 
     # Saving is the caller's: render_section is pure, so a run re-renders from
     # its archive and the caller owns the path (and the movie's frame naming).
