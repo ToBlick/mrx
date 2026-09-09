@@ -58,6 +58,11 @@ def parse_args(argv=None):
                     help="load the harmonic 2-form DOF vector from this .npz instead of "
                          "solving (e.g. a vacuum_convergence rung's fields.npz); --geometry/--ns/--p must match")
     ap.add_argument("--field-key", default="h_dof", help="array name in --field-npz [h_dof]")
+    ap.add_argument("--drop-inner", type=int, default=0,
+                    help="omit the N innermost radial lines (near-axis outliers) entirely, "
+                         "from every panel and the colour scale [0]")
+    ap.add_argument("--cbar-ticks", type=int, default=10,
+                    help="max intervals for the numeric iota colour-bar ticks (MaxNLocator) [10]")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     return ap.parse_args(argv)
@@ -69,6 +74,7 @@ def main(cli):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
     import numpy as np
 
     from mrx.geometry import build_sequence, geometry_nfp
@@ -103,11 +109,24 @@ def main(cli):
                            steps_per_period=cli.steps)
     res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
                              steps_per_period=cli.steps, saves_per_period=cli.saves)
-    keep = ~(res["escaped"] | ~res["ok"])
-    shown = keep & ~res["chaotic"]
-    print(f"[vacuum] {ns} p={cli.p} nfp={nfp}: {int((~keep).sum())}/{keep.size} lost, "
-          f"{int((keep & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, "
-          f"iota in [{float(res['iota'][shown].min()):.4f}, {float(res['iota'][shown].max()):.4f}]; "
+    keep = np.asarray(~(res["escaped"] | ~res["ok"]))
+    # Omit the N innermost radial lines ENTIRELY (near-axis outliers): drop them
+    # from every per-line array so they never appear -- not marked "lost".
+    line = np.ones(keep.shape[0], dtype=bool)
+    if cli.drop_inner > 0:
+        order = np.argsort(np.asarray(res["seeds"][:, 0]))
+        line[order[:cli.drop_inner]] = False
+        print(f"[vacuum] omitting {cli.drop_inner} innermost line(s) up to r = "
+              f"{float(np.asarray(res['seeds'][:, 0])[order[cli.drop_inner - 1]]):.4f}", flush=True)
+    iota_l = np.asarray(res["iota"])[line]
+    iota_err_l = np.asarray(res["iota_err"])[line]
+    iota_scat_l = np.asarray(res["iota_scatter"])[line]
+    seed_r_l = np.asarray(res["seeds"][:, 0])[line]
+    keep_l = keep[line]
+    shown_l = keep_l & ~np.asarray(res["chaotic"])[line]
+    print(f"[vacuum] {ns} p={cli.p} nfp={nfp}: {int((~keep_l).sum())}/{keep_l.size} lost, "
+          f"{int((keep_l & np.asarray(res['chaotic'])[line]).sum())} chaotic, drift {res['drift']:.2e}, "
+          f"iota in [{float(iota_l[shown_l].min()):.4f}, {float(iota_l[shown_l].max()):.4f}]; "
           f"B^zeta/|B| in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]", flush=True)
 
     # The house font hierarchy (label > tick > annotation/legend), rescaled so the
@@ -116,16 +135,18 @@ def main(cli):
     label_sz, tick_sz, annot_sz = FS.label * scale, FS.tick * scale, FS.annot * scale
 
     # ONE iota colour + profile scale across all five planes (never rescaled).
-    lo, hi = float(res["iota"][shown].min()), float(res["iota"][shown].max())
+    lo, hi = float(iota_l[shown_l].min()), float(iota_l[shown_l].max())
     for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
         R, Z, aR, aZ, _cR, _cZ, lr, lth = section_RZ(seq, res["ys"], res["axis"], cli.saves, plane)
+        R, Z, lr, lth = np.asarray(R)[line], np.asarray(Z)[line], np.asarray(lr)[line], np.asarray(lth)[line]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)
-        fig, _ = render_section(
-            R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], keep,
+        fig, axes = render_section(
+            R, Z, iota_l, iota_err_l, seed_r_l, keep_l,
             pressure=None, title=None, draw_ribbon=False,   # no title, no iota +-band
-            axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
+            axis_RZ=None,                                   # no magnetic-axis '+' marker
+            profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
             logical=(lr, lth), limits=SectionLimits(iota=(lo, hi)),
-            iota_scatter=res["iota_scatter"], profile_rays=cli.profile_rays,
+            iota_scatter=iota_scat_l, profile_rays=cli.profile_rays,
             legend_fontsize=annot_sz)
         # render_section is @house_style-decorated (tick/label sizes come from the
         # house mplstyle), so scale the fonts AFTER it returns. Author the figure at
@@ -155,6 +176,15 @@ def main(cli):
             else:
                 for txt in leg.get_texts():
                     txt.set_fontsize(annot_sz)
+        # Denser, numeric ticks on the iota colour bar (render_section labels it
+        # only at the resonant rationals, which are sparse over a narrow range).
+        cbar = axes["ax"].collections[0].colorbar
+        if cbar is not None:
+            ticks = MaxNLocator(nbins=cli.cbar_ticks).tick_values(lo, hi)
+            ticks = [float(t) for t in ticks if lo - 1e-9 <= t <= hi + 1e-9]  # keep within the colour range
+            cbar.set_ticks(ticks)
+            cbar.set_ticklabels([f"{t:.3f}" for t in ticks])
+            cbar.ax.tick_params(labelsize=tick_sz)
         stem = os.path.join(cli.out, f"poincare_zeta{plane:g}")
         fig.savefig(stem + ".pdf", dpi=cli.dpi)     # dpi sets the rasterised crossing scatter
         fig.savefig(stem + ".png", dpi=cli.dpi)     # for quick viewing; the PDF is the deliverable
