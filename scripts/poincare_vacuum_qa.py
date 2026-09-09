@@ -11,8 +11,9 @@ One iota colour scale across all five planes; the colour bar is ticked at the
 resonant rationals, admitted by spacing (``--min-sep``). The house font hierarchy
 (label > tick > legend) is rescaled so the axis labels are ``--label-size`` when the
 figure is one page wide. Writes ``poincare_zeta*.pdf`` (and a ``.png`` for viewing)
-into ``--out``, plus ``trace.npz``: the traced lines, reused by every later call so a
-change to the figure never retraces.
+into ``--out``. The traced lines and their sections go to ``trace.npz`` NEXT TO the
+``--field-npz`` they came from (the run's own directory), and every later call reuses
+them: a change to the figure never retraces, and needs no GPU.
 
     python scripts/poincare_vacuum_qa.py --geometry data/wout_LandremanPaul2021_QA_lowres.nc --out DIR
 
@@ -33,7 +34,7 @@ Options
     --field-npz PATH     stored harmonic 2-form DOFs (a vacuum_convergence rung) instead of solving
     --inner-cells C      draw only lines seeded at r >= C / n_r; the rest are traced, not drawn [1.5]
     --min-sep F          rational tick spacing, fraction of the iota range [0.12]
-    --trace-npz PATH     traced-line archive [<out>/trace.npz]
+    --trace-npz PATH     traced-line archive [<dir of --field-npz>/trace.npz, else <out>/trace.npz]
     --out DIR            figure directory
     --precision {float64,float32}
 """
@@ -79,8 +80,9 @@ def parse_args(argv=None):
                     help="candidate pool for the rational ticks; large enough that --min-sep "
                          "is the rule that stops them (the house 30 starves a narrow range) [300]")
     ap.add_argument("--trace-npz", default=None,
-                    help="archive of the traced lines [<out>/trace.npz]; loaded instead of "
-                         "tracing when it exists, written after tracing otherwise")
+                    help="archive of the traced lines, kept WITH the run the field came from "
+                         "[<dir of --field-npz>/trace.npz, else <out>/trace.npz]; loaded instead "
+                         "of tracing when it exists, written after tracing otherwise")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     return ap.parse_args(argv)
@@ -108,10 +110,13 @@ def main(cli):
     # The traced lines AND their five (R, Z) sections are archived: tracing is
     # the expensive step, and mapping the crossings to (R, Z) needs the built
     # sequence, so with both stored a re-render is plain matplotlib -- no
-    # geometry, no field, no GPU: it runs on the login node. When the archive
-    # exists it is used as-is (--geometry/--ns/--p and the seeding/tracing
-    # options are then read from it, not the command line; delete it to retrace).
-    trace_npz = cli.trace_npz or os.path.join(cli.out, "trace.npz")
+    # geometry, no field, no GPU: it runs on the login node. The archive lives
+    # next to the field it was traced from (the rung's fields.npz + result.json),
+    # not with the figures: the trace is a result of that run. When it exists it
+    # is used as-is (--geometry/--ns/--p and the seeding/tracing options are then
+    # read from it, not the command line; delete it to retrace).
+    trace_npz = cli.trace_npz or os.path.join(
+        os.path.dirname(cli.field_npz) if cli.field_npz else cli.out, "trace.npz")
     if os.path.exists(trace_npz):
         z = np.load(trace_npz)
         res = {k: z[k] for k in z.files}
