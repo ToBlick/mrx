@@ -105,7 +105,6 @@ Flags, defaults in brackets:
                                    leaves the line search alone)
     Budgets and output:
       --steps N [3000]             maximum number of steps
-      --seconds S [none]           wall-clock budget of the descent loop
       --chunk N [500]              steps per compiled chunk (one lax.scan):
                                    the trace comes back, the quantities of
                                    interest are sampled (helicity, the two
@@ -222,7 +221,6 @@ def parse_args(argv=None):
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--steps", type=int, default=3000)
-    ap.add_argument("--seconds", type=float, default=None)
     ap.add_argument("--chunk", type=int, default=500,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
@@ -350,7 +348,7 @@ def main(cli):
             json.dump(results, fh, indent=1)
 
     relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
-          seconds=cli.seconds, reconnect_every=cli.reconnect_every,
+          reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
     print(f"wrote {out}/relax.json and {ckpt_dir}/", flush=True)
 

@@ -36,7 +36,7 @@ LEDGER=$PUB/jobs.tsv
 GEOM=$ROOT/data/wout_li383_low_res_reference.nc
 GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 # floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
-# there): let --steps / --seconds end the run and show whether it bottoms out.
+# there): let --steps or the job limit end the run and show whether it bottoms out.
 COMMON="--floor-tol 1e-4 --steps 6000"
 G1="--velocity-smoothing-order 1"   # mu = 0.02 / n_r^2, the driver's default (SMOOTHING_C)
 G1_12=$G1
@@ -64,10 +64,10 @@ reader() {
     arm r12_p1_g0     "$GEOM" "--ns 12,24,12 --p 1"                                60
     arm r12_p2_g0     "$GEOM" "--ns 12,24,12 --p 2"                                90
     arm r12_p3_g0     "$GEOM" "--ns 12,24,12 --p 3"                               150
-    arm r12_p4_g0     "$GEOM" "--ns 12,24,12 --p 4 --seconds 7200"                240
-    arm r12_p3_g0_f64 "$GEOM" "--ns 12,24,12 --p 3 --precision float64 --seconds 9000" 300
-    arm r12_p3_g1     "$GEOM" "--ns 12,24,12 --p 3 $G1_12 --seconds 9000"         300
-    arm r16_p3_g1     "$GEOM" "--ns 16,32,16 --p 3 $G1_16 --seconds 12000"        480
+    arm r12_p4_g0     "$GEOM" "--ns 12,24,12 --p 4"                240
+    arm r12_p3_g0_f64 "$GEOM" "--ns 12,24,12 --p 3 --precision float64" 300
+    arm r12_p3_g1     "$GEOM" "--ns 12,24,12 --p 3 $G1_12"         300
+    arm r16_p3_g1     "$GEOM" "--ns 16,32,16 --p 3 $G1_16"        480
     arm hi_r12_p3_g0  "$GEOM_HI" "--ns 12,24,12 --p 3"                            120
 }
 
@@ -77,30 +77,30 @@ seeded() {
     # (m, n) = (6, 1): the iota = 1/2 surface (rho 0.544); (5, 1): iota = 3/5 (rho 0.794).
     # eps = |dB^rho| / |B^zeta| at the surface; island width ~ 1.6 sqrt(eps nfp / (m iota')).
     local s61="--seed 6,1,0.544,0.1" s51="--seed 5,1,0.794,0.1"
-    arm hi_r12x24_p3_g0  "$GEOM_HI" "--ns 12,24,24 --p 3 --seconds 5400"                       180
-    arm s61_e1e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-3 --seconds 5400"  180
-    arm s61_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 --seconds 5400"  180
-    arm s61_e1e-2_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-2 --seconds 5400"  180
-    arm s61_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
-    arm s51_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3 --seconds 5400"  180
-    arm s51_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3 $G1_12 --seconds 9000" 300
-    arm r16_s61_e3e-3_g1 "$GEOM_HI" "--ns 16,32,32 --p 3 $s61 --seed-eps 3e-3 $G1_16 --seconds 12000" 480
+    arm hi_r12x24_p3_g0  "$GEOM_HI" "--ns 12,24,24 --p 3"                       180
+    arm s61_e1e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-3"  180
+    arm s61_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3"  180
+    arm s61_e1e-2_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 1e-2"  180
+    arm s61_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12" 300
+    arm s51_e3e-3_g0     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3"  180
+    arm s51_e3e-3_g1     "$GEOM_HI" "--ns 12,24,24 --p 3 $s51 --seed-eps 3e-3 $G1_12" 300
+    arm r16_s61_e3e-3_g1 "$GEOM_HI" "--ns 16,32,32 --p 3 $s61 --seed-eps 3e-3 $G1_16" 480
 }
 
 deep() {
     # The 2026-09-02 arms all stopped at the 1e-3 floor; these three run on to
     # the step / wall cap (floor 1e-4) to show where the residual bottoms out.
     local s61="--seed 6,1,0.544,0.1"
-    arm hi_r12x24_p3_g0_f4 "$GEOM_HI" "--ns 12,24,24 --p 3 --seconds 5400"                            180
-    arm s61_e3e-3_g0_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 --seconds 5400"       180
-    arm s61_e3e-3_g1_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12 --seconds 7200" 240
+    arm hi_r12x24_p3_g0_f4 "$GEOM_HI" "--ns 12,24,24 --p 3"                            180
+    arm s61_e3e-3_g0_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3"       180
+    arm s61_e3e-3_g1_f4    "$GEOM_HI" "--ns 12,24,24 --p 3 $s61 --seed-eps 3e-3 $G1_12" 240
 }
 
 anchor_sweeps() {
     # 2026-09-04: one-flag departures from the anchor h16_p2_g1 (the (16,32,32)
     # p = 2 gamma = 1 rung of hsweep_p2): the L-BFGS history m = 0 (steepest
     # descent), 3, 5 (m = 1 is the anchor), and gamma = 0. 5000 steps, no
-    # floor, so every run ends on the step cap; the anchor's --seconds cap is
+    # floor, so every run ends on the step cap; the anchor's job limit is
     # dropped for the same reason.
     local common="--ns 16,32,32 --p 2 --floor-tol 0 --steps 5000"
     arm h16_p2_g1_m0 "$GEOM_HI" "$common $G1_16 --history 0"        300
@@ -116,11 +116,11 @@ hsweep_p2() {
     # Wall caps sum to 18.5 GPU-h; the n = 32 rung takes about 10 h of it.
     # These follow COMMON on the command line, so they override its floor and step cap.
     local common="--p 2 --floor-tol 1e-5 --steps 5000 --velocity-smoothing-order 1"
-    arm h8_p2_g1  "$GEOM_HI" "--ns 8,16,16  $common --seconds 1800"    90
-    arm h12_p2_g1 "$GEOM_HI" "--ns 12,24,24 $common --seconds 3600"   150
-    arm h16_p2_g1 "$GEOM_HI" "--ns 16,32,32 $common --seconds 7200"    300
-    arm h24_p2_g1 "$GEOM_HI" "--ns 24,48,48 $common --seconds 18000"  660
-    arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common --seconds 36000" 1260
+    arm h8_p2_g1  "$GEOM_HI" "--ns 8,16,16  $common"    90
+    arm h12_p2_g1 "$GEOM_HI" "--ns 12,24,24 $common"   150
+    arm h16_p2_g1 "$GEOM_HI" "--ns 16,32,32 $common"    300
+    arm h24_p2_g1 "$GEOM_HI" "--ns 24,48,48 $common"  660
+    arm h32_p2_g1 "$GEOM_HI" "--ns 32,64,64 $common" 1260
 }
 
 psweep_p16() {
@@ -128,9 +128,9 @@ psweep_p16() {
     # (also the resistivity sweep's mesh): p = 1, 3, 4 with the same recipe;
     # p = 2 is h16_p2_g1.
     local common="--ns 16,32,32 --floor-tol 1e-5 --steps 5000 $G1_16"
-    arm h16_p1_g1 "$GEOM_HI" "$common --p 1 --seconds 1800"   60
-    arm h16_p3_g1 "$GEOM_HI" "$common --p 3 --seconds 10800" 360
-    arm h16_p4_g1 "$GEOM_HI" "$common --p 4 --seconds 18000" 600
+    arm h16_p1_g1 "$GEOM_HI" "$common --p 1"   60
+    arm h16_p3_g1 "$GEOM_HI" "$common --p 3" 360
+    arm h16_p4_g1 "$GEOM_HI" "$common --p 4" 600
 }
 
 aux() {  # aux [smoke|pairs]
@@ -147,7 +147,7 @@ aux() {  # aux [smoke|pairs]
     elif [ "${1:-}" = pairs ]; then
         # Two pairs, each with the B step and the auxiliary-H step: float64 at
         # (12,24,24) p = 2 and float32 at (8,16,16) p = 1.
-        local base="--floor-tol 1e-5 --steps 5000 --seconds 7200"
+        local base="--floor-tol 1e-5 --steps 5000"
         local st flag
         for st in B H; do
             flag=""; [ $st = H ] && flag=$AUX
@@ -155,7 +155,7 @@ aux() {  # aux [smoke|pairs]
             submit relax h8_p1_$st      "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 $flag --out $PUB/h8_p1_$st" 120
         done
     else
-        submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/aux_h16_p2_g1" 300
+        submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $common --steps 5000 --out $PUB/aux_h16_p2_g1" 300
     fi
 }
 
@@ -191,7 +191,7 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     elif [ "${1:-}" = smoke ]; then
         submit relax reconnect_smoke "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
     else
-        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
+        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
     fi
 }
 

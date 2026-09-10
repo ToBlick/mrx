@@ -1252,7 +1252,7 @@ class RelaxResult(NamedTuple):
 
     ``state`` the descent state, ``steps`` the steps of this run so far
     (``it0 + steps`` is the absolute step), ``stop`` why it ended (``steps``,
-    ``floor``, ``seconds``, or ``running``), ``wall`` the seconds in the
+    ``floor``, or ``running``), ``wall`` the seconds in the
     compiled steps (sampling and callbacks excluded), ``trace`` the per-step
     scalars (``dE`` the exact energy change of the step, ``dE_ls`` the line
     search's prediction ``-dt <F, u>_M (1 - dt / 2 dt_star)`` -- the two
@@ -1290,7 +1290,7 @@ def pressure_line(d: dict) -> str:
 
 
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
-          floor_tol: float = 0.0, seconds: Optional[float] = None,
+          floor_tol: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
@@ -1298,11 +1298,11 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count, on ``floor_tol`` (the last
-    chunk's mean of the relative force residual ``||F||_M / ||grad(B^2/2)||``
-    below it; the residual is not monotone, the window mean is the quantity)
-    or on
-    ``seconds`` of wall time in the steps. ``reconnect_every`` (rounded to
+    Stops on the step count or on ``floor_tol`` (the last chunk's mean of
+    the relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
+    residual is not monotone, the window mean is the quantity); a job's
+    time limit is no stop, the checkpoint of every chunk restarts it.
+    ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of
     its helicity, ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J
@@ -1390,15 +1390,13 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   + f"           {pressure_line(scalars)}", flush=True)
         if resid_now < floor_tol:
             stop = "floor"
-        elif seconds is not None and wall > seconds:
-            stop = "seconds"
         elif n_done == steps:
             stop = "steps"
         if on_chunk is not None:
             on_chunk(result(n_done, stop, wall))
         if stop != "running":
-            if verbose and stop != "steps":
-                print(f"  [{stop}] {'chunk mean of the force residual %.3e below %.1e' % (resid_now, floor_tol) if stop == 'floor' else '%.0f s spent' % seconds} at it={it}", flush=True)
+            if verbose and stop == "floor":
+                print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
         if reconnect_every and n_done % reconnect_every == 0:

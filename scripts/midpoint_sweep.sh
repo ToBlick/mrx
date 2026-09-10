@@ -42,39 +42,39 @@ small() {
     # 2-form B in the cross products and with the auxiliary (Dirichlet) H.
     # Exact conservation needs the midpoint scheme AND the auxiliary field.
     local c="--steps 1000 --precision float64 --ns 8,16,16 --p 2"
-    arm ex_small_f64_bonly "--scheme explicit $c --seconds 1800"      60
-    arm mp_small_f64_bonly "--scheme midpoint $c --seconds 2700"      75
-    arm ex_small_f64_Hd    "--scheme explicit $c --seconds 1800 $AUX" 60
-    arm mp_small_f64_Hd    "--scheme midpoint $c --seconds 2700 $AUX" 75
+    arm ex_small_f64_bonly "--scheme explicit $c"      60
+    arm mp_small_f64_bonly "--scheme midpoint $c"      75
+    arm ex_small_f64_Hd    "--scheme explicit $c $AUX" 60
+    arm mp_small_f64_Hd    "--scheme midpoint $c $AUX" 75
 }
 
 small32() {
     # The float32 twins: the helicity floor is the solver tolerance there.
     local c="--steps 1000 --ns 8,16,16 --p 2"
-    arm ex_small_f32_bonly "--scheme explicit $c --seconds 1800"      60
-    arm mp_small_f32_bonly "--scheme midpoint $c --seconds 2700"      75
-    arm ex_small_f32_Hd    "--scheme explicit $c --seconds 1800 $AUX" 60
-    arm mp_small_f32_Hd    "--scheme midpoint $c --seconds 2700 $AUX" 75
+    arm ex_small_f32_bonly "--scheme explicit $c"      60
+    arm mp_small_f32_bonly "--scheme midpoint $c"      75
+    arm ex_small_f32_Hd    "--scheme explicit $c $AUX" 60
+    arm mp_small_f32_Hd    "--scheme midpoint $c $AUX" 75
 }
 
 r16() {
     # the same eight arms on (16,32,32) p=2 (Tobias, 2026-09-04: the smoke
     # mesh is too coarse); ~0.5 s/step float32, ~1.2 s/step float64, 1000 steps
     local c="--steps 1000 --ns 16,32,32 --p 2"
-    arm ex_r16_f32_bonly "--scheme explicit $c --seconds 2400"                          75
-    arm mp_r16_f32_bonly "--scheme midpoint $c --seconds 3000"                          90
-    arm ex_r16_f32_Hd    "--scheme explicit $c --seconds 2400 $AUX"                     75
-    arm mp_r16_f32_Hd    "--scheme midpoint $c --seconds 3000 $AUX"                     90
-    arm ex_r16_f64_bonly "--scheme explicit $c --seconds 4200 --precision float64"      120
-    arm mp_r16_f64_bonly "--scheme midpoint $c --seconds 5400 --precision float64"      150
-    arm ex_r16_f64_Hd    "--scheme explicit $c --seconds 4200 --precision float64 $AUX" 120
-    arm mp_r16_f64_Hd    "--scheme midpoint $c --seconds 5400 --precision float64 $AUX" 150
+    arm ex_r16_f32_bonly "--scheme explicit $c"                          75
+    arm mp_r16_f32_bonly "--scheme midpoint $c"                          90
+    arm ex_r16_f32_Hd    "--scheme explicit $c $AUX"                     75
+    arm mp_r16_f32_Hd    "--scheme midpoint $c $AUX"                     90
+    arm ex_r16_f64_bonly "--scheme explicit $c --precision float64"      120
+    arm mp_r16_f64_bonly "--scheme midpoint $c --precision float64"      150
+    arm ex_r16_f64_Hd    "--scheme explicit $c --precision float64 $AUX" 120
+    arm mp_r16_f64_Hd    "--scheme midpoint $c --precision float64 $AUX" 150
 }
 
 f64() {
     # float64 on the production mesh, auxiliary H: the publication pair.
-    arm ex_lbfgs_f64_Hd "--scheme explicit --steps 1500 --seconds 3600 --precision float64 $AUX" 120
-    arm mp_lbfgs_f64_Hd "--scheme midpoint --steps 1500 --seconds 5400 --precision float64 $AUX" 150
+    arm ex_lbfgs_f64_Hd "--scheme explicit --steps 1500 --precision float64 $AUX" 120
+    arm mp_lbfgs_f64_Hd "--scheme midpoint --steps 1500 --precision float64 $AUX" 150
 }
 
 case ${1:-} in
