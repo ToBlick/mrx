@@ -75,8 +75,6 @@ class DeRhamSequence():
         Spline bases for 0-, 1-, 2-, and 3-forms respectively.
     quad : QuadratureRule
         Tensor-product Gauss quadrature rule used for assembly.
-    geometry : SequenceGeometry
-        Metric and Jacobian data derived from the logical-to-physical map.
     xi : jnp.ndarray
         Polar extraction weights ``(3, 2, n_θ)`` (:func:`~mrx.extraction_operators.get_xi`).
     extraction : dict
