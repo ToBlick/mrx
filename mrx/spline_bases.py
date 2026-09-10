@@ -1,4 +1,4 @@
-"""1D B-spline bases (clamped, periodic, constant), their derivative bases, and local evaluation."""
+"""1D B-spline bases (clamped, periodic), their derivative bases, and local evaluation."""
 import functools
 from typing import Optional
 
@@ -106,17 +106,14 @@ def _histopolation(T, spans, xi_ref, w_ref, knots, *, key, periodic):
 
 
 class SplineBasis:
-    """A class representing a basis of spline functions.
-
-    This class implements various types of spline bases including clamped, periodic,
-    and constant splines of different degrees (0 to 3). The splines are evaluated
-    using JAX for efficient computation and automatic differentiation.
+    """A basis of clamped or periodic B-splines on ``[0, 1]``, evaluated
+    with JAX.
 
     Attributes:
         n (int): The number of splines in the basis
         ns (jnp.ndarray): Array of spline indices
         p (int): The degree of the spline
-        type (str): The type of spline ('clamped', 'periodic', or 'constant')
+        type (str): The type of spline ('clamped' or 'periodic')
         T (jnp.ndarray): The knot vector defining the spline basis
     """
 
@@ -132,7 +129,7 @@ class SplineBasis:
         Args:
             n: The number of splines in the basis
             p: The degree of the spline
-            type: The type of spline ('clamped', 'periodic', or 'constant')
+            type: The type of spline ('clamped' or 'periodic')
             T: Optional knot vector. If None, knots will be initialized based on type
         """
         self.n = n
@@ -144,10 +141,10 @@ class SplineBasis:
         else:
             self.T = self._init_knots()
 
-        if p >= n and p != 1:  # n = p = 1 is allowed for ignoring the third dimension
+        if p >= n:
             raise ValueError(
                 f"Degree {p} is greater than or equal to the number of splines {n}")
-        if type not in ['clamped', 'periodic', 'constant']:
+        if type not in ['clamped', 'periodic']:
             raise ValueError(f"Invalid spline type: {type}")
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
@@ -180,9 +177,6 @@ class SplineBasis:
                 jnp.ones(p)
             ])
             return T
-        elif self.type == 'constant':
-            T = jnp.array([0, 1])
-            return T
         else:
             raise ValueError(f"Invalid spline type: {self.type}")
 
@@ -202,13 +196,10 @@ class SplineBasis:
                 self._evaluate(x, i) + self._evaluate(x, self.n + i),
                 self._evaluate(x, i),
             )
-        elif self.type == 'clamped':
-            return jnp.where(
-                jnp.logical_and(i == self.n-1, x == self.T[-1]),
-                1.0 * jnp.ones_like(x),
-                self._evaluate(x, i))
-        elif self.type == 'constant':
-            return 1.0
+        return jnp.where(
+            jnp.logical_and(i == self.n-1, x == self.T[-1]),
+            1.0 * jnp.ones_like(x),
+            self._evaluate(x, i))
 
     def evaluate_local(self, x: float) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Return ``(values, indices)`` of the ``p + 1`` basis functions that can
@@ -217,8 +208,6 @@ class SplineBasis:
         Periodic bases fold the raw indices modulo ``n`` (the same folding
         :meth:`evaluate` applies) and read ``x`` modulo the unit period.
         """
-        if self.type == 'constant':
-            return jnp.ones(1), jnp.zeros(1, dtype=jnp.int32)
         if self.type == 'periodic':
             x = jnp.mod(x, 1.0)
         values, first = _nonzero_bsplines(self.T, self.p, x)
@@ -336,36 +325,21 @@ class SplineBasis:
 class TensorBasis:
     """Tensor product of three 1-D spline bases, ``B_i(x) B_j(y) B_k(z)``.
 
-    Production evaluation is span-local: :meth:`evaluate_local` returns, per
-    axis, the ``p + 1`` nonzero 1-D values and their indices at a point, and
+    Evaluation is span-local: :meth:`evaluate_local` returns, per axis, the
+    ``p + 1`` nonzero 1-D values and their indices at a point, and
     :meth:`contract` sums a coefficient tensor against them
     (:func:`contract_local`); the sequence tabulates the 1-D bases at the
-    quadrature points once. :meth:`evaluate` is the dense per-function
-    reference the tests check that path against.
+    quadrature points once.
 
     Attributes:
-        bases: the three :class:`SplineBasis`.
-        shape: ``(n_x, n_y, n_z)``.
-        n: ``prod(shape)``; ``ns`` its ``arange``.
+        bases: the three 1-D bases (:class:`SplineBasis` or :class:`DerivativeSpline`).
     """
 
-    def __init__(self, bases: list[SplineBasis]) -> None:
-        """Initialize a tensor product basis.
-
-        The number of basis functions needs to be tracked during JAX tracing/compilation,
-        so we store it explicitly rather than computing it from the bases.
-
-        Args:
-            bases: List of one-dimensional SplineBasis objects to form the tensor product
-        Raises:
-            ValueError: If the number of bases is not exactly 3
-        """
+    def __init__(self, bases: list) -> None:
         if len(bases) != 3:
             raise ValueError(
                 f"TensorBasis requires exactly 3 bases, got {len(bases)}")
         self.bases = bases
-        self.n = bases[0].n * bases[1].n * bases[2].n
-        self.ns = jnp.arange(self.n)
 
     def evaluate_local(self, x: jnp.ndarray) -> tuple:
         """Per-axis ``(values, indices)`` of the 1-D basis functions nonzero at ``x``."""
@@ -378,32 +352,25 @@ class TensorBasis:
 
 
 class DerivativeSpline:
-    """A class representing the derivative of a spline basis.
-
-    This class implements the derivative of a spline basis, supporting various types
-    of splines (clamped, periodic, constant). It computes the derivative by adjusting
-    the degree and number of basis functions based on the original spline type.
+    """The basis containing the derivatives of a spline basis: ``n - 1``
+    functions of degree ``p - 1`` on a clamped axis, ``n`` on a periodic one,
+    normalised to unit integral.
 
     Attributes:
         n (int): Number of derivative spline basis functions
         p (int): Degree of the derivative spline
-        type (str): Type of spline ('clamped', 'periodic', or 'constant')
+        type (str): Type of spline ('clamped' or 'periodic')
         T (jnp.ndarray): Knot vector for the derivative spline
         s (SplineBasis): The underlying spline basis used for derivative computation
     """
 
     def __init__(self, s: SplineBasis) -> None:
-        """Initialize a derivative spline basis.
-
-        Args:
-            s: The original SplineBasis object to compute derivatives from
-        """
         self.n = s.n - 1 if s.type == 'clamped' else s.n
-        self.p = s.p if s.type == 'constant' else s.p - 1
+        self.p = s.p - 1
         self.type = s.type
         # The derivative of a degree-p spline on knots T is a degree-(p-1)
         # spline on T[1:-1]: the outermost knot on each side drops out.
-        self.T = s.T if s.type == 'constant' else s.T[1:-1]
+        self.T = s.T[1:-1]
         self.parent = s
         self.s = SplineBasis(self.n, self.p, self.type, self.T)
         self.ns = jnp.arange(self.n)
@@ -418,29 +385,14 @@ class DerivativeSpline:
         return (p + 1) / (self.T[i + p + 1] - self.T[i])
 
     def evaluate(self, x: float, i: int) -> jnp.ndarray:
-        """Evaluate the ith derivative basis function at point x.
-
-        For clamped and periodic splines this is the degree-(p-1) B-spline on
-        the trimmed knot vector, scaled to unit integral; for constant splines
-        it is 1.0 (derivative of a constant function).
-
-        Args:
-            x: The point at which to evaluate the derivative
-            i: The index of the spline derivative to evaluate
-
-        Returns:
-            The value of the derivative at x
-        """
-        if self.type == 'constant':
-            return 1.0
+        """The ith derivative basis function at ``x``: the degree-(p-1)
+        B-spline on the trimmed knot vector, scaled to unit integral."""
         return self.s(x, i) * self._scale(i)
 
     def evaluate_local(self, x: float) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Return ``(values, indices)`` of the ``p + 1`` derivative basis
         functions that can be nonzero at ``x``; see :meth:`SplineBasis.evaluate_local`."""
         values, indices = self.s.evaluate_local(x)
-        if self.type == 'constant':
-            return values, indices
         return values * self._scale(indices), indices
 
     def greville_spans(self) -> jnp.ndarray:
@@ -455,57 +407,27 @@ class DerivativeSpline:
         """
         points = self.parent.greville_points()
         if self.type == 'periodic':
-            # greville_points() applies mod(., 1) to the periodic abscissae,
-            # which WRAPS the ones that fall outside [0, 1) and so destroys
-            # their monotonicity for every p >= 2.  Rolling an unsorted array
-            # produced one span of NEGATIVE width and one of width > 1 -- e.g.
-            # n=6 gave widths spanning [-0.833, +1.167] at p = 2, 3 and 4 alike
-            # -- so the spans did not tile the period and the histopolation
-            # matrix was built over nonsense intervals.  Sorting first is safe:
-            # the spans and the moments both come from this function, so they
-            # stay consistent, and sorted points tile [g_0, g_0 + 1) exactly
-            # once.
+            # greville_points() wraps the periodic abscissae into [0, 1), which
+            # breaks their monotonicity for p >= 2; sorted, they tile
+            # [g_0, g_0 + 1) exactly once, and the spans and the moments both
+            # come from here. The last span, [g_{n-1}, g_0 + 1], crosses the
+            # seam for EVEN p (and for odd p up to rounding), so every
+            # consumer integrates the PERIODIC extension over it:
+            # histopolation_matrix wraps its quadrature points,
+            # projectors._span_quadrature feeds a pullback that wraps.
             points = jnp.sort(points)
             next_points = jnp.roll(points, -1)
             next_points = next_points.at[-1].set(next_points[-1] + 1.0)
-            # NOTE: the last span is [g_{n-1}, g_0 + 1], which lies inside
-            # [0, 1] only when g_0 = 0, i.e. for ODD p (Greville points on
-            # knots) -- and even then only up to rounding: a point that is 0
-            # up to eps can wrap to 1 - eps.  For EVEN p it always crosses
-            # the seam.  Every consumer must integrate the PERIODIC extension
-            # over it: histopolation_matrix wraps its quadrature points,
-            # projectors._span_quadrature feeds a pullback that wraps.
             return jnp.stack([points, next_points], axis=1)
-        if self.type != 'clamped':
-            raise NotImplementedError(
-                "Greville histopolation spans are currently implemented only "
-                "for clamped and periodic splines."
-            )
         return jnp.stack([points[:-1], points[1:]], axis=1)
 
-    def histopolation_matrix(
-        self,
-        spans: Optional[jnp.ndarray] = None,
-        quadrature_order: Optional[int] = None,
-    ) -> jnp.ndarray:
-        """Assemble the Greville-span histopolation matrix for this basis.
-
-        Args:
-            spans: Integration intervals of shape ``(n, 2)``. If omitted,
-                the Greville spans from :meth:`greville_spans` are used.
-            quadrature_order: Number of Gauss-Legendre quadrature points per
-                span. Defaults to ``max(2, p + 2)``.
-
-        Returns:
-            Array of shape ``(n, n)`` where entry ``[k, i]`` is the integral
-            of the ``i``-th derivative basis function over ``spans[k]``.
-        """
-        if spans is None:
-            spans = self.greville_spans()
-        if quadrature_order is None:
-            quadrature_order = max(2, self.p + 2)
-
-        xi_ref, w_ref = np.polynomial.legendre.leggauss(quadrature_order)
+    def histopolation_matrix(self) -> jnp.ndarray:
+        """The Greville-span histopolation matrix of this basis: ``(n, n)``,
+        entry ``[k, i]`` the integral of the ``i``-th derivative basis
+        function over the ``k``-th span of :meth:`greville_spans`, by
+        ``max(2, p + 2)``-point Gauss on each piece."""
+        spans = self.greville_spans()
+        xi_ref, w_ref = np.polynomial.legendre.leggauss(max(2, self.p + 2))
         # Every span is split at the knots it contains: a Greville span
         # straddles an interior knot whenever p is EVEN, and Gauss is exact
         # only for polynomials; across a knot the spline has a derivative
@@ -520,15 +442,9 @@ class DerivativeSpline:
 
 
 # --------------------------------------------------------------------------- #
-# Basis tables at quadrature points (jitted, keyed on the basis shape)
+# Basis tables at quadrature points (jitted, keyed on the basis shape, for
+# the reason given above)
 # --------------------------------------------------------------------------- #
-#
-# Every table below is a vmap over a spline evaluation. Run eagerly, a vmap
-# executes the batched trace one primitive at a time, each primitive compiled
-# and dispatched on its own (~4000 compilations per (4,8,4) sequence build,
-# measured 2026-08-27: 0.6 s per table). Under jit the whole table is one
-# executable, keyed on the basis SHAPE (:func:`basis_key`),
-# so every basis of a shape shares it.
 
 def basis_table(basis, x):
     """``basis(x_q, i)`` for every ``i`` in ``basis.ns`` and every point in ``x``, ``(n, n_q)``."""
@@ -600,17 +516,11 @@ def evaluate_basis_local(basis, x_q_flat, q_per_elem):
         elems = jnp.arange(n_elem)
         ks = jnp.arange(n_local)
         gdof = (elems[:, None] + ks[None, :]) % n
-    elif basis.type == "clamped":
+    else:
         n_elem = n - p
         elems = jnp.arange(n_elem)
         ks = jnp.arange(n_local)
         gdof = elems[:, None] + ks[None, :]
-    elif basis.type == "constant":
-        # Single element, single DOF (p=0, n=1).
-        n_elem = 1
-        gdof = jnp.zeros((1, 1), dtype=jnp.int32)
-    else:
-        raise NotImplementedError(basis.type)
 
     x_local = x_q_flat.reshape(n_elem, q_per_elem)
     key, T = basis_key(basis)

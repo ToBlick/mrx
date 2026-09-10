@@ -38,27 +38,13 @@ def _n_vectors(betti_numbers, k, dirichlet):
         dbc  (relative)   k=0: 0   k=1: 0   k=2: 1   k=3: 1
 
     so harmonic forms exist at exactly ``(0, free)``, ``(1, free)``,
-    ``(2, dbc)`` and ``(3, dbc)`` -- and NOT at ``(1, dbc)`` or ``(2, free)``.
-
-    THIS HAS COST TWO PEOPLE ONE DAY (2026-08-25), from opposite directions:
-    once by reading absolute ``(1,1,0,0)`` as "no harmonic 2-forms anywhere"
-    when ``compute_helicity`` works in the Dirichlet complex where there IS
-    one; and once by A/B-ing a preconditioner on ``(1, dbc)`` and ``(2, free)``,
-    where BOTH arms returned the same non-harmonic vector because there was no
-    harmonic form to find -- which reads as reassuring agreement rather than as
-    a measurement of nothing.
-
-    If you are choosing ``(k, dirichlet)`` cells to test, check this function
-    first. A cell with zero harmonic forms still RETURNS a vector.
+    ``(2, dbc)`` and ``(3, dbc)`` -- and NOT at ``(1, dbc)`` or ``(2, free)``
+    (a cell with zero harmonic forms still RETURNS a vector from a solve).
     """
     b0, b1, b2, _b3 = betti_numbers
     if dirichlet:
         return (0, b2, b1, b0)[k]
     return (b0, b1, b2, 0)[k]
-
-
-def _dof_count(seq, k, dirichlet):
-    return seq.n(k, dirichlet)
 
 
 # ---------------------------------------------------------------------------
@@ -75,21 +61,16 @@ def init_nullspaces(seq, operators, betti_numbers=None):
     if betti_numbers is None:
         betti_numbers = seq.betti_numbers
     spaces = {(k, dirichlet): jnp.zeros((_n_vectors(betti_numbers, k, dirichlet),
-                                         _dof_count(seq, k, dirichlet)), dtype=mrx.DTYPE)
+                                         seq.n(k, dirichlet)), dtype=mrx.DTYPE)
               for k in range(4) for dirichlet in (False, True)}
     return eqx.tree_at(lambda ops: ops.nullspaces, operators, spaces,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
 
 def get_nullspace(operators, k, dirichlet):
-    """The stacked nullspace array ``(n_vectors, n_k)`` of the k-th Hodge Laplacian."""
-    try:
-        return operators.nullspaces[(int(k), bool(dirichlet))]
-    except (KeyError, TypeError):
-        raise ValueError(
-            f"nullspace for k={k}, dirichlet={dirichlet} is not initialised; "
-            "seq.build_preconditioners() creates the bundle with zero "
-            "nullspaces, compute_nullspaces fills them") from None
+    """The stacked nullspace array ``(n_vectors, n_k)`` of the k-th Hodge
+    Laplacian: zeros until :func:`compute_nullspaces` fills them."""
+    return operators.nullspaces[(int(k), bool(dirichlet))]
 
 
 def _set_null(operators, k, dirichlet, values):
@@ -196,7 +177,7 @@ def laplacian_pair(seq, v, k, dirichlet=True, operators=None):
     """
     import mrx.operators as op  # noqa: PLC0415
     from mrx.precision import RESIDUAL_DTYPE  # noqa: PLC0415
-    on = seq.residual if seq.residual is not None else seq
+    on = _builder(seq)
     v = jnp.asarray(v).astype(RESIDUAL_DTYPE)
     lv = op.apply_stiffness(on, v, k, dirichlet=dirichlet)
     if k > 0:
@@ -219,9 +200,7 @@ def harmonic_rayleigh(seq, v, k, dirichlet=True, operators=None):
     non-harmonic vector, every deflated solve downstream deflates against it,
     and nothing says a word.
 
-    Evaluated in the residual precision (:func:`laplacian_pair`): until
-    2026-09-05 the quotient was taken in the working precision and floored
-    at its round-off in float32.
+    Evaluated in the residual precision (:func:`laplacian_pair`).
 
     Quote it against ``lambda_1`` from :func:`estimate_spectral_gap` -- the
     quotient is not dimensionless, so a raw value carries the units of the
@@ -245,12 +224,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     :func:`direct_construction_unsupported_reason`.  For anything else use
     :func:`compute_nullspaces_iterative`.
 
-    ``betti_numbers`` defaults to ``seq.betti_numbers``.  (It used to be
-    hard-wired to ``(1, 0, 0, 0)``, which contradicted the function's own
-    output: that tuple allocates *zero* rows for the k=1 NBC and k=2 DBC
-    slots, and the code then wrote one row into each.  What it actually
-    computes is the ``b1``-driven pair, so the Betti numbers must come from
-    the sequence.)
+    ``betti_numbers`` defaults to ``seq.betti_numbers``.
 
     The construction has no gate of its own -- a Hodge solve that runs out of
     iterations returns a non-harmonic vector and nothing downstream says a
@@ -291,14 +265,8 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
 
     # The construction below is two Hodge-Laplacian solves -- L_1 DBC for the
     # k=2 form, L_0 FREE for the k=1 form -- and each takes the metric-lumped
-    # atom, which is REQUIRED rather than consulted.
-    #
-    # This function does NOT build it. It used to, and that was a setup step
-    # hidden inside a solve routine: the caller could not tell which
-    # preconditioners existed, and a geometry change afterwards left them stale.
-    # Build them explicitly, or in one call with
-    # ``seq.set_map_and_preconditioners(map)``. A missing atom raises here with
-    # a message naming the assembler.
+    # atom of the bundle (``build_preconditioners``); a missing atom raises
+    # with a message naming the assembler. Nothing is built here.
     operators = _commit(seq, init_nullspaces(
         seq, operators, betti_numbers=betti_numbers))
 
@@ -323,11 +291,8 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         # form: no dependency on anything stored later).  The seed is NOT the
         # harmonic form -- that is the Hodge star of d zeta, metric-weighted,
         # never in V^2 -- it only has to be closed; the solve does the metric.
-        #
-        # It used to Leray-project an M_2^{-1}-seed first (a k=3 solve).  The
-        # k=3 Hodge-split solve deflates its L^_2 solves against THIS form,
-        # which at that point is still zero, and returned a form with
-        # |D h_2| / |h_2| ~ 2 on QA (co-closed, not closed).
+        # A Leray-projected seed would need the k=3 solve, which deflates
+        # against THIS form, still zero at this point.
         flux = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
         seed2 = build.interpolate(lambda x_hat: flux, 2, dirichlet=True, frame='ref')
         div_seed = build.apply_incidence_matrix(
@@ -361,16 +326,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
         # its incidence curl is zero to round-off.  A closed seed has no
         # coexact part, so the Leray projection (one L_0 NBC solve, deflated
         # by the constants just stored) IS the harmonic form: curl-free by
-        # C G = 0, weakly divergence-free by the solve.  No L_2 solve.
-        #
-        # It used to seed with M_1^{-1} of the (0, 0, 1) dual load, i.e. the
-        # form with CONTRAVARIANT (0, 0, 1) -- |curl|/|v| ~ 2 on QA -- and
-        # remove that curl with an L_2 free solve.  At p = 4, n >= 24 that
-        # solve exhausts its budget and the leftover curl (4e-3 -> 4e-2 from
-        # n = 24 to 32) was the whole Route-A convergence stall of
-        # scripts/analytic_vacuum.py.  The k = 2 Dirichlet form above cannot
-        # take this shortcut: it is the Hodge star of d zeta, metric-weighted,
-        # never in V^2, so its L_1 solve is doing real work.
+        # C G = 0, weakly divergence-free by the solve.  No L_2 solve (a seed
+        # with a curl to remove, e.g. M_1^{-1} of the dual load, needs one,
+        # and that solve exhausted its budget at p = 4, n >= 24).  The k = 2
+        # Dirichlet form above cannot take this shortcut: it is the Hodge
+        # star of d zeta, metric-weighted, never in V^2.
         dzeta = jnp.asarray((0.0, 0.0, 1.0), dtype=mrx.DTYPE)
         seed1 = build.interpolate(lambda x_hat: dzeta, 1, dirichlet=False, frame='ref')
         curl_seed = build.apply_incidence_matrix(
@@ -486,10 +446,10 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
 
     Each ``(k, dirichlet)`` pair with a non-zero harmonic dimension is
     seeded with an analytic initial guess when available (see
-    :func:`_initial_guesses`). If that guess already satisfies
-    ``||L_k v|| <= abs_tol`` we accept it directly without running inverse
-    iteration. Otherwise the guess is used as the starting point for
-    inverse iteration, which also terminates on ``||L_k v|| <= abs_tol``.
+    :func:`_initial_guesses`). If that guess already has a Rayleigh
+    quotient below ``abs_tol ** 2`` it is accepted without inverse
+    iteration; otherwise it starts the inverse iteration, which terminates
+    on the same criterion (:func:`find_nullspace_vectors`).
 
     Parameters
     ----------
@@ -512,9 +472,9 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
         correspondingly worse conditioned.  Verify the margin with
         :func:`estimate_spectral_gap` rather than assuming it.
     abs_tol : float, optional
-        Absolute tolerance on the Hodge-Laplacian residual ``||L_k v||``.
-        Defaults to ``seq.tol``.  Keep it comfortably above ``inner_tol``;
-        the outer loop's stall guard catches the rest.
+        Tolerance on ``sqrt(v^T L_k v / v^T M_k v)``, the relative L2 error
+        of the form. Defaults to ``seq.tol``.  Keep it comfortably above
+        ``inner_tol``; the outer loop's stall guard catches the rest.
     inner_tol : float
         Tolerance for the inner shifted MINRES solve at each power-iteration
         step.  This sets an accuracy floor on the outer iteration (see
@@ -526,10 +486,8 @@ def compute_nullspaces_iterative(seq, operators=None, betti_numbers=None,
     operators : SequenceOperators
         Updated bundle with the eight ``null_*`` fields populated.
     info : dict
-        Per ``(k, dirichlet)`` key: a list of ``(n_iters, residual)`` tuples,
-        one per converged eigenvector, where ``residual = ||L_k v||``.
-        ``n_iters == 0`` indicates the initial guess was accepted without
-        iteration.
+        Per ``(k, dirichlet)`` key: the ``(n_iters, residual, rayleigh)``
+        triples of :func:`find_nullspace_vectors`, one per vector.
     """
     if operators is None:
         operators = seq._require_operators()
@@ -628,9 +586,10 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
         :func:`estimate_spectral_gap`), whereas ``||L_k v||`` measures a dual
         vector in the primal mass norm and its scale drifts with resolution.
     """
+    import mrx.operators as op  # noqa: PLC0415
     if abs_tol is None:
         abs_tol = seq.tol
-    n = _dof_count(seq, k, dirichlet)
+    n = seq.n(k, dirichlet)
     if n_vectors == 0:
         return jnp.zeros((0, n), dtype=mrx.DTYPE), []
 
@@ -670,10 +629,8 @@ def find_nullspace_vectors(seq, operators, k, n_vectors, eps, dirichlet=True,
             v, rq, _rq_prev, i = state
             Mv = seq.apply_mass_matrix(
                 v, k, dirichlet=dirichlet)
-            w = seq.apply_inverse_shifted_laplacian(
-                Mv, k, eps, dirichlet=dirichlet, guess=v,
-                operators=operators,
-                tol=inner_tol)
+            w = op.apply_inverse_shifted_laplacian(
+                seq, operators, Mv, k, eps, dirichlet=dirichlet, guess=v, tol=inner_tol)
             w = project_out(w)
             # M is SPD so w^T M w >= 0 exactly; in float32 the deflated
             # cancellation can round it slightly negative, which would make

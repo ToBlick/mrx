@@ -82,23 +82,28 @@ def main():
     print(f"[study] DeRhamSequence {time.time() - t0:.1f} s", flush=True)
 
     st = read_equilibrium(path)
-    nfp, sp = st["nfp"], st.get("sp")
+    nfp = st["nfp"]
     m, n_per = st["X1"]["m"], st["X1"]["n"] / nfp
     amp = np.abs(st["X1"]["coef"]).max(axis=1)
     beyond = (np.abs(m) > ns[1] // 2) | (np.abs(n_per) > ns[2] // 2)
     print(f"[study] modes {len(m)}: m in [{m.min()}, {m.max()}], n/nfp in [{n_per.min():.0f}, {n_per.max():.0f}]; "
           f"beyond Nyquist of {ns[1:]}: {beyond.sum()} modes, max |R_mn| {amp[beyond].max() if beyond.any() else 0:.2e}, "
           f"sum {amp[beyond].sum():.2e} (m=1,n=0: {amp[(m == 1) & (n_per == 0)].max():.2e})", flush=True)
-    R_fn = StateField(st["X1"], sp, nfp, vector=True)
-    Z_fn = StateField(st["X2"], sp, nfp, vector=True)
+    R_sf, Z_sf = StateField(st["X1"], nfp), StateField(st["X2"], nfp)
+
+    def R_fn(x):
+        return jnp.array([R_sf(x)])
+
+    def Z_fn(x):
+        return jnp.array([Z_sf(x)])
 
     dofs, times = {}, {}
     t0 = time.time()
     dofs["sampled"] = (seq.interpolate(R_fn, 0), seq.interpolate(Z_fn, 0))
     times["sampled"] = time.time() - t0
     t0 = time.time()
-    dofs["l2"] = (series_spline_dofs(st["X1"], sp, nfp, seq),
-                  series_spline_dofs(st["X2"], sp, nfp, seq))
+    dofs["l2"] = (series_spline_dofs(st["X1"], nfp, seq),
+                  series_spline_dofs(st["X2"], nfp, seq))
     times["l2"] = time.time() - t0
     scale = float(jnp.abs(dofs["sampled"][0]).max())
     dR = float(jnp.abs(dofs["sampled"][0] - dofs["l2"][0]).max()) / scale

@@ -33,11 +33,12 @@ Two conventions the state carries:
   wraps one field period through the wrong angle with a healthy Jacobian to
   hide it; every reader takes an ``nfp`` override.
 
-Every function takes the file path; the extension decides the route --
-``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same blocks by
-``mrx.vmec``; anything else raises. ``test/synthetic_gvec.py`` writes a
-state file for an analytic circular torus; the test suite reads it through
-the same functions as a real one.
+:func:`read_equilibrium` takes the file path and the extension decides the
+route -- ``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same
+blocks by ``mrx.vmec``; anything else raises -- and every other function
+takes the parsed state. ``test/synthetic_gvec.py`` writes a state file for
+an analytic circular torus; the test suite reads it through the same
+functions as a real one.
 """
 from __future__ import annotations
 
@@ -47,7 +48,7 @@ import numpy as np
 from scipy.interpolate import BSpline
 
 from mrx.precision import DTYPE
-from mrx.differential_forms import DiscreteFunction, jacobian_determinant
+from mrx.differential_forms import DiscreteFunction, det33
 from mrx.projectors import _conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -65,7 +66,8 @@ def _numbers(line):
 def read_state(path):
     """Parse a state file into a dict: ``nfp``, ``sp``, ``deg``, the three
     field blocks ``X1``, ``X2``, ``LA`` (``m``, ``n``, ``coef`` of shape
-    ``(n_modes, n_base)``, ``sin_cos`` 1 = sine, 2 = cosine), ``profiles``
+    ``(n_modes, n_base)``, ``sin_cos`` 1 = sine, 2 = cosine, ``deg`` and
+    the clamped radial knot vector ``T`` on the element grid), ``profiles``
     (``s``, ``phi``, ``chi``, ``iota``, ``pressure`` at the interpolation
     points) and ``a_minor``, ``r_major``, ``volume``."""
     with open(path) as fh:
@@ -85,15 +87,14 @@ def read_state(path):
     st = {}
     n_elems = int(_numbers(block("grid: nElems")[0])[0])
     st["sp"] = np.array(_numbers(block("grid: sp")[0]))[: n_elems + 1]
-    nfp, _, _, _, hmap = _numbers(block("global")[0])
-    st["nfp"], st["hmap"] = int(nfp), int(hmap)
+    st["nfp"] = int(_numbers(block("global")[0])[0])
     for name in ("X1", "X2", "LA"):
         n_base, deg, _, n_modes, sin_cos, _ = (int(v) for v in _numbers(block(f"{name}_base")[0]))
         rows = np.array([_numbers(ln) for ln in block(f"{name}:")])
         if rows.shape != (n_modes, 2 + n_base):
             raise ValueError(f"{path}: {name} block is {rows.shape}, expected {(n_modes, 2 + n_base)}")
         st[name] = dict(m=rows[:, 0].astype(int), n=rows[:, 1].astype(int),
-                        coef=rows[:, 2:], sin_cos=sin_cos, deg=deg)
+                        coef=rows[:, 2:], sin_cos=sin_cos, deg=deg, T=knots(st["sp"], deg))
     st["deg"] = st["X1"]["deg"]
     prof = np.array([_numbers(ln) for ln in block("at X1_base IP point positions")])
     st["profiles"] = dict(zip(("s", "phi", "chi", "iota", "pressure"), prof.T))
@@ -106,21 +107,11 @@ def knots(sp, deg):
     return np.concatenate([np.full(deg, sp[0]), sp, np.full(deg, sp[-1])])
 
 
-def block_knots(block, sp):
-    """The radial knot vector of a field block: its own ``T`` (the wout
-    route) or the clamped vector on the element grid ``sp``."""
-    return np.asarray(block["T"] if "T" in block else knots(sp, block["deg"]))
-
-
-def radial_design(sp, deg, s):
-    """``(len(s), n_base)`` values of the radial basis at ``s``."""
-    return BSpline.design_matrix(np.asarray(s, dtype=np.float64), knots(sp, deg), deg).toarray()
-
-
-def evaluate(block, sp, s, theta, zeta):
+def evaluate(block, s, theta, zeta):
     """A field block on the tensor grid ``s x theta x zeta`` (angles in
     radians, ``zeta`` the physical toroidal angle)."""
-    A = radial_design(sp, block["deg"], s) @ block["coef"].T             # (n_s, n_modes)
+    A = BSpline.design_matrix(np.asarray(s, dtype=np.float64), block["T"],
+                              block["deg"]).toarray() @ block["coef"].T   # (n_s, n_modes)
     arg = (np.outer(block["m"], theta)[:, :, None]
            - np.outer(block["n"], zeta)[:, None, :])                      # (n_modes, n_t, n_z)
     F = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
@@ -129,40 +120,34 @@ def evaluate(block, sp, s, theta, zeta):
 
 def profile_spline(st, name):
     """The radial spline through a profile's interpolation-point values."""
-    prof, sp, deg = st["profiles"], st["sp"], st["deg"]
-    c = np.linalg.solve(radial_design(sp, deg, prof["s"]), prof[name])
-    return BSpline(knots(sp, deg), c, deg)
+    prof, deg = st["profiles"], st["deg"]
+    T = knots(st["sp"], deg)
+    c = np.linalg.solve(BSpline.design_matrix(prof["s"], T, deg).toarray(), prof[name])
+    return BSpline(T, c, deg)
 
 
 class StateField:
     """A state's ``X1``, ``X2`` or ``LA`` as a JAX function of the logical
     point ``(rho, theta, zeta)`` (angles on ``[0, 1)``, ``zeta`` per field
-    period). ``vector=True`` returns a ``(1,)`` array, the convention of the
-    scalar callables :func:`_map_with_sign` takes (the series map itself,
-    the reference the spline map is measured against); otherwise a scalar.
-    A block that carries its own knot vector ``T`` (the wout route,
-    ``mrx.vmec``) overrides the element grid ``sp``, which may then be
-    ``None``. ``rho`` is not clipped to ``[0, 1]``: the local evaluator
-    continues the end polynomial pieces outside, and a clip halves the
-    autodiff radial derivative at ``rho = 1`` exactly (JAX splits the
-    gradient of a tie), which halved the series map's ``det DF`` at the
-    wall (measured 2026-08-28)."""
+    period), on the block's own radial knots ``T``. ``rho`` is not clipped
+    to ``[0, 1]``: the local evaluator continues the end polynomial pieces
+    outside, and a clip halves the autodiff radial derivative at ``rho =
+    1`` exactly (JAX splits the gradient of a tie), which halved the series
+    map's ``det DF`` at the wall."""
 
-    def __init__(self, block, sp, nfp, vector=False):
+    def __init__(self, block, nfp):
         self.basis = SplineBasis(block["coef"].shape[1], block["deg"], "clamped",
-                                 T=jnp.asarray(block_knots(block, sp)))
+                                 T=jnp.asarray(block["T"]))
         self.C = jnp.asarray(block["coef"])                              # (n_modes, n_base)
         self.m = jnp.asarray(block["m"], dtype=DTYPE)
         self.n_per = jnp.asarray(block["n"], dtype=DTYPE) / nfp    # per field period
         self.cos = block["sin_cos"] == 2
-        self.vector = vector
 
     def __call__(self, x):
         vals, idx = self.basis.evaluate_local(x[0])
         radial = self.C[:, idx] @ vals                                    # (n_modes,)
         arg = 2.0 * jnp.pi * (self.m * x[1] - self.n_per * x[2])
-        f = (jnp.cos(arg) if self.cos else jnp.sin(arg)) @ radial
-        return jnp.array([f]) if self.vector else f
+        return (jnp.cos(arg) if self.cos else jnp.sin(arg)) @ radial
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +171,7 @@ def _det_DF(map_func, n=64, seed=0):
     xs = jnp.asarray(np.column_stack([
         rng.uniform(0.15, 0.95, n), rng.uniform(0.0, 1.0, n),
         rng.uniform(0.0, 1.0, n)]))
-    dets = jax.vmap(jacobian_determinant(map_func))(xs)
+    dets = jax.vmap(lambda x: det33(jax.jacfwd(map_func)(x)))(xs)
     return np.asarray(dets)
 
 
@@ -246,7 +231,7 @@ def _angular_symbol(basis, freqs):
     return moment / _periodic_symbol(M[:, 0], freqs)
 
 
-def _radial_coefficients(block, sp, basis_r):
+def _radial_coefficients(block, basis_r):
     """``(n_r, n_modes)`` coefficients on the map's clamped radial basis of
     the L2 projection of every mode's radial function ``c_mn(rho)``, a
     spline on the state's knots: the moments by Gauss quadrature on the
@@ -254,7 +239,7 @@ def _radial_coefficients(block, sp, basis_r):
     ``n_r x n_r`` mass solve shared by all modes. Exact when the map's
     radial space contains the state's (GVEC's degree-5 basis on 10 uniform
     elements at ``p = 5``, ``n_r = 15``)."""
-    T_s, deg_s, C = block_knots(block, sp), block["deg"], block["coef"]
+    T_s, deg_s, C = np.asarray(block["T"]), block["deg"], block["coef"]
     T_r, p_r = np.asarray(basis_r.T, dtype=np.float64), basis_r.p
     bp = np.unique(np.concatenate([T_s, T_r]))
     xi, wi = np.polynomial.legendre.leggauss((deg_s + p_r) // 2 + 1)
@@ -267,7 +252,7 @@ def _radial_coefficients(block, sp, basis_r):
     return np.linalg.solve(M, Br.T @ (w[:, None] * (Bs @ C.T)))
 
 
-def series_tensor_coefficients(block, sp, nfp, seq):
+def series_tensor_coefficients(block, nfp, seq):
     """``(n_r, n_t, n_z)`` coefficients on the tensor-product 0-form space
     of ``seq`` of the L2 projection of a state field, built from its
     coefficients alone: no evaluation grid, no collocation solve.
@@ -286,7 +271,7 @@ def series_tensor_coefficients(block, sp, nfp, seq):
     m, n_per = block["m"].astype(np.float64), block["n"] / nfp
     if np.abs(n_per - np.round(n_per)).max() > 0:
         raise ValueError("toroidal mode numbers are not multiples of nfp")
-    c_r = _radial_coefficients(block, sp, br)                            # (n_r, n_modes)
+    c_r = _radial_coefficients(block, br)                                # (n_r, n_modes)
     gamma = _angular_symbol(bt, m) * _angular_symbol(bz, n_per)          # (n_modes,)
     x_t = np.asarray(bt.greville_points(), dtype=np.float64)
     y_z = np.asarray(bz.greville_points(), dtype=np.float64)
@@ -296,7 +281,7 @@ def series_tensor_coefficients(block, sp, nfp, seq):
     return np.einsum("ik,k,kjl->ijl", c_r, gamma, trig)
 
 
-def series_spline_dofs(block, sp, nfp, seq):
+def series_spline_dofs(block, nfp, seq):
     """The polar 0-form DoFs on ``seq.basis_0`` of a state field: the tensor
     coefficients of :func:`series_tensor_coefficients` restricted onto the
     polar space with the ring-0/ring-1 surgery of every 0-form
@@ -304,7 +289,7 @@ def series_spline_dofs(block, sp, nfp, seq):
     Greville interpolant of the series -- identical to sampling it at the
     Greville points and solving -- was measured against this projection
     and dropped (``docs/research/analytic_map_2026-08-28.md``)."""
-    C_full = series_tensor_coefficients(block, sp, nfp, seq)
+    C_full = series_tensor_coefficients(block, nfp, seq)
     return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)))
 
 
@@ -323,36 +308,30 @@ def read_equilibrium(path):
                      "files (.dat) and VMEC wout files (.nc)")
 
 
-def build_gvec_map(st, seq, sign=None, nfp=None):
+def build_gvec_map(st, seq, nfp=None):
     """Build the stellarator map of a GVEC state or a VMEC wout (``st``,
     the parsed file of :func:`read_equilibrium`) as a C1 polar spline map
     on ``seq.basis_0``.
 
-    A ``.dat`` state or a ``.nc`` wout (refit into the same blocks by
-    :mod:`mrx.vmec`) supplies ``R`` and ``Z`` as radial-spline x Fourier
-    series, and the map's spline coefficients are the L2 projection built
-    from the series coefficients (:func:`series_spline_dofs`) -- nothing is
-    evaluated on a grid; any other file raises.
-    Returns ``(F, info)``. ``sign`` is the toroidal handedness
-    ``Y = sign * R sin(2 pi zeta/nfp)``; left ``None`` it is measured, and a
-    file that is degenerate under both signs raises.
+    The state supplies ``R`` and ``Z`` as radial-spline x Fourier series,
+    and the map's spline coefficients are the L2 projection built from the
+    series coefficients (:func:`series_spline_dofs`) -- nothing is
+    evaluated on a grid. Returns ``(F, info)`` with ``info`` the ``nfp``,
+    the measured toroidal handedness ``sign`` (``Y = sign * R sin(2 pi
+    zeta/nfp)``; a file that is degenerate under both signs raises) and the
+    sampled ``det_range``.
     """
     nfp = st["nfp"] if nfp is None else int(nfp)
-    R_fn = StateField(st["X1"], st.get("sp"), st["nfp"], vector=True)
-    Z_fn = StateField(st["X2"], st.get("sp"), st["nfp"], vector=True)
-    R_dof = series_spline_dofs(st["X1"], st.get("sp"), st["nfp"], seq)
-    Z_dof = series_spline_dofs(st["X2"], st.get("sp"), st["nfp"], seq)
-    R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
-    Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
+    R_h = DiscreteFunction(series_spline_dofs(st["X1"], st["nfp"], seq), seq.basis_0, seq.E(0))
+    Z_h = DiscreteFunction(series_spline_dofs(st["X2"], st["nfp"], seq), seq.basis_0, seq.E(0))
 
     tried = {}
-    for s in ((sign,) if sign is not None else (1.0, -1.0)):
+    for s in (1.0, -1.0):
         F = _map_with_sign(R_h, Z_h, nfp, s)
         d = _det_DF(F)
         tried[s] = (float(d.min()), float(d.max()))
         if np.isfinite(d).all() and d.min() > 0:
-            return F, {"R_h": R_h, "Z_h": Z_h, "R_fn": R_fn, "Z_fn": Z_fn,
-                       "nfp": nfp, "sign": s, "det_range": tried[s]}
+            return F, {"nfp": nfp, "sign": s, "det_range": tried[s]}
     raise RuntimeError(f"{st['path']}: no handedness gives det DF > 0; "
                        f"sampled ranges {tried}")
 
@@ -388,7 +367,7 @@ def load_clebsch(st):
     return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
                 dchi=spline(st, "iota")(rho) * dPhi,
                 p=spline(st, "pressure")(rho),
-                lam_h=StateField(st["LA"], st.get("sp"), st["nfp"]))
+                lam_h=StateField(st["LA"], st["nfp"]))
 
 
 # ---------------------------------------------------------------------------

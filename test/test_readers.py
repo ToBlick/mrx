@@ -35,7 +35,7 @@ def test_gvec_state_file_reproduces_the_formulas(tmp_path):
     RHO, TH, ZE = np.meshgrid(rho, th, ze, indexing="ij")
     for blk, want in (("X1", torus.R(RHO, TH)), ("X2", torus.Z(RHO, TH)),
                       ("LA", torus.LA(RHO, TH, ZE))):
-        got = evaluate(st[blk], st["sp"], rho, TWO_PI * th, TWO_PI * ze / NFP)
+        got = evaluate(st[blk], rho, TWO_PI * th, TWO_PI * ze / NFP)
         assert np.abs(got - np.asarray(want)).max() <= mrx.eps(512), blk
     r = np.linspace(0.0, 1.0, 37)
     for name, want in (("phi", torus.Phi(r)), ("chi", torus.chi(r)),
@@ -50,8 +50,6 @@ def test_vmec_li383_reads_and_reproduces_the_file():
     st = read_wout(LI383)
     assert (st["nfp"], st["ns"], st["mnmax"]) == (3, 16, 25)
     assert read_nfp(LI383) == 3
-    from mrx.geometry import geometry_nfp
-    assert geometry_nfp(LI383) == 3
     from mrx.vmec import _axis_orders
     k_max = max(len(_axis_orders(int(mm), st["deg"])) for mm in st["X1"]["m"])
     # nodes + the axis phantoms; LA: half mesh + axis + edge

@@ -5,7 +5,6 @@ Provides :class:`DifferentialForm` (basis), :class:`DiscreteFunction`
 """
 
 import math
-from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -32,9 +31,6 @@ class DifferentialForm:
     nr: int
     nt: int
     nz: int
-    pr: int
-    pt: int
-    pz: int
     ns: jnp.ndarray
 
     def __init__(self, k, ns, ps, types, Ts=None):
@@ -42,8 +38,8 @@ class DifferentialForm:
             k: Form degree (0, 1, 2 or 3).
             ns: Number of DOFs in each direction.
             ps: Polynomial degrees in each direction.
-            types: Boundary condition types (``'clamped'``, ``'periodic'``,
-                ``'constant'``) for each direction.
+            types: Boundary condition types (``'clamped'``, ``'periodic'``)
+                for each direction.
             Ts: Knot vectors; ``None`` uses uniform knots.
         """
         self.d = len(ns)
@@ -56,7 +52,6 @@ class DifferentialForm:
         self.dΛ = [DerivativeSpline(b) for b in self.Λ]
         self.types = types
 
-        self.pr, self.pt, self.pz = ps
         self.nr, self.nt, self.nz = ns
         if types[0] == "clamped":
             self.dr = self.nr - 1
@@ -115,6 +110,13 @@ class DifferentialForm:
             raise ValueError("Degree k must be 0, 1, 2 or 3")
         self.n = self.n1 + self.n2 + self.n3
         self.ns = jnp.arange(self.n)
+
+    def derivative_axes(self, c):
+        """The axes on which component ``c`` is a derivative spline: none for
+        ``k = 0``, axis ``c`` for ``k = 1``, every axis but ``c`` for ``k = 2``,
+        all three for ``k = 3`` -- read off :attr:`bases`, the one place the
+        pattern is spelled out."""
+        return tuple(a for a, b in enumerate(self.bases[c].bases) if b is self.dΛ[a])
 
     def raw_blocks(self, raw):
         """Split a raw (pre-extraction) coefficient vector into one tensor per
@@ -277,8 +279,3 @@ def inv33(mat: jnp.ndarray) -> jnp.ndarray:
     """Inverse of a 3×3 matrix via the explicit adjugate formula.
     """
     return adj33(mat) / det33(mat)
-
-
-def jacobian_determinant(f: Callable) -> Callable:
-    """Return a function that computes ``det(jacfwd(f))`` at a point."""
-    return lambda x: det33(jax.jacfwd(f)(x))

@@ -32,15 +32,14 @@ Three sources of the profiles:
   equilibrium file's own field, ``B = dA'`` from its Clebsch data
   (:func:`mrx.gvec.load_clebsch`), the production route.
 
-:func:`project_reference_two_form` turns any of them into DoFs. It pushes the
-form forward and uses ``load(frame='phys')``: ``load(frame='ref')`` wants
-``g omega / J`` and fails silently on ``omega``.
+:func:`project_reference_two_form` turns the analytic form into DoFs. It
+pushes the form forward and uses ``load(frame='phys')``: ``load(frame='ref')``
+wants ``g omega / J`` and fails silently on ``omega``.
 """
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-from mrx.relaxation import compute_divergence_norm
 import numpy as np
 
 
@@ -240,8 +239,6 @@ def project_reference_two_form(seq, omega_ref):
     return B_raw / norm, norm
 
 
-
-
 def leray_clean(seq, B):
     """Leray-project ``B`` and renormalise to ``||B||_M = 1``.
 
@@ -278,6 +275,7 @@ def initial_field(seq, seed=None):
     ``seed_rho`` (the file's resonant surface).
     """
     from mrx.gvec import load_clebsch  # noqa: PLC0415
+    from mrx.relaxation import compute_divergence_norm  # noqa: PLC0415
 
     eq = seq.equilibrium
     if eq is None:

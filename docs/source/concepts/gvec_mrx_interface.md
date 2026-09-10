@@ -29,14 +29,7 @@ sqrt(g) B^theta = dchi_dr - dPhi_dr * dLA_dz
 sqrt(g) B^zeta  = dPhi_dr * (1 + dLA_dt)
 ```
 
-Verified (2026-08) on a pyGVEC export against that file's own `B`, using
-its own `grad_rho / grad_theta / grad_zeta`:
-
-| identity | measured |
-| --- | --- |
-| `sqrt(g) B^rho = 0` | 3.8e-16 |
-| `B^theta` relation | ratio 1.00000000, std 2.9e-13 |
-| `B^zeta` relation | ratio 1.00000000, std 1.7e-16 |
+Verified to round-off on a pyGVEC export against that file's own `B`.
 
 ## 2. The state file
 
@@ -45,7 +38,7 @@ its own `grad_rho / grad_theta / grad_zeta`:
 | block | content |
 | --- | --- |
 | `grid: nElems`, `grid: sp` | the radial element grid `sp` on `[0, 1]` |
-| `global` | `nfp`, `hmap` |
+| `global` | `nfp` |
 | `X1_base`, `X2_base`, `LA_base` | per field: `nbase`, degree, continuity, number of modes, `sin_cos` (1 sine, 2 cosine) |
 | `X1`, `X2`, `LA` | per mode `m, n` (`n` already multiplied by `nfp`) the `nbase` radial B-spline coefficients: `X1 = R` (cosine), `X2 = Z` (sine), `LA = lambda` (sine, radians) |
 | `at X1_base IP point positions` | `s, Phi, chi, iota, pressure` at the radial interpolation points (the Greville points of the `X1` basis) |
@@ -53,10 +46,10 @@ its own `grad_rho / grad_theta / grad_zeta`:
 
 The series is `sum f_mn(s) trig(m theta_G - n zeta_G)` in GVEC's radian
 angles; `s` is the radial label (`Phi = Phi_edge s^2`, so `s` is the
-square root of the normalised toroidal flux — what MRX calls `rho`).
-`mrx.gvec.StateField` evaluates one block at a logical point in JAX (the
-radial basis on GVEC's own clamped knots, the angles as
-`2 pi (m theta - n zeta / nfp)`), so
+square root of the normalised toroidal flux — what MRX calls `rho`). Every
+field block carries its radial knot vector `T`. `mrx.gvec.StateField`
+evaluates one block at a logical point in JAX (the radial basis on the
+block's own knots, the angles as `2 pi (m theta - n zeta / nfp)`), so
 
 - `build_gvec_map` builds the map's polar spline coefficients of `R` and
   `Z` from the series coefficients mode by mode (`series_spline_dofs`: the
@@ -67,10 +60,6 @@ radial basis on GVEC's own clamped knots, the angles as
 - `load_clebsch` tabulates the profile splines (`Phi'`, `chi' = iota Phi'`,
   `p`) on 401 uniform radii and hands `lambda` over as the closed-form
   `StateField`, which the initial condition histopolates.
-
-Against the pyGVEC export of W7-X FMM002 the series reproduce `R`, `Z`,
-`lambda` and `Phi'` to round-off and `chi'`, `p` to `1e-5` (the
-interpolation floor of the 15 profile samples).
 
 ## 3. Storage rule: derivative or parent?
 
@@ -121,9 +110,9 @@ survives a spot-check.
 
 ### 4.3 Handedness and `nfp`
 
-`mrx.gvec._map_with_sign` uses `Y = -R sin(2 pi zeta/nfp)`, which
-mirrors raw GVEC data; `build_gvec_map` measures the sign that gives
-`det DF > 0` instead of assuming it. `nfp` enters the map as the angle
+`mrx.gvec._map_with_sign` uses `Y = sign * R sin(2 pi zeta/nfp)`;
+`build_gvec_map` measures the sign that gives `det DF > 0` instead of
+assuming it (raw GVEC data is mirrored). `nfp` enters the map as the angle
 `2 pi zeta / nfp`, so a wrong value wraps one field period through the
 wrong angle with a healthy Jacobian to hide it; every reader takes an
 `nfp` override.
@@ -158,20 +147,16 @@ synthetic state below is where the answers are known in closed form.
 * **Cartesian `Bx, By` are zeta-quasiperiodic**, rotating by `R_z(-2pi/nfp)`
   per field period. `LA` is a scalar in logical coordinates and has no such
   seam — the reason the interface is built on scalars.
-* **Gridded exports do not converge.** MRX used to read a tensor-grid export
-  of the same quantities and bridge it to the Greville points by linear
-  interpolation; that bridge has an O(h^2) bias that no mesh refinement
-  removes, and every W7-X number obtained through it carried a force floor
-  the closed form does not (`docs/research/coarse_gvec_export_2026-08-26.md`).
-  The route was removed 2026-08-28.
+* **Gridded exports do not converge.** Bridging a tensor-grid export to the
+  Greville points by interpolation has an O(h^2) bias that no mesh
+  refinement removes (`docs/research/coarse_gvec_export_2026-08-26.md`).
 
 ## 7. The synthetic state (what the test suite reads)
 
 `test/synthetic_gvec.py` (`write_synthetic_state`) writes a state file in
 this layout from closed formulas, so the whole route -- `read_state`,
 `build_gvec_map`, `load_clebsch`, the potential, the projection -- is
-checked against known answers with no data file (the parser by
-`test/test_readers.py`; `test/synthetic_gvec.py` writes the state):
+checked against known answers with no data file (`test/test_readers.py`):
 
 | item | synthetic state |
 | --- | --- |

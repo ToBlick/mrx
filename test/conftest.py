@@ -11,8 +11,8 @@ preconditioners and harmonic forms:
   Hodge Laplacians have closed-form manufactured solutions
   (``test/manufactured.py``, all ``(k, dirichlet)`` pairs).
 
-Tests that need no sequence (spline bases, quadrature, precision, the
-kind-dispatch audit, the file readers) are the milliseconds around them.
+Tests that need no sequence (spline bases, quadrature, precision, the file
+readers) are the milliseconds around them.
 
 The suite is XLA-compile-bound: every eager solve traces and compiles its own
 loop body, so the cost of a test is the number of distinct solves it makes,
@@ -77,11 +77,12 @@ def toroid(torus_map):
     one geometry whose Hodge Laplacians have closed-form solutions."""
     from mrx.derham_sequence import DeRhamSequence
     from mrx.geometry import greville_interpolate_map
+    from mrx.nullspace import compute_nullspaces
 
     t0 = time.perf_counter()
     s = DeRhamSequence(NS, (P, P, P), P + 1, TYPES, polar=True, betti_numbers=BETTI)
     s.set_spline_map(greville_interpolate_map(torus_map, s))
     s.build_preconditioners()
-    s.compute_nullspaces(BETTI)
+    compute_nullspaces(s)
     print(f"\n  toroid {NS} p={P}: build {time.perf_counter() - t0:.0f} s", flush=True)
     return s

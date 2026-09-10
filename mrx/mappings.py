@@ -1,5 +1,5 @@
 """Analytic logical-to-physical maps and the :class:`SplineMap` wrapper for fitted ones."""
-from typing import Any, Callable
+from typing import Callable
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -11,24 +11,17 @@ from mrx.differential_forms import DifferentialForm
 class SplineMap(eqx.Module):
     """A logical-to-physical map represented in the scalar spline basis.
 
-    ``coefficients``, ``extraction`` and ``raw`` are dynamic pytree children, so ``SplineMap`` can be passed through ``jit`` /
-    ``grad`` / ``vmap`` and its coefficients can be differentiated.
-    ``basis_0`` is a static topology object and rides along as aux data.
-
     ``raw`` is ``E^T`` applied to the three Cartesian coefficient vectors,
-    reshaped to the tensor-product grid, ``(3, n_r, n_t, n_z)``; it is what
-    :meth:`__call__` evaluates, on the ``prod(p_d + 1)`` basis functions
-    that are nonzero at the point.
+    reshaped to the tensor-product grid, ``(3, n_r, n_t, n_z)``: the one
+    dynamic pytree leaf, what :meth:`__call__` evaluates on the ``prod(p_d
+    + 1)`` basis functions that are nonzero at the point. ``basis_0`` is a
+    static topology object and rides along as aux data.
     """
 
-    coefficients: jnp.ndarray
-    extraction: Any
     basis_0: DifferentialForm = eqx.field(static=True)
     raw: jnp.ndarray
 
-    def __init__(self, coefficients, extraction, basis_0=None):
-        self.coefficients = coefficients
-        self.extraction = extraction
+    def __init__(self, coefficients, extraction, basis_0):
         self.basis_0 = basis_0
         coeffs = coefficients.reshape(3, -1)
         self.raw = (extraction.T @ coeffs.T).T.reshape((3,) + basis_0.shape[0])
@@ -56,14 +49,9 @@ def rotating_ellipse_map(eps: float = 0.33, kappa: float = 1.2, R0: float = 1.0,
 
     def F(x):
         r, θ, ζ = x
-        if nfp > 0:
-            ζ /= nfp  # only model one field period
-
+        ζ /= nfp  # only model one field period
         R = R0 + eps * nu(ζ) * r * cos(2 * pi * θ)
-        if nfp > 0:
-            Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
-        else:
-            Z = eps * nu(ζ) * r * sin(2 * pi * θ)
+        Z = eps * r * nu(ζ + 0.5 / nfp) * sin(2 * pi * θ)
         return jnp.array([R * cos(2 * pi * ζ),
                           -R * sin(2 * pi * ζ),
                           Z])

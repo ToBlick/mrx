@@ -37,16 +37,13 @@ faq
 :maxdepth: 1
 :caption: Concepts
 
-concepts
 concepts/architecture
 concepts/mass
 concepts/polar
 concepts/preconditioning
 concepts/precision
 concepts/relaxation
-concepts/PRODUCTION
 concepts/gvec_mrx_interface
-concepts/manufactured_solutions
 concepts/testing_strategy
 ```
 
@@ -56,3 +53,7 @@ concepts/testing_strategy
 
 api/index
 ```
+
+`docs/research/` in the repository is the campaign record: handoffs, plans,
+measurements, refuted approaches. Its `README.md` indexes it by topic and
+`OPEN.md` lists every open item.
