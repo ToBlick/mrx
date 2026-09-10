@@ -4,7 +4,7 @@ in poloidal cuts, and the force residual against the energy.
 Reads a run directory (``relax.json`` and the ``ic`` / ``final`` checkpoints; the weak pressure is computed from each field) and the
 run's attributes) and ``relax.json`` (the per-step trace) from the run
 directory and rebuilds the sequence from ``geometry_path`` like
-``scripts/poincare_relax.py`` does.
+``scripts/poincare_trace.py`` does.
 
     python -u scripts/plot_relaxation.py outputs/run --cuts 6
 

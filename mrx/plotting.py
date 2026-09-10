@@ -32,7 +32,7 @@ from mrx.plotstyle import (FIELD_CMAP, FS, LEFT, PRESSURE_CMAP, RIGHT,
 # FIELD_CMAP, SECTION_CMAP, PRESSURE_CMAP, FS, LEFT/RIGHT and house_style live in
 # mrx.plotstyle now (re-exported here for callers that import them from plotting).
 __all__ = ["get_2d_grids", "plot_torus", "plot_crossections_separate",
-           "plot_twin_axis", "render_section", "resonant_rationals",
+           "plot_twin_axis", "paper_fonts", "render_section", "resonant_rationals",
            "set_axes_equal"]
 
 
@@ -417,13 +417,14 @@ def _ray_line(lr, lth, pressure, th0):
 
 
 @house_style()
-def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
+def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=None,
                    axis_RZ=None, profile_x=None,
-                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30,
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30, min_sep=0.06,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3):
+                   profile_coord="logical", profile_rays=3, axis_marker=True,
+                   dot_scale=1.0, rationals=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
     Pure arrays in, so a run can be re-rendered from its archive without
@@ -468,6 +469,17 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     It needs ``axis_RZ`` and raises without it rather than quietly drawing a
     half-empty panel: 'above' and 'below' are defined against the MAGNETIC
     axis, not ``Z = 0``, which would cut a Shafranov-shifted plasma off-centre.
+    ``axis_marker`` (default on) draws the axis itself -- a ``+`` at its mean
+    and a hairline through its wander; off for a figure that should show the
+    field alone, while ``axis_RZ`` still places the split. ``dot_scale``
+    multiplies the crossing-marker size the point count sets (1 = the house
+    size; 0.5 for a dense section on a page). ``rationals`` -- ``"n/m"``
+    strings -- fixes the resonant ticks (colour bar and profile lines) instead
+    of picking them from the iota range, so a movie's frames all carry the
+    same labels; ticks outside the range are simply not shown.
+
+    ``title=None`` omits the whole suptitle (a figure captioned in the
+    document rather than titled in the image).
     """
 
     if split_iota_p is None:
@@ -516,7 +528,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
     # One marker per crossing: ~10^4 points want a hairline to show the surface
     # texture, ~10^2 want something you can actually see.
     npts = max(int(keep.sum()) * R.shape[1], 1)
-    size = float(jnp.clip(3000.0 / npts, 0.35, 15.0))
+    size = dot_scale * float(jnp.clip(3000.0 / npts, 0.35, 15.0))
     colour = jnp.broadcast_to(iota[:, None], R.shape)
 
     # The split is per CROSSING, not per line: a surface straddles the axis, so
@@ -549,13 +561,17 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
         if sel_p.any():
             psc = ax.scatter(R[sel_p], Z[sel_p], c=pressure_scale * pressure[sel_p], s=size,
                              cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
-    res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max)
-                             if nfp else ([], []))
+    if rationals is not None:
+        res_labels = list(rationals)
+        res_ticks = [int(r.split("/")[0]) / int(r.split("/")[1]) for r in res_labels]
+    else:
+        res_ticks, res_labels = (resonant_rationals(lo, hi, int(nfp), denom_max, min_sep)
+                                 if nfp else ([], []))
     if (~keep).any():
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
         ax.legend(loc="upper right", fontsize=FS.annot, markerscale=4)
-    if axis_RZ is not None:
+    if axis_RZ is not None and axis_marker:
         # ONE marker at the mean, plus a hairline through the wander. Drawing a
         # "k+" at every save stacked 401 opaque markers into a black blob ~10%
         # of the minor radius across, which reads as a failed line at the axis
@@ -757,17 +773,58 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title, subtitle,
             handles, labels_ = handles + h2, labels_ + l2
         bx.legend(handles, labels_, loc="center")
 
-    # One descriptive title for the whole figure, not a title per panel.
-    sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"
-    if subtitle:
-        sup = f"{sup}   |   {subtitle}"
-    if has_p:
-        sup = f"{sup}   |   {p_label}"     # states the p scaling once, here
-    fig.suptitle(sup, fontsize=FS.title)
+    # One descriptive title for the whole figure, not a title per panel;
+    # title=None omits it entirely (a figure captioned in the document).
+    if title is not None:
+        sup = title if to_scale else f"{title}   —   AXES NOT TO SCALE"
+        if subtitle:
+            sup = f"{sup}   |   {subtitle}"
+        if has_p:
+            sup = f"{sup}   |   {p_label}"     # states the p scaling once, here
+        fig.suptitle(sup, fontsize=FS.title)
 
     # Saving is the caller's: render_section is pure, so a run re-renders from
     # its archive and the caller owns the path (and the movie's frame naming).
     return fig, axes
+
+
+def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
+    """Rescale a :func:`render_section` figure for the paper.
+
+    The figure is resized to ``page_width`` inches so that, included at
+    ``\\linewidth``, every font reads at its authored size: axis labels at
+    ``label_size`` pt, ticks and legends proportionally smaller in the house
+    hierarchy (``FS.label : FS.tick : FS.annot``). Call it AFTER
+    :func:`render_section`: that one is ``@house_style``-decorated, so its sizes
+    are the mplstyle's until rescaled here. The profile panel's theta-ray legend
+    moves OUT of the axes, above the panel where the (absent) title would be:
+    inside, at one page wide, every corner is taken by one curve or another
+    -- iota low on the left for a rising profile (li383), high for a falling
+    one (QA), p on the opposite side, the Farey labels on the right.
+    """
+    scale = label_size / FS.label
+    label_sz, tick_sz, annot_sz = FS.label * scale, FS.tick * scale, FS.annot * scale
+    w0, h0 = fig.get_size_inches()
+    fig.set_size_inches(page_width, page_width * h0 / w0)
+    for a in fig.axes:                              # panels, twins and colour bars alike
+        a.tick_params(labelsize=tick_sz)
+        a.xaxis.label.set_size(label_sz)
+        a.yaxis.label.set_size(label_sz)
+        for t in a.texts:                           # Farey labels, in-axes notes
+            t.set_fontsize(annot_sz)
+        leg = a.get_legend()
+        if leg is None:
+            continue
+        labels = [t.get_text() for t in leg.get_texts()]
+        if any("theta" in lab for lab in labels):
+            handles = leg.legend_handles
+            leg.remove()
+            a.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
+                     ncol=len(labels), fontsize=annot_sz, frameon=False,
+                     handlelength=1.8, handletextpad=0.4, columnspacing=1.2)
+        else:
+            for txt in leg.get_texts():
+                txt.set_fontsize(annot_sz)
 
 
 def _padded(v, pad=0.06, floor=0.0):

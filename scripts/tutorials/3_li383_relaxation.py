@@ -22,8 +22,8 @@ robust there and it is the production precision.
 
 The script prints the traces, draws ``||F||`` against the energy and the weak
 pressure on the torus, and writes the run in ``scripts/relax.py``'s layout;
-``scripts/poincare_relax.py`` then draws the Poincare sections of the initial
-and relaxed fields at planes 0, 0.25, 0.5 (see the tutorials page).
+``scripts/poincare_trace.py`` then traces the initial and relaxed fields and
+``scripts/poincare_plot.py`` draws their Poincare sections (see the tutorials page).
 ``scripts/relax.py`` is the production driver (archives, QoIs, snapshots,
 resistivity, seeds).
 
@@ -154,7 +154,7 @@ print(f"  -> {path}")
 # %%
 # Now we archive the run the way scripts/relax.py does -- relax.json with the
 # parameters and the traces, and the initial and final state as checkpoints --
-# so scripts/poincare_relax.py can draw the Poincare sections of both states.
+# so scripts/poincare_trace.py + poincare_plot.py can draw the Poincare sections of both states.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
@@ -163,6 +163,7 @@ params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p,
               auxiliary_B_field=False, ic=ic["kind"])
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
-print(f"  -> {cli.out}/relax.json and checkpoints/  (trace the sections with:")
-print(f"     python -u scripts/poincare_relax.py {cli.out} --planes 0,0.25,0.5)")
+print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")
+print(f"     python -u scripts/poincare_trace.py --run {cli.out}")
+print(f"     python scripts/poincare_plot.py {cli.out})")
 

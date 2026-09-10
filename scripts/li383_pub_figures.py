@@ -684,7 +684,7 @@ def reconnect_rows(j):
     chunk mean before the solve, the dose, and what the solve did to |F|,
     helicity, current and beta; widths and chaotic lines from the arm's
     sections, where the fields before each solve are the ``reconnect<k>``
-    tags (poincare_relax.py --fields reconnect, traced in one call with ic
+    tags (poincare_trace.py --fields reconnect, traced in one call with ic
     and final)."""
     z = sections(j)
     rows = [
