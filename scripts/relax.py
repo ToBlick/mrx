@@ -29,7 +29,7 @@ Flags, defaults in brackets:
                                    map and that field. Always Leray-projected.
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
-      --ns R,T,Z [8,16,16]         spline resolution (also the map's)
+      --ns R,T,Z [16,32,32]        spline resolution (also the map's)
       --r-refine a:b:m,... [""]    radial refinement: m uniform cells in each
                                    window [a, b] of the logical radius, the
                                    remaining n_r - p cells spread over the
@@ -164,7 +164,7 @@ def parse_args(argv=None):
                     help="a VMEC wout (.nc), a GVEC state (.dat) or an analytic geometry (.json)")
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
-    ap.add_argument("--ns", default="8,16,16")
+    ap.add_argument("--ns", default="16,32,32")
     ap.add_argument("--r-refine", default="",
                     help='radial refinement windows "a:b:m,..." (m cells in [a, b]); "" = uniform')
     ap.add_argument("--p", type=int, default=2)

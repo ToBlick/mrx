@@ -101,7 +101,7 @@ Flags, defaults in brackets:
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
 | `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
-| `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
+| `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--r-refine a:b:m,... [""]` | radial refinement: `m` uniform cells in each window `[a, b]` of the logical radius, the remaining `n_r - p` cells spread over the gaps (`mrx.geometry.radial_knots`) |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
 | `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
