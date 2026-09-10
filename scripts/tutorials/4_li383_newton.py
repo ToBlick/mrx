@@ -42,8 +42,8 @@ descent for another ``--descent-steps`` and Newton for ``--newton-steps``,
 and draws ``||F||`` against the step and against the wall time for both. It
 writes the Newton run in ``scripts/relax.py``'s layout, so Tutorial 6 can
 warm-start from it and ``scripts/poincare_trace.py`` can section it.
-``scripts/relax.py --newton true --history 0`` is the same run from the
-command line.
+``scripts/relax.py`` runs the same from the command line: Newton is its
+default method.
 
     python -u scripts/tutorials/4_li383_newton.py
 """

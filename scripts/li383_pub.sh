@@ -143,7 +143,7 @@ aux() {  # aux [smoke|pairs]
     export EXTRA_ENV="PYTHONPATH=$wt"
     local common="--ns 16,32,32 --p 2 $G1_16 --floor-tol 1e-5 $AUX"
     if [ "${1:-}" = smoke ]; then
-        submit relax aux_smoke "$wt/scripts/relax.py" "--geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --chunk 100 $AUX --out $PUB/aux_smoke" 30
+        submit relax aux_smoke "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 1e-5 --steps 200 --chunk 100 $AUX --out $PUB/aux_smoke" 30
     elif [ "${1:-}" = pairs ]; then
         # Two pairs, each with the B step and the auxiliary-H step: float64 at
         # (12,24,24) p = 2 and float32 at (8,16,16) p = 1.
@@ -151,11 +151,11 @@ aux() {  # aux [smoke|pairs]
         local st flag
         for st in B H; do
             flag=""; [ $st = H ] && flag=$AUX
-            submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 $flag --out $PUB/h12_p2_f64_$st" 300
-            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 $flag --out $PUB/h8_p1_$st" 120
+            submit relax h12_p2_f64_$st "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $base --ns 12,24,24 --p 2 $G1_12 --precision float64 $flag --out $PUB/h12_p2_f64_$st" 300
+            submit relax h8_p1_$st      "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $base --ns 8,16,16  --p 1 --velocity-smoothing-order 1 $flag --out $PUB/h8_p1_$st" 120
         done
     else
-        submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/aux_h16_p2_g1" 300
+        submit relax aux_h16_p2_g1 "$wt/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI $common --steps 5000 --seconds 7200 --out $PUB/aux_h16_p2_g1" 300
     fi
 }
 
@@ -178,20 +178,20 @@ reconnect() {  # reconnect [smoke|ladder|ladder5k|refine_smoke]
     # (iota = 3/5), the outer chain finer.
     export EXTRA_ENV="PYTHONPATH=$WT"
     L5="--floor-tol 0 --steps 10000 --reconnect-every 5000 --reconnect-helicity 0.01"
-    R32="--r-refine 0.47:0.62:6,0.68:0.94:15"
+    R32="--knots-r 0,0.0671429,0.134286,0.201429,0.268571,0.335714,0.402857,0.47,0.495,0.52,0.545,0.57,0.595,0.62,0.68,0.697333,0.714667,0.732,0.749333,0.766667,0.784,0.801333,0.818667,0.836,0.853333,0.870667,0.888,0.905333,0.922667,0.94,1"
     if [ "${1:-}" = ladder5k ]; then
-        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 $L5 --out $PUB/reconnect_l5_h16_p2_g1" 240
-        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $L5 --out $PUB/reconnect_l5_h32u_p2_g1" 480
-        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --out $PUB/reconnect_l5_h32r_p2_g1" 540
+        submit relax reconnect_l5_h16_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 $L5 --out $PUB/reconnect_l5_h16_p2_g1" 240
+        submit relax reconnect_l5_h32u_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $L5 --out $PUB/reconnect_l5_h32u_p2_g1" 480
+        submit relax reconnect_l5_h32r_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 32,32,32 --p 2 $G1_32 $R32 $L5 --out $PUB/reconnect_l5_h32r_p2_g1" 540
     elif [ "${1:-}" = refine_smoke ]; then
         # The refined radial grid end to end at n_r = 16: 5 + 5 window cells, 300 steps, one solve.
-        submit relax refine_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,16,16 --p 2 $G1_16 --r-refine 0.45:0.65:5,0.68:0.92:5 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-helicity 0.02 --out $PUB/refine_smoke" 40
+        submit relax refine_smoke "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,16,16 --p 2 $G1_16 --knots-r 0,0.225,0.45,0.49,0.53,0.57,0.61,0.65,0.68,0.728,0.776,0.824,0.872,0.92,1 --floor-tol 0 --steps 300 --chunk 100 --reconnect-every 200 --reconnect-helicity 0.02 --out $PUB/refine_smoke" 40
     elif [ "${1:-}" = ladder ]; then
-        submit relax reconnect_ladder_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 18000 --reconnect-every 2000 --reconnect-helicity 0.0125 --out $PUB/reconnect_ladder_h16_p2_g1" 420
+        submit relax reconnect_ladder_h16_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 18000 --reconnect-every 2000 --reconnect-helicity 0.0125 --out $PUB/reconnect_ladder_h16_p2_g1" 420
     elif [ "${1:-}" = smoke ]; then
-        submit relax reconnect_smoke "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
+        submit relax reconnect_smoke "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 8,16,16 --p 2 --floor-tol 0 --steps 3000 --chunk 100 --reconnect-every 600 --out $PUB/reconnect_smoke" 40
     else
-        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
+        submit relax reconnect_h16_p2_g1 "$WT/scripts/relax.py" "--method lbfgs --geometry $GEOM_HI --ns 16,32,32 --p 2 $G1_16 --floor-tol 0 --steps 8000 --seconds 10800 --reconnect-every 2000 --out $PUB/reconnect_h16_p2_g1" 400
     fi
 }
 

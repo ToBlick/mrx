@@ -495,8 +495,8 @@ class TimeStepper(eqx.Module):
             scheme conserve helicity exactly, at one extra k=1 mass solve
             per force evaluation and ``H_t = 0`` on the wall.
         velocity_smoothing_order: Number of smoothing solves applied to the
-            descent direction, ``v = (I - scale * Laplacian)^-order F``.
-            0 (the default) leaves the direction as it is -- and is fragile:
+            descent direction, ``v = (I - scale * Laplacian)^-order F``;
+            1 is the default. 0 leaves the direction as it is -- and is fragile:
             the explicit step with the unsmoothed velocity stops conserving
             helicity after ~1e4 steps at (16,32,32) p=2 on li383 (the drift
             grows a hundredfold, the field reconnects numerically, the
@@ -532,7 +532,9 @@ class TimeStepper(eqx.Module):
             equation in the Coulomb gauge; the gradient part of ``J x B`` is
             annihilated by ``curl^T`` exactly) and ``c = (J x B, h) / (h,
             h)`` on the harmonic 2-form ``h``. ``F`` is divergence-free to
-            roundoff. The velocity smoothing acts on the potential through
+            roundoff. ``None`` (the default) is ``True`` unless ``newton`` or
+            ``auxiliary_B_field`` is set, which have their own routes;
+            ``True`` with either raises. The velocity smoothing acts on the potential through
             the k=1 shifted solve, ``curl (M_1 + mu L_1)^-1 M_1 a =
             (M_2 + mu L_2)^-1 M_2 curl a`` exactly, and the L-BFGS
             direction combines the SMOOTHED forces (the preconditioned-CG
@@ -564,8 +566,9 @@ class TimeStepper(eqx.Module):
             ``dt = 1`` (the Newton step), with unresolved flat ones that want
             a longer step; the exact line search settles near 2, where the
             resolved modes' residual is reflected rather than removed
-            (measured: dt* 1.95-2.0 on li383 from step 5000). 1 takes the
-            Newton step; ``inf`` (the default) leaves the line search alone.
+            (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
+            default) takes the Newton step; ``inf`` leaves the line search
+            alone.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
             ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
@@ -574,20 +577,20 @@ class TimeStepper(eqx.Module):
     """
     seq: DeRhamSequence
     auxiliary_B_field: bool = False
-    velocity_smoothing_order: int = 0
+    velocity_smoothing_order: int = 1
     velocity_smoothing_scale: float = None
     history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
-    potential_velocity: bool = False
+    potential_velocity: bool = None
     smooth_first: bool = False
     newton: bool = False
     newton_shift: float = 0.0
-    newton_tol: float = 1e-3
-    newton_maxiter: int = 100
+    newton_tol: float = 0.1
+    newton_maxiter: int = 300
     newton_precond: str = "laplacian"
     newton_inner_tol: float = None
-    newton_dt_cap: float = float("inf")
+    newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
@@ -602,6 +605,8 @@ class TimeStepper(eqx.Module):
         if self.newton and self.newton_precond == "harmonic":
             # built once: the profiles of h and the Fourier symbols
             self.newton_precond_apply = harmonic_preconditioner(self.seq)
+        if self.potential_velocity is None:
+            self.potential_velocity = not (self.newton or self.auxiliary_B_field)
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
             raise ValueError("potential_velocity is the Leray route's replacement on the 2-form B: "
                              "it excludes newton and the auxiliary field.")

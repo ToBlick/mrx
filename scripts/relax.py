@@ -63,34 +63,35 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
+      --method {newton,lbfgs} [newton]
+                                   the direction: Newton on the second
+                                   variation (the Newton flags below) or the
+                                   L-BFGS descent
       --history M [1]              L-BFGS secant pairs: 0 is steepest
                                    descent, 1 memoryless BFGS (= CG)
-      --velocity-smoothing-order G [0], --velocity-smoothing-scale MU [0.02 / n_r^2]
+      --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.02 / n_r^2]
                                    descent direction v = (I - MU L)^-G F
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
                                    disables it
-      --potential-velocity {false,true} [false]
+      --potential-velocity {false,true} [true for the L-BFGS descent]
                                    the projected force as curl a + c h from
                                    the k=1 Hodge solve of curl^T load(J x B)
                                    instead of the Leray saddle solve
                                    (divergence-free to roundoff), the
                                    smoothing on the potential, L-BFGS on
-                                   the smoothed forces
+                                   the smoothed forces; Newton and the
+                                   auxiliary field have their own routes
       --smooth-first {false,true} [false]
                                    Leray route: smooth the force before the
                                    L-BFGS combination (the preconditioned-CG
                                    order) instead of the combination after
-      --newton {false,true} [false]
-                                   the Newton direction of the second
-                                   variation instead of L-BFGS, u = curl a
-                                   with curl^T (H + shift M) curl a =
-                                   curl^T M F by MINRES (mrx.hessian; needs
-                                   --history 0); a non-descending direction
-                                   falls back to the smoothed force
-      --newton-shift S [0]         its Levenberg-Marquardt shift (L2 metric)
-      --newton-tol TOL [1e-3]      relative residual of the MINRES solve
-      --newton-maxiter N [100]     its iteration budget per step
+    Newton (--method newton): the direction u = curl a with
+    curl^T (H + shift M) curl a = curl^T M F by MINRES (mrx.hessian); a
+    non-descending direction falls back to the smoothed force.
+      --newton-shift S [0]         the Levenberg-Marquardt shift (L2 metric)
+      --newton-tol TOL [0.1]       relative residual of the MINRES solve
+      --newton-maxiter N [300]     its iteration budget per step
       --newton-precond {laplacian,laplacian2,mass,harmonic} [laplacian]
                                    the preconditioner: the k=1 Laplacian
                                    atom, its square, the k=1 mass atom, or
@@ -99,8 +100,9 @@ Flags, defaults in brackets:
                                    in its denominator, mrx.hessian)
       --newton-inner-tol TOL [solve tol]
                                    tolerance of the Hessian's mass solves
-      --newton-dt-cap C [inf]      cap the line-search step along a Newton
-                                   direction (1 = the Newton step)
+      --newton-dt-cap C [1]        cap the line-search step along a Newton
+                                   direction (1 = the Newton step, inf
+                                   leaves the line search alone)
     Budgets and output:
       --steps N [3000]             maximum number of steps
       --seconds S [none]           wall-clock budget of the descent loop
@@ -193,30 +195,31 @@ def parse_args(argv=None):
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
     ap.add_argument("--history", type=int, default=1,
                     help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
-    ap.add_argument("--velocity-smoothing-order", type=int, default=0,
+    ap.add_argument("--velocity-smoothing-order", type=int, default=1,
                     help="descent direction v = (I - scale L)^-order F; 0 is off and fragile: the "
                          "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
-                         "reconnection), use 1 for any long ideal run")
+                         "reconnection)")
     ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
                     help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
     ap.add_argument("--cfl", type=float, default=0.5)
-    ap.add_argument("--potential-velocity", default="false", choices=("false", "true"),
-                    help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve")
+    ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
+                    help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
+                         "[true for the L-BFGS descent; Newton and the auxiliary field have their own routes]")
     ap.add_argument("--smooth-first", default="false", choices=("false", "true"),
                     help="Leray route: smooth the force before the L-BFGS combination, not the combination after")
-    ap.add_argument("--newton", default="false", choices=("false", "true"),
-                    help="the Newton direction of the second variation instead of L-BFGS (needs --history 0)")
+    ap.add_argument("--method", default="newton", choices=("newton", "lbfgs"),
+                    help="the direction: Newton on the second variation, or the L-BFGS descent")
     ap.add_argument("--newton-shift", type=float, default=0.0,
                     help="Levenberg-Marquardt shift of the Newton solve in the velocity's L2 metric")
-    ap.add_argument("--newton-tol", type=float, default=1e-3,
+    ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="relative residual tolerance of the Newton MINRES solve")
-    ap.add_argument("--newton-maxiter", type=int, default=100,
+    ap.add_argument("--newton-maxiter", type=int, default=300,
                     help="iteration budget of the Newton MINRES solve per step")
     ap.add_argument("--newton-precond", default="laplacian", choices=("laplacian", "laplacian2", "mass", "harmonic"),
                     help="preconditioner of the Newton solve")
     ap.add_argument("--newton-inner-tol", type=float, default=None,
                     help="tolerance of the Hessian's mass solves [the solve tolerance]")
-    ap.add_argument("--newton-dt-cap", type=float, default=float("inf"),
+    ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--steps", type=int, default=3000)
     ap.add_argument("--seconds", type=float, default=None)
@@ -241,11 +244,9 @@ def parse_args(argv=None):
     if cli.map_batch < 0:
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
-    cli.newton = cli.newton == "true"
-    cli.potential_velocity = cli.potential_velocity == "true"
+    cli.newton = cli.method == "newton"
+    cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
     cli.smooth_first = cli.smooth_first == "true"
-    if cli.newton and cli.history:
-        ap.error("--newton replaces the L-BFGS direction: pass --history 0")
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
     if cli.chunk < 1 or cli.steps % cli.chunk:
@@ -309,7 +310,7 @@ def main(cli):
         seq=seq, auxiliary_B_field=cli.auxiliary_B_field,
         scheme={"explicit": IntegrationScheme.EXPLICIT,
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
-        cfl=cli.cfl, history_size=cli.history,
+        cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity, smooth_first=cli.smooth_first,
@@ -324,7 +325,8 @@ def main(cli):
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
-    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if cli.potential_velocity else ''}{'  smooth-first' if cli.smooth_first else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    params["potential_velocity"] = bool(ts.potential_velocity)
+    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}{'  smooth-first' if cli.smooth_first else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

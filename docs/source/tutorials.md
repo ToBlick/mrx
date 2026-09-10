@@ -127,9 +127,10 @@ cb = load_clebsch(seq.equilibrium)   # the file build_sequence parsed
 B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
 ```
 
-The descent is `mrx.relaxation` with `scripts/relax.py`'s defaults -- L-BFGS
-with history 1 (equivalent to conjugate gradient), analytic line search under
-a CFL cap of 0.5, no resistivity -- plus **velocity smoothing of order 1**
+The descent is `mrx.relaxation` with `scripts/relax.py --method lbfgs`'s
+defaults -- L-BFGS with history 1 (equivalent to conjugate gradient) on the
+projected force by the potential route, analytic line search under a CFL cap
+of 0.5, no resistivity -- plus **velocity smoothing of order 1**
 (gamma = 1), the descent direction $(I - \text{scale}\,L)^{-1} F$ with
 $\text{scale} = 0.02 / n_r^2$ (`mrx.relaxation.SMOOTHING_C`, the stepper's
 default), run through `relax`:
@@ -207,8 +208,8 @@ The script warm-starts from Tutorial 3's run (or runs that descent itself),
 continues the smoothed descent and Newton from the same state, prints the
 step costs and draws $\|F\|_M$ against the step and the wall time for both,
 and writes the Newton run in `scripts/relax.py`'s layout for Tutorial 6 and
-`poincare_trace.py`. `scripts/relax.py --newton true --history 0` is the same
-run from the command line (the `--newton-*` flags in
+`poincare_trace.py`. `scripts/relax.py` runs the same from the command line,
+Newton being its default method (the `--newton-*` flags in
 [Relaxation](relaxation.md)).
 
 ## 5. Seed a magnetic island (`5_li383_island_seed.py`)

@@ -6,9 +6,9 @@ li383 is the project's fruit-fly stellarator: a three-field-period
 state's own equilibrium field, ``B = dA'`` from the histopolated Clebsch
 potential (exactly divergence-free, tangential to the wall, nested
 surfaces). The relaxation is the energy descent of ``mrx.relaxation`` with
-``scripts/relax.py``'s production defaults: L-BFGS direction with history 1
-(equivalent to conjugate gradient), analytic line search under a CFL cap of
-0.5, no resistivity. It conserves helicity and lowers the magnetic energy
+``scripts/relax.py --method lbfgs``'s defaults: L-BFGS direction with history 1
+(equivalent to conjugate gradient) on the projected force by the potential
+route, analytic line search under a CFL cap of 0.5, no resistivity. It conserves helicity and lowers the magnetic energy
 until ``J x B = grad p`` in the weak sense; ``p`` is not prescribed, it is
 the Lagrange multiplier the descent finds.
 

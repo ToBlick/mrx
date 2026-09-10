@@ -171,7 +171,7 @@ def _preconditioner(seq, name):
     raise ValueError(f"newton_precond {name!r} is not one of {PRECONDITIONERS}")
 
 
-def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=1e-3, maxiter=100,
+def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=0.1, maxiter=300,
                      precond="laplacian", inner_tol=None):
     """The Newton direction ``u = curl a`` at the field ``B``.
 

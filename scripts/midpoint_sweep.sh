@@ -23,7 +23,7 @@ mkdir -p "$SWEEP"
 LEDGER=$SWEEP/jobs.tsv
 
 GEOM=data/wout_li383_low_res_reference.nc
-COMMON="--geometry $GEOM --ns 12,24,24 --p 3 --floor-tol 1e-4 --chunk 100"
+COMMON="--method lbfgs --geometry $GEOM --ns 12,24,24 --p 3 --floor-tol 1e-4 --chunk 100"
 AUX="--auxiliary-B-field true"
 
 arm() {  # arm NAME "EXTRA RELAX ARGS" TIMEOUT_MIN
