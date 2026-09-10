@@ -5,12 +5,34 @@ This module provides classes and functions for handling polar coordinate transfo
 and boundary conditions in finite element computations.
 """
 
+import functools
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 import mrx
+
+
+@functools.partial(jax.jit, static_argnames=("num_segments",))
+def _apply_coo(vals, gather_idx, segment_idx, x, num_segments):
+    """The COO apply as one compiled program rather than two eager ops.
+
+    Called unjitted this dispatches a gather and a ``segment_sum``
+    separately, and on a TPU each indexed op carries about a millisecond of
+    fixed cost: ``E`` and ``E^T`` measured a flat 1.93 ms regardless of
+    whether there were 4584 or 11484 non-zeros, against a 0.037 ms floor for
+    dispatching one device call. Compiling the pair together lets XLA fuse
+    the multiply into the scatter and pay that cost once.
+
+    Module-level and keyed on ``num_segments`` so the executable is shared
+    across every operator of the same shape instead of being retraced per
+    instance.
+    """
+    weights = vals if x.ndim == 1 else vals[:, None]
+    return jax.ops.segment_sum(weights * x[gather_idx], segment_idx,
+                               num_segments=num_segments)
 
 
 class MatrixFreeExtraction(eqx.Module):
@@ -75,10 +97,8 @@ class MatrixFreeExtraction(eqx.Module):
             # E: gather from raw cols, scatter into extracted rows.
             gather_idx, segment_idx, num_segments = (
                 self.cols, self.rows, self.forward_shape[0])
-        weights = self.vals if x.ndim == 1 else self.vals[:, None]
-        contributions = weights * x[gather_idx]
-        return jax.ops.segment_sum(
-            contributions, segment_idx, num_segments=num_segments)
+        return _apply_coo(self.vals, gather_idx, segment_idx, x,
+                          num_segments=num_segments)
 
     def __matmul__(self, x):
         return self._apply(x)

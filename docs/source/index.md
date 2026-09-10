@@ -29,6 +29,7 @@ getting_started
 tutorials
 relaxation
 cluster
+tpu
 faq
 ```
 

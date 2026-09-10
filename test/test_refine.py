@@ -46,3 +46,24 @@ def test_leray_projection_is_divergence_free_to_tolerance(seq, b0):
           f"{float(seq.l2_norm(F, 2) / seq.l2_norm(JxX, 2)):.2e}")
     # F is stored in the working dtype: its rounding alone leaves eps |JxB| / h.
     assert rel <= 100 * max(SOLVE_TOL, float(np.finfo(DTYPE).eps)), rel
+
+
+def test_refine_discards_a_correction_that_raises_the_residual():
+    """A pass that increases the residual is dropped and the loop stops.
+
+    The operator is the identity; the inner 'solve' returns ``100 r``, which
+    overshoots. Without the stall check, ``x`` would walk to 100 and the
+    residual would grow; with it, ``x`` stays at the initial zero.
+    """
+    from mrx.solvers import refine
+
+    def apply_res(x: jnp.ndarray) -> jnp.ndarray:
+        return x
+
+    def solve(r: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        return 100.0 * r, jnp.int32(-1)
+
+    b = jnp.ones(4, dtype=RESIDUAL_DTYPE)
+    x, info = refine(apply_res, solve, b, tol=1e-8, max_passes=6)
+    assert jnp.allclose(x, 0.0)
+    assert int(info) > 0

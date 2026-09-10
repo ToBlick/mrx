@@ -15,9 +15,9 @@ input vector into the contraction.
 
 `sumfact_apply(plan, weights, x)` in `mrx/mass.py` is `x -> M_k x` on the
 raw tensor-product space, from the geometry-independent plan of the
-apply (`mass_plan(seq, k)`: the 1-D basis tables, the gather and scatter
-index plans, the pair structure of the weight; built once on the
-sequence) and the weights that ride on the geometry
+apply (`mass_plan(seq, k)`: the 1-D basis tables, the per-axis shift plans
+of the read and of the assembly, the pair structure of the weight; built
+once on the sequence) and the weights that ride on the geometry
 (`attach_weights(seq, geometry)`, applied by `set_geometry`:
 `geometry.mass_weights[k]`). `mass_core_apply` in `mrx/operators.py`
 binds the two; the
@@ -28,33 +28,41 @@ incidence and extraction operators.
 
 ## 2. The kernel
 
-`_impl(x, Bvals, W_split, gather_idx, seg_idx)` is the jitted body. For
+`_sumfact_kernel(x, Bvals_r, Bvals_c, Ws, ...)` is the jitted body. For
 `n_comp` components (1 for k=0,3; 3 for k=1,2):
 
-1. **Gather.** `x_local = x[gather_idx[c]]` for each column component `c`:
+1. **Read.** `x_local = _structured_gather(x, plan)` for each column component:
    the element-local coefficient cube of shape
-   `(ne_x, ne_y, ne_z, p+1, p+1, p+1)`. `gather_idx` is a static integer
-   array from `_flat_dof_plan`, built once on the host.
-2. **Column transforms** (`_to_quadrature`): three einsums, one axis at a
-   time, take the cube to values at the element's quadrature points,
-   `(ne_x, ne_y, ne_z, qx, qy, qz)`. One transform per column component.
+   `(ne_x, ne_y, ne_z, p+1, p+1, p+1)`. On a tensor-product B-spline basis the
+   element-to-DoF map of every axis is the pure shift `(e + l) mod S`, so this
+   is a stack of rolled slices with no index tensor at all.
+2. **Column transforms** (`_to_quadrature`): two einsums take the cube to
+   values at the element's quadrature points,
+   `(ne_x, ne_y, ne_z, qx, qy, qz)`. One transform per column component. Two
+   rather than three because the y and z tables are fused into one `Byz`
+   ahead of time (`_fuse_yz`), trading 1.5x the arithmetic for one fewer
+   stage. A pure contraction: the read is step 1 and stays there.
 3. **Pointwise mix.** For each row component `cr`,
    `v = Σ_cc W_split[(cr, cc)] * u[cc]`: `n_comp^2` multiply-adds at the
    quadrature points. `W_split[(cr, cc)]` is the `(cr, cc)` entry of the
    metric weight reshaped to elements with the Gauss weights folded in.
-4. **Row transforms** (`_from_quadrature`): the adjoint three einsums, one
-   per row component.
-5. **Scatter.** One `jax.ops.segment_sum` over the concatenated row cubes
-   with `seg_idx`, into the concatenated output.
+4. **Row transforms** (`_from_quadrature`): the adjoint two einsums, one per
+   row component, against the same fused `Byz`.
+5. **Assembly.** `_structured_accumulate` over the same shift plan: shifted
+   dense adds per component, concatenated into the output. Again no indices.
 
-Steps 2 and 4 are sum factorisation: `O(q(p+1) + q^2(p+1) + q^3)` per element
-instead of `O(q^3 (p+1)^3)`. Mixing at the quadrature points rather than per
+Steps 2 and 4 are sum factorisation, which replaces the `O(q^3 (p+1)^3)` per
+element of a direct evaluation with a chain of one-axis contractions. Fusing y
+and z shortens that chain to two stages and costs 1.5x the FLOPs, which is a
+win because both a v5e and an H200 charge far more per contraction than per
+FLOP at widths of 3-4 (`_fuse_yz`). Mixing at the quadrature points rather than per
 `(cr, cc)` pair does a third of the transform work. Row and column bases are
 the same tables, so the applied operator is symmetric by construction.
 
-The plan (basis tables, gather indices, segment ids, weights) is passed to
-`_impl` as arguments, not captured as constants, so XLA does not constant-fold
-the index tensors.
+The weight is passed as a runtime argument and the shift plans as static ones.
+`_shift_plan` raises if an axis map is not a shift: there is no indexed
+fallback, because the library builds only tensor-product B-spline bases and a
+basis numbered otherwise would read and write silently wrong.
 
 ### The 1D tables
 
@@ -113,7 +121,7 @@ there.
 The same tables give exact diagonals with no operator apply:
 
 - `build_mass_diagonal(seq, k)`: `diag(M_k)` on the raw space; only the
-  `(c, c)` weight blocks contribute; one `segment_sum` per component.
+  `(c, c)` weight blocks contribute; one structured assembly per component.
 - `build_stiffness_diagonal(seq, k)`: `diag(G_k^T M_{k+1} G_k)` from the
   derivative tables lifted by `grad_1d`.
 - `build_codifferential_diagonal(seq, k)`: the weak-term diagonal at k=3.
