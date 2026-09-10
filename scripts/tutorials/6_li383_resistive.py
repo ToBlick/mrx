@@ -1,26 +1,28 @@
-"""Tutorial 5: reconnection with finite resistivity on li383.
+"""Tutorial 6: reconnection with finite resistivity on li383.
 
-Tutorials 3 and 4 stayed ideal (eta = 0): a frozen-in flow that lowers the
+Tutorials 3 to 5 stayed ideal (eta = 0): a frozen-in flow that lowers the
 energy without ever changing the field's topology. Turn on resistivity and that
 constraint breaks -- a step becomes the ideal move followed by a backward-Euler
 diffusion of ``B`` (an implicit resistive solve), and field lines can
 **reconnect**: nested surfaces merge, a seeded island heals or grows, and
 helicity is no longer conserved, it decays at the resistive rate.
 
-This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
-relaxed field** if its run ``outputs/tutorials/li383_relaxation`` is
-present (same ``(10, 16, 16) p = 2`` mesh), so the initial descent is not
-repeated; otherwise it builds the equilibrium initial condition itself. It then
-takes a **single resistive step** at ``--eps`` -- one reconnection event --
-and relaxes ideally for another 500 steps to a clean floor. Finally it draws
+This tutorial is arranged to be cheap. It **warm-starts from Tutorial 4's
+Newton floor** (``outputs/tutorials/li383_newton``) or, failing that, from
+Tutorial 3's relaxed field, if the run is present on the same
+``(10, 16, 16) p = 2`` mesh; otherwise it builds the equilibrium initial
+condition itself. It then takes a **single resistive step** at ``--eps`` --
+one reconnection event -- and relaxes ideally to a clean floor again with
+Newton (Tutorial 4): the reconnected field is near its floor already, so the
+direction of the second variation is the right tool. Finally it draws
 Poincare sections of the field before and after, so the magnetic islands the
 reconnection opens or heals are visible.
 
-Pass ``--seed`` (the Tutorial 4 syntax) when it falls back to building the IC,
+Pass ``--seed`` (the Tutorial 5 syntax) when it falls back to building the IC,
 to start from a seeded island and watch it reconnect. Runs in the default
-float32 with velocity smoothing of order 1 (gamma = 1).
+float32.
 
-    python -u scripts/tutorials/5_li383_resistive.py
+    python -u scripts/tutorials/6_li383_resistive.py
 """
 
 # %%
@@ -36,19 +38,18 @@ _INTERACTIVE = "ipykernel" in sys.modules
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
-                help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorial 3")
+                help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorials 3 and 4")
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
-ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation",
-                help="Tutorial 3's run directory; warm-start from its last checkpoint if present")
+ap.add_argument("--warm-start", default="outputs/tutorials/li383_newton,outputs/tutorials/li383_relaxation",
+                help="run directories, first present wins; warm-start from its last checkpoint")
 ap.add_argument("--eps", type=float, default=1e-4,
                 help="resistive dose eps = eta*dt of the single reconnection step")
 ap.add_argument("--seed", default="",
                 help='optional resonant seed "m,n,rho0,width" (used only when building the IC)')
 ap.add_argument("--seed-eps", type=float, default=0.0)
-ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations of the ideal tail")
-ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
-ap.add_argument("--floor-tol", type=float, default=1e-4, help="stop the ideal tail below this")
+ap.add_argument("--newton-steps", type=int, default=5,
+                help="Newton steps of the ideal tail after the resistive step (a multiple of 5)")
 ap.add_argument("--seeds", type=int, default=24, help="Poincare field lines")
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
 ap.add_argument("--cuts", type=int, default=6)
@@ -91,22 +92,24 @@ seq, ops = build_sequence(cli.geometry, ns, cli.p)
 compute_nullspaces(seq)
 
 # %%
-# Now we get the starting field: warm-start from Tutorial 3's relaxed B if its
-# checkpoint is on disk and matches this mesh, otherwise build the equilibrium
-# initial condition ourselves (optionally with a resonant seed).
+# Now we get the starting field: warm-start from Tutorial 4's Newton floor or
+# Tutorial 3's relaxed B, whichever checkpoint is on disk first and matches this
+# mesh, otherwise build the equilibrium initial condition ourselves (optionally
+# with a resonant seed).
 B0 = None
-ws_json = os.path.join(cli.warm_start, "relax.json")
-if os.path.exists(ws_json):
+for run in cli.warm_start.split(","):
+    ws_json = os.path.join(run, "relax.json")
+    if not os.path.exists(ws_json):
+        continue
     with open(ws_json) as fh:
         ws = json.load(fh)["params"]
-    ckpts = sorted(glob.glob(os.path.join(cli.warm_start, "checkpoints", "state_*.h5")))
+    ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
     if tuple(ws["ns"]) == ns and int(ws["p"]) == cli.p and ckpts:
         with h5py.File(ckpts[-1], "r") as fh:
             B0 = jnp.asarray(np.asarray(fh["B_n"]))
-        print(f"[ic] warm-started from Tutorial 3: {ckpts[-1]} (ns={ws['ns']} p={ws['p']})")
-    else:
-        print(f"[ic] run {cli.warm_start} is ns={ws['ns']} p={ws['p']} "
-              f"(need {list(ns)} p={cli.p}); building the IC instead")
+        print(f"[ic] warm-started from {ckpts[-1]} (ns={ws['ns']} p={ws['p']})")
+        break
+    print(f"[ic] run {run} is ns={ws['ns']} p={ws['p']} (need {list(ns)} p={cli.p}); skipped")
 if B0 is None:
     seed = None
     if cli.seed:
@@ -126,18 +129,25 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
       f"||dB||/||B|| = {rel:.2e} (the reconnection; the ideal descent could not do this)")
 
 # %%
-# Now we relax ideally for another 500 steps to a clean floor. The ideal tail
-# conserves helicity and just settles the reconnected field.
-ts_ideal = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
-print(f"[relax] {cli.outer * cli.inner} ideal steps to a clean floor")
-res = relax(initial_state(B_reconnected, ts_ideal), ts_ideal, steps=cli.outer * cli.inner,
-            chunk=cli.inner, floor_tol=cli.floor_tol)
+# Now we relax ideally back to a clean floor with Newton (Tutorial 4's stepper:
+# the truncated MINRES solve of the second variation, the line search capped at
+# the Newton step). The ideal tail conserves helicity and just settles the
+# reconnected field.
+ts_newton = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
+                        newton=True, newton_tol=0.1, newton_maxiter=300,
+                        newton_precond="laplacian", newton_dt_cap=1.0)
+print(f"[relax] {cli.newton_steps} Newton steps to a clean floor")
+res = relax(initial_state(B_reconnected, ts_newton), ts_newton, steps=cli.newton_steps,
+            chunk=5, floor_tol=0.0)
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
-print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
+it_n = np.asarray(res.trace["newton_it"])
+print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
+      f"(lowest {F.min():.3e} at step {F.argmin() + 1}), "
       f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
-      f"||div B|| {float(res.trace['div'][-1]):.1e}")
+      f"||div B|| {float(res.trace['div'][-1]):.1e}; MINRES iterations mean {np.abs(it_n).mean():.0f}, "
+      f"fallbacks {int(np.asarray(res.trace['newton_fallback']).sum())}")
 B = res.state.B_n
 
 # %%
@@ -182,7 +192,7 @@ def sections(B_dof, tag, title):
         print(f"  -> {path}")
 
 sections(B0, "before", f"before reconnection {ns} p={cli.p}")
-sections(B, "after", f"after reconnection + relax {ns} p={cli.p}")
+sections(B, "after", f"after reconnection + Newton {ns} p={cli.p}")
 
 # %%
 # Now we draw the weak pressure of the reconnected, relaxed field on the torus.
@@ -191,7 +201,6 @@ def weak_p(field):
     p_w, _, _ = weak_pressure(J, Hf, seq)
     return np.asarray(p_w)
 
-pw_ic = weak_p(B0)
 pw_final = weak_p(B)
 pw = DiscreteFunction(jnp.asarray(pw_final), seq.basis_0, seq.E(0, True))
 
@@ -219,11 +228,12 @@ print(f"  -> {path}")
 # checkpoints of the field before the reconnection and at the end -- so
 # scripts/poincare_trace.py can trace the sections at any planes from it.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts_ideal), 0)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts_newton), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
               r_refine="", precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
-              auxiliary_B_field=False, ic="warmstart", eps=cli.eps, seed=cli.seed, seed_eps=cli.seed_eps)
+              auxiliary_B_field=False, ic="warmstart", eps=cli.eps, seed=cli.seed, seed_eps=cli.seed_eps,
+              newton=True)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/")

@@ -1,29 +1,32 @@
 # Tutorials
 
 The scripts in `scripts/tutorials/` take a stellarator equilibrium from the
-file all the way to a resistively relaxed field, one concept at a time. Five
+file all the way to a resistively relaxed field, one concept at a time. Six
 numbered steps:
 
 1. **load and visualise a geometry** (`1_qa_geometry.py`),
 2. **solve a field** -- the vacuum (coil) field as a curl-curl problem
    (`2_qa_vacuum_field.py`),
 3. **relax** an equilibrium field to a nested state (`3_li383_relaxation.py`),
-4. **seed a magnetic island** in the initial field (`4_li383_island_seed.py`),
-5. **reconnect** with a resistive step, warm-started from step 3
-   (`5_li383_resistive.py`).
+4. **Newton** on the second variation, from step 3's state to the floor
+   (`4_li383_newton.py`),
+5. **seed a magnetic island** in the initial field and relax it ideally
+   (`5_li383_island_seed.py`),
+6. **reconnect** with a resistive step, warm-started from step 4
+   (`6_li383_resistive.py`).
 
 Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
-2021). Steps 3-5 run on **li383** (three-field-period NCSX, the project's
-fruit-fly case): steps 3 and 5 on the coarse reference
-(`data/wout_li383_low_res_reference.nc`, `ns = 16`), step 4 on the
+2021). Steps 3-6 run on **li383** (three-field-period NCSX, the project's
+fruit-fly case): steps 3, 4 and 6 on the coarse reference
+(`data/wout_li383_low_res_reference.nc`, `ns = 16`), step 5 on the
 high-resolution reference (`data/wout_li383_1.4m.nc`, `ns = 49`) -- the seeded
-island must clear the coarse file's own reconstruction residual (see step 4). All are VMEC
+island must clear the coarse file's own reconstruction residual (see step 5). All are VMEC
 `wout_*.nc` files read in closed form by `mrx.vmec`; the same `build_sequence`
 call reads a GVEC `.dat` state instead (see the
 [interface](concepts/gvec_mrx_interface.md)).
 
-All five run in the package default, now **float32**, the production
+All six run in the package default, now **float32**, the production
 precision. Tutorial 2's harmonic-form ratio reaches round-off only in double
 precision -- run it with `MRX_DTYPE=float64` for that. On a cluster run them
 through `slurm/run.sh` like
@@ -33,7 +36,7 @@ every other MRX script:
 SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
 ```
 
-Steps 1-2 default to `--ns 12,24,12 --p 3`; steps 3-5 to `--ns 10,16,16 --p 2`.
+Steps 1-2 default to `--ns 12,24,12 --p 3`; steps 3-6 to `--ns 10,16,16 --p 2`.
 They write their figures to `outputs/tutorials/<name>/`.
 
 ## 1. Load the geometry (`1_qa_geometry.py`)
@@ -147,14 +150,67 @@ python -u scripts/poincare_trace.py --run outputs/tutorials/li383_relaxation
 python scripts/poincare_plot.py outputs/tutorials/li383_relaxation
 ```
 
-## 4. Seed a magnetic island (`4_li383_island_seed.py`)
+## 4. Newton to the floor (`4_li383_newton.py`)
 
-The ideal (eta = 0) descent is a frozen-in flow: it cannot change the field's
-topology, so a seeded island can only breathe, never reconnect (that is
-Tutorial 5's job). Here we skip the descent and just look at the **initial
-field** the seed produces, next to the unseeded control, so the effect of the
-seed is unmistakable. The seed rides on the Clebsch potential, so $B = dA'$
-stays exactly divergence-free and wall-tangent:
+The descent's tail is a power law: the residual falls as a power of the step,
+never a plateau, and the directions the energy is flat along -- surfaces
+sliding past each other, current sheets thinning -- crawl, because a gradient
+method scales every mode by the same time step and the stiffest modes set it.
+Newton scales each mode by the inverse of its own curvature. The energy along
+the flow of a divergence-free $u$ expands to second order: the gradient is
+minus the Lorentz force, the Hessian $H$ is the second variation ($2\,\delta W$
+of ideal MHD at $p = 0$; minus the linearised force operator at an
+equilibrium). Newton's equation $H u = J \times B$ is solved in the potential
+form, $u = \operatorname{curl} a$ with
+$\operatorname{curl}^T H \operatorname{curl} a = \operatorname{curl}^T (J \times B)$
+-- divergence-free by construction, no Leray solve -- by MINRES with the
+$k = 1$ Laplacian atom, **truncated**: 300 iterations toward a relative
+residual of $0.1$, warm-started from the previous step's potential. The
+truncation is the trust region; a fully converged direction overshoots. The
+rest of the step is Tutorial 3's -- the analytic line search along the
+direction, capped at the Newton step $\Delta t = 1$, the CFL cap, the update a
+curl so $\operatorname{div} B$ and the helicity stay exact -- and a direction
+that is not a descent direction is replaced by the smoothed force for that
+step:
+
+```python
+ts = TimeStepper(seq=seq, history_size=0, cfl=0.5, velocity_smoothing_order=1,
+                 newton=True, newton_tol=0.1, newton_maxiter=300,
+                 newton_precond="laplacian", newton_dt_cap=1.0)
+res = relax(initial_state(B_start, ts), ts, steps=10, chunk=5)
+```
+
+Newton is the floor finder. Warm-started from a state the descent has taken
+through its fast phase it reaches the mesh's residual floor in tens of steps
+where the descent needs thousands -- on li383 at $(16, 32, 32)\ p = 2$, 49
+Newton steps (16 min) reach a floor the descent does not reach in 18 000
+steps (3.2 h) -- at 15-30 descent steps per Newton step. The floor it finds
+depends on the route, which corner of the orbit the descent left it in, and
+neither method leaves a corner for a lower one; so the rule is descent
+through its fast phase, then Newton
+(`docs/research/newton_second_variation_2026-09-06.md`). The paper's floors
+are at sixteen radial cells and more; on the tutorial's ten the direction is
+good for a handful of steps -- the residual drops fivefold in the first five,
+then turns around and the helicity starts to leak (under-resolved radial
+structure at the surfaces, the study's section 10e) -- and that is the budget
+here: ten steps, a minute or two on a GPU.
+
+The script warm-starts from Tutorial 3's run (or runs that descent itself),
+continues the smoothed descent and Newton from the same state, prints the
+step costs and draws $\|F\|_M$ against the step and the wall time for both,
+and writes the Newton run in `scripts/relax.py`'s layout for Tutorial 6 and
+`poincare_trace.py`. `scripts/relax.py --newton true --history 0` is the same
+run from the command line (the `--newton-*` flags in
+[Relaxation](relaxation.md)).
+
+## 5. Seed a magnetic island (`5_li383_island_seed.py`)
+
+The ideal (eta = 0) flow is frozen-in: it cannot change the field's topology,
+so a seeded island can only move and reshape, never reconnect (that is
+Tutorial 6's job). Here we look at the **initial field** the seed produces,
+next to the unseeded control, so the effect of the seed is unmistakable, and
+then relax it. The seed rides on the Clebsch potential, so $B = dA'$ stays
+exactly divergence-free and wall-tangent:
 
 ```python
 seed = (6, 1, 0.544, 0.1, 1e-2)                           # (m, n, rho0, width, eps)
@@ -175,9 +231,14 @@ not the unseeded one. It uses the **high-resolution reference**
 residual sits on top of the seeded signal, so the seed cannot be told from the
 noise. Sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
 $\sqrt{\varepsilon}$, and `--seed 5,1,0.794,0.1` to move to the $3/5$ surface.
-There is no relaxation and no run directory; this is the cheapest tutorial.
 
-## 5. Reconnect with finite resistivity (`5_li383_resistive.py`)
+Then the script relaxes the seeded field ideally -- 200 steps of Tutorial 3's
+descent through its fast phase, 5 Newton steps of Tutorial 4 --
+and sections it again: the chain is still there at the floor. The run is
+written in `scripts/relax.py`'s layout; `--descent-steps 0 --newton-steps 0`
+skips the relaxation and just sections the two initial fields.
+
+## 6. Reconnect with finite resistivity (`6_li383_resistive.py`)
 
 Turn on a small resistivity and the frozen-in constraint breaks. A step is now
 the ideal move followed by a backward-Euler diffusion of $B$ (an implicit
@@ -185,22 +246,24 @@ resistive solve): field lines can **reconnect**, nested surfaces merge, a
 seeded island heals or grows, and helicity is no longer conserved -- it decays
 at the resistive rate.
 
-This tutorial is arranged to be cheap. It **warm-starts from Tutorial 3's
-relaxed field** if the run `outputs/tutorials/li383_relaxation` is present (same
-$(10, 16, 16)\ p = 2$ mesh), so the initial descent is not repeated; otherwise
-it builds the equilibrium initial condition itself. It then takes a **single
-resistive step** at `--eta-max` and relaxes ideally for another 500 steps:
+This tutorial is arranged to be cheap. It **warm-starts from Tutorial 4's
+Newton floor** (`outputs/tutorials/li383_newton`, or Tutorial 3's relaxed
+field) if the run is present on the same $(10, 16, 16)\ p = 2$ mesh, so the
+descent is not repeated; otherwise it builds the equilibrium initial condition
+itself. It then takes a **single resistive step** at `--eps` and relaxes
+ideally back to a floor with Newton -- the reconnected field is near its floor
+already, so the direction of the second variation is the right tool:
 
 ```python
 B_reconnected, _, rel = resistive_step(B0, seq, eps)                    # one reconnection step
-res = relax(initial_state(B_reconnected, ts), ts, steps=500, chunk=50,
-            floor_tol=1e-4)                                             # 500 ideal steps
+res = relax(initial_state(B_reconnected, ts_newton), ts_newton,
+            steps=5, chunk=5)                                           # Newton toward the floor
 ```
 
 The helicity drop across the resistive step is the reconnection; the ideal tail
 conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
 pressure on the torus, and writes the run for `poincare_trace.py`. Pass
-`--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 4 syntax) when it falls
+`--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 5 syntax) when it falls
 back to building the IC, to watch a seeded island reconnect.
 
 ---
