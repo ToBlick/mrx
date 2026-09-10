@@ -8,7 +8,7 @@
   ],
   "p": 2,
   "nfp": null,
-  "r_refine": "",
+  "knots": null,
   "precision": "float32",
   "steps": 10,
   "scheme": "explicit",

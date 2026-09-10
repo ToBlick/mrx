@@ -47,7 +47,7 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, parse_r_refine
+    from mrx.geometry import build_sequence
     from mrx.plotting import (get_2d_grids, plot_crossections_separate, plot_torus,
                               plot_twin_axis)
     from mrx.relaxation import compute_force, weak_pressure
@@ -66,8 +66,7 @@ def main():
     p = int(attrs["p"])
     nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
     print(f"[run] {run}: {geometry} ns={ns} p={p}", flush=True)
-    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override,
-                            r_windows=parse_r_refine(str(attrs.get("r_refine", ""))))
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, knots=attrs.get("knots"))
     aux = bool(attrs.get("auxiliary_B_field", False))
 
     # The cuts span one field period: zeta in [0, 1) is the logical toroidal

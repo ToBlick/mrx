@@ -187,7 +187,7 @@ if cli.descent_steps or cli.newton_steps:
     write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{steps:06d}.h5"),
                      initial_state(B, ts_any), steps)
     params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-                  r_refine="", precision=str(mrx.DTYPE), steps=steps, scheme="explicit",
+                  knots=None, precision=str(mrx.DTYPE), steps=steps, scheme="explicit",
                   auxiliary_B_field=False, ic="clebsch", seed=cli.seed, seed_eps=cli.seed_eps)
     with open(os.path.join(cli.out, "relax.json"), "w") as fh:
         json.dump(dict(params=params, reconnect=[]), fh, indent=1)

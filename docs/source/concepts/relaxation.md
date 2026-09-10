@@ -293,7 +293,7 @@ angular derivatives are per radian. See [gvec_mrx_interface.md](gvec_mrx_interfa
 
 ## 5. Geometries
 
-`build_sequence(geometry, ns, p, maxiter, tol, nfp, r_windows)` in
+`build_sequence(geometry, ns, p, maxiter, tol, nfp, knots)` in
 `mrx/geometry.py` returns `(seq, ops)` with the map installed and every
 solver operator built. `geometry` is the path of a GVEC state (`.dat`) or
 a VMEC wout (`.nc`) (`build_gvec_map` in `mrx/gvec.py`), or of an analytic
@@ -327,10 +327,10 @@ method per run. Flags, defaults in brackets:
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`): the geometry and the initial condition (sections 4, 5) |
 | `--nfp N [file value]` | field periods, for a file that declares them wrong |
-| `--ns R,T,Z [8,16,16]`, `--p P [2]` | resolution (also the map's) and degree |
-| `--r-refine a:b:m,... [""]` | radial refinement windows, `m` uniform cells in each `[a, b]` (`radial_knots`) |
+| `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
+| `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis from 0 to 1 instead of the uniform grid; the axis takes its `n` from them (`knot_vector`); angular breakpoints must be uniform |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`precision.md`) |
-| `--precision {float32,float64} [float32]` | exported as `MRX_DTYPE` before `mrx` is imported |
+| `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual, `float32` and `float64` are both; exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |

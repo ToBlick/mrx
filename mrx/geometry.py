@@ -321,51 +321,29 @@ def geometry_nfp(geometry, nfp=None):
     return int(read_analytic(geometry)["map_params"].get("nfp", 1))
 
 
-def parse_r_refine(spec):
-    """``"a:b:m,a:b:m"`` -> ``[(a, b, m), ...]``: radial windows ``[a, b]``
-    that get ``m`` uniform cells each (:func:`radial_knots`); ``""`` -> ``[]``."""
-    windows = []
-    for w in filter(None, spec.split(",")):
-        a, b, m = w.split(":")
-        windows.append((float(a), float(b), int(m)))
-    return windows
+def parse_knots(spec):
+    """``"0,0.1,...,1"`` -> the breakpoints as a list of floats; ``""`` ->
+    ``None``, the uniform grid."""
+    return [float(v) for v in spec.split(",")] if spec else None
 
 
-def radial_knots(n_r, p, windows):
-    """The clamped radial knot vector of ``n_r`` degree-``p`` splines with
-    ``n_r - p`` cells: ``m`` uniform cells inside every window ``(a, b, m)``,
-    and the remaining cells spread over the gaps between and outside the
-    windows in proportion to their length (largest-remainder rounding, at
-    least one cell per gap). Without windows this is the uniform grid the
-    sequence builds itself."""
-    windows = sorted(windows)
-    n_cells = n_r - p
-    inside = sum(m for _, _, m in windows)
-    gaps = []
-    lo = 0.0
-    for a, b, _ in windows:
-        gaps.append((lo, a))
-        lo = b
-    gaps.append((lo, 1.0))
-    gaps = [(a, b) for a, b in gaps if b > a]
-    free = n_cells - inside
-    if free < len(gaps):
-        raise ValueError(f"{inside} window cells leave {free} for {len(gaps)} gaps of n_r - p = {n_cells}")
-    length = sum(b - a for a, b in gaps)
-    raw = [free * (b - a) / length for a, b in gaps]
-    counts = [max(1, int(r)) for r in raw]
-    order = sorted(range(len(gaps)), key=lambda i: raw[i] - int(raw[i]), reverse=True)
-    for i in order[: free - sum(counts)]:
-        counts[i] += 1
-    for i in reversed(order):    # a gap forced up to one cell may have overshot
-        if sum(counts) > free and counts[i] > 1:
-            counts[i] -= 1
-    segments = sorted([(a, b, m) for a, b, m in windows] + [(a, b, c) for (a, b), c in zip(gaps, counts)])
-    bp = np.concatenate([np.linspace(a, b, m, endpoint=False) for a, b, m in segments] + [[1.0]])
+def knot_vector(breakpoints, p, periodic):
+    """The full knot vector of the degree-``p`` splines whose cells are the
+    intervals between ``breakpoints`` (increasing, from 0 to 1): a clamped
+    axis repeats each end ``p`` more times, a periodic axis continues the
+    ``p`` cells either side by the period -- the structure
+    :class:`mrx.spline_bases.SplineBasis` builds for a uniform grid. The
+    number of splines is the number of cells plus ``p`` on a clamped axis
+    and the number of cells on a periodic one."""
+    bp = np.asarray(breakpoints, dtype=float)
+    if bp[0] != 0.0 or bp[-1] != 1.0 or np.any(np.diff(bp) <= 0):
+        raise ValueError(f"breakpoints must increase from 0 to 1 (got {list(breakpoints)})")
+    if periodic:
+        return np.concatenate([bp[-(p + 1):-1] - 1.0, bp, bp[1:p + 1] + 1.0])
     return np.concatenate([np.zeros(p), bp, np.ones(p)])
 
 
-def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_windows=()):
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
@@ -374,13 +352,17 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
             a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``),
             or an analytic geometry file (``.json``, :func:`read_analytic`).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
+            An axis with breakpoints in ``knots`` takes its ``n`` from them.
         p: spline degree, all directions; ``p + 1`` Gauss points per knot span.
         maxiter: iteration budget of every solve through the sequence.
         tol: solve tolerance; ``None`` is :data:`mrx.precision.SOLVE_TOL`.
         nfp: overrides an equilibrium file's ``nfp`` (see ``mrx.gvec``);
             ignored for an analytic geometry.
-        r_windows: radial refinement windows ``[(a, b, m), ...]`` for
-            :func:`radial_knots`; empty for the uniform radial grid.
+        knots: ``(r, theta, zeta)`` breakpoints per axis, each a list from
+            0 to 1 or ``None`` for the uniform grid of ``ns``; the knot
+            vectors are :func:`knot_vector` of them. The angular breakpoints
+            must be uniform (they only set ``n``): the map's series
+            projection uses the circulant structure of the periodic bases.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -400,10 +382,19 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, r_window
     from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
-    knots = (radial_knots(ns[0], p, r_windows), None, None) if r_windows else None
-    seq = DeRhamSequence(ns, (p,) * 3, p + 1, ("clamped", "periodic", "periodic"),
-                         polar=True, tol=tol, maxiter=maxiter, knots=knots,
-                         betti_numbers=(1, 1, 0, 0))
+    types = ("clamped", "periodic", "periodic")
+    bps = tuple(knots) if knots is not None else (None, None, None)
+    for bp, t in zip(bps, types):
+        if bp is not None and t == "periodic" and not np.allclose(np.diff(bp), 1.0 / (len(bp) - 1)):
+            raise ValueError(
+                "angular breakpoints must be uniform: the map's series projection "
+                "(mrx.gvec) uses the circulant structure of the periodic bases")
+    Ts = tuple(None if bp is None else knot_vector(bp, p, t == "periodic")
+               for bp, t in zip(bps, types))
+    ns = tuple(n if bp is None else len(bp) - 1 + (p if t == "clamped" else 0)
+               for n, bp, t in zip(ns, bps, types))
+    seq = DeRhamSequence(ns, (p,) * 3, p + 1, types, polar=True, tol=tol, maxiter=maxiter,
+                         knots=Ts, betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)

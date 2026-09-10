@@ -30,15 +30,22 @@ Flags, defaults in brackets:
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
       --ns R,T,Z [16,32,32]        spline resolution (also the map's)
-      --r-refine a:b:m,... [""]    radial refinement: m uniform cells in each
-                                   window [a, b] of the logical radius, the
-                                   remaining n_r - p cells spread over the
-                                   gaps (mrx.geometry.radial_knots)
+      --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
+                                   the breakpoints of that axis, comma-
+                                   separated from 0 to 1, instead of the
+                                   uniform grid; the axis takes its n from
+                                   them (cells + p clamped, cells periodic;
+                                   mrx.geometry.knot_vector). The angular
+                                   breakpoints must be uniform: the map's
+                                   series projection is circulant
       --p P [2]                    spline degree; p+1 Gauss points per span
       --solve-maxiter N [2000]     iteration budget of every inner solve
       --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
-      --precision {float32,float64} [float32]  exported as MRX_DTYPE before
-                                   mrx is imported
+      --precision {mixed,float32,float64} [mixed]
+                                   mixed: float32 fields and solves with a
+                                   float64 residual; float32, float64: both
+                                   (MRX_DTYPE and MRX_RESIDUAL_DTYPE, exported
+                                   before mrx is imported)
       --seed m,n,rho0,width [""], --seed-eps EPS [0]
                                    equilibrium files only: a resonant term in
                                    A'_zeta that opens an island at the
@@ -157,6 +164,11 @@ import os
 import time
 
 
+#: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE)
+PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32"),
+              "float64": ("float64", "float64")}
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -165,12 +177,13 @@ def parse_args(argv=None):
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
     ap.add_argument("--ns", default="16,32,32")
-    ap.add_argument("--r-refine", default="",
-                    help='radial refinement windows "a:b:m,..." (m cells in [a, b]); "" = uniform')
+    for axis in ("r", "theta", "zeta"):
+        ap.add_argument(f"--knots-{axis}", default="",
+                        help=f'breakpoints of the {axis} axis, comma-separated from 0 to 1; "" = uniform')
     ap.add_argument("--p", type=int, default=2)
     ap.add_argument("--solve-maxiter", type=int, default=2000)
     ap.add_argument("--solve-tol", type=float, default=None)
-    ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
+    ap.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
     ap.add_argument("--seed", default="",
                     help='resonant seed "m,n,rho0,width" added to the potential (equilibrium files only)')
     ap.add_argument("--seed-eps", type=float, default=0.0,
@@ -246,16 +259,18 @@ def parse_args(argv=None):
 
 def main(cli):
     import mrx
-    from mrx.geometry import build_sequence, geometry_kind, parse_r_refine
+    from mrx.geometry import build_sequence, geometry_kind, parse_knots
     from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                                 relax, write_checkpoint)
 
-    if cli.precision != str(mrx.DTYPE):
-        raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE}")
+    if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
+        raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
+                         f"with {mrx.precision.RESIDUAL_DTYPE} residuals")
     mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
-    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}  map batch {cli.map_batch or 'all'}", flush=True)
+    print(f"[env] mrx from {mrx.__file__}  precision {cli.precision} ({mrx.DTYPE} solves, "
+          f"{mrx.precision.RESIDUAL_DTYPE} residual)  map batch {cli.map_batch or 'all'}", flush=True)
     ns = tuple(int(v) for v in cli.ns.split(","))
     out = cli.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"),
                                   time.strftime("%H-%M-%S"))
@@ -267,8 +282,11 @@ def main(cli):
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
+    knots = [parse_knots(s) for s in (cli.knots_r, cli.knots_theta, cli.knots_zeta)]
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
-                              nfp=cli.nfp, r_windows=parse_r_refine(cli.r_refine))
+                              nfp=cli.nfp, knots=knots)
+    ns = seq.ns
+    params.update(ns=list(ns), knots=knots)
     compute_nullspaces(seq)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
@@ -337,5 +355,5 @@ def main(cli):
 
 if __name__ == "__main__":
     cli = parse_args()
-    os.environ["MRX_DTYPE"] = cli.precision
+    os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[cli.precision]
     main(cli)

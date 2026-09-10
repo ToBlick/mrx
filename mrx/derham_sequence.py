@@ -210,10 +210,10 @@ class DeRhamSequence():
         for ax, T in enumerate(Ts):
             if T is not None:
                 T = jnp.asarray(T, dtype=mrx.DTYPE)
-                n_expected = ns[ax] + ps[ax] + 1
-                if types[ax] == "clamped" and T.shape != (n_expected,):
+                n_expected = ns[ax] + ps[ax] + 1 if types[ax] == "clamped" else ns[ax] + 2 * ps[ax] + 1
+                if T.shape != (n_expected,):
                     raise ValueError(
-                        f"knot vector for axis {ax} must have n+p+1 = "
+                        f"knot vector for axis {ax} ({types[ax]}) must have "
                         f"{n_expected} entries (got shape {T.shape})")
                 Ts[ax] = T
         if polar and Ts[0] is None:

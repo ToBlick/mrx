@@ -2,12 +2,12 @@
 and where the knots land.
 
     python scripts/plot_mesh.py --geometry data/wout_li383_1.4m.nc \\
-        --meshes "16,32,32;32,32,32;32,32,32|0.47:0.62:6,0.68:0.94:15" --out DIR
+        --meshes "16,32,32;32,32,32;16,32,32|0,0.1,0.2,0.3,0.4,0.45,0.5,0.55,0.6,0.7,0.8,0.9,1" --out DIR
 
 Writes ``mesh_2d.png``: one column per mesh, one row per plane of ``--planes``,
-the poloidal cross-section with the radial breakpoints as closed curves (a
-``--r-refine`` window shows as denser lines, see ``mrx.geometry.radial_knots``)
-and the poloidal knots as spokes. Panels carry no axes or frame; the two
+the poloidal cross-section with the radial breakpoints as closed curves
+(breakpoints given after ``|`` show as denser lines where they crowd) and the
+poloidal knots as spokes. Panels carry no axes or frame; the two
 innermost rings are omitted and the spokes start at the first surviving ring,
 so the near-axis polar patch (the ``ring_depth=2`` -> three C1 basis functions
 surgery of ``mrx.extraction_operators``) reads as one region. With ``--sections`` a panel is split at the
@@ -19,7 +19,9 @@ lines. Both also as ``pgf/*.pgf``. Only the map is built (no preconditioners).
 
 Options
     --geometry PATH      GVEC .dat or VMEC wout .nc (``mrx.geometry.build_sequence`` names)
-    --meshes SPEC        ``n_r,n_t,n_z[|a:b:m,...]`` per mesh, ``;``-separated
+    --meshes SPEC        ``n_r,n_t,n_z[|breakpoints]`` per mesh, ``;``-separated;
+                         radial breakpoints (comma list, 0 to 1) replace the
+                         uniform grid and set ``n_r`` (cells + p)
     --p P                spline degree [2]
     --planes Z,...       logical toroidal planes of the cross-sections [0,0.5]
     --sections S;...     per mesh ``path/trace.npz[:tag]`` (tag ``final`` by
@@ -55,7 +57,7 @@ def main(cli):
     import numpy as np
 
     from mrx.derham_sequence import DeRhamSequence
-    from mrx.geometry import parse_r_refine, radial_knots
+    from mrx.geometry import knot_vector, parse_knots
     from mrx.gvec import build_gvec_map, read_equilibrium
     from mrx.plotstyle import LEFT, SECTION_CMAP, house_style
     from mrx.plotting import save_figure
@@ -67,14 +69,17 @@ def main(cli):
     for spec in cli.meshes.split(";"):
         ns_spec, _, refine = spec.partition("|")
         ns = tuple(int(v) for v in ns_spec.split(","))
-        windows = parse_r_refine(refine)
-        T = radial_knots(ns[0], cli.p, windows)
+        bp = parse_knots(refine)
+        if bp is not None:
+            ns = (len(bp) - 1 + cli.p,) + ns[1:]
+        T = knot_vector(bp if bp is not None else np.linspace(0, 1, ns[0] - cli.p + 1), cli.p, False)
         seq = DeRhamSequence(ns, (cli.p,) * 3, cli.p + 1, ("clamped", "periodic", "periodic"),
-                             polar=True, knots=(T, None, None) if windows else None)
+                             polar=True, knots=(T, None, None))
         F, info = build_gvec_map(read_equilibrium(cli.geometry), seq, nfp=cli.nfp)
-        label = f"({ns[0]}, {ns[1]}, {ns[2]})" + (" refined" if windows else "")
-        print(f"[mesh] {label}: nfp={info['nfp']} radial cells {ns[0] - cli.p}, windows {windows}", flush=True)
-        meshes.append((label, ns, np.unique(np.asarray(T)), windows, jax.jit(jax.vmap(F)), info["nfp"]))
+        label = f"({ns[0]}, {ns[1]}, {ns[2]})" + (" refined" if bp is not None else "")
+        print(f"[mesh] {label}: nfp={info['nfp']} radial cells {ns[0] - cli.p}, "
+              f"breakpoints {'given' if bp is not None else 'uniform'}", flush=True)
+        meshes.append((label, ns, np.unique(np.asarray(T)), jax.jit(jax.vmap(F)), info["nfp"]))
     if len(sections) == 1:
         sections = sections * len(meshes)
     assert not sections or len(sections) == len(meshes), "--sections: one entry per mesh (or one for all)"
@@ -102,7 +107,7 @@ def main(cli):
         fig, axes = plt.subplots(len(planes), len(meshes), figsize=(4.2 * len(meshes), 4.4 * len(planes)),
                                  squeeze=False, constrained_layout=True)
         for i, ze in enumerate(planes):
-            for k, (label, ns, bp, windows, F, nfp) in enumerate(meshes):
+            for k, (label, ns, bp, F, nfp) in enumerate(meshes):
                 ax = axes[i, k]
                 sec = loaded[k] if loaded else None
                 z_split = None
@@ -146,7 +151,7 @@ def main(cli):
         plt.close(fig)
 
         # --- 3-D: the boundary of the first mesh over the full torus -----------
-        label, ns, bp, windows, F, nfp = meshes[0]
+        label, ns, bp, F, nfp = meshes[0]
         n_line = 200
         fig = plt.figure(figsize=(8.0, 6.0))
         ax = fig.add_subplot(111, projection="3d")

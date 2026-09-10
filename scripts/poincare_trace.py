@@ -108,7 +108,7 @@ def main():
     import jax
     import jax.numpy as jnp
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, geometry_nfp, map_jacobian_at, parse_r_refine
+    from mrx.geometry import build_sequence, geometry_nfp, map_jacobian_at
     from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
                               section_RZ, trace_and_classify)
 
@@ -157,7 +157,7 @@ def main():
         ns = tuple(int(v) for v in attrs["ns"])
         p = int(attrs["p"])
         nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
-        r_refine = str(attrs.get("r_refine", ""))
+        knots = attrs.get("knots")
         aux = bool(attrs.get("auxiliary_B_field", False))
         pressure_kind = cli.pressure
         source = (f"{os.path.basename(geometry)} {ns} p={p}, relaxed in {attrs.get('precision')} "
@@ -166,7 +166,7 @@ def main():
     else:
         geometry, p = cli.geometry, cli.p
         ns = tuple(int(v) for v in cli.ns.split(","))
-        nfp_override, r_refine, aux, movie = None, "", False, False
+        nfp_override, knots, aux, movie = None, None, False, False
         pressure_kind = "none"
         name = cli.field_key
         fields = [name]
@@ -178,7 +178,7 @@ def main():
     print(f"[trace] {source}: nfp={nfp}, fields {fields}, planes {planes}, "
           f"pressure {pressure_kind}, tracing in {cli.precision}", flush=True)
 
-    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, r_windows=parse_r_refine(r_refine))
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, knots=knots)
     if pressure_kind == "weak":
         # The weak pressure is a diagnostic of the field, not state: two solves per field.
         from mrx.relaxation import compute_force, weak_pressure

@@ -159,7 +159,7 @@ os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-              r_refine="", precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
+              knots=None, precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
               auxiliary_B_field=False, ic=ic["kind"])
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
