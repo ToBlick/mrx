@@ -9,9 +9,9 @@ helicity is no longer conserved, it decays at the resistive rate.
 
 This tutorial is arranged to be cheap. It **warm-starts from Tutorial 4's
 Newton floor** (``outputs/tutorials/li383_newton``) or, failing that, from
-Tutorial 3's relaxed field, if the run is present on the same
-``(10, 16, 16) p = 2`` mesh; otherwise it builds the equilibrium initial
-condition itself. It then takes a **single resistive step** at ``--eps`` --
+Tutorial 3's relaxed field, the user's run or the shipped state in
+``data/tutorials/``, on the same ``(10, 16, 16) p = 2`` mesh; otherwise it
+builds the equilibrium initial condition itself. It then takes a **single resistive step** at ``--eps`` --
 one reconnection event -- and relaxes ideally to a clean floor again with
 Newton (Tutorial 4): the reconnected field is near its floor already, so the
 direction of the second variation is the right tool. Finally it draws
@@ -41,8 +41,10 @@ ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorials 3 and 4")
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
-ap.add_argument("--warm-start", default="outputs/tutorials/li383_newton,outputs/tutorials/li383_relaxation",
-                help="run directories, first present wins; warm-start from its last checkpoint")
+ap.add_argument("--warm-start",
+                default="outputs/tutorials/li383_newton,outputs/tutorials/li383_relaxation,"
+                        "data/tutorials/li383_newton,data/tutorials/li383_relaxation",
+                help="run directories, first present wins: Tutorials 4 and 3, the user's runs then the shipped states")
 ap.add_argument("--eps", type=float, default=1e-4,
                 help="resistive dose eps = eta*dt of the single reconnection step")
 ap.add_argument("--seed", default="",
@@ -93,7 +95,8 @@ compute_nullspaces(seq)
 
 # %%
 # Now we get the starting field: warm-start from Tutorial 4's Newton floor or
-# Tutorial 3's relaxed B, whichever checkpoint is on disk first and matches this
+# Tutorial 3's relaxed B -- the user's runs, then the states shipped in
+# data/tutorials/ -- whichever checkpoint is on disk first and matches this
 # mesh, otherwise build the equilibrium initial condition ourselves (optionally
 # with a resonant seed).
 B0 = None

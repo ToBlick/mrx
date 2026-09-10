@@ -241,6 +241,7 @@ def main():
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
+    os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)
     np.savez_compressed(archive, **sections)
     print(f"  -> {archive}", flush=True)
 

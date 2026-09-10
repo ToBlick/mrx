@@ -34,9 +34,10 @@ first five, then turns around and the helicity starts to leak (under-resolved
 radial structure at the surfaces, the study's section 10e) -- and that is the
 budget here: ten steps, a minute or two on a GPU.
 
-This tutorial warm-starts from Tutorial 3's floor
-(``outputs/tutorials/li383_relaxation``, the same mesh) or, without it, runs
-that descent itself. From that state it runs both continuations: the smoothed
+This tutorial warm-starts from Tutorial 3's floor -- the run in
+``outputs/tutorials/li383_relaxation`` or the shipped state in
+``data/tutorials/li383_relaxation`` -- or, without either, runs that descent
+itself. From that state it runs both continuations: the smoothed
 descent for another ``--descent-steps`` and Newton for ``--newton-steps``,
 and draws ``||F||`` against the step and against the wall time for both. It
 writes the Newton run in ``scripts/relax.py``'s layout, so Tutorial 6 can
@@ -65,8 +66,8 @@ ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorial 3")
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
-ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation",
-                help="Tutorial 3's run directory; warm-start from its last checkpoint if present")
+ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation,data/tutorials/li383_relaxation",
+                help="run directories, first present wins: Tutorial 3's run, then its shipped state")
 ap.add_argument("--descent-steps", type=int, default=200,
                 help="steps of the smoothed descent continued from the warm start, for comparison")
 ap.add_argument("--newton-steps", type=int, default=10, help="Newton steps from the warm start")
@@ -104,23 +105,25 @@ seq, ops = build_sequence(cli.geometry, ns, cli.p)
 compute_nullspaces(seq)
 
 # %%
-# Now we get the starting field: Tutorial 3's relaxed B if its checkpoint is on
-# disk and matches this mesh, otherwise the equilibrium initial condition taken
+# Now we get the starting field: Tutorial 3's relaxed B from the first run
+# directory whose checkpoint is on disk and matches this mesh (the user's run,
+# then the shipped state), otherwise the equilibrium initial condition taken
 # through the descent's fast phase here (Tutorial 3's run, 500 steps).
 ts_descent = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
 B_start = None
-ws_json = os.path.join(cli.warm_start, "relax.json")
-if os.path.exists(ws_json):
+for run in cli.warm_start.split(","):
+    ws_json = os.path.join(run, "relax.json")
+    if not os.path.exists(ws_json):
+        continue
     with open(ws_json) as fh:
         ws = json.load(fh)["params"]
-    ckpts = sorted(glob.glob(os.path.join(cli.warm_start, "checkpoints", "state_*.h5")))
+    ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
     if tuple(ws["ns"]) == ns and int(ws["p"]) == cli.p and ckpts:
         with h5py.File(ckpts[-1], "r") as fh:
             B_start = jnp.asarray(np.asarray(fh["B_n"]))
         print(f"[ic] warm-started from Tutorial 3: {ckpts[-1]} (ns={ws['ns']} p={ws['p']})")
-    else:
-        print(f"[ic] run {cli.warm_start} is ns={ws['ns']} p={ws['p']} "
-              f"(need {list(ns)} p={cli.p}); building the IC instead")
+        break
+    print(f"[ic] run {run} is ns={ws['ns']} p={ws['p']} (need {list(ns)} p={cli.p}); skipped")
 if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "

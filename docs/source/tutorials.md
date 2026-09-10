@@ -39,6 +39,14 @@ SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
 Steps 1-2 default to `--ns 12,24,12 --p 3`; steps 3-6 to `--ns 10,16,16 --p 2`.
 They write their figures to `outputs/tutorials/<name>/`.
 
+The li383 tutorials can be run in any order: the end state of each ships in
+`data/tutorials/<name>/` (a `relax.json` with the parameters and the last
+checkpoint, from the runs at the shipped defaults). Steps 4 and 6 warm-start
+from the user's own run in `outputs/tutorials/` when it exists and from the
+shipped state otherwise, and `scripts/poincare_trace.py --run
+data/tutorials/li383_newton` sections a shipped state without running
+anything.
+
 ## 1. Load the geometry (`1_qa_geometry.py`)
 
 A VMEC `wout_*.nc` stores the flux surfaces as $R$ and $Z$ Fourier series in

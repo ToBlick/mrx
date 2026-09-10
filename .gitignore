@@ -24,6 +24,8 @@ data/*
 !data/wout_li383_1.4m.nc
 !data/wout_LandremanPaul2021_QA_lowres.nc
 !data/*.json
+!data/tutorials/
+!data/tutorials/**
 outputs
 out
 logs

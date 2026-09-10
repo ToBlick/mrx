@@ -1,0 +1,24 @@
+{
+ "params": {
+  "geometry_path": "data/wout_li383_low_res_reference.nc",
+  "ns": [
+   10,
+   16,
+   16
+  ],
+  "p": 2,
+  "nfp": null,
+  "r_refine": "",
+  "precision": "float32",
+  "steps": 10,
+  "scheme": "explicit",
+  "auxiliary_B_field": false,
+  "ic": "warmstart",
+  "newton": true,
+  "newton_tol": 0.1,
+  "newton_maxiter": 300,
+  "newton_precond": "laplacian",
+  "newton_dt_cap": 1.0
+ },
+ "reconnect": []
+}

@@ -1,0 +1,21 @@
+{
+ "params": {
+  "geometry_path": "data/wout_li383_1.4m.nc",
+  "ns": [
+   10,
+   16,
+   16
+  ],
+  "p": 2,
+  "nfp": null,
+  "r_refine": "",
+  "precision": "float32",
+  "steps": 205,
+  "scheme": "explicit",
+  "auxiliary_B_field": false,
+  "ic": "clebsch",
+  "seed": "6,1,0.544,0.1",
+  "seed_eps": 0.01
+ },
+ "reconnect": []
+}

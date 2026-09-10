@@ -1,0 +1,23 @@
+{
+ "params": {
+  "geometry_path": "data/wout_li383_low_res_reference.nc",
+  "ns": [
+   10,
+   16,
+   16
+  ],
+  "p": 2,
+  "nfp": null,
+  "r_refine": "",
+  "precision": "float32",
+  "steps": 5,
+  "scheme": "explicit",
+  "auxiliary_B_field": false,
+  "ic": "warmstart",
+  "eps": 0.0001,
+  "seed": "",
+  "seed_eps": 0.0,
+  "newton": true
+ },
+ "reconnect": []
+}
