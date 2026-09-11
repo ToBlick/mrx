@@ -61,6 +61,14 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
+      --helicity-correction {false,true} [false]
+                                   remove from the induction field E the one
+                                   component (a multiple of the Dirichlet
+                                   proxy of B) that changes the discrete
+                                   helicity: exact conservation with H
+                                   natural, either scheme
+                                   (TimeStepper.helicity_correction); the
+                                   trace records the multiple as hcorr
       --method {newton,lbfgs} [newton]
                                    the direction: Newton on the second
                                    variation (the Newton flags below) or the
@@ -186,6 +194,8 @@ def parse_args(argv=None):
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
+    ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
+                    help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--history", type=int, default=1,
                     help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
     ap.add_argument("--velocity-smoothing-order", type=int, default=1,
@@ -230,6 +240,7 @@ def parse_args(argv=None):
     if cli.map_batch < 0:
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
+    cli.helicity_correction = cli.helicity_correction == "true"
     cli.newton = cli.method == "newton"
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
@@ -300,6 +311,7 @@ def main(cli):
         scheme={"explicit": IntegrationScheme.EXPLICIT,
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
         cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
+        helicity_correction=cli.helicity_correction,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
@@ -315,7 +327,8 @@ def main(cli):
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
     print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
+          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
+          f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",

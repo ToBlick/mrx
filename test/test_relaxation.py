@@ -1,5 +1,6 @@
 """The relaxation run on li383: the production loop lowers the energy, and
-the midpoint scheme with the auxiliary field conserves helicity.
+the midpoint scheme with the auxiliary field, and the explicit step with
+the helicity correction, conserve helicity.
 
 The initial condition is the state's own field, ``B = dA'`` from the
 histopolated Clebsch potential (exactly divergence-free); the stepper is
@@ -129,3 +130,22 @@ def test_potential_force_is_the_leray_force(seq, b0):
     assert rel < band
     assert rel_s < band
     assert div < 1e2 * eps()
+
+
+def test_helicity_correction_conserves_helicity(seq, b0):
+    """The explicit step with the helicity correction on the plain-B route:
+    one scalar per step zeroes the discrete helicity change exactly, the
+    energy still falls, and the correction is small (of the size of the
+    leak it cancels, not of the induction)."""
+    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, helicity_correction=True)
+    res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
+    dE = np.asarray(res.trace["dE"], dtype=float)
+    H = np.asarray(res.qoi["helicity"], dtype=float)
+    lam = np.asarray(res.trace["hcorr"], dtype=float)
+    E0 = res.E0
+    print(f"\n  20 corrected explicit steps: E {E0:.6e} -> {E0 + dE.sum():.6e}, dH/2E0 "
+          f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, |lambda| max {np.abs(lam).max():.2e}")
+    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
+    assert np.all(lam != 0.0) and np.abs(lam).max() < 1e-2, lam
+    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
+        f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

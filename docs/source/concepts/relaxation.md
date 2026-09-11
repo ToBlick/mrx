@@ -144,7 +144,28 @@ Dirichlet `H` the midpoint scheme is exact to the solves (+2.2e-7
 explicit, +5e-12 midpoint), at the price of `H_t = 0` at the wall. Without
 the auxiliary field (`X = B`) the midpoint scheme has no time error either;
 what remains is the grid's projection error of the pairing, about 1e-6
-on that mesh. See `docs/research/implicit_midpoint_2026-09-04.md`. The
+on that mesh. See `docs/research/implicit_midpoint_2026-09-04.md`.
+
+**The helicity correction** (`TimeStepper.helicity_correction`,
+`--helicity-correction true`) keeps `H` natural and removes the leak
+instead. Over one explicit step the identity above reads, exactly on the
+mesh, `K_{n+1} - K_n = 2 dt <E, P B_n> + dt^2 <E, P curl E>`, and the
+pairing `<E, P B>` is one number per step: the projection residual of
+`u x B` paired with the tangential wall DoFs of the natural proxy. With
+`E - lambda H_D`, `H_D = M_1^{-1} P B` the Dirichlet proxy of the field, the
+change is a quadratic in `lambda` whose root near zero the explicit step
+takes (two pairings of curls, one warm-started k=1 mass solve for `H_D`);
+inside the midpoint sweep the `dt^2` term is the scheme's and `lambda =
+<E, P B_mid> / <H_D, P B_mid>`. The pairings are formed in the residual
+precision, a small total of large terms. The helicity is then flat to the
+solves and to the stored field's rounding, `E` stays Dirichlet so `B` keeps
+its wall condition, and there is no wall layer. What the correction removes
+is the component of `E` along `B`, which the exact `u x B` does not have
+and which is the only one that changes helicity; the induction picks up
+`-lambda curl H_D`, of the size of the leak, and the energy decrease is
+perturbed by `lambda` times the `J . B` pairing. The step is no longer
+variational: the energy is monotone up to that term. The trace records
+`lambda` as `hcorr`. The
 energy change is `-dt <u, F_mid>_M` with the force at the
 midpoint field: descent while the predictor's velocity still correlates
 with the midpoint force, second order in `dt`, not the line search's
@@ -334,6 +355,7 @@ method per run. Flags, defaults in brackets:
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |
+| `--helicity-correction {false,true} [false]` | one scalar correction of `E` per step (a multiple of the Dirichlet proxy `H_D = M_1^{-1} P B`) that zeroes the step's discrete helicity change exactly, with `H` natural, under either scheme (section 2); the trace records the multiple as `hcorr` |
 | `--method {newton,lbfgs} [newton]` | the direction: Newton on the second variation, or the L-BFGS descent |
 | `--history M [1]` | L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG) |
 | `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | `v = (I - MU L)^{-G} F` |

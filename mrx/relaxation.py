@@ -359,6 +359,9 @@ class State(eqx.Module):
     newton_fallback : int
         1 when the Newton direction was not a descent direction and the
         smoothed force was stepped along instead, else 0.
+    helicity_lambda : float
+        The multiple of the Dirichlet proxy ``H_D`` removed from ``E`` by
+        ``TimeStepper.helicity_correction`` (0 without it).
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
@@ -389,6 +392,7 @@ class State(eqx.Module):
     a: Optional[jnp.ndarray] = None
     newton_it: int = 0
     newton_fallback: int = 0
+    helicity_lambda: float = 0.0
 
     def __post_init__(self):
         if self.B_nplus1 is None:
@@ -559,6 +563,27 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
+        helicity_correction: Remove from the induction field ``E`` the
+            one component that changes the discrete helicity. Over one
+            step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
+            B_harm>`` of :func:`compute_helicity` changes by exactly ``2 dt
+            <E, P B_n> + dt^2 <E, P curl E>`` (the discrete Stokes identity
+            is exact with ``A`` and ``E`` Dirichlet, ``B_harm`` does not
+            move), and ``<E, P B> = <E - u x B, H_w>`` is the pairing of
+            the projection residual of ``u x B`` with the tangential wall
+            DoFs of the natural proxy of ``B``: the leak of the plain-``B``
+            route (``docs/research/implicit_midpoint_2026-09-04.md``). With
+            ``E - lambda H_D``, ``H_D = M_1^-1 P B`` the Dirichlet proxy,
+            one scalar zeroes the change: under ``EXPLICIT`` the root near
+            zero of the quadratic in ``lambda``, under ``IMPLICIT_MIDPOINT``
+            ``lambda = <E, P B_mid> / <H_D, P B_mid>`` inside every sweep
+            (the ``dt^2`` term is the midpoint's). The pairings are formed
+            in the residual precision (a small total of large terms). The
+            helicity is then flat to the solves and the field's own
+            rounding, with ``H`` natural and no wall layer; the induction
+            picks up ``-lambda curl H_D``, of the size of the leak, and the
+            energy decrease is perturbed by ``lambda`` times the ``J . B``
+            pairing: not variational. ``State.helicity_lambda`` records it.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
             ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
@@ -579,6 +604,7 @@ class TimeStepper(eqx.Module):
     newton_precond: str = "laplacian"
     newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
+    helicity_correction: bool = False
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -709,6 +735,36 @@ class TimeStepper(eqx.Module):
             u = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
+
+    def _helicity_proxy(self, B: jnp.ndarray, X: jnp.ndarray, H_guess: jnp.ndarray):
+        """``(P B, H_D)``: the dual Dirichlet 1-form of ``B`` and its Dirichlet
+        proxy ``H_D = M_1^-1 P B``, which is ``X`` itself on the auxiliary
+        route and one warm-started mass solve on the plain one."""
+        seq = self.seq
+        PB = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
+        H_D = X if self.auxiliary_B_field else seq.apply_inverse_mass_matrix(PB, 1, dirichlet=True, guess=H_guess)
+        return PB, H_D
+
+    def _helicity_lambda(self, E: jnp.ndarray, PB: jnp.ndarray, H_D: jnp.ndarray, dt=None) -> jnp.ndarray:
+        """The multiple of ``H_D`` whose removal from ``E`` zeroes the step's
+        helicity change (``helicity_correction``): ``<E, P B> / <H_D, P B>``
+        for the midpoint pairing, or with ``dt`` the root near zero of ``2
+        <E_l, P B> + dt <E_l, P curl E_l> = 0``, ``E_l = E - lambda H_D``.
+        Every pairing in the residual precision."""
+        on = self.seq if self.seq.residual is None else self.seq.residual
+        E, PB, H_D = (x.astype(RESIDUAL_DTYPE) for x in (E, PB, H_D))
+        if dt is None:
+            return (E @ PB) / (H_D @ PB)
+
+        def P_curl(y):
+            return on.apply_projection_matrix(
+                on.apply_incidence_matrix(y, 1, dirichlet_in=True, dirichlet_out=True),
+                2, 1, True, dirichlet_out=True)
+        PDE, PDH = P_curl(E), P_curl(H_D)
+        a = dt * (H_D @ PDH)
+        b = -2.0 * (H_D @ PB) - 2.0 * dt * (E @ PDH)
+        c = 2.0 * (E @ PB) + dt * (E @ PDE)
+        return 2.0 * c / (-b + jnp.sqrt(b * b - 4.0 * a * c))
 
     def _induction_field(self, u_jk: jnp.ndarray, X: jnp.ndarray, E_guess: jnp.ndarray) -> jnp.ndarray:
         """``E = M_1^-1 load(u x X)`` with ``u`` at the quadrature points and
@@ -946,8 +1002,11 @@ class TimeStepper(eqx.Module):
         value of ``PICARD_TOL_FACTOR`` times ``seq.tol``.
 
         Returns ``(inc, dt, dt_star, B_ideal, evaluations, restarts,
-        residual)``: ``inc`` is the predictor's increment with ``H`` and
-        ``E`` replaced by the midpoint's, the warm starts of the next step.
+        residual, lambda)``: ``inc`` is the predictor's increment with ``H``
+        and ``E`` replaced by the midpoint's, the warm starts of the next
+        step (on the plain-``B`` route with ``helicity_correction`` the
+        ``H`` slot carries the Dirichlet proxy ``H_D``), ``lambda`` the
+        correction of the last sweep (0 without it).
         """
         B_n = state.B_n
         seq = self.seq
@@ -960,12 +1019,16 @@ class TimeStepper(eqx.Module):
         one = jnp.ones((), B_n.dtype)
 
         def sweep(carry):
-            k, n_eval, restarts, dt, x, H, E, resid = carry
+            k, n_eval, restarts, dt, x, H, E, resid, lam = carry
             B_mid = B_n + 0.5 * x
             if self.auxiliary_B_field:
                 H_dual = seq.apply_projection_matrix(B_mid, 2, 1, True, dirichlet_out=True)
                 H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H)
             E = self._induction_field(u_jk, H if self.auxiliary_B_field else B_mid, E)
+            if self.helicity_correction:
+                PB, H = self._helicity_proxy(B_mid, H, H)
+                lam = self._helicity_lambda(E, PB, H).astype(B_n.dtype)
+                E = E - lam.astype(E.dtype) * H
             g = dt * seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
             resid = seq.l2_norm(g - x, 2) / (dt * dB0_norm)
             k, n_eval = k + 1, n_eval + 1
@@ -977,31 +1040,39 @@ class TimeStepper(eqx.Module):
             k = jnp.where(restart, 0, k)
             resid = jnp.where(restart, one, resid)
             restarts = restarts + restart.astype(jnp.int32)
-            return k, n_eval, restarts, dt, x, H, E, resid
+            return k, n_eval, restarts, dt, x, H, E, resid, lam
 
         def unconverged(carry):
-            k, _, _, _, _, _, _, resid = carry
+            k, _, _, _, _, _, _, resid, _ = carry
             return ~(resid <= self.picard_tol) & (resid < PICARD_BLOWUP) & (k < PICARD_MAX)
 
-        carry = (jnp.int32(0), jnp.int32(1), jnp.int32(0), dt0, dt0 * dB0, inc0.H, inc0.E, one)
-        _, n_eval, restarts, dt, x, H, E, resid = jax.lax.while_loop(unconverged, sweep, carry)
-        return inc0._replace(H=H, E=E), dt, dt_star, B_n + x, n_eval, restarts, resid
+        carry = (jnp.int32(0), jnp.int32(1), jnp.int32(0), dt0, dt0 * dB0, inc0.H, inc0.E, one,
+                 jnp.zeros((), B_n.dtype))
+        _, n_eval, restarts, dt, x, H, E, resid, lam = jax.lax.while_loop(unconverged, sweep, carry)
+        return inc0._replace(H=H, E=E), dt, dt_star, B_n + x, n_eval, restarts, resid, lam
 
     def relaxation_step(self, state: State) -> State:
         """Advance ``state.B_n`` by one ideal step into ``state.B_nplus1``:
         forward Euler on the descent velocity, ``B_n + dt curl(u x X)``, or
         the implicit midpoint rule (``scheme``)."""
         B_n = state.B_n
+        lam = jnp.zeros((), B_n.dtype)
         if self.scheme == IntegrationScheme.EXPLICIT:
             inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
                                         state.J, state.E)
             dt, dt_star = self._step_size(inc)
+            if self.helicity_correction:
+                PB, H_D = self._helicity_proxy(B_n, inc.H, state.H)
+                lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
+                E = inc.E - lam * H_D
+                inc = inc._replace(E=E, H=H_D, dB=self.seq.apply_incidence_matrix(
+                    E, 1, dirichlet_in=True, dirichlet_out=True))
             B_nplus1 = B_n + dt * inc.dB
             n_eval, restarts, resid = jnp.int32(1), jnp.int32(0), jnp.zeros((), B_n.dtype)
         elif self.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
             # inc is the predictor's (u, F, dt* are the explicit step's);
             # only the induction is implicit.
-            inc, dt, dt_star, B_nplus1, n_eval, restarts, resid = self._midpoint_solve(state)
+            inc, dt, dt_star, B_nplus1, n_eval, restarts, resid, lam = self._midpoint_solve(state)
         else:
             raise ValueError(
                 f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
@@ -1026,14 +1097,14 @@ class TimeStepper(eqx.Module):
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.newton_fallback),
+                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, inc.Fs, inc.MFs, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, inc.newton_fallback))
+             inc.a, inc.newton_it, inc.newton_fallback, lam))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
@@ -1082,6 +1153,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         a=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         newton_it=jnp.int32(0),
         newton_fallback=jnp.int32(0),
+        helicity_lambda=jnp.zeros((), dtype=DTYPE),
     )
 
 
@@ -1105,7 +1177,8 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
     evaluations and final defect; 1 and 0 for the explicit step),
     ``newton_it`` and ``newton_fallback`` (the Newton solve's signed MINRES
-    count and whether its direction was replaced; 0 without ``newton``), plus
+    count and whether its direction was replaced; 0 without ``newton``),
+    ``hcorr`` (the helicity correction's ``lambda``; 0 without it), plus
     ``extra[name](state)`` for every extra probe.
 
     Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
@@ -1127,6 +1200,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, newton_fallback=state.newton_fallback,
+            hcorr=state.helicity_lambda,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
 
@@ -1314,7 +1388,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr")}
     qoi: dict = {}
     events: list = []
 
@@ -1361,7 +1435,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "newton_fallback"):
+                  "newton_it", "newton_fallback", "hcorr"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
