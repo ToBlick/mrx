@@ -28,11 +28,19 @@ The released configuration differs from the runs behind the paper in:
    the harmonic atom** (Tobias, 2026-09-11 16:00: "harmonic preconditioner
    reaches the floor faster -- that is what we want"; it reaches the floor
    in a fifth of the steps, then descends past it with the residual
-   climbing, which the floor stop at 1e-8 chunk mean ends). To become the
-   default in the code (kappa from the newton session's arms); the Newton
-   rows C1-C3 run with it, and their steps-to-floor and times shrink
-   accordingly. The (32,64,64) run needs the stall-free confirmation on
-   e680ab4 with the harmonic atom before it goes in.
+   climbing). kappa = 1 (the newton session's arms: kappa = 1e-2 never
+   reaches 1e-8 at (16,32,32), kappa = 1 is at 5.8e-9 by step 6; the
+   window below 1e-8 is steps 6-10). To become the default in the code on
+   Tobias's direct confirmation to the newton session; the Newton rows
+   C1-C3 run with it, and their steps-to-floor and times shrink
+   accordingly. kappa = 1 has never run at (32,64,64); its 100-step run
+   there (newton session) is the confirmation the finest row needs.
+   **No floor stop for the paper's runs** (Tobias, 16:30): the chunk-mean
+   criterion misses a five-step window, chunk 5 is silly for Newton, an
+   in-loop stop is a production question for later. Every rerun uses
+   `--floor-tol 0` and runs to its step budget; the tables take the
+   per-step trace (minimum and its step, steps and time to the
+   thresholds), as `newton_table.py` already does.
 6. **Explicit helicity correction available** (newton worktree 04f5cfe,
    `--helicity-correction true`, off by default): the explicit step
    conserves the discrete helicity to 1e-15 in float64. Changes what the
