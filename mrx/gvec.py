@@ -16,8 +16,9 @@ basis through :class:`mrx.spline_bases.SplineBasis` on GVEC's own knots, the
 angles as ``2 pi (m theta - n zeta / nfp)`` -- and :func:`build_gvec_map`
 builds the map's polar spline coefficients of ``R`` and ``Z`` as the L2
 projection of the series, mode by mode (:func:`series_spline_dofs`: the
-radial splines projected onto the map's radial basis, the angular modes
-through the periodic B-spline's Fourier transform), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
+radial splines projected onto the map's radial basis, the angular modes by
+their moments against the periodic bases and one 1-D mass solve per mode,
+uniform or not), while :func:`load_clebsch` histopolates ``lambda`` at the quadrature
 points from the closed form. Nothing is evaluated on a grid
 (``docs/research/analytic_map_2026-08-28.md``). Validated against the pyGVEC
 export of W7-X FMM002 to round-off (2026-08-27).
@@ -175,60 +176,29 @@ def _det_DF(map_func, n=64, seed=0):
     return np.asarray(dets)
 
 
-def _periodic_symbol(row, freqs):
-    """Real Fourier symbol ``sum_l row[l] cos(2 pi m l / N)`` of the circulant
-    matrix with first column ``row``, evaluated at each mode ``m`` in ``freqs``.
-
-    ``row`` is the first column of ``M = B^T W B`` for a uniform periodic
-    B-spline basis, which is symmetric (``M = M^T``) AND circulant (the basis
-    is shift invariant), so ``row[l] = row[N - l]`` exactly and every
-    eigenvalue is real. The Gauss-quadrature assembly leaves that symmetry
-    exact only to round-off, and a raw complex transform of the round-off-
-    asymmetric row then carries a spurious imaginary part whose size depends
-    on ``m`` (small ``freqs`` on one file, large on another) -- so enforce the
-    known structure by symmetrising ``row`` and take the real cosine
-    transform, after checking the input departed from symmetry only at
-    round-off. A genuinely non-uniform basis is not circulant and raises.
-
-    ``collocation_matrix`` runs at the WORKING precision, so a float32
-    relaxation (every relaxation; the convergence study is float64) assembles
-    this row with ~1e-7 round-off and its raw asymmetry reaches ~3e-8 --
-    symmetrising removes exactly that antisymmetric noise. The guard admits
-    round-off to ``1e-4`` (well above float32's ~1e-7, well below the ~1e-2
-    asymmetry a genuinely non-uniform basis would show)."""
-    N = len(row)
-    row = np.asarray(row, dtype=np.float64)
-    sym_row = 0.5 * (row + np.concatenate([row[:1], row[1:][::-1]]))
-    if np.abs(row - sym_row).max() > 1e-4 * np.abs(row).max():
-        raise ValueError("periodic collocation/mass row is not symmetric")
-    return np.cos(2 * np.pi * np.outer(freqs, np.arange(N)) / N) @ sym_row
-
-
-def _angular_symbol(basis, freqs):
-    """Per-mode coefficient factor ``gamma(m)`` of the uniform periodic
-    basis: the degree-``p`` spline with coefficients ``gamma(m) exp(2 pi i m
-    x_j)`` (``x_j`` the Greville points, the centres of the basis functions)
-    is the L2 projection of ``exp(2 pi i m theta)``.
-
-    The moments are the B-spline's Fourier transform,
-    ``int B_j(theta) exp(2 pi i m theta) dtheta = h sinc(m h)^(p+1)
-    exp(2 pi i m x_j)`` with ``h = 1/N`` and ``sinc(x) = sin(pi x)/(pi x)``,
-    and the mass matrix is circulant with the symbol ``mu(m) = sum_l M_l0
-    exp(-2 pi i m l / N)``, so ``gamma(m) = h sinc(m h)^(p+1) / mu(m)``. A
-    mode beyond the Nyquist frequency ``N/2`` is damped by ``sinc^(p+1)``
-    where an interpolant would alias it with gain up to ``1/sigma(N/2) = 3``
-    at ``p = 3``. The mass matrix is assembled by Gauss quadrature, exact
-    for the spline product.
-    """
-    N, p = basis.n, basis.p
+def _angular_coefficients(basis, freqs):
+    """``(n_modes, N)`` complex coefficients on the periodic ``basis`` of the
+    L2 projection of ``exp(2 pi i f theta)`` for every frequency ``f`` in
+    ``freqs``: the moments ``int B_j(theta) exp(2 pi i f theta) dtheta`` by
+    Gauss quadrature on the basis's cells, with enough points for the
+    mode's phase across the widest cell, and one ``N x N`` mass solve
+    shared by all modes, at setup. On a uniform basis this is the closed
+    form ``gamma(f) exp(2 pi i f x_j)`` (``x_j`` the Greville points,
+    ``gamma`` the sinc-damped moment over the circulant mass symbol); a
+    non-uniform basis has no closed form and needs nothing else."""
+    p = basis.p
     freqs = np.asarray(freqs, dtype=np.float64)
-    xi, wi = np.polynomial.legendre.leggauss(p + 1)
-    pts = ((np.arange(N)[:, None] + 0.5 * (xi[None, :] + 1.0)) / N).ravel()
-    w = np.tile(0.5 * wi / N, N)
+    T = np.asarray(basis.T, dtype=np.float64)
+    bp = np.unique(T[(T >= 0.0) & (T <= 1.0)])
+    lo, hi = bp[:-1], bp[1:]
+    q = p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * (hi - lo).max()))
+    xi, wi = np.polynomial.legendre.leggauss(q)
+    pts = (0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * xi[None, :]).ravel()
+    w = (0.5 * (hi - lo)[:, None] * wi[None, :]).ravel()
     B = np.asarray(basis.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
     M = B.T @ (w[:, None] * B)
-    moment = np.sinc(freqs / N) ** (p + 1) / N
-    return moment / _periodic_symbol(M[:, 0], freqs)
+    moments = B.T @ (w[:, None] * np.exp(1j * TWO_PI * np.outer(pts, freqs)))   # (N, n_modes)
+    return np.linalg.solve(M, moments).T
 
 
 def _radial_coefficients(block, basis_r):
@@ -261,24 +231,25 @@ def series_tensor_coefficients(block, nfp, seq):
     and the L2 projection onto a tensor-product spline space is linear and
     tensor-product, so the coefficients are the sum over modes of (radial
     coefficients of ``c_mn``, :func:`_radial_coefficients`) x (angular
-    coefficients of the trig mode, in closed form, :func:`_angular_symbol`):
+    coefficients of the trig mode, :func:`_angular_coefficients`): with
+    ``A_t[m, j]`` and ``A_z[n, k]`` the coefficients of ``exp(2 pi i m
+    theta)`` and ``exp(2 pi i n zeta)`` on the two periodic bases,
 
-        C[i, j, k] = sum_mn c_mn[i] gamma_t(m) gamma_z(n) trig(2 pi (m x_j - n y_k))
+        C[i, j, k] = sum_mn c_mn[i] Re/Im(A_t[m, j] conj(A_z[n, k]))
 
-    with ``x_j``, ``y_k`` the angular Greville points.
+    (cosine series: the real part; sine series: the imaginary part), the
+    angular bases uniform or not.
     """
     br, bt, bz = seq.basis_0.Λ
     m, n_per = block["m"].astype(np.float64), block["n"] / nfp
     if np.abs(n_per - np.round(n_per)).max() > 0:
         raise ValueError("toroidal mode numbers are not multiples of nfp")
     c_r = _radial_coefficients(block, br)                                # (n_r, n_modes)
-    gamma = _angular_symbol(bt, m) * _angular_symbol(bz, n_per)          # (n_modes,)
-    x_t = np.asarray(bt.greville_points(), dtype=np.float64)
-    y_z = np.asarray(bz.greville_points(), dtype=np.float64)
-    arg = TWO_PI * (m[:, None, None] * x_t[None, :, None]
-                    - n_per[:, None, None] * y_z[None, None, :])          # (n_modes, n_t, n_z)
-    trig = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
-    return np.einsum("ik,k,kjl->ijl", c_r, gamma, trig)
+    A_t = _angular_coefficients(bt, m)                                   # (n_modes, n_t)
+    A_z = _angular_coefficients(bz, n_per)                               # (n_modes, n_z)
+    modes = A_t[:, :, None] * np.conj(A_z)[:, None, :]                   # exp(2 pi i (m theta - n zeta))
+    trig = modes.real if block["sin_cos"] == 2 else modes.imag           # (n_modes, n_t, n_z)
+    return np.einsum("ik,kjl->ijl", c_r, trig)
 
 
 def series_spline_dofs(block, nfp, seq):

@@ -102,7 +102,7 @@ Flags, defaults in brackets:
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
 | `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
-| `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`); the angular breakpoints must be uniform, the map's series projection uses the circulant structure of the periodic bases |
+| `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`) |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
 | `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual, `float32` and `float64` are both; exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
@@ -113,13 +113,13 @@ Flags, defaults in brackets:
 | Newton (`--method newton`) | the direction of the second variation: the truncated Newton step, `mrx.hessian.newton_direction`, from a MINRES solve of the Hessian in the potential form `curlᵀ H curl ω = curlᵀ (J × B)`, one budgeted pass at the true residual; the line search and the CFL cap apply to it as to any direction. Reaches the mesh's residual floor in tens to hundreds of steps where the descent needs thousands (`docs/research/newton_second_variation_2026-09-06.md`); start it after the descent's fast phase, the floor it finds depends on the route; Tutorial 4 (`scripts/tutorials/4_li383_newton.py`) |
 | `--newton-tol TOL [0.1]`, `--newton-maxiter N [300]` | relative residual tolerance and iteration budget of that MINRES solve: the truncation is the trust region, a fully converged direction overshoots |
 | `--newton-precond {laplacian,laplacian2,mass,harmonic} [laplacian]` | its preconditioner: the k=1 Laplacian atom (the study's choice), the same squared, the mass atom, or the harmonic sandwich |
-| `--newton-shift S [0]`, `--newton-inner-tol TOL [the solve tolerance]`, `--newton-dt-cap C [1]` | a Levenberg-Marquardt shift in the velocity's L2 metric, the tolerance of the Hessian's inner mass solves, and a cap on the line-search step along the direction (`1` = the Newton step, `inf` leaves the line search alone) |
+| `--newton-dt-cap C [1]` | a cap on the line-search step along the direction (`1` = the Newton step, `inf` leaves the line search alone) |
 | `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
 | `--potential-velocity {false,true} [true for the L-BFGS descent]` | the projected force as `curl a + c h` from the k=1 Hodge solve of `curlᵀ load(J × B)` instead of the Leray saddle solve: divergence-free to round-off, the same iterates 20-30% cheaper; Newton and the auxiliary field have their own routes |
 | `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
-| `--steps N [3000]` | the step budget; a job's time limit is no stop, the checkpoint of every chunk restarts it (`--restart`) |
-| `--chunk N [500]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
-| `--floor-tol TOL [1e-3]` | stopping criterion: the last chunk's mean relative force residual below it |
+| `--steps N [100 Newton, 3000 L-BFGS]` | the step budget; a job's time limit is no stop, the checkpoint of every chunk restarts it (`--restart`) |
+| `--chunk N [20 Newton, 500 L-BFGS]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
+| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / (‖grad |B|²‖² / 2)` below it |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
@@ -133,21 +133,21 @@ directly; `mrx.initial_conditions.initial_field` builds the field and
 
 ## Stopping criterion
 
-The relative force residual $\|F\|_M / \|\nabla(B^2/2)\|$ is recorded at
-every step. The run stops when its mean over the last `W` steps,
+The squared normalised force residual $\|F\|_M^2 / (\tfrac12 \|\nabla |B|^2\|^2)$
+is recorded at every step. The run stops when its mean over the last `W` steps,
 
 $$
 \frac{1}{W} \sum_{j=i-W+1}^{i} \mathrm{resid}[j] < \texttt{floor-tol},
 $$
 
-or when the step or wall-clock budget runs out. The relaxation guarantees
+or when the step budget runs out. The relaxation guarantees
 $dE/dt \le 0$ only, so the residual is not monotone; the window mean is
 the quantity, never the last value. On the W7-X Clebsch run at `(8,16,8)`,
-`p = 3`, float64, the residual reaches $1.7 \times 10^{-3}$ at step 500
-and floors around $10^{-3}$ by step 1000-3000. A float32 run's solves are
+`p = 3`, float64, it reaches $1.4 \times 10^{-6}$ at step 500 and floors
+around $5 \times 10^{-7}$ by step 1000-3000. A float32 run's solves are
 refined against a float64 residual ([Precision](concepts/precision.md)),
 so its floor is no longer the solve tolerance; until 2026-09-04 it was
-($\sim 2 \times 10^{-3}$ at tol $10^{-5}$), and a `--floor-tol` below it
+($\sim 2 \times 10^{-6}$ at tol $10^{-5}$), and a `--floor-tol` below it
 never fired.
 
 ## Output
@@ -170,7 +170,7 @@ Read the trace with the standard library:
 import json
 run = json.load(open("outputs/relax/<date>/<time>/relax.json"))
 dE = run["trace"]["dE"]                   # the exact energy change of every step
-resid = run["trace"]["resid"]             # ||F|| / ||grad(B²/2)|| after every step
+resid = run["trace"]["resid"]             # ||F||² / (||grad |B|²||² / 2) after every step
 H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 
@@ -184,7 +184,7 @@ Three checks of a healthy run (`--scheme explicit`, no reconnection):
 - `helicity` is constant to the solver tolerance.
 - `div` stays at roundoff.
 
-`resid` is the force residual relative to the magnetic pressure gradient.
+`resid` is the squared force residual relative to the magnetic pressure gradient.
 Judge a refinement by the floor it reaches, not by the rate.
 
 ## Two pressures

@@ -23,16 +23,13 @@ curl of a Dirichlet 1-form, ``u = curl a``, which is divergence-free exactly
 (``div curl = 0`` on the incidence matrices) and turns the constrained system
 into the symmetric one
 
-    curl^T (H + shift M_2) curl a = curl^T M_2 F,
+    curl^T H curl a = curl^T M_2 F,
 
 consistent by construction (the right-hand side annihilates every ``a`` whose
 curl is in the kernel of ``H``; the gauge ``a + grad phi`` is in the kernel of
 both sides and the curl removes it from the answer), solved by MINRES with the
-k=1 Laplacian atom as the preconditioner. ``shift`` is the Levenberg-Marquardt
-shift in the velocity's L2 metric: 0 is Newton, a large shift is steepest
-descent ``u = F / shift`` (the line search removes the scale), and in between
-the modes of ``H`` above the shift are solved for and the ones below descended
-along. The one divergence-free direction ``curl a`` cannot represent is the
+k=1 Laplacian atom as the preconditioner. The one divergence-free direction
+``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
 import jax.numpy as jnp
@@ -171,19 +168,17 @@ def _preconditioner(seq, name):
     raise ValueError(f"newton_precond {name!r} is not one of {PRECONDITIONERS}")
 
 
-def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=0.1, maxiter=300,
-                     precond="laplacian", inner_tol=None):
+def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian"):
     """The Newton direction ``u = curl a`` at the field ``B``.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
     Leray-projected force (``curl^T M_2 F`` is ``curl^T load(J x B)``
     exactly: the gradient part is a ``D_2^T``, and ``D_2 D_1 = 0``),
     ``a_guess`` the previous direction's potential (the warm start of the
-    MINRES solve), ``shift`` the Levenberg-Marquardt shift, ``tol`` the
-    relative residual of the solve in the preconditioner norm, ``maxiter``
-    its iteration budget, ``precond`` one of :data:`PRECONDITIONERS` or the
-    preconditioner's apply itself (a callable),
-    ``inner_tol`` the tolerance of the Hessian's mass solves.
+    MINRES solve), ``tol`` the relative residual of the solve in the
+    preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
+    of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
+    callable); the Hessian's mass solves run at the sequence's tolerance.
 
     A truncated solve by design: MINRES runs the ``maxiter`` budget with no
     criterion of its own (its residual is in the preconditioner's norm, not
@@ -204,7 +199,7 @@ def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=0.1, maxiter=300,
     on = seq if seq.residual is None else seq.residual
 
     def chain(s):
-        Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype), tol=inner_tol)
+        Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype))
 
         def curl(a):
             return s.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True)
@@ -215,7 +210,7 @@ def newton_direction(seq, B, J, MF, a_guess, shift=0.0, tol=0.1, maxiter=300,
 
         def A(a):
             u = curl(a)
-            return curl_t(Hs(u) + shift * s.apply_mass_matrix(u, 2, True))
+            return curl_t(Hs(u))
         return curl, curl_t, A
 
     curl, curl_t, A = chain(seq)

@@ -360,9 +360,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
             ignored for an analytic geometry.
         knots: ``(r, theta, zeta)`` breakpoints per axis, each a list from
             0 to 1 or ``None`` for the uniform grid of ``ns``; the knot
-            vectors are :func:`knot_vector` of them. The angular breakpoints
-            must be uniform (they only set ``n``): the map's series
-            projection uses the circulant structure of the periodic bases.
+            vectors are :func:`knot_vector` of them.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -384,11 +382,6 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
 
     types = ("clamped", "periodic", "periodic")
     bps = tuple(knots) if knots is not None else (None, None, None)
-    for bp, t in zip(bps, types):
-        if bp is not None and t == "periodic" and not np.allclose(np.diff(bp), 1.0 / (len(bp) - 1)):
-            raise ValueError(
-                "angular breakpoints must be uniform: the map's series projection "
-                "(mrx.gvec) uses the circulant structure of the periodic bases")
     Ts = tuple(None if bp is None else knot_vector(bp, p, t == "periodic")
                for bp, t in zip(bps, types))
     ns = tuple(n if bp is None else len(bp) - 1 + (p if t == "clamped" else 0)

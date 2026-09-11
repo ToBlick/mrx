@@ -128,7 +128,7 @@ if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
-    fast = relax(initial_state(B0, ts_descent), ts_descent, steps=500, chunk=50, floor_tol=1e-3)
+    fast = relax(initial_state(B0, ts_descent), ts_descent, steps=500, chunk=50, floor_tol=5e-7)
     B_start = fast.state.B_n
     print(f"[ic] the descent's fast phase: {fast.steps} steps ({fast.stop}), "
           f"||F|| {fast.trace['F'][0]:.3e} -> {fast.trace['F'][-1]:.3e}")

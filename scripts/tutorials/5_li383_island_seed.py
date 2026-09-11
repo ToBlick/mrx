@@ -153,7 +153,7 @@ B = B_seeded
 if cli.descent_steps:
     ts_descent = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
     res_d = relax(initial_state(B, ts_descent), ts_descent, steps=cli.descent_steps, chunk=50,
-                  floor_tol=1e-3)
+                  floor_tol=5e-7)
     F = np.asarray(res_d.trace["F"], dtype=float)
     H = np.asarray(res_d.qoi["helicity"], dtype=float)
     print(f"[descent] {res_d.steps} steps ({res_d.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "

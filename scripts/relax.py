@@ -35,9 +35,7 @@ Flags, defaults in brackets:
                                    separated from 0 to 1, instead of the
                                    uniform grid; the axis takes its n from
                                    them (cells + p clamped, cells periodic;
-                                   mrx.geometry.knot_vector). The angular
-                                   breakpoints must be uniform: the map's
-                                   series projection is circulant
+                                   mrx.geometry.knot_vector)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --solve-maxiter N [2000]     iteration budget of every inner solve
       --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
@@ -82,14 +80,9 @@ Flags, defaults in brackets:
                                    smoothing on the potential, L-BFGS on
                                    the smoothed forces; Newton and the
                                    auxiliary field have their own routes
-      --smooth-first {false,true} [false]
-                                   Leray route: smooth the force before the
-                                   L-BFGS combination (the preconditioned-CG
-                                   order) instead of the combination after
     Newton (--method newton): the direction u = curl a with
-    curl^T (H + shift M) curl a = curl^T M F by MINRES (mrx.hessian); a
-    non-descending direction falls back to the smoothed force.
-      --newton-shift S [0]         the Levenberg-Marquardt shift (L2 metric)
+    curl^T H curl a = curl^T M F by MINRES (mrx.hessian); a non-descending
+    direction falls back to the smoothed force.
       --newton-tol TOL [0.1]       relative residual of the MINRES solve
       --newton-maxiter N [300]     its iteration budget per step
       --newton-precond {laplacian,laplacian2,mass,harmonic} [laplacian]
@@ -98,14 +91,14 @@ Flags, defaults in brackets:
                                    the harmonic atom (the Laplacian atom with
                                    the parallel symbol of the harmonic field
                                    in its denominator, mrx.hessian)
-      --newton-inner-tol TOL [solve tol]
-                                   tolerance of the Hessian's mass solves
       --newton-dt-cap C [1]        cap the line-search step along a Newton
                                    direction (1 = the Newton step, inf
                                    leaves the line search alone)
     Budgets and output:
-      --steps N [3000]             maximum number of steps
-      --chunk N [500]              steps per compiled chunk (one lax.scan):
+      --steps N [100 Newton, 3000 L-BFGS]
+                                   maximum number of steps
+      --chunk N [20 Newton, 500 L-BFGS]
+                                   steps per compiled chunk (one lax.scan):
                                    the trace comes back, the quantities of
                                    interest are sampled (helicity, the two
                                    pressures, beta), a checkpoint and the
@@ -115,9 +108,10 @@ Flags, defaults in brackets:
       --reconnect-every K [0]      see "Reconnection series"; 0 = off
       --reconnect-helicity X [0.01] the helicity each reconnection spends,
                                    |dH| / |H|
-      --floor-tol TOL [1e-3]       stop when the last chunk's mean relative
-                                   force residual ||F||_M / ||grad(B^2/2)||
-                                   is below this (the residual is not
+      --floor-tol TOL [1e-8]       stop when the last chunk's mean squared
+                                   normalised force residual
+                                   ||F||^2_M / (||grad |B|^2||^2 / 2) is
+                                   below this (the residual is not
                                    monotone; the window mean is the quantity)
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
@@ -204,28 +198,22 @@ def parse_args(argv=None):
     ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
                     help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
                          "[true for the L-BFGS descent; Newton and the auxiliary field have their own routes]")
-    ap.add_argument("--smooth-first", default="false", choices=("false", "true"),
-                    help="Leray route: smooth the force before the L-BFGS combination, not the combination after")
     ap.add_argument("--method", default="newton", choices=("newton", "lbfgs"),
                     help="the direction: Newton on the second variation, or the L-BFGS descent")
-    ap.add_argument("--newton-shift", type=float, default=0.0,
-                    help="Levenberg-Marquardt shift of the Newton solve in the velocity's L2 metric")
     ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="relative residual tolerance of the Newton MINRES solve")
     ap.add_argument("--newton-maxiter", type=int, default=300,
                     help="iteration budget of the Newton MINRES solve per step")
     ap.add_argument("--newton-precond", default="laplacian", choices=("laplacian", "laplacian2", "mass", "harmonic"),
                     help="preconditioner of the Newton solve")
-    ap.add_argument("--newton-inner-tol", type=float, default=None,
-                    help="tolerance of the Hessian's mass solves [the solve tolerance]")
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
-    ap.add_argument("--steps", type=int, default=3000)
-    ap.add_argument("--chunk", type=int, default=500,
+    ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 L-BFGS]")
+    ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
-    ap.add_argument("--floor-tol", type=float, default=1e-3,
-                    help="stop when the last chunk's mean relative force residual is below this")
+    ap.add_argument("--floor-tol", type=float, default=1e-8,
+                    help="stop when the last chunk's mean squared normalised force residual is below this")
     ap.add_argument("--reconnect-every", type=int, default=0,
                     help="reconnect the field with one resistive solve every K steps, rounded "
                          "to whole chunks; 0 = off (see the docstring)")
@@ -243,8 +231,11 @@ def parse_args(argv=None):
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.newton = cli.method == "newton"
+    if cli.steps is None:
+        cli.steps = 100 if cli.newton else 3000
+    if cli.chunk is None:
+        cli.chunk = 20 if cli.newton else 500
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
-    cli.smooth_first = cli.smooth_first == "true"
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
     if cli.chunk < 1 or cli.steps % cli.chunk:
@@ -311,10 +302,9 @@ def main(cli):
         cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
-        potential_velocity=cli.potential_velocity, smooth_first=cli.smooth_first,
-        newton=cli.newton, newton_shift=cli.newton_shift, newton_tol=cli.newton_tol,
-        newton_maxiter=cli.newton_maxiter, newton_precond=cli.newton_precond,
-        newton_inner_tol=cli.newton_inner_tol, newton_dt_cap=cli.newton_dt_cap)
+        potential_velocity=cli.potential_velocity,
+        newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
+        newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -324,7 +314,7 @@ def main(cli):
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
-    print(f"\n=== {'newton shift=%.3e tol=%.1e maxiter=%d precond=%s' % (cli.newton_shift, cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}{'  smooth-first' if cli.smooth_first else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

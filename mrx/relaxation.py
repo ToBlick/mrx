@@ -520,12 +520,6 @@ class TimeStepper(eqx.Module):
             O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
             the cap and leaves the trajectory untouched.
         scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
-        smooth_first: On the Leray route, smooth the force and let L-BFGS
-            combine the smoothed forces (the preconditioned-CG order, the
-            potential route's order) instead of combining the raw forces
-            and smoothing the combination, which smooths the already smooth
-            previous step a second time. Off by default (the production
-            order); the potential route always smooths first.
         potential_velocity: Compute the projected force as ``F = curl a +
             c h`` instead of by the Leray saddle solve: ``a`` from the k=1
             Hodge Laplacian solve of ``curl^T load(J x B)`` (the curl-curl
@@ -542,8 +536,8 @@ class TimeStepper(eqx.Module):
             result). No pressure comes out of it; ``State.p`` keeps the
             sampler's. Excludes ``newton`` and the auxiliary field.
         newton: Replace the L-BFGS direction by the Newton direction of the
-            second variation, ``u = curl a`` with ``curl^T (H + newton_shift
-            M_2) curl a = curl^T M_2 F`` solved by MINRES
+            second variation, ``u = curl a`` with ``curl^T H curl a = curl^T
+            M_2 F`` solved by MINRES
             (:mod:`mrx.hessian`). Needs ``history_size = 0``. The Hessian
             reads the 2-form ``B``; the force and the induction follow
             ``auxiliary_B_field`` and ``scheme`` as usual, so the midpoint
@@ -553,13 +547,9 @@ class TimeStepper(eqx.Module):
             search's sign decides: a direction with ``(u, F)_M <= 0`` is
             replaced by the smoothed force of ``velocity_smoothing_order``,
             and ``State.newton_fallback`` says so.
-        newton_shift: The Levenberg-Marquardt shift of the Newton solve in
-            the velocity's L2 metric (0 is Newton).
         newton_tol: Relative residual tolerance of the MINRES solve.
         newton_maxiter: Its iteration budget per step.
         newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`.
-        newton_inner_tol: Tolerance of the Hessian's three k=1 mass solves
-            per MINRES iteration; ``None`` is the sequence's.
         newton_dt_cap: Cap on the line-search step along a Newton direction,
             ``dt = min(dt_star, cfl / cfl_max, newton_dt_cap)``. A truncated
             MINRES direction mixes resolved modes, whose energy minimum is at
@@ -583,13 +573,10 @@ class TimeStepper(eqx.Module):
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
-    smooth_first: bool = False
     newton: bool = False
-    newton_shift: float = 0.0
     newton_tol: float = 0.1
     newton_maxiter: int = 300
     newton_precond: str = "laplacian"
-    newton_inner_tol: float = None
     newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
     picard_tol: float = None
@@ -797,8 +784,13 @@ class TimeStepper(eqx.Module):
             # (M F, M u, M dB) whichever method is running -- L-BFGS used to
             # apply it 4m + 6 times.
             MF = seq.apply_mass_matrix(F, 2)
-            Fs = self.smooth_velocity(F) if self.smooth_first else F
-            MFs = seq.apply_mass_matrix(Fs, 2) if self.smooth_first else MF
+            # The force is smoothed BEFORE the L-BFGS combination (the
+            # preconditioned-CG order, the potential route's order): the
+            # combination of raw forces smoothed afterwards smooths the
+            # already smooth previous step a second time and floors 2.7x
+            # higher (li383 (16,32,32) p=2, tab:velocity_choices).
+            Fs = self.smooth_velocity(F)
+            MFs = seq.apply_mass_matrix(Fs, 2)
             a = state.a
 
         # The secant history exists only for history_size > 0 (a static
@@ -820,18 +812,16 @@ class TimeStepper(eqx.Module):
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MFs_prev - MFs)
         if self.newton:
             u_newton, a, newton_it = newton_direction(
-                seq, B, J, MF, state.a, self.newton_shift, self.newton_tol, self.newton_maxiter,
-                self.newton_precond_apply or self.newton_precond, self.newton_inner_tol)
+                seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter,
+                self.newton_precond_apply or self.newton_precond)
             # The line search's sign: a Newton direction that does not
-            # descend (H + shift M indefinite there, or a direction the
+            # descend (H indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.
             descent = (u_newton @ MF) > 0
             u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
             sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
         else:
             u, sy = self._lbfgs_direction(Fs, state.s_history, y_hist, state.Ms_history, My_hist)
-            if not (self.potential_velocity or self.smooth_first):   # else the force was smoothed
-                u = self.smooth_velocity(u)
             newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
@@ -1299,8 +1289,9 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
     Stops on the step count or on ``floor_tol`` (the last chunk's mean of
-    the relative force residual ``||F||_M / ||grad(B^2/2)||`` below it; the
-    residual is not monotone, the window mean is the quantity); a job's
+    the squared normalised force residual ``||F||_M^2 / (||grad |B|^2||^2 /
+    2)`` below it; the residual is not monotone, the window mean is the
+    quantity); a job's
     time limit is no stop, the checkpoint of every chunk restarts it.
     ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
@@ -1318,7 +1309,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
     scale = force_scale(seq)
-    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: st.F_norm / scale(st.B_n)))
+    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: st.F_norm ** 2 / (2.0 * scale(st.B_n) ** 2)))
     sample = make_sampler(seq, ts)
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
@@ -1332,7 +1323,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
-                   resid=float(state.F_norm / scale(state.B_n)), **scalars)
+                   resid=float(state.F_norm ** 2 / (2.0 * scale(state.B_n) ** 2)), **scalars)
         for k, v in row.items():
             qoi.setdefault(k, []).append(v)
 
@@ -1345,16 +1336,17 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     record(it0, 0.0, scalars)
     if verbose:
         # The force's gradient-part remnant is the pressure solve's residual,
-        # relative to |J x B| while the force is resid times that: its
-        # energy term is 0.1 tol / resid^2 of the descent (li383, float64,
+        # relative to |J x B| while the force is sqrt(2 resid) times that
+        # (resid the squared normalised residual): its energy term is
+        # 0.05 tol / resid of the descent (li383, float64,
         # docs/research/velocity_leray_ab_2026-09-04.md), a tenth of it at
-        # resid = sqrt(tol). Reported, not enforced: the tolerance and the
+        # resid = tol / 2. Reported, not enforced: the tolerance and the
         # floor are the caller's choices.
         print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
-              f"resid={float(state.F_norm / scale(state.B_n)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
+              f"resid={float(state.F_norm ** 2 / (2.0 * scale(state.B_n) ** 2)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
               f"        {pressure_line(scalars)}\n"
               f"        solve tol {seq.tol:.1e}: the force's gradient-part term is a tenth of the "
-              f"descent at resid {seq.tol ** 0.5:.1e} (0.1 tol / resid^2)", flush=True)
+              f"descent at the squared residual {seq.tol / 2:.1e} (0.05 tol / resid)", flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"
