@@ -111,3 +111,18 @@ arms ran before the decision and are not tabulated. Tables by
 | mixed | B | -1.02e-05 | 8.46e-05 |
 | mixed | aux H | -1.02e-06 | 3.04e-05 |
 | mixed | B + helicity correction | -1.86e-07 | -- |
+
+## Seeded arms: sections and widths (traces 18390819/22, `scripts/poincare_trace.py`, five planes; the paper's measure)
+
+| arm | width ic | width final | change (paper) | chaotic lines ic -> final (paper) | the other chain at the end |
+|---|---|---|---|---|---|
+| (6,1), iota = 1/2 | 0.1637 rho = 2.62 h_r | 0.1630 = 2.61 h_r | -0.4% (+2.0%) | 2 -> 9 (1 -> 4) | 3/5: 0.023 rho = 0.37 h_r |
+| (5,1), iota = 3/5 | 0.1455 = 2.33 h_r | 0.1394 = 2.23 h_r | -4.2% (+4.7%) | 1 -> 10 (0 -> 1) | 1/2: 0.034 rho = 0.54 h_r |
+
+Both seeded chains survive within the paper's "+-5%" (2.6 and 2.2 h_r,
+sections `<arm>/poincare/poincare_final_zeta0.375.pdf`). New against the
+paper: the end states carry 9-10 chaotic lines instead of 1-4, and the
+unseeded resonance of each arm opens a small chain (0.4-0.5 h_r), the 1/2
+chain of the (5,1) arm being the reconnection its helicity drift (+2e-5)
+recorded. The unseeded anchor's sections at step 10 000 are traced
+separately (job 18391109).
