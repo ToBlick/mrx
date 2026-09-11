@@ -126,3 +126,11 @@ unseeded resonance of each arm opens a small chain (0.4-0.5 h_r), the 1/2
 chain of the (5,1) arm being the reconnection its helicity drift (+2e-5)
 recorded. The unseeded anchor's sections at step 10 000 are traced
 separately (job 18391109).
+
+Unseeded anchor (potential route, `anchor_pot_m1g1`, traced at steps 10 000
+and 18 000, job 18391109; frames in `anchor_pot_m1g1/poincare/`): at
+10 000 both resonances carry a grid-scale chain, 1/2 at 0.36 h_r and 3/5 at
+0.35 h_r, five chaotic lines (the paper's anchor: 3/5 at 0.47 h_r, no 1/2
+chain); at 18 000: 0.25 and 0.36 h_r, four chaotic lines. So the seeded
+chains at 2.2-2.6 h_r stand six to seven times above the unseeded field's,
+as in the paper.
