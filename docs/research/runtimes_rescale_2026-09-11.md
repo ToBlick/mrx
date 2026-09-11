@@ -130,6 +130,29 @@ Every re-measured row was compared step by step with its paper arm
   a converged one, so part of those "factors" may be the bug. The n <= 24,
   p <= 3, tol >= 1e-8 and order-0 rows stand.
 
+**Probe verdict (15:20).** The n=48 arm in float64 on the same code
+(job 18383773, 30 steps): squared residual against the paper's mixed run
+0.29 / 0.96 / 1.18 per 10 steps (the first window is the smooth-first
+transient, as at n=16), |F| falling 1.50e-2 -> 7.9e-3, dt 1.1-1.6, no
+stall; the mixed run at b0f8d38 had 46 / 9 / 30 and |F| rising. So the
+mixed-precision refinement stop was the cause; removed in e680ab4 (the
+newton session, suites 54/54 x3). float64 at n=48 today: 28 s/step steady
+(chunks 2-3), compile 12 min. The held rows are to be re-measured on
+e680ab4. The n=48 mixed rate of 5.3 s/step is void.
+
+**Vacuum solve at the floor rungs, current code, float64, tol 1e-10
+(`scripts/vacuum_timing.py`, jobs 18380092/18380098/18383776):**
+
+| rung | DoFs | build | harmonic form first / second call | force first / second | Rayleigh | Leray resid | raw JxB resid | J/B |
+|---|---|---|---|---|---|---|---|---|
+| 39x78x39 p=2 | 335k | 103 s | 40 / 19 s | 14 / 10 s | 3.2e-24 | 7.2e-27 | 1.7e-24 | 1.8e-12 |
+| 32x64x32 p=3 | 182k | 81 s | 38 / 19 s | 15 / 11 s | 1.5e-23 | 9.8e-26 | 6.9e-24 | 3.9e-12 |
+| 41x82x41 p=4 | 390k | 127 s | 95 / 68 s | 34 / 30 s | 5.3e-22 | 4.1e-24 | 2.4e-22 | 2.3e-11 |
+
+The second call is the solve without compile; the force residual is in the
+relaxation's units, sixteen orders below the relaxation floor. p=4 needed
+`--map-batch 8192` (the map evaluation allocates 14 GiB unbatched).
+
 ## The time columns, recomputed
 
 Time = the paper's step count x today's steady s/step, compile and setup
