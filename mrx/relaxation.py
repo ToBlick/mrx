@@ -1289,8 +1289,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
     Stops on the step count or on ``floor_tol`` (the last chunk's mean of
-    the squared normalised force residual ``||F||_M^2 / (||grad |B|^2||^2 /
-    2)`` below it; the residual is not monotone, the window mean is the
+    the squared normalised force residual ``||F||_M^2 / ||grad(B^2/2)||^2``
+    below it; the residual is not monotone, the window mean is the
     quantity); a job's
     time limit is no stop, the checkpoint of every chunk restarts it.
     ``reconnect_every`` (rounded to
@@ -1309,7 +1309,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
     scale = force_scale(seq)
-    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: st.F_norm ** 2 / (2.0 * scale(st.B_n) ** 2)))
+    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: (st.F_norm / scale(st.B_n)) ** 2))
     sample = make_sampler(seq, ts)
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
@@ -1323,7 +1323,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
-                   resid=float(state.F_norm ** 2 / (2.0 * scale(state.B_n) ** 2)), **scalars)
+                   resid=float((state.F_norm / scale(state.B_n)) ** 2), **scalars)
         for k, v in row.items():
             qoi.setdefault(k, []).append(v)
 
@@ -1336,17 +1336,17 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     record(it0, 0.0, scalars)
     if verbose:
         # The force's gradient-part remnant is the pressure solve's residual,
-        # relative to |J x B| while the force is sqrt(2 resid) times that
+        # relative to |J x B| while the force is sqrt(resid) times that
         # (resid the squared normalised residual): its energy term is
-        # 0.05 tol / resid of the descent (li383, float64,
+        # 0.1 tol / resid of the descent (li383, float64,
         # docs/research/velocity_leray_ab_2026-09-04.md), a tenth of it at
-        # resid = tol / 2. Reported, not enforced: the tolerance and the
-        # floor are the caller's choices.
+        # resid = tol. Reported, not enforced: the tolerance and the floor
+        # are the caller's choices.
         print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
-              f"resid={float(state.F_norm ** 2 / (2.0 * scale(state.B_n) ** 2)):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
+              f"resid={float((state.F_norm / scale(state.B_n)) ** 2):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
               f"        {pressure_line(scalars)}\n"
               f"        solve tol {seq.tol:.1e}: the force's gradient-part term is a tenth of the "
-              f"descent at the squared residual {seq.tol / 2:.1e} (0.05 tol / resid)", flush=True)
+              f"descent at the squared residual {seq.tol:.1e} (0.1 tol / resid)", flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"

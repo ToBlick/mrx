@@ -119,7 +119,7 @@ Flags, defaults in brackets:
 | `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
 | `--steps N [100 Newton, 3000 L-BFGS]` | the step budget; a job's time limit is no stop, the checkpoint of every chunk restarts it (`--restart`) |
 | `--chunk N [20 Newton, 500 L-BFGS]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
-| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / (‖grad |B|²‖² / 2)` below it |
+| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
@@ -133,7 +133,7 @@ directly; `mrx.initial_conditions.initial_field` builds the field and
 
 ## Stopping criterion
 
-The squared normalised force residual $\|F\|_M^2 / (\tfrac12 \|\nabla |B|^2\|^2)$
+The squared normalised force residual $\|F\|_M^2 / \|\nabla(B^2/2)\|^2$
 is recorded at every step. The run stops when its mean over the last `W` steps,
 
 $$
@@ -143,11 +143,11 @@ $$
 or when the step budget runs out. The relaxation guarantees
 $dE/dt \le 0$ only, so the residual is not monotone; the window mean is
 the quantity, never the last value. On the W7-X Clebsch run at `(8,16,8)`,
-`p = 3`, float64, it reaches $1.4 \times 10^{-6}$ at step 500 and floors
-around $5 \times 10^{-7}$ by step 1000-3000. A float32 run's solves are
+`p = 3`, float64, it reaches $2.9 \times 10^{-6}$ at step 500 and floors
+around $10^{-6}$ by step 1000-3000. A float32 run's solves are
 refined against a float64 residual ([Precision](concepts/precision.md)),
 so its floor is no longer the solve tolerance; until 2026-09-04 it was
-($\sim 2 \times 10^{-6}$ at tol $10^{-5}$), and a `--floor-tol` below it
+($\sim 4 \times 10^{-6}$ at tol $10^{-5}$), and a `--floor-tol` below it
 never fired.
 
 ## Output
@@ -170,7 +170,7 @@ Read the trace with the standard library:
 import json
 run = json.load(open("outputs/relax/<date>/<time>/relax.json"))
 dE = run["trace"]["dE"]                   # the exact energy change of every step
-resid = run["trace"]["resid"]             # ||F||² / (||grad |B|²||² / 2) after every step
+resid = run["trace"]["resid"]             # ||F||² / ||grad(B²/2)||² after every step
 H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 

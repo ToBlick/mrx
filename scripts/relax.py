@@ -110,9 +110,9 @@ Flags, defaults in brackets:
                                    |dH| / |H|
       --floor-tol TOL [1e-8]       stop when the last chunk's mean squared
                                    normalised force residual
-                                   ||F||^2_M / (||grad |B|^2||^2 / 2) is
-                                   below this (the residual is not
-                                   monotone; the window mean is the quantity)
+                                   ||F||^2_M / ||grad(B^2/2)||^2 is below
+                                   this (the residual is not monotone; the
+                                   window mean is the quantity)
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision

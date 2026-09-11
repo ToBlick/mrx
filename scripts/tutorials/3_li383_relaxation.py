@@ -50,7 +50,7 @@ ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
-ap.add_argument("--floor-tol", type=float, default=5e-7,
+ap.add_argument("--floor-tol", type=float, default=1e-6,
                 help="stop once the chunk-mean squared normalised force residual falls below this")
 ap.add_argument("--cuts", type=int, default=6)
 ap.add_argument("--out", default="outputs/tutorials/li383_relaxation")

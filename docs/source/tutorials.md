@@ -137,7 +137,7 @@ default), run through `relax`:
 
 ```python
 ts = TimeStepper(seq=seq, history_size=1, cfl=0.5, velocity_smoothing_order=1)
-res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=5e-7)
+res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=1e-6)
 ```
 
 On li383 gamma = 1 reaches a clean nested floor in ~1000 steps where the

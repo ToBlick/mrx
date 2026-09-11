@@ -341,7 +341,7 @@ method per run. Flags, defaults in brackets:
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
 | `--chunk N [20 Newton, 500 L-BFGS]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_trace.py --fields snapshots`, which traces every stored step at the chosen plane; `scripts/poincare_plot.py` then writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--steps N [100 Newton, 3000 L-BFGS]` | the step budget; the checkpoint of every chunk restarts a job its time limit ended |
-| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / (‖grad |B|²‖² / 2)` below it; below `tol / 2` the force's gradient-part remnant is more than a tenth of the descent (0.05 tol / resid, `precision.md`); `relax` prints that value at the start |
+| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it; below `tol` the force's gradient-part remnant is more than a tenth of the descent (0.1 tol / resid, `precision.md`); `relax` prints that value at the start |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |
@@ -349,14 +349,14 @@ method per run. Flags, defaults in brackets:
 
 The initial condition is always Leray-projected. The run stops when the
 mean over the last `W` steps of the squared normalised force residual
-`||F||²_M / (||grad |B|²||² / 2)` falls below `--floor-tol`
+`||F||²_M / ||grad(B²/2)||²` falls below `--floor-tol`
 (`force_floor_reached`), or when a budget runs out. The residual is not
 monotone, so the window mean is the quantity, never the last value.
 Calibration: on the W7-X Clebsch run at `(8,16,8)`, `p = 3`, float64, the
-residual reaches `1.4e-6` at step 500 and floors around `5e-7` by step
+residual reaches `2.9e-6` at step 500 and floors around `1e-6` by step
 1000-3000. A float32 run's solves are refined against a float64 residual
 (`precision.md`), so its floor is no longer the solve tolerance (until
-2026-09-04 it was, `~2e-6` at tol `1e-5`).
+2026-09-04 it was, `~4e-6` at tol `1e-5`).
 
 Output: `relax.json` with the parameters, the per-step trace (`dE` the
 exact energy change of the step, `dE_ls` the line search's prediction,
