@@ -45,6 +45,13 @@ The released configuration differs from the runs behind the paper in:
    `--helicity-correction true`, off by default): the explicit step
    conserves the discrete helicity to 1e-15 in float64. Changes what the
    helicity table can say (a fifth column, or the midpoint rows retired).
+   **Decided (Tobias, 17:00): the midpoint scheme is omitted from the
+   paper.** The helicity table becomes explicit x {mixed, float64} x
+   {with, without the auxiliary field} plus the explicit step with the
+   correction; the scheme option, the Picard sentence and the midpoint
+   proposition go from the text. The four midpoint arms of the 2026-09-11
+   rerun batch had finished (9-14 min each) before the decision; their
+   records stay in `paper_rerun_2026-09-11/hel_mp_*` unused.
 7. **Knot lists per axis** replace `--r-refine` (the refined mesh of the
    mesh-refinement figure is a breakpoint list now).
 8. **Vacuum: one construction** (direct Hodge decomposition, Rayleigh
