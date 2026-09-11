@@ -140,6 +140,15 @@ newton session, suites 54/54 x3). float64 at n=48 today: 28 s/step steady
 (chunks 2-3), compile 12 min. The held rows are to be re-measured on
 e680ab4. The n=48 mixed rate of 5.3 s/step is void.
 
+**(32,64,64) Newton verified on e680ab4 (newton session, job 18384195,
+50 steps, `chunk_speed/h32_chunk10_nostop`):** zero stalled steps (13 on
+b0f8d38), cos(u, F) median 0.11, dt 0.89-1 throughout, squared residual
+within 1-4% of the paper's arm at every step (step 22: 4.81e-7 vs 4.57e-7;
+40: 2.21e-7 vs 2.24e-7; 49: 1.41e-7 vs 1.36e-7). Steady 42 s/step as this
+morning: the Newton (32,64,64) row's factor 1.82 stands. Still held: the
+L-BFGS (32,64,64) row, n = 48, p = 4, 5 and tol 1e-6 (the last gets its
+rate from the paper-rerun batch's 32 000-step arm on e680ab4).
+
 **Vacuum solve at the floor rungs, current code, float64, tol 1e-10
 (`scripts/vacuum_timing.py`, jobs 18380092/18380098/18383776):**
 
