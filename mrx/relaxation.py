@@ -1297,7 +1297,9 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     """The ``(state, step)`` of :func:`write_checkpoint`, for a stepper of the
     same sequence: the skeleton comes from :func:`initial_state` on the
     stored field (one force evaluation), every leaf is then replaced by
-    the stored one."""
+    the stored one. A leaf the file does not have (a diagnostic added
+    after the file was written, ``helicity_lambda`` since 2026-09-11)
+    keeps the skeleton's value."""
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
@@ -1305,8 +1307,12 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     skeleton = initial_state(jnp.asarray(data["B_n"]), ts)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
-    for keypath, _ in leaves:
-        v = data[jax.tree_util.keystr(keypath).lstrip(".")]
+    for keypath, leaf in leaves:
+        name = jax.tree_util.keystr(keypath).lstrip(".")
+        if name not in data:
+            new.append(leaf)
+            continue
+        v = data[name]
         new.append(jnp.asarray(v, dtype=DTYPE if np.issubdtype(v.dtype, np.floating) else v.dtype))
     return jax.tree_util.tree_unflatten(treedef, new), step
 
