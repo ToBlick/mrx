@@ -362,6 +362,13 @@ class State(eqx.Module):
     helicity_lambda : float
         The multiple of the Dirichlet proxy ``H_D`` removed from ``E`` by
         ``TimeStepper.helicity_correction`` (0 without it).
+    B_best, resid_best, step_best : jnp.ndarray, float, int
+        The field with the lowest squared normalised force residual the run
+        has seen, that residual, and the absolute step it was at (the start
+        field until a step beats it). A run past its floor (the residual is
+        not monotone, and past the resolved floor the ideal descent raises
+        it) returns this state as its answer; ``chunk_runner`` keeps it,
+        ``scripts/relax.py`` writes it as ``checkpoints/state_best.h5``.
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None
@@ -393,6 +400,9 @@ class State(eqx.Module):
     newton_it: int = 0
     newton_fallback: int = 0
     helicity_lambda: float = 0.0
+    B_best: Optional[jnp.ndarray] = None
+    resid_best: float = np.inf
+    step_best: int = 0
 
     def __post_init__(self):
         if self.B_nplus1 is None:
@@ -1107,7 +1117,7 @@ class TimeStepper(eqx.Module):
              inc.a, inc.newton_it, inc.newton_fallback, lam))
 
 
-def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State:
+def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
     """Build the state at ``B_dof`` with its force already evaluated.
 
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
@@ -1117,13 +1127,16 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
     state is the carry of :func:`chunk_runner`'s scan, and a Python-float
     leaf here against a float32 array out of the scan gave the scan two
     carry signatures, i.e. a second compile at the second chunk of every run
-    (30-55 s, measured 2026-09-05).
+    (30-55 s, measured 2026-09-05). ``step`` is the absolute step the
+    field is at (a restart's), the label of the best state until a step
+    beats it.
     """
     seq = ts.seq
     n = seq.n(2, True)
     m = ts.history_size
     F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
     MF0 = seq.apply_mass_matrix(F0, 2)
+    resid0 = (jnp.sqrt(F0 @ MF0) / force_scale(seq)(B_dof)) ** 2
     return State(
         B_n=B_dof,
         dt=jnp.asarray(dt, dtype=DTYPE),
@@ -1154,6 +1167,9 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0) -> State
         newton_it=jnp.int32(0),
         newton_fallback=jnp.int32(0),
         helicity_lambda=jnp.zeros((), dtype=DTYPE),
+        B_best=B_dof,
+        resid_best=jnp.asarray(resid0, dtype=DTYPE),
+        step_best=jnp.int32(step),
     )
 
 
@@ -1178,8 +1194,13 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     evaluations and final defect; 1 and 0 for the explicit step),
     ``newton_it`` and ``newton_fallback`` (the Newton solve's signed MINRES
     count and whether its direction was replaced; 0 without ``newton``),
-    ``hcorr`` (the helicity correction's ``lambda``; 0 without it), plus
-    ``extra[name](state)`` for every extra probe.
+    ``hcorr`` (the helicity correction's ``lambda``; 0 without it),
+    ``resid`` (the squared normalised force residual ``||F||_M^2 /
+    ||grad(B^2/2)||^2``, :func:`force_scale`, the force being the step's
+    start field's and the scale the end field's), plus ``extra[name](state)``
+    for every extra probe. The body also keeps the best state: the start
+    field of any step whose ``resid`` is below ``state.resid_best`` replaces
+    ``state.B_best`` with its residual and absolute step.
 
     Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
     count); the chunk is the cadence at which the host sees the trace and
@@ -1187,12 +1208,19 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     """
     seq = ts.seq
     extra = extra or {}
+    scale = force_scale(seq)
 
     def body(state, it):
         state = ts.relaxation_step(state)
         B_n, B_new = state.B_n, state.B_nplus1
         dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
-        state = eqx.tree_at(lambda s: s.B_n, state, B_new)
+        resid = (state.F_norm / scale(B_new)) ** 2
+        better = resid < state.resid_best
+        state = eqx.tree_at(
+            lambda s: (s.B_n, s.B_best, s.resid_best, s.step_best), state,
+            (B_new, jnp.where(better, B_n, state.B_best),
+             jnp.where(better, resid, state.resid_best).astype(state.resid_best.dtype),
+             jnp.where(better, it - 1, state.step_best).astype(state.step_best.dtype)))
         trace = dict(
             dE=dE, F=state.F_norm, v=state.v_norm,
             dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
@@ -1200,7 +1228,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, newton_fallback=state.newton_fallback,
-            hcorr=state.helicity_lambda,
+            hcorr=state.helicity_lambda, resid=resid,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
 
@@ -1298,13 +1326,13 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     same sequence: the skeleton comes from :func:`initial_state` on the
     stored field (one force evaluation), every leaf is then replaced by
     the stored one. A leaf the file does not have (a diagnostic added
-    after the file was written, ``helicity_lambda`` since 2026-09-11)
-    keeps the skeleton's value."""
+    after the file was written: ``helicity_lambda`` and the best state
+    since 2026-09-11) keeps the skeleton's value."""
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    skeleton = initial_state(jnp.asarray(data["B_n"]), ts)
+    skeleton = initial_state(jnp.asarray(data["B_n"]), ts, step=step)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
     for keypath, leaf in leaves:
@@ -1389,7 +1417,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
     scale = force_scale(seq)
-    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: (st.F_norm / scale(st.B_n)) ** 2))
+    run = chunk_runner(ts, chunk)
     sample = make_sampler(seq, ts)
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
@@ -1477,7 +1505,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             ev = dict(k=k, it=it, resid=resid_now, eps=eps, helicity_target=reconnect_helicity,
                       F_before=float(state.F_norm), **{f"{kk}_before": v for kk, v in scalars.items()})
             B_new, info, rel = reconnect_fn(state.B_n, eps)
-            state = initial_state(B_new, ts, dt=float(state.dt))
+            state = initial_state(B_new, ts, dt=float(state.dt), step=it)
             state, pw, scalars = sample(state, pw)
             record(it, wall, scalars)
             ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.F_norm),
@@ -1513,6 +1541,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    E_0 {E0:.8e}, E_0 - E {removed:.4e}  ({removed / E0:.4%} of the initial energy removed)")
     print(f"    residual {resid[0]:.4e} -> {resid[-1]:.4e}  (mean over the last chunk of "
           f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
+    print(f"    best state: step {int(res.state.step_best)}, residual {float(res.state.resid_best):.4e}")
     print(f"    |dE - dE_ls| / E0 (the velocity's gradient part against grad p): median {np.median(ident):.3e}"
           f"  max {ident.max():.3e}"
           + ("  (not an identity under the midpoint scheme)"

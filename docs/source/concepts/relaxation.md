@@ -388,6 +388,9 @@ exact energy change of the step, `dE_ls` the line search's prediction,
 pressure diagnostics of section 3: `gradp_cmp`, `p_cmp`, `weak_resid`,
 `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`), the initial field's
 numbers `ic` and the `summary` with the stopping reason; and
+`checkpoints/state_best.h5`, the field with the lowest per-step residual
+of the run (`State.B_best`, kept inside the compiled loop at the cost of one
+`where` per step; the run's answer when it went past its floor), and
 `checkpoints/state_<step>.h5`, the `State` at every chunk boundary and at
 step 0 (`write_checkpoint` / `read_checkpoint`), from which the plotters
 read the field and the strong pressure. The loop itself is

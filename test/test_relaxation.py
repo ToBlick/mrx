@@ -147,5 +147,8 @@ def test_helicity_correction_conserves_helicity(seq, b0):
           f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, |lambda| max {np.abs(lam).max():.2e}")
     assert np.all(dE < 0.0), f"energy not monotone: {dE}"
     assert np.all(lam != 0.0) and np.abs(lam).max() < 1e-2, lam
+    resid = np.asarray(res.trace["resid"], dtype=float)
+    assert float(res.state.resid_best) <= resid.min() and int(res.state.step_best) == resid.argmin(), \
+        (float(res.state.resid_best), resid.min(), int(res.state.step_best), resid.argmin())
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

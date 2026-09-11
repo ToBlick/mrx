@@ -346,14 +346,18 @@ def main(cli):
                          E0=res.E0, E_removed=res.E0 - res.qoi["E"][-1], F_final=res.trace["F"][-1],
                          resid_final=res.trace["resid"][-1],
                          resid_window_mean=float(sum(res.trace["resid"][-res.chunk:]) / res.chunk),
+                         best_step=int(res.state.step_best), best_resid=float(res.state.resid_best),
                          **last))
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
 
-    relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
+    res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
-    print(f"wrote {out}/relax.json and {ckpt_dir}/", flush=True)
+    write_checkpoint(os.path.join(ckpt_dir, "state_best.h5"),
+                     initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
+    print(f"wrote {out}/relax.json and {ckpt_dir}/ (state_best.h5: step {int(res.state.step_best)}, "
+          f"residual {float(res.state.resid_best):.3e})", flush=True)
 
 
 if __name__ == "__main__":
