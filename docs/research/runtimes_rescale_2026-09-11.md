@@ -149,6 +149,20 @@ morning: the Newton (32,64,64) row's factor 1.82 stands. Still held: the
 L-BFGS (32,64,64) row, n = 48, p = 4, 5 and tol 1e-6 (the last gets its
 rate from the paper-rerun batch's 32 000-step arm on e680ab4).
 
+**Held rows rerun on e680ab4 (17:00, jobs 18388743/4/8; the b0f8d38
+records kept in `outputs/runtimes_b0f8d38/`):** L-BFGS (32,64,64) 2.976
+s/step (2.983 on b0f8d38), trajectory 1.1-2.2x the paper's smooth-last arm
+like n = 16 and 24: verified, factor 1.83. p = 4: 1.577 (1.568), p = 5:
+3.732 (3.703): the rates are the same on both commits and the trajectories
+still deviate 5-15x from the paper's arms with accepted steps 0.84 / 0.82
+against 5.6 / 7.7, so the refinement stop was NOT their cause. Open:
+smooth-first at high degree, or a degree-dependent issue in the current
+code; the discriminating probe is p = 4 on adb4e06 with `--smooth-first
+true` (the flag existed there), 15 min. Until then the p = 4, 5 rows'
+factors (1.62, 1.32) are rates of a descent that differs from the paper's.
+n = 48 and tol 1e-6 remain to be re-measured (tol 1e-6 from the rerun
+batch's 32 000-step arm: 0.205 s/step on the potential route).
+
 **Vacuum solve at the floor rungs, current code, float64, tol 1e-10
 (`scripts/vacuum_timing.py`, jobs 18380092/18380098/18383776):**
 
