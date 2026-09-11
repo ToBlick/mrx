@@ -145,7 +145,7 @@ so the per-chunk values sit on 0 or +-1 ulp. lambda <= 1.6e-6 on the first
 step from the VMEC field, median 6e-12 afterwards (Newton arms: max 2e-8).
 The one-in-nine positive dE in mixed is the float32 rounding of the stored
 field, present without the correction too. Production settings (potential
-route, order 1): 0.300 -> 0.306 s/step (`outputs/chunk_speed/lbfgs500{,_corr}`).
+route, order 1): 0.300 -> 0.303 s/step, 1% (`outputs/chunk_speed/lbfgs500{,_corr}`).
 
 Consequence for the paper: the midpoint scheme's only remaining property is
 being variational in time, which nothing measures; the exact scheme is
