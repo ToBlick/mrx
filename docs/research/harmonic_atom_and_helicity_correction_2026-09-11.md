@@ -207,3 +207,39 @@ kappa = 3 at 100 iterations reaches 1e-6 / 1e-7 / 1e-8 at steps 8 / 15 / 53 agai
 the paper's Laplacian arm's 13 / 73 / 256, minimum 3.1e-9 at step 82 (the paper's arm:
 9.4e-9 at 325) and holding (last-chunk mean 3.7e-9), ~17 s/step steady (1e-8 in ~18
 min against the paper's 5.7 h), dt ~ 1, no fallbacks, no stalls, dH/H -2.5e-6.
+
+## 6. The iteration count, the regularised line search, and the L-BFGS stall (late evening)
+
+**MINRES iterations at kappa = 3** (`outputs/kappa_sweep/k3_it{30,50,100,150,200,300}`): every
+budget >= 100 reaches the same minimum (4.5-4.9e-9) in the same wall time (~2-2.5 min); what
+differs is afterwards: 100 holds (last chunk 7.9e-9, dH/H +7e-7), 150 / 200 / 300 drift back to
+1.4e-8 / 3.7e-8 / 2.9e-7 with dH/H 1.8e-5 / 6.8e-5 / 2.1e-4; 50 reaches 8.8e-9 at step 70, 30 no
+floor in 100 steps. The optimum is 100.
+
+**The regularised line search** (`TimeStepper.step_regularisation`, 68de2c3): the line search
+minimises E + eps ||J||^2 / 2 along the increment, direction and force unchanged, dt* =
+(<F,u> - eps <J, curl~ dB>) / (||dB||^2 + eps ||curl~ dB||^2), one weak curl of dB per step.
+On the kappa = 3 / 100 arm (`outputs/stepreg_sweep/`): identical until the floor (dt = 1 there
+is the cap, not dt*), then the accepted step collapses to 0.03 (C = 0.1) or 0.003 (C = 1) of
+the Newton length and the run holds a floor 1.7x lower (4.5e-9 last-chunk mean at C = 0.1
+against 7.9e-9); +2-4% per step. With `--dt-floor 0.1` the run stops itself at step 35 (244 s)
+at the same floor (`k3_it100_c0.1_dtstop`). Defaults: C = 0.1 and dt-floor 0.1 for Newton, both
+0 for L-BFGS, because on the descent the search is NOT inert (dt* ~ 2.2 is the binding step
+there, not the CFL cap): the 500-step production arm's trajectory changed and cost +9%
+(`outputs/chunk_speed/lbfgs500_stepreg`).
+
+**The L-BFGS stall in the reruns** (`paper_rerun_2026-09-11`, smooth-first, m = 1): the anchor's
+accepted step collapses from 2.2 to 0.017 over steps 1500-2000 with cos(u, F) = 0.00, no
+progress for ~1000 steps, then recovery with a x4 bump of the residual at step 2000; tol1e-6
+(same early trajectory) the same, seed61 / seed51 2 / 4 episodes, m5 11 episodes (its
+"reconnection"), m0 / h12 / tol1e-10 / leray_m1g1 none. The paper's old arms (smooth-last)
+have none in 30 000 steps of records. With m = 1 a tiny step collapses the single pair's scale
+and reproduces itself (the descent's version of the Newton stall). m = 0 as the default would
+cost 4x (1e-7 at 25 min against 6, never 1e-8 in 18 000 steps). Proposed and pending: Powell's
+restart for m = 1 (= PR-CG): drop the pair when |<F_k, F_{k-1}>| > 0.2 ||F_k||^2.
+
+**Figures**: every line figure of the paper regenerated from the run records in one style
+(`outputs/figures_2026-09-11/paper_figures.py`: raw per-step traces, L-BFGS alpha 0.5 / lw 1,
+Newton lw 1.5, one legend per factor, house fonts, PDF + PNG + PGF), plus the three Newton
+sweeps as figures and `newton_sweeps_table.tex`, and `appendix_run_parameters.tex` (one
+parameter table per figure and paper table, from the records).
