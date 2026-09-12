@@ -134,3 +134,17 @@ and 18 000, job 18391109; frames in `anchor_pot_m1g1/poincare/`): at
 chain); at 18 000: 0.25 and 0.36 h_r, four chaotic lines. So the seeded
 chains at 2.2-2.6 h_r stand six to seven times above the unseeded field's,
 as in the paper.
+
+## Newton (16,32,32) on the released default (2026-09-12, 79b81ad, job 18408790)
+
+Harmonic atom, kappa = 3, 100 MINRES iterations, step regularisation
+C = 0.1, `--dt-floor 0 --floor-tol 0`, 60 steps, chunk 20, from the VMEC
+field, mixed. Steps to 1e-6 / 1e-7 / 1e-8: **4 / 6 / 19** (paper's
+Laplacian row 2 / 5 / 28); best 3.9e-9 at step 59, the per-step residual
+monotone from step 2 and 0.5e-8 by step 40 (the paper's arm: 4.5e-9 at
+49, then rising); 4.1 s/step steady (5.8 with the compile), so 1e-8 in
+78 s against the paper's 10.2 min and its Laplacian atom's 5.2 min on
+today's core; dH/H -1.03e-5 (paper -1.17e-5), dE/E -3.91e-6; no fallback;
+the accepted step falls to 0.03 by step 60 (the default step floor would
+have ended the run near step 40, as designed). Record
+`paper_rerun_2026-09-11/newton_h16/`.
