@@ -61,6 +61,12 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
+      --energy-regularisation C [0]
+                                   minimise E + eps ||J||^2 / 2 instead of E,
+                                   eps = C / n_r^2 (TimeStepper
+                                   .energy_regularisation, a prototype): the
+                                   force reads J + eps curl~ curl J; the qoi
+                                   resid_phys is the physical residual
       --helicity-correction {false,true} [false]
                                    remove from the induction field E the one
                                    component (a multiple of the Dirichlet
@@ -194,6 +200,8 @@ def parse_args(argv=None):
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
+    ap.add_argument("--energy-regularisation", type=float, default=0.0,
+                    help="eps of the regularised energy E + eps ||J||^2 / 2, in units of 1 / n_r^2")
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--history", type=int, default=1,
@@ -312,6 +320,7 @@ def main(cli):
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
         cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
         helicity_correction=cli.helicity_correction,
+        energy_regularisation=cli.energy_regularisation / ns[0] ** 2,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
@@ -327,7 +336,8 @@ def main(cli):
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
     print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
+          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}"
+          f"{'  energy-regularisation=%.3e' % ts.energy_regularisation if cli.energy_regularisation else ''}  "
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

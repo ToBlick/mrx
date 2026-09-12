@@ -73,8 +73,16 @@ def compute_force(
     JxH_guess: jnp.ndarray | None = None,
     J_guess: jnp.ndarray | None = None,
     F_guess: jnp.ndarray | None = None,
+    regularisation: float = 0.0,
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """The Leray-projected Lorentz force at ``B`` and what it was built from.
+
+    ``regularisation`` (``eps``) is the force of the regularised energy
+    ``E + eps ||J||_M^2 / 2`` instead: the current in the cross product is
+    ``J + eps curl~ curl J`` (one more weak curl), the returned ``J`` stays
+    the physical current. A prototype (2026-09-11): the energy along the
+    ideal flow then has a minimiser on the mesh, where the plain energy
+    keeps a descent into current sheets the mesh cannot carry.
 
     ``J`` is the weak curl of ``B`` (a Dirichlet 1-form). Without the
     auxiliary field the force is ``J x B`` with the 2-form ``B`` itself;
@@ -89,13 +97,15 @@ def compute_force(
     of the Leray saddle solve next to ``p_guess`` on its upper one.
     """
     J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
+    J_eff = J if not regularisation else J + regularisation * seq.apply_weak_curl(
+        seq.apply_incidence_matrix(J, 1, dirichlet_in=True, dirichlet_out=True), dirichlet=True)
     if auxiliary_B_field:
         H_dual = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
         X = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H_guess)
-        JxX_dual = seq.cross_product_load(J, X, 2, 1, 1, True, True, True)
+        JxX_dual = seq.cross_product_load(J_eff, X, 2, 1, 1, True, True, True)
     else:
         X = B
-        JxX_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
+        JxX_dual = seq.cross_product_load(J_eff, B, 2, 1, 2, True, True, True)
     # JxX in the residual precision: the Leray projection forms the force
     # as JxX - sigma, the small difference of two large fields, before it
     # rounds to the working dtype.
@@ -573,6 +583,15 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
+        energy_regularisation: ``eps`` of the regularised energy ``E + eps
+            ||J||_M^2 / 2`` the descent minimises instead of ``E`` (0 is
+            off): the force reads the current ``J + eps curl~ curl J``
+            (:func:`compute_force`) and the line search's quadratic gains
+            the term ``eps ||curl~ dB||_M^2 / 2``; the Newton direction keeps
+            the Hessian of ``E`` as its model. The sampler's ``F_phys`` and
+            the qoi ``resid_phys`` are the physical force at the chunk
+            boundaries; the trace's ``F`` is the regularised one. Set from
+            ``--energy-regularisation C`` as ``C / n_r^2``. A prototype.
         helicity_correction: Remove from the induction field ``E`` the
             one component that changes the discrete helicity. Over one
             step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
@@ -615,6 +634,7 @@ class TimeStepper(eqx.Module):
     newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
     helicity_correction: bool = False
+    energy_regularisation: float = 0.0
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -798,7 +818,10 @@ class TimeStepper(eqx.Module):
         """
         seq = self.seq
         J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
-        JxB_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
+        eps = self.energy_regularisation
+        J_eff = J if not eps else J + eps * seq.apply_weak_curl(
+            seq.apply_incidence_matrix(J, 1, dirichlet_in=True, dirichlet_out=True), dirichlet=True)
+        JxB_dual = seq.cross_product_load(J_eff, B, 2, 1, 2, True, True, True)
         rhs = seq.apply_incidence_matrix(JxB_dual, 1, dirichlet_in=True, dirichlet_out=True,
                                          transpose=True)
         a = seq.apply_inverse_laplacian(rhs, 1, dirichlet=True, guess=a_guess)
@@ -844,7 +867,8 @@ class TimeStepper(eqx.Module):
             F, p, J, X, JxX = compute_force(
                 B, seq, self.auxiliary_B_field,
                 p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
-                J_guess=J_guess, F_guess=state.F_prev)
+                J_guess=J_guess, F_guess=state.F_prev,
+                regularisation=self.energy_regularisation)
             # M F ONCE.  It serves ||F||_M and the L-BFGS secant
             # M y = M F_prev - M F; the increment applies M_2 three times in total
             # (M F, M u, M dB) whichever method is running -- L-BFGS used to
@@ -928,7 +952,12 @@ class TimeStepper(eqx.Module):
         along the increment exactly (``dE = -dt <F, u>_M + dt^2 ||dB||^2 / 2``).
         The cap: ``cfl = inf`` gives ``min(dt_star, inf) = dt_star`` exactly.
         """
-        dt_star = inc.F @ inc.Mu / self.seq.l2_norm_sq(inc.dB, 2)
+        curvature = self.seq.l2_norm_sq(inc.dB, 2)
+        if self.energy_regularisation:
+            # the regularised energy's quadratic: + eps ||curl~ dB||_M^2 / 2
+            curvature = curvature + self.energy_regularisation * self.seq.l2_norm_sq(
+                self.seq.apply_weak_curl(inc.dB, dirichlet=True), 1, dirichlet=True)
+        dt_star = inc.F @ inc.Mu / curvature
         dt = jnp.minimum(dt_star, self.cfl / inc.cfl_max)
         if self.newton:
             dt = jnp.minimum(dt, self.newton_dt_cap)
@@ -1290,17 +1319,18 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
         h, A_new = compute_helicity(B, seq, A)
         JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
         JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
-        return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag
+        F_phys = seq.l2_norm(F, 2)      # the physical force whatever the stepper minimises
+        return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag, F_phys
 
     probe_jit = jax.jit(probe)
 
     def sample(state: State, pw_guess: jnp.ndarray, eager: bool = False):
         f = probe if eager else probe_jit
-        p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
+        p, H, JxH, J, A, p_w, h, JoverB, JB, diag, F_phys = f(
             state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
         state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
         E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
-        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB),
+        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB), F_phys=float(F_phys),
                        **{k: float(v) for k, v in diag.items()})
         return state, p_w, scalars
 
@@ -1431,7 +1461,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
-                   resid=float((state.F_norm / scale(state.B_n)) ** 2), **scalars)
+                   resid=float((state.F_norm / scale(state.B_n)) ** 2),
+                   resid_phys=float((scalars["F_phys"] / scale(state.B_n)) ** 2), **scalars)
         for k, v in row.items():
             qoi.setdefault(k, []).append(v)
 
