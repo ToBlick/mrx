@@ -243,3 +243,20 @@ restart for m = 1 (= PR-CG): drop the pair when |<F_k, F_{k-1}>| > 0.2 ||F_k||^2
 Newton lw 1.5, one legend per factor, house fonts, PDF + PNG + PGF), plus the three Newton
 sweeps as figures and `newton_sweeps_table.tex`, and `appendix_run_parameters.tex` (one
 parameter table per figure and paper table, from the records).
+
+## 7. Powell's restart, measured (2026-09-12, `outputs/powell/anchor18000`)
+
+The anchor (li383 (16,32,32) p=2, potential route, smooth-first, m = 1, mixed, 18 000 steps,
+`--floor-tol 0`) with `POWELL_RESTART = 0.2` (5f3be3b) against the rerun without it:
+
+| | steps to 1e-6 / 1e-7 / 1e-8 / 5e-9 | resid at 18 000 (last 1000) | E removed | dH/H | s/step | restarts |
+|---|---|---|---|---|---|---|
+| rerun (no restart) | 320 / 1194 / 12 079 / 14 861 | 3.5e-9 | 1.963e-6 | -9.9e-6 | 0.302 | - |
+| Powell restart | 285 / 1185 / 1472 / 1830 | 2.35e-9 | 2.015e-6 | -1.15e-5 | 0.314 | 1417 (all before step 8000) |
+
+2000-step means, Powell: 1.5e-6, 2.5e-8, 2.4e-8, 2.7e-8, 4.3e-9, 3.6e-9, 3.1e-9, 2.7e-9, 2.4e-9;
+rerun: 1.4e-6, 1.3e-7, 5.0e-8, 2.9e-8, 2.1e-8, 1.6e-8, 9.6e-9, 5.6e-9, 3.8e-9. The stall is gone
+(dt 1.8-2.5, cos 0.4-0.55 throughout). The restart-heavy phase (steps 1500-8000, 20% of the
+steps restarted) is a plateau at 2.5e-8 with a transient dip to 5e-9 at step 1830; once the
+restarts stop the run descends to a floor 1.5x below the rerun's. Whether the paper's descent
+arms are rerun with the restart is Tobias's call.
