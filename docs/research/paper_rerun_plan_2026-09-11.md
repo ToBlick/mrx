@@ -122,3 +122,30 @@ Sequencing: the cheap block first on e680ab4 (also settles the potential
 route's floors), then B3/B5/B7 whose numbers the text quotes most, then
 the rest. The L-BFGS sweeps stay in the paper as they are meant to; they
 just run the released method.
+
+## 2026-09-12 01:00: the defaults flipped, and a hold on the L-BFGS arms
+
+`origin/newton-second-variation` is at 79b81ad: the Newton default is the
+harmonic atom with HARMONIC_FLOOR 3 and 100 MINRES iterations, plus the
+line search's step regularisation (C = 0.1, `E + eps ||J||^2 / 2` along the
+step) and a step floor (`--dt-floor 0.1`, ends the run when a chunk's mean
+accepted step falls below it); both off for L-BFGS. A default Newton run
+at (16,32,32) stops at step 40 (263 s, best 4.6e-9). The paper's Newton
+rows run with `--dt-floor 0 --floor-tol 0` for the full budget (Tobias:
+run to max iterations); the (32,64,64) row exists in the newton session's
+`outputs/kappa_sweep/k3_it100_h32` (100 steps; the defaults except the
+regularisation, which did not exist yet: to be rerun or noted). The
+(16,32,32) row (60 steps) is job 18408790 from here; (24,48,48) at 60
+steps (~12 min) awaits Tobias's go.
+
+Powell's restart of the L-BFGS memory is ON by default (POWELL_RESTART
+0.2) since 5f3be3b: it removes the smooth-first m=1 stall episodes (steps
+1500-2500 of the anchor: dt 2.2 -> 0.017, cos 0.00, ~1000 idle steps, x4
+bump on recovery; absent in the paper's smooth-last arms and in the
+m = 0 and n = 12 reruns) but fires on a third of the steps after 1500, so
+its long-run rate is unverified (18 000-step anchor running, job
+18408723). **HOLD every L-BFGS rerun until that lands**: if the restart
+costs the floor, the constant or the criterion changes and every arm is
+redone. The 2026-09-11 block (e680ab4, no restart) stays valid as the
+"no restart" state; whether the paper's descent arms are rerun with the
+restart is Tobias's call, ~12 GPU h for the anchor-based arms.
