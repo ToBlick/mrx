@@ -105,8 +105,11 @@ Flags, defaults in brackets:
     curl^T H curl a = curl^T M F by MINRES (mrx.hessian); a non-descending
     direction falls back to the smoothed force.
       --newton-tol TOL [0.1]       relative residual of the MINRES solve
-      --newton-maxiter N [300]     its iteration budget per step
-      --newton-precond {laplacian,laplacian2,mass,harmonic} [laplacian]
+      --newton-maxiter N [100]     its iteration budget per step: the
+                                   parameter of the truncated solve (more
+                                   = a more exact direction = past the
+                                   floor sooner; 100 holds the floor)
+      --newton-precond {harmonic,laplacian,laplacian2,mass} [harmonic]
                                    the preconditioner: the k=1 Laplacian
                                    atom, its square, the k=1 mass atom, or
                                    the harmonic atom (the Laplacian atom with
@@ -234,9 +237,9 @@ def parse_args(argv=None):
                     help="the direction: Newton on the second variation, or the L-BFGS descent")
     ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="relative residual tolerance of the Newton MINRES solve")
-    ap.add_argument("--newton-maxiter", type=int, default=300,
+    ap.add_argument("--newton-maxiter", type=int, default=100,
                     help="iteration budget of the Newton MINRES solve per step")
-    ap.add_argument("--newton-precond", default="laplacian", choices=("laplacian", "laplacian2", "mass", "harmonic"),
+    ap.add_argument("--newton-precond", default="harmonic", choices=("harmonic", "laplacian", "laplacian2", "mass"),
                     help="preconditioner of the Newton solve")
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")

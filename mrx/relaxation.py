@@ -334,6 +334,9 @@ class State(eqx.Module):
         actually used by the two-loop recursion.  Reported, never clamped: a
         negative value means the stored pair is not a descent pair and the
         approximate inverse Hessian it builds is indefinite.
+    lbfgs_restart : int
+        1 when the step dropped the L-BFGS memory (Powell's restart,
+        ``POWELL_RESTART``) and took the smoothed-force direction, else 0.
     picard_iterations : int
         1 under ``EXPLICIT``; the predictor plus every Picard sweep (two
         k=1 mass solves and a curl each) under ``IMPLICIT_MIDPOINT``.
@@ -393,6 +396,7 @@ class State(eqx.Module):
     F_norm: float = 0.0
     v_norm: float = 0.0
     lbfgs_sy: float = 0.0
+    lbfgs_restart: int = 0
     picard_iterations: int = 0
     picard_restarts: int = 0
     picard_residual: float = 0.0
@@ -410,6 +414,19 @@ class State(eqx.Module):
 
 # %%
 
+
+#: Powell's restart of the L-BFGS memory: when consecutive (smoothed)
+#: forces are far from orthogonal, ``|<F_k, F_{k-1}>_M| > POWELL_RESTART
+#: ||F_k||_M^2``, the memory is dropped and the step is the smoothed force.
+#: The criterion of Powell (1977) for restarting conjugate gradients, which
+#: L-BFGS with one pair is. Why: with one pair a tiny step collapses the
+#: pair's scale and reproduces itself; measured 2026-09-11 on li383
+#: (16,32,32), potential route, smooth-first: the accepted step fell from 2.2
+#: to 0.017 with cos(u, F) = 0 for ~1000 steps around step 2000 (the
+#: anchor rerun, tol 1e-6, the seeded arms; 11 episodes at m = 5), a x4
+#: bump of the residual on recovery. Inert on a healthy run, where
+#: consecutive forces are nearly orthogonal.
+POWELL_RESTART = 0.2
 
 #: A midpoint sweep whose defect exceeds this many times the predictor's
 #: increment is not contracting: halve ``dt`` and start again.
@@ -464,6 +481,7 @@ class Increment(NamedTuple):
     E: jnp.ndarray
     cfl_max: jnp.ndarray
     sy: jnp.ndarray
+    lbfgs_restart: jnp.ndarray
     y_history: jnp.ndarray
     My_history: jnp.ndarray
     a: jnp.ndarray
@@ -562,8 +580,19 @@ class TimeStepper(eqx.Module):
             replaced by the smoothed force of ``velocity_smoothing_order``,
             and ``State.newton_fallback`` says so.
         newton_tol: Relative residual tolerance of the MINRES solve.
-        newton_maxiter: Its iteration budget per step.
-        newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`.
+        newton_maxiter: Its iteration budget per step: THE parameter of the
+            truncated solve (the tolerance is never met; the true residual
+            decays like N^-1/2 for every preconditioner). Swept 2026-09-11 on
+            li383 (16,32,32) with the harmonic atom: every budget >= 100
+            reaches the same floor in the same wall time, 100 holds it, 150+
+            drift back up (a more exact direction is closer to the ideal
+            descent, which past the resolved floor thins current sheets the
+            mesh cannot carry).
+        newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`; the
+            harmonic atom with its floor ``HARMONIC_FLOOR = 3`` (kappa
+            interpolates between the harmonic atom, small, and the Laplacian
+            atom, large; 3 reaches the Laplacian atom's floor in a fifth of
+            the steps and holds it).
         newton_dt_cap: Cap on the line-search step along a Newton direction,
             ``dt = min(dt_star, cfl / cfl_max, newton_dt_cap)``. A truncated
             MINRES direction mixes resolved modes, whose energy minimum is at
@@ -619,8 +648,8 @@ class TimeStepper(eqx.Module):
     potential_velocity: bool = None
     newton: bool = False
     newton_tol: float = 0.1
-    newton_maxiter: int = 300
-    newton_precond: str = "laplacian"
+    newton_maxiter: int = 100
+    newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
     helicity_correction: bool = False
@@ -886,6 +915,14 @@ class TimeStepper(eqx.Module):
             # of the converged sweep and never an inner iterate's.
             y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.Fs_prev - Fs)
             My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MFs_prev - MFs)
+            # Powell's restart: consecutive forces far from orthogonal drop the
+            # memory (this step's direction is the smoothed force, the pairs
+            # pushed at the end of the step start it afresh).
+            restart = jnp.abs(state.Fs_prev @ MFs) > POWELL_RESTART * (Fs @ MFs)
+            y_hist = jnp.where(restart, 0.0, y_hist)
+            My_hist = jnp.where(restart, 0.0, My_hist)
+        else:
+            restart = jnp.zeros((), bool)
         if self.newton:
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter,
@@ -897,7 +934,8 @@ class TimeStepper(eqx.Module):
             u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
             sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
         else:
-            u, sy = self._lbfgs_direction(Fs, state.s_history, y_hist, state.Ms_history, My_hist)
+            u, sy = self._lbfgs_direction(Fs, jnp.where(restart, 0.0, state.s_history), y_hist,
+                                          jnp.where(restart, 0.0, state.Ms_history), My_hist)
             newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
         # M u once: the linesearch numerator, ||u||_M and the stored M s.
         Mu = seq.apply_mass_matrix(u, 2)
@@ -928,7 +966,8 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, Fs, MFs, p, H, JxX, J, E, cfl_max, sy, y_hist, My_hist,
+        return Increment(dB, u, Mu, F, MF, Fs, MFs, p, H, JxX, J, E, cfl_max, sy,
+                         restart.astype(jnp.int32), y_hist, My_hist,
                          a, newton_it, newton_fallback)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -1117,8 +1156,9 @@ class TimeStepper(eqx.Module):
         # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
         s_hist, Ms_hist = state.s_history, state.Ms_history
         if self.history_size > 0:
-            s_hist = jnp.roll(s_hist, 1, axis=0).at[0].set(dt * inc.u)
-            Ms_hist = jnp.roll(Ms_hist, 1, axis=0).at[0].set(dt * inc.Mu)
+            # after a restart the old pairs are gone: the roll starts from zeros
+            s_hist = jnp.roll(jnp.where(inc.lbfgs_restart > 0, 0.0, s_hist), 1, axis=0).at[0].set(dt * inc.u)
+            Ms_hist = jnp.roll(jnp.where(inc.lbfgs_restart > 0, 0.0, Ms_hist), 1, axis=0).at[0].set(dt * inc.Mu)
 
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
@@ -1126,14 +1166,14 @@ class TimeStepper(eqx.Module):
                        s.dt, s.dt_star, s.cfl_max,
                        s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda),
+                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda, s.lbfgs_restart),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, inc.Fs, inc.MFs, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
              dt, dt_star, inc.cfl_max,
              s_hist, inc.y_history, Ms_hist, inc.My_history,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, inc.newton_fallback, lam))
+             inc.a, inc.newton_it, inc.newton_fallback, lam, inc.lbfgs_restart))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
@@ -1163,6 +1203,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         cfl_max=jnp.zeros((), dtype=DTYPE),
         v_norm=jnp.zeros((), dtype=DTYPE),
         lbfgs_sy=jnp.zeros((), dtype=DTYPE),
+        lbfgs_restart=jnp.int32(0),
         v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
@@ -1247,7 +1288,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, newton_fallback=state.newton_fallback,
-            hcorr=state.helicity_lambda, resid=resid,
+            hcorr=state.helicity_lambda, resid=resid, lbfgs_restart=state.lbfgs_restart,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
 
@@ -1445,7 +1486,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr",
+                             "lbfgs_restart")}
     qoi: dict = {}
     events: list = []
 
@@ -1492,7 +1534,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "newton_fallback", "hcorr"):
+                  "newton_it", "newton_fallback", "hcorr", "lbfgs_restart"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
@@ -1584,6 +1626,8 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    CFL cap (C={ts.cfl}) bound on {int((dts < dt_star).sum())}/{n} steps;  "
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
+    if ts.history_size > 0:
+        print(f"    L-BFGS restarts (Powell): {int(np.sum(tr['lbfgs_restart']))}/{n} steps")
     if ts.newton:
         nit = np.abs(np.array(tr["newton_it"]))
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "

@@ -173,9 +173,12 @@ equilibrium). Newton's equation $H u = J \times B$ is solved in the potential
 form, $u = \operatorname{curl} a$ with
 $\operatorname{curl}^T H \operatorname{curl} a = \operatorname{curl}^T (J \times B)$
 -- divergence-free by construction, no Leray solve -- by MINRES with the
-$k = 1$ Laplacian atom, **truncated**: 300 iterations toward a relative
-residual of $0.1$, warm-started from the previous step's potential. The
-truncation is the trust region; a fully converged direction overshoots. The
+harmonic atom (the Laplacian atom with the parallel symbol of the harmonic
+field divided in), **truncated**: 100 iterations, warm-started from the
+previous step's potential. The budget is the parameter: a more exact
+direction is closer to the ideal descent, which past the resolved floor
+thins current sheets the mesh cannot carry, so 100 iterations hold the floor
+where 300 leave it. The
 rest of the step is Tutorial 3's -- the analytic line search along the
 direction, capped at the Newton step $\Delta t = 1$, the CFL cap, the update a
 curl so $\operatorname{div} B$ and the helicity stay exact -- and a direction
@@ -184,8 +187,8 @@ step:
 
 ```python
 ts = TimeStepper(seq=seq, history_size=0, cfl=0.5, velocity_smoothing_order=1,
-                 newton=True, newton_tol=0.1, newton_maxiter=300,
-                 newton_precond="laplacian", newton_dt_cap=1.0)
+                 newton=True, newton_tol=0.1, newton_maxiter=100,
+                 newton_precond="harmonic", newton_dt_cap=1.0)
 res = relax(initial_state(B_start, ts), ts, steps=10, chunk=5)
 ```
 

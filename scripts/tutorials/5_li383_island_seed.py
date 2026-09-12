@@ -161,8 +161,8 @@ if cli.descent_steps:
     B = res_d.state.B_n
 if cli.newton_steps:
     ts_newton = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
-                            newton=True, newton_tol=0.1, newton_maxiter=300,
-                            newton_precond="laplacian", newton_dt_cap=1.0)
+                            newton=True, newton_tol=0.1, newton_maxiter=100,
+                            newton_precond="harmonic", newton_dt_cap=1.0)
     res_n = relax(initial_state(B, ts_newton), ts_newton, steps=cli.newton_steps, chunk=5,
                   floor_tol=0.0)
     F = np.asarray(res_n.trace["F"], dtype=float)

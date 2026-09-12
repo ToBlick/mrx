@@ -13,10 +13,12 @@ the second variation (``2 delta W`` of ideal MHD at ``p = 0``; at an
 equilibrium, minus the linearised force operator). Newton's equation
 ``H u = J x B`` is solved in the **potential form**, ``u = curl a`` with
 ``curl^T H curl a = curl^T (J x B)`` -- divergence-free by construction, no
-Leray solve -- by MINRES with the k=1 Laplacian atom as preconditioner,
-**truncated**: 300 iterations toward a relative residual of 0.1, warm-started
-from the previous step's potential. The truncation is the trust region; a
-fully converged direction overshoots. The rest of the step is Tutorial 3's:
+Leray solve -- by MINRES with the harmonic atom as preconditioner (the
+Laplacian atom with the parallel symbol of the harmonic field divided in),
+**truncated**: 100 iterations, warm-started from the previous step's
+potential. The budget is the parameter: a more exact direction is closer to
+the ideal descent, which past the resolved floor thins current sheets the
+mesh cannot carry, so 100 holds the floor where 300 leaves it. The rest of the step is Tutorial 3's:
 the analytic line search along the direction (``dt* ~ 1`` for a Newton
 direction; the cap ``newton_dt_cap = 1`` is the Newton step), the CFL cap,
 and the update is a curl, so ``div B`` and the helicity stay exact. A
@@ -74,7 +76,7 @@ ap.add_argument("--newton-steps", type=int, default=10, help="Newton steps from 
 ap.add_argument("--newton-chunk", type=int, default=5, help="compiled Newton steps per chunk")
 ap.add_argument("--newton-tol", type=float, default=0.1,
                 help="relative residual the truncated MINRES solve aims at")
-ap.add_argument("--newton-maxiter", type=int, default=300, help="its iteration budget per step")
+ap.add_argument("--newton-maxiter", type=int, default=100, help="its iteration budget per step")
 ap.add_argument("--out", default="outputs/tutorials/li383_newton")
 cli = ap.parse_args([] if _INTERACTIVE else None)
 ns = tuple(int(v) for v in cli.ns.split(","))
@@ -199,7 +201,7 @@ write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
               knots=None, precision=str(mrx.DTYPE), steps=res_n.steps, scheme="explicit",
               auxiliary_B_field=False, ic="warmstart", newton=True, newton_tol=cli.newton_tol,
-              newton_maxiter=cli.newton_maxiter, newton_precond="laplacian", newton_dt_cap=1.0)
+              newton_maxiter=cli.newton_maxiter, newton_precond="harmonic", newton_dt_cap=1.0)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res_n.trace, qoi=res_n.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")

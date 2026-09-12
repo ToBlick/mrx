@@ -28,7 +28,8 @@ into the symmetric one
 consistent by construction (the right-hand side annihilates every ``a`` whose
 curl is in the kernel of ``H``; the gauge ``a + grad phi`` is in the kernel of
 both sides and the curl removes it from the answer), solved by MINRES with the
-k=1 Laplacian atom as the preconditioner. The one divergence-free direction
+harmonic atom as the preconditioner (:func:`harmonic_preconditioner`; the
+k=1 Laplacian atom is the alternative). The one divergence-free direction
 ``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
@@ -46,7 +47,7 @@ PRECONDITIONERS = ("laplacian", "laplacian2", "mass", "harmonic")
 #: The floor of the harmonic atom's parallel symbol, in units of
 #: ``(2 pi)^2 (h_theta^2 + h_zeta^2)``: stands in for the ``u . grad h`` term
 #: the symbol drops, which is what the flat (resonant) modes are left with.
-HARMONIC_FLOOR = 1e-2
+HARMONIC_FLOOR = 3.0
 
 
 def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
