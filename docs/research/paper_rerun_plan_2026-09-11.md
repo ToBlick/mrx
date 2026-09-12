@@ -35,6 +35,17 @@ The released configuration differs from the runs behind the paper in:
    C1-C3 run with it, and their steps-to-floor and times shrink
    accordingly. kappa = 1 has never run at (32,64,64); its 100-step run
    there (newton session) is the confirmation the finest row needs.
+   **Revised 19:00 (newton session's kappa x budget sweep at (16,32,32),
+   100 steps from the VMEC field):** kappa = 1 at 300 MINRES reaches
+   5.8e-9 at step 7 but climbs to 1e-6 by step 100 with dH/H +2.2e-4;
+   **kappa = 3 at 100 MINRES** (5.0 s/step) is below 1e-8 from step ~15,
+   min 4.9e-9 at 33, holds (7.9e-9 in the last chunk), removes the same
+   energy as the Laplacian floor and drifts +7e-7: 8x faster to the same
+   floor than the Laplacian atom (12.5 s/step, floor at step 50), 30x less
+   drift. kappa = 10 is the Laplacian atom again. Candidate default:
+   harmonic, HARMONIC_FLOOR 3, newton_maxiter 100; (32,64,64) confirmation
+   running; the commit waits for Tobias's direct word to the newton
+   session. Newton rows C1-C3 then run far shorter than 220 / 680 / 480.
    **No floor stop for the paper's runs** (Tobias, 16:30): the chunk-mean
    criterion misses a five-step window, chunk 5 is silly for Newton, an
    in-loop stop is a production question for later. Every rerun uses
