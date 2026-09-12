@@ -156,3 +156,54 @@ correction, numerics paragraph, table with a third column):
 `% ==== CHANGE 2026-09-11 (helicity correction)` markers with the old text in
 `% OLD:` comments. The "runtimes" session times explicit plain-B only; no
 midpoint or auxiliary arms anywhere in its plan.
+
+## 5. The budget and kappa sweeps (evening): kappa = 3 at 100 MINRES iterations
+
+All li383 (16,32,32) p=2 mixed, Newton from the VMEC field, 100 steps, `--floor-tol 0`,
+per-step squared residual (`outputs/maxiter_sweep/`, `outputs/kappa_sweep/`, code e680ab4+).
+
+| atom | kappa | MINRES it | s/step | min F2 (step) | F2 at 30 / 60 / 90 | E removed | dH/H |
+|---|---|---|---|---|---|---|---|
+| Laplacian | - | 300 | 12.5 | 4.5e-9 (50) | 7.8e-9 / 5.7e-9 / 6.9e-9 | 2.0e-6 | -2.4e-5 |
+| harmonic | 1 | 300 | 11.8 | 5.8e-9 (7) | 3.8e-8 / 3.1e-7 / 8.2e-7 | 5.4e-6 | +2.2e-4 |
+| harmonic | 1 | 600 | 22.4 | 1.5e-8 (5) | climbs faster | 8.3e-6 | +3.5e-4 |
+| harmonic | 1 | 1000 | 37.2 | 7.8e-8 (3) | climbs faster still | 9.0e-6 (60 st.) | +3.5e-4 |
+| harmonic | 1 | 1000, tol 0.01 | 36.7 | 6.2e-8 (3) | = 1000 (the tolerance is inert) | | |
+| harmonic | 1 | 100 | 5.0 | 7.2e-9 (23) | 1.0e-8 / 1.0e-8 / 1.4e-8 | 2.6e-6 | +1.8e-5 |
+| harmonic | 0.01 | 300 | 12.2 | 1.5e-8 (14) | 6.3e-8 / 1.8e-7 / 2.0e-7 | 3.7e-6 | +9e-5 |
+| harmonic | 0.1 | 300 | 12.1 | 1.2e-8 (9) | 2.0e-7 / 4.4e-7 / 9.6e-7 | 4.9e-6 | +1.3e-4 |
+| harmonic | 0.3 | 300 | 11.9 | 8.2e-9 (5) | 1.1e-7 / 5.0e-7 / 9.8e-7 | 5.0e-6 | +1.4e-4 |
+| harmonic | 3 | 300 | 12.1 | 4.5e-9 (10) | 1.6e-8 / 4.7e-8 / 2.1e-7 | 4.6e-6 | +2.1e-4 |
+| harmonic | 10 | 300 | 12.0 | 3.9e-9 (17) | 7.8e-9 / 1.5e-8 / 2.2e-8 | 2.7e-6 | +4.7e-5 |
+| **harmonic** | **3** | **100** | **5.0** | **4.9e-9 (33)** | **5.7e-9 / 8.6e-9 / 7.6e-9** | **2.2e-6** | **+7e-7** |
+| harmonic | 10 | 100 | 5.1 | 5.1e-9 (55) | 1.2e-8 / 5.4e-9 / 6.7e-9 | 2.0e-6 | -2.4e-5 |
+| harmonic, dt cap 0.25 | 1 | 300 | 13.7 | 2.1e-8 (21) | 3.1e-8 at 30 (40 steps) | 2.2e-6 | +8e-7 |
+| harmonic, dt cap 0.25 | 1 | 1000 | 39.1 | 9.1e-8 (26) | 1.4e-7 at 30 (40 steps) | 2.4e-6 | +7e-6 |
+
+- The MINRES tolerance is inert (the 1000 / tol 0.01 arm tracks the 1000 arm): the true
+  residual in the mass-atom norm follows N^-1/2 for both atoms and 0.1 is unreachable at 300.
+- More iterations = a more exact Newton step = a faster route into the post-floor descent:
+  the minimum comes earlier and higher, the climb steeper, energy removed and helicity
+  drift grow with the budget. Fewer iterations (100) hold the floor.
+- kappa interpolates between the harmonic atom (small kappa, the flat modes amplified) and
+  the Laplacian atom (kappa = 10 is indistinguishable from it): larger kappa = lower
+  minimum, slower climb.
+- A dt cap of 0.25 does not find a lower floor (2.1e-8 vs 5.8e-9 at 300 it): the finer
+  walk reaches a different, worse state; it only buys the helicity (the explicit step's
+  error is O(dt^2)).
+- **kappa = 3 at 100 iterations**: below 1e-8 from step ~15 (75 s against the Laplacian
+  atom's 10 min to the same floor), holds it through step 100, the same energy removed
+  as the Laplacian floor, helicity drift 7e-7 (30x below the Laplacian arm's). The
+  candidate default (precond harmonic, HARMONIC_FLOOR 3, newton_maxiter 100), pending
+  Tobias's word and the (32,64,64) confirmation (`outputs/kappa_sweep/k3_it100_h32`).
+- The regularised energy E + eps ||J||^2 / 2 (branch `energy-regularisation-prototype`,
+  gradient regularised, Hessian not): the Newton direction of E is nearly all penalty for
+  E_eps (dt* 0.03 at C = 0.01, 0 at C = 1); C >= 0.1 stops the descent, C = 0.01 descends
+  slowly (physical residual 7e-7 after 100 steps, no floor). Inconclusive without the
+  Hessian of E_eps; not for the release.
+
+**(32,64,64) confirmation** (`outputs/kappa_sweep/k3_it100_h32`, 100 steps, floor-tol 0):
+kappa = 3 at 100 iterations reaches 1e-6 / 1e-7 / 1e-8 at steps 8 / 15 / 53 against
+the paper's Laplacian arm's 13 / 73 / 256, minimum 3.1e-9 at step 82 (the paper's arm:
+9.4e-9 at 325) and holding (last-chunk mean 3.7e-9), ~17 s/step steady (1e-8 in ~18
+min against the paper's 5.7 h), dt ~ 1, no fallbacks, no stalls, dH/H -2.5e-6.
