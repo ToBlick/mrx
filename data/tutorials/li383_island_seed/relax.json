@@ -1,6 +1,6 @@
 {
  "params": {
-  "geometry_path": "data/wout_li383_1.4m.nc",
+  "geometry_path": "/kfs3/scratch/tblickhan/mrx/.claude/worktrees/newton/data/wout_li383_1.4m.nc",
   "ns": [
    10,
    16,
