@@ -61,6 +61,19 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
+      --step-regularisation C [0.1 Newton, 0 L-BFGS]
+                                   the line search minimises the
+                                   regularised energy E + eps ||J||^2 / 2
+                                   along the step, eps = C / n_r^2, the
+                                   direction and the force unchanged
+                                   (TimeStepper.step_regularisation): a
+                                   step whose induction is rough is
+                                   shortened; at the resolved floor the
+                                   Newton step shrinks to a few per cent
+                                   and --dt-floor ends the run. On the
+                                   L-BFGS descent it changes the
+                                   trajectory (dt* is the binding step
+                                   there) and is off by default
       --helicity-correction {false,true} [false]
                                    remove from the induction field E the one
                                    component (a multiple of the Dirichlet
@@ -121,6 +134,12 @@ Flags, defaults in brackets:
                                    ||F||^2_M / ||grad(B^2/2)||^2 is below
                                    this (the residual is not monotone; the
                                    window mean is the quantity)
+      --dt-floor DT [0.1 Newton, 0 L-BFGS]
+                                   stop when the last chunk's mean accepted
+                                   step is below this (the regularised
+                                   line search's step shrinks at the
+                                   resolved floor; 0 = off; the descent's
+                                   steps are of order 1e-3 by nature)
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision
@@ -194,6 +213,9 @@ def parse_args(argv=None):
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
+    ap.add_argument("--step-regularisation", type=float, default=None,
+                    help="eps of the regularised energy the line search minimises, in units of 1 / n_r^2 "
+                         "[0.1 Newton, 0 L-BFGS]")
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--history", type=int, default=1,
@@ -222,6 +244,8 @@ def parse_args(argv=None):
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
+    ap.add_argument("--dt-floor", type=float, default=None,
+                    help="stop when the last chunk's mean accepted step is below this [0.1 Newton, 0 L-BFGS]")
     ap.add_argument("--floor-tol", type=float, default=1e-8,
                     help="stop when the last chunk's mean squared normalised force residual is below this")
     ap.add_argument("--reconnect-every", type=int, default=0,
@@ -246,6 +270,10 @@ def parse_args(argv=None):
         cli.steps = 100 if cli.newton else 3000
     if cli.chunk is None:
         cli.chunk = 20 if cli.newton else 500
+    if cli.step_regularisation is None:
+        cli.step_regularisation = 0.1 if cli.newton else 0.0
+    if cli.dt_floor is None:
+        cli.dt_floor = 0.1 if cli.newton else 0.0
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
@@ -312,6 +340,7 @@ def main(cli):
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
         cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
         helicity_correction=cli.helicity_correction,
+        step_regularisation=cli.step_regularisation / ns[0] ** 2,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
@@ -327,9 +356,11 @@ def main(cli):
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
     print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
+          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}"
+          f"{'  step-regularisation=%.3e' % ts.step_regularisation if cli.step_regularisation else ''}  "
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
-          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
+          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e}"
+          f"{' dt-floor=%.1e' % cli.dt_floor if cli.dt_floor else ''} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",
           flush=True)
@@ -352,6 +383,7 @@ def main(cli):
             json.dump(results, fh, indent=1)
 
     res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
+                dt_floor=cli.dt_floor,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "state_best.h5"),

@@ -573,6 +573,15 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
+        step_regularisation: ``eps`` of the regularised energy ``E + eps
+            ||J||_M^2 / 2`` the LINE SEARCH minimises along the step (0 is
+            off): the direction and the force stay the physical ones, and
+            ``dt_star`` becomes ``(<F, u>_M - eps <J, curl~ dB>_M) / (||dB||_M^2
+            + eps ||curl~ dB||_M^2)``, the exact minimiser of the regularised
+            energy along the increment. A step whose induction is rough is
+            shortened by about ``1 + eps k^2``; a smooth one is untouched.
+            One weak curl of ``dB`` per step. Set from ``--step-regularisation
+            C`` as ``C / n_r^2``. A prototype (2026-09-11).
         helicity_correction: Remove from the induction field ``E`` the
             one component that changes the discrete helicity. Over one
             step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
@@ -615,6 +624,7 @@ class TimeStepper(eqx.Module):
     newton_dt_cap: float = 1.0
     newton_precond_apply: Callable = None
     helicity_correction: bool = False
+    step_regularisation: float = 0.0
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -928,7 +938,16 @@ class TimeStepper(eqx.Module):
         along the increment exactly (``dE = -dt <F, u>_M + dt^2 ||dB||^2 / 2``).
         The cap: ``cfl = inf`` gives ``min(dt_star, inf) = dt_star`` exactly.
         """
-        dt_star = inc.F @ inc.Mu / self.seq.l2_norm_sq(inc.dB, 2)
+        slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
+        if self.step_regularisation:
+            # the regularised energy along the increment: its slope gains
+            # -eps <J, curl~ dB>, its curvature eps ||curl~ dB||^2
+            seq, eps = self.seq, self.step_regularisation
+            dual = seq.apply_derivative_matrix(inc.dB, 1, dirichlet_in=True, dirichlet_out=True,
+                                               transpose=True)
+            slope = slope - eps * (inc.J @ dual)
+            curvature = curvature + eps * (seq.apply_inverse_mass_matrix(dual, 1, dirichlet=True) @ dual)
+        dt_star = slope / curvature
         dt = jnp.minimum(dt_star, self.cfl / inc.cfl_max)
         if self.newton:
             dt = jnp.minimum(dt, self.newton_dt_cap)
@@ -1388,7 +1407,7 @@ def pressure_line(d: dict) -> str:
 
 
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
-          floor_tol: float = 0.0,
+          floor_tol: float = 0.0, dt_floor: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
@@ -1396,10 +1415,14 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
     (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count or on ``floor_tol`` (the last chunk's mean of
+    Stops on the step count, on ``floor_tol`` (the last chunk's mean of
     the squared normalised force residual ``||F||_M^2 / ||grad(B^2/2)||^2``
     below it; the residual is not monotone, the window mean is the
-    quantity); a job's
+    quantity) or on ``dt_floor`` (the last chunk's mean accepted step below
+    it: with ``TimeStepper.step_regularisation`` the line search shortens
+    the step by the roughness of its induction, so a step that has shrunk
+    to a fraction of the Newton length says the descent has reached what
+    the mesh resolves); a job's
     time limit is no stop, the checkpoint of every chunk restarts it.
     ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
@@ -1490,6 +1513,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   + f"           {pressure_line(scalars)}", flush=True)
         if resid_now < floor_tol:
             stop = "floor"
+        elif dt_floor and ch["dt"].mean() < dt_floor:
+            stop = "dt"
         elif n_done == steps:
             stop = "steps"
         if on_chunk is not None:
@@ -1497,6 +1522,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         if stop != "running":
             if verbose and stop == "floor":
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
+            if verbose and stop == "dt":
+                print(f"  [dt] chunk mean of the accepted step {ch['dt'].mean():.3e} below {dt_floor:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
         if reconnect_every and n_done % reconnect_every == 0:
