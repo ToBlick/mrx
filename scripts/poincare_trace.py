@@ -142,8 +142,9 @@ def main():
             fields = [n for w in fields for n in ([f"reconnect{k}" for k in ks] if w == "reconnect" else [w])]
         movie = fields == ["snapshots"]
         if movie:
-            # One frame per checkpoint (relax.py --chunk), named by step.
-            steps = sorted(ckpts)
+            # One frame per checkpoint (relax.py --chunk), named by step; the
+            # best state's entry is keyed "best", not by a step.
+            steps = sorted(k for k in ckpts if isinstance(k, int))
             if cli.snapshot_steps:
                 wanted = set()
                 for rng in cli.snapshot_steps.split(","):
