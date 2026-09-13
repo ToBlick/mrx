@@ -20,10 +20,12 @@ Flags (defaults in brackets):
                            the section and the chart, and as the profile's right
                            axis); it is drawn whenever the archive holds one
     --inner-cells C        lines seeded closer to the axis than C radial cells
-                           (r < C / n_r) are not drawn: the field is not resolved
-                           there (the polar patch) and their iota fit is biased
-                           high (QA 32x64x32 p3: +1.6e-3 at r = 0.019, on trend
-                           from r ~ 1.5 h). They stay in the archive. [1.5]
+                           (r < C / n_r) are not drawn; 0 draws every line
+                           (the inner lines are regular; Tobias 2026-09-12).
+                           The iota fit of a line inside the polar patch is
+                           biased high (QA 32x64x32 p3: +1.6e-3 at r = 0.019,
+                           on trend from r ~ 1.5 h). They stay in the
+                           archive either way. [0]
     --min-sep F            resonant-rational iota ticks: a rational is labelled
                            only if it is at least this fraction of the iota
                            range from every lower-order label already placed --
@@ -134,7 +136,7 @@ def main():
     ap.add_argument("--fields", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-pressure", dest="pressure", action="store_false")
-    ap.add_argument("--inner-cells", type=float, default=1.5)
+    ap.add_argument("--inner-cells", type=float, default=0.0)
     ap.add_argument("--min-sep", type=float, default=0.12)
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
