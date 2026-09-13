@@ -354,3 +354,19 @@ and stalls), c = 0.02 stays the optimum; Leray 9.2e-9 at 5000 against the potent
 8.1e-9, at 0.44 against 0.33 s/step. Figures m_sweep, gamma_sweep, c_sweep and lbfgs_tables.tex
 (the c table and the two-row velocity table) come from paper_figures.py and are in the draft
 (captions placeholders; the prose still quotes the 2026-09-11 numbers).
+
+## 13. W7-X FMM002 (VMEC wout) unseeded and seeded at iota = 1 (2026-09-13, morning)
+
+`data/wout_W7-X_FMM002_000_000000.nc` (iota 0.916 axis -> 1.070 edge, |iota| = 1 at rho = 0.83),
+(16,32,32) p=2, released Newton configuration: `outputs/w7x_p2/fmm002w16` (unseeded) and
+`fmm002w16_seed51` (seed (5,1) at rho0 = 0.83, width 0.1, eps 1e-2: for nfp = 5 the seed's n counts
+field periods, so (5,1) is the iota = 1 chain; the (11,10) attempt on the wout reference the night
+before was a non-resonant 50-period ripple, the corrected (11,2) seed is damped to a quarter cell at
+m = 11 on 32 poloidal cells -- a null result, see `wout16_seed_wrong_n10`, `wout16_seed1011`).
+Both stop on the floor test at step 40 (5.4 s/step, 3.6 min): unseeded 1.8e-4 -> 3.0e-10, seeded
+1.8e-4 -> 1.1e-9; dH/H +2.3e-5 / -4.9e-5, dE/E -1.1e-6 / -1.6e-6, beta_vol 1.12%. Traces at 96
+steps/period, no line lost. The 5/5 chain: unseeded 0 (IC) -> 0.65 h_r (relaxed, the natural
+chain); seeded 3.03 h_r (IC) -> 2.74 h_r (relaxed): the seeded island survives the Newton descent
+within 10% of its width, as the li383 seeds did, with the pressure flat across it (p x100 ~ 0.03
+on all island lines, the iota shelf at 5/5 over r = 0.75-0.9). Pages:
+`outputs/figures_2026-09-11/w7x/poincare_fmm002w16{,_seed51}_{ic,best}_zeta0.*`.
