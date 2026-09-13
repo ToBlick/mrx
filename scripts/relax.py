@@ -61,7 +61,7 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
-      --step-regularisation C [0.1 Newton, 0 L-BFGS]
+      --step-regularisation C [0.1 Newton without a reconnection series, else 0]
                                    the line search minimises the
                                    regularised energy E + eps ||J||^2 / 2
                                    along the step, eps = C / n_r^2, the
@@ -274,7 +274,10 @@ def parse_args(argv=None):
     if cli.chunk is None:
         cli.chunk = 20 if cli.newton else 500
     if cli.step_regularisation is None:
-        cli.step_regularisation = 0.1 if cli.newton else 0.0
+        # off with a reconnection series: the regularised energy E + eps ||J||^2 / 2 rises
+        # along the relaxation of a reconnected field (the resistive step diffused J, the
+        # relaxation regrows it), so the regularised search refuses every direction there
+        cli.step_regularisation = 0.1 if (cli.newton and not cli.reconnect_every) else 0.0
     if cli.dt_floor is None:
         cli.dt_floor = 0.1 if cli.newton else 0.0
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"

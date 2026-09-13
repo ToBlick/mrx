@@ -930,7 +930,22 @@ class TimeStepper(eqx.Module):
             # The line search's sign: a Newton direction that does not
             # descend (H indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.
-            descent = (u_newton @ MF) > 0
+            # With the regularised search the sign is the regularised
+            # energy's slope along the direction's increment: after a
+            # reconnection the field is rough on purpose, the Newton
+            # direction's induction is rough with it, and the penalty's slope
+            # can outweigh the energy's (measured 2026-09-12 on the ladder:
+            # dt* < 0 on every step of the rungs after the first, MINRES
+            # converging in 8-18 iterations on the reconnected field). One
+            # induction solve and one weak curl more per step.
+            slope = u_newton @ MF
+            if self.step_regularisation:
+                dB_n = seq.apply_incidence_matrix(
+                    self._induction_field(seq.evaluate_at_quadrature(u_newton, 2, True), X, E_guess),
+                    1, dirichlet_in=True, dirichlet_out=True)
+                slope = slope - self.step_regularisation * (J @ seq.apply_derivative_matrix(
+                    dB_n, 1, dirichlet_in=True, dirichlet_out=True, transpose=True))
+            descent = slope > 0
             u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
             sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
         else:
@@ -987,7 +1002,9 @@ class TimeStepper(eqx.Module):
             slope = slope - eps * (inc.J @ dual)
             curvature = curvature + eps * (seq.apply_inverse_mass_matrix(dual, 1, dirichlet=True) @ dual)
         dt_star = slope / curvature
-        dt = jnp.minimum(dt_star, self.cfl / inc.cfl_max)
+        # a non-positive dt* is no step: the (regularised) energy does not
+        # decrease along the increment; a negative step would climb it
+        dt = jnp.minimum(jnp.maximum(dt_star, 0.0), self.cfl / inc.cfl_max)
         if self.newton:
             dt = jnp.minimum(dt, self.newton_dt_cap)
         return dt, dt_star
