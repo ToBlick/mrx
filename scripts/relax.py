@@ -44,7 +44,7 @@ Flags, defaults in brackets:
                                    float64 residual; float32, float64: both
                                    (MRX_DTYPE and MRX_RESIDUAL_DTYPE, exported
                                    before mrx is imported)
-      --seed m,n,rho0,width [""], --seed-eps EPS [0]
+      --seed m,n,rho0,width[,phase] [""], --seed-eps EPS [0]
                                    equilibrium files only: a resonant term in
                                    A'_zeta that opens an island at the
                                    |iota| = nfp n / m surface
@@ -210,7 +210,8 @@ def parse_args(argv=None):
     ap.add_argument("--solve-tol", type=float, default=None)
     ap.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
     ap.add_argument("--seed", default="",
-                    help='resonant seed "m,n,rho0,width" added to the potential (equilibrium files only)')
+                    help='resonant seed "m,n,rho0,width[,phase]" added to the potential (equilibrium files '
+                         'only); phase in periods of the seed, 0.5 swaps the O- and X-points')
     ap.add_argument("--seed-eps", type=float, default=0.0,
                     help="its amplitude |dB^rho| / |B^zeta| at rho0 (island width ~ sqrt of it)")
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
@@ -295,7 +296,7 @@ def parse_args(argv=None):
 def main(cli):
     import mrx
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field
+    from mrx.initial_conditions import initial_field, parse_seed
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                                 relax, write_checkpoint)
@@ -329,10 +330,7 @@ def main(cli):
 
     # --- initial condition -----------------------------------------------
     t1 = time.perf_counter()
-    seed = None
-    if cli.seed:
-        m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-        seed = (int(m), int(n), rho0, width, cli.seed_eps)
+    seed = parse_seed(cli.seed, cli.seed_eps) if cli.seed else None
     B0, ic = initial_field(seq, seed)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "

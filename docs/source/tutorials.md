@@ -225,7 +225,7 @@ then relax it. The seed rides on the Clebsch potential, so $B = dA'$ stays
 exactly divergence-free and wall-tangent:
 
 ```python
-seed = (6, 1, 0.544, 0.1, 1e-2)                           # (m, n, rho0, width, eps)
+seed = (6, 1, 0.544, 0.1, 1e-2, 0.0)                      # (m, n, rho0, width, eps, phase)
 B_seeded, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
 ```
 

@@ -128,12 +128,14 @@ def clebsch_potential_form(cb, seed=None):
     profiles with ``Phi(0) = chi(0) = 0`` and a vanishing slope on the axis
     (both are ``rho^2`` there).
 
-    ``seed = (m, n, rho0, width, eps)`` adds the resonant term
-    ``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta))`` to
-    ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
+    ``seed = (m, n, rho0, width, eps, phase)`` adds the resonant term
+    ``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta + phase))``
+    to ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
     (1 - rho0^2)`` and ``s`` the sign of the file's ``iota``: ``eps`` is the
     resonant normal field ``|dB^rho| / |B^zeta|`` at ``rho0``, the chain
-    sits where ``|iota| = nfp n / m`` (:func:`resonant_rho`), the wall trace
+    sits where ``|iota| = nfp n / m`` (:func:`resonant_rho`), ``phase`` (in
+    periods of the cosine) turns the chain -- ``0.5`` swaps its O- and
+    X-points, so a ray through an X-point crosses an O-point --, the wall trace
     stays a function of ``rho`` alone (``B . n = 0`` exactly), and the
     island the seed opens has full width about
     ``1.6 sqrt(eps nfp / (m |iota'|))`` in ``rho`` (pendulum estimate; the
@@ -162,14 +164,14 @@ def clebsch_potential_form(cb, seed=None):
         def seed_zeta(x):
             return 0.0
     else:
-        m, n, rho0, width, eps = seed
+        m, n, rho0, width, eps, phase = seed
         s = float(np.sign(np.mean(np.asarray(cb["dchi"]) / np.asarray(cb["dPhi"]))))
         amp = eps * abs(float(np.interp(rho0, rho, cb["dPhi"]))) / m
 
         def seed_zeta(x):
             r = x[0]
             g = jnp.exp(-((r - rho0) / width) ** 2) * (1.0 - r ** 2) / (1.0 - rho0 ** 2)
-            return amp * g * jnp.cos(two_pi * (m * x[1] - s * n * x[2]))
+            return amp * g * jnp.cos(two_pi * (m * x[1] - s * n * x[2] + phase))
 
     def A_ref(x):
         r = jnp.clip(x[0], 0.0, 1.0)
@@ -179,6 +181,16 @@ def clebsch_potential_form(cb, seed=None):
                           two_pi * jnp.interp(r, r_t, Phi_t),
                           -two_pi / nfp * jnp.interp(r, r_t, chi_t) + seed_zeta(x)])
     return A_ref
+
+
+def parse_seed(spec, eps):
+    """The seed tuple of :func:`clebsch_potential_form` from a driver's
+    ``--seed "m,n,rho0,width[,phase]"`` and ``--seed-eps``; the phase is 0
+    unless given."""
+    v = [float(x) for x in spec.split(",")]
+    m, n, rho0, width = v[:4]
+    phase = v[4] if len(v) == 5 else 0.0
+    return int(m), int(n), rho0, width, eps, phase
 
 
 def resonant_rho(cb, m, n):
@@ -263,7 +275,8 @@ def initial_field(seq, seed=None):
     by :func:`mrx.geometry.build_sequence`): an
     equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
     through the histopolated Clebsch potential, exactly divergence-free,
-    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
+    optionally with a resonant ``seed = (m, n, rho0, width, eps, phase)``
+    (:func:`parse_seed`); an
     analytic geometry file gives the logical-grid field of its ``profile``
     block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
 
