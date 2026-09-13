@@ -291,3 +291,37 @@ step 41, then a slow climb with the step shrinking, stop on the dt test at step 
 factor above the unseeded floor as in the descent table). The best-state file is
 `checkpoints/best.h5` (renamed from `state_best.h5`, which the tracers' `state_*.h5` glob
 mistook for a step).
+
+## 10. The W7-X high-beta demonstration: Newton past the floor destroys the surfaces (2026-09-12)
+
+`outputs/w7x_highbeta/h32` (GVEC `w7x_highbeta.dat`, (32,64,64) p=2, mixed, the released Newton
+configuration, 200 steps, 37.7 s/step, 2.1 h) and `h16` ((16,32,32), same). h32: resid 1.28e-3
+(IC) -> 8.3e-6 at step 10, then 4.4e-6..7e-6 for the remaining 190 steps, best 4.36e-6 at step
+177, dt 0.4..1.0 (the cap), 100 MINRES iterations every step, no fallback, energy -5.6e-5 and
+helicity -1.7e-5 relative, beta_vol 5.25 -> 3.27%. The floor of this system at this resolution is
+~5e-6, far above `--floor-tol 1e-8`, so neither stop fired and the run spent its step budget
+walking along the floor. The Poincare sections show what that walk does. IC: nested surfaces,
+iota 0.856 (axis) .. 0.955, 7 of 160 lines lost, 3 chaotic (h/2 drift 0.17 -- W7-X wants more
+than 24 trace steps per period). Snapshot traces (`trace_snapshots.npz`, steps 20..100 + 200):
+
+| step | lost | chaotic | iota range |
+|---|---|---|---|
+| 0 | 7 | 3 | 0.856-0.955 |
+| 20 | 16 | 11 | 0.856-0.938 |
+| 40 | 9 | 28 | 0.856-0.938 |
+| 60 | 24 | 25 | 0.855-0.909 |
+| 80 | 27 | 47 | 0.855-0.865 |
+| 100 | 50 | 33 | 0.853-0.872 |
+| 177 (best) | 52 | 57 | 0.833-1.000 |
+| 200 | 65 | 61 | 0.833-1.000 |
+
+The edge rotational transform falls from 0.95 to the axis value by step 80, the outer half of the
+plasma goes stochastic, and the axis pressure drops by a quarter (x100: 1.0 -> 0.75): past the
+floor the Newton direction is discretisation noise and a dt ~ 1 step of it is a random walk of
+numerical reconnection that drains the pressure toward the force-free state, at constant residual.
+The best-state carry, which picks by residual, picks one of the worst states. h16 stopped on the
+dt test at step 40 (best 2.4e-2 at step 7, unresolved at p=2). Consequences: a Newton run on a
+system whose floor is above `--floor-tol` must stop at the floor (set `--floor-tol` to the expected
+floor, or stop on no improvement over a window); the W7-X state to show is the first floored one
+(step 10-20), re-traced with more steps per period; and the paper's W7-X subsection has to say
+this rather than present step 177.
