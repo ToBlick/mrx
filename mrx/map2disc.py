@@ -661,39 +661,76 @@ def _next_pow2(n: int) -> int:
     return max(8, 1 << max(0, int(n - 1)).bit_length())
 
 
-def _invert_nodes(curve: BoundaryCurve, rho: jnp.ndarray, theta: jnp.ndarray,
-                  interior: np.ndarray, max_iter: int
+def _invert_nodes(curve: BoundaryCurve, M: int, max_iter: int
                   ) -> tuple[jnp.ndarray, float, float]:
-    """Newton-invert the interior concentric nodes on one boundary resolution.
+    """Newton-invert the degree-``M`` concentric nodes by degree continuation.
+
+    Newton is warm-started by walking the degree up, ``2, 3, ..., M``, and
+    starting each rung from the previous rung's fitted :class:`ZernikeMap`
+    evaluated at the new nodes. Only the first rung uses the crude radial
+    guess ``center + 0.9 rho (gamma(theta) - center)``.
+
+    That guess is good enough on mild cross-sections -- an ellipse, the
+    Landreman-Paul QA planes and a moderate bean all converge in one to
+    five Newton steps -- but on a strongly non-convex boundary it lands
+    where the Nystrom evaluation of ``g`` is meaningless and Newton walks
+    off to ``1e15``. Continuation keeps every start inside the domain, so
+    a boundary resolution that the crude guess cannot invert at all is
+    inverted to the same answer, one doubling earlier. It is close to
+    free: the rungs share the single dense Nystrom solve inside
+    :func:`harmonic_map`, which is what a doubling costs eight times more
+    of.
 
     Args:
         curve: Boundary at the resolution to use.
-        rho: Node radii from :func:`concentric_nodes`.
-        theta: Node angles from :func:`concentric_nodes`.
-        interior: Indices of the nodes with ``rho < 1`` (the ``rho = 1``
-            ring is ``gamma`` exactly and is never solved for).
-        max_iter: Newton steps per node.
+        M: Maximum Zernike degree; the last rung of the ladder.
+        max_iter: Newton steps per node, on every rung.
 
     Returns:
-        ``(xy, residual, gap_ratio)``: the node positions, the largest
-        Newton residual, and the distance from the closest interior node
-        to the boundary in units of the boundary spacing.
+        ``(xy, residual, gap_ratio)``: the degree-``M`` node positions,
+        the largest Newton residual of the last rung, and the distance
+        from the closest interior node to the boundary in units of the
+        boundary spacing.
     """
+    rho, theta = concentric_nodes(M)
+    interior = np.flatnonzero(np.asarray(rho) < 1.0 - 1e-10)
     xy = jax.vmap(curve.interpolate)(theta / (2.0 * jnp.pi))
     if interior.size == 0:
+        # A degree-1 basis has every node on the boundary, where the map
+        # is gamma exactly: there is nothing to invert.
         return xy, 0.0, np.inf
+
+    g = harmonic_map(curve)
     center = jnp.mean(curve.samples, axis=0)
-    rho_in = rho[interior]
-    xy0 = center[None, :] + (0.9 * rho_in[:, None]) * (xy[interior] - center[None, :])
-    targets = jnp.stack([rho_in * jnp.cos(theta[interior]),
-                         rho_in * jnp.sin(theta[interior])], axis=1)
-    xy_in, residual = invert_harmonic_map(harmonic_map(curve), targets, xy0,
-                                          max_iter=max_iter)
+    coarse, residual = None, jnp.zeros(())
+    for degree in range(2, M + 1):
+        last = degree == M
+        rho_d, theta_d = (rho, theta) if last else concentric_nodes(degree)
+        inner = (interior if last
+                 else np.flatnonzero(np.asarray(rho_d) < 1.0 - 1e-10))
+        nodes = xy if last else jax.vmap(curve.interpolate)(theta_d / (2.0 * jnp.pi))
+        rho_in, theta_in = rho_d[inner], theta_d[inner]
+        if coarse is None:
+            start = (center[None, :]
+                     + (0.9 * rho_in[:, None]) * (nodes[inner] - center[None, :]))
+        else:
+            start = jax.vmap(lambda r, t, f=coarse: f(r, t))(rho_in, theta_in)
+        targets = jnp.stack([rho_in * jnp.cos(theta_in),
+                             rho_in * jnp.sin(theta_in)], axis=1)
+        solved, residual = invert_harmonic_map(g, targets, start, max_iter=max_iter)
+        nodes = nodes.at[inner].set(solved)
+        if last:
+            xy = nodes
+        else:
+            ell_d, m_d = zernike_indices(degree)
+            coarse = ZernikeMap(M=degree, coeffs=jnp.linalg.solve(
+                zernike_eval(ell_d, m_d, rho_d, theta_d), nodes).T)
+
     step = curve.samples - jnp.roll(curve.samples, 1, axis=0)
     spacing = float(jnp.sum(jnp.hypot(step[:, 0], step[:, 1]))) / curve.n
     gap = float(jnp.min(jnp.linalg.norm(
-        xy_in[:, None, :] - curve.samples[None, :, :], axis=2)))
-    return xy.at[interior].set(xy_in), float(jnp.max(residual)), gap / spacing
+        xy[interior][:, None, :] - curve.samples[None, :, :], axis=2)))
+    return xy, float(jnp.max(residual)), gap / spacing
 
 
 def fit_disc_map(curve: BoundaryCurve, M: int = 8,
@@ -720,7 +757,7 @@ def fit_disc_map(curve: BoundaryCurve, M: int = 8,
       wall in boundary spacings, which is proportional to the resolution
       and so predicts the resolution that would suffice, and
     * compares the node positions against the previous, coarser
-      resolution,
+      resolution whose Newton converged,
 
     and accepts only when the nodes have stopped moving AND the gap is
     resolved. Resampling is trigonometric (:meth:`BoundaryCurve.resample`),
@@ -737,6 +774,10 @@ def fit_disc_map(curve: BoundaryCurve, M: int = 8,
     two resolutions actually compared are consecutive; comparing against
     the probe instead would compare against garbage and force a needless
     extra doubling, and each doubling costs eight times the last.
+
+    The Newton itself is warm-started by degree continuation
+    (:func:`_invert_nodes`), which is what lets a strongly non-convex
+    boundary be inverted at all at the coarser resolutions.
 
     Args:
         curve: Boundary, parametrised by the disc angle.
@@ -777,24 +818,30 @@ def fit_disc_map(curve: BoundaryCurve, M: int = 8,
     if interior.size == 0:
         # Every node of a degree-1 basis is on the boundary, where the map
         # is gamma exactly: no quadrature is involved and nothing to refine.
-        xy, _, _ = _invert_nodes(curve, rho, theta, interior, newton_max_iter)
+        xy, _, _ = _invert_nodes(curve, M, newton_max_iter)
         return ZernikeMap(M=M, coeffs=jnp.linalg.solve(V, xy).T)
 
     # The probe only has to locate the nodes well enough to measure how
     # far they sit from the wall, so it runs a few Newton steps, not the
     # full budget, and its positions are discarded.
-    _, _, probe = _invert_nodes(curve.resample(n), rho, theta, interior,
+    _, _, probe = _invert_nodes(curve.resample(n), M,
                                 max(4, newton_max_iter // 5))
     if probe > 0.0:
         n = min(n_max, max(n, _next_pow2(int(n * gap_ratio / probe)) // 2))
 
-    previous, change = None, np.inf
+    # Only a resolution whose Newton converged is worth comparing against.
+    # One that did not holds nodes nowhere near the map -- on a strongly
+    # non-convex boundary they run off to 1e15 -- so the movement measured
+    # against it is meaningless, and it would reject the converged level
+    # that follows. An unresolved GAP does not disqualify a predecessor:
+    # its nodes are merely inaccurate, not wrong, and the gap is tested on
+    # the current level anyway.
+    trusted, change = None, np.inf
     while True:
-        xy, residual, gap = _invert_nodes(curve.resample(n), rho, theta,
-                                          interior, newton_max_iter)
-        if previous is not None:
-            change = float(jnp.max(jnp.abs(xy - previous)))
-        if residual <= rel and gap >= gap_ratio and change <= rel * extent:
+        xy, residual, gap = _invert_nodes(curve.resample(n), M, newton_max_iter)
+        converged = residual <= rel
+        change = np.inf if trusted is None else float(jnp.max(jnp.abs(xy - trusted)))
+        if converged and gap >= gap_ratio and change <= rel * extent:
             return ZernikeMap(M=M, coeffs=jnp.linalg.solve(V, xy).T)
         if n >= n_max:
             raise ValueError(
@@ -805,7 +852,7 @@ def fit_disc_map(curve: BoundaryCurve, M: int = 8,
                 f"{rel:.2e}) and node movement under refinement {change:.2e} "
                 f"(need {rel * extent:.2e}). Lower M, or raise n_max if the "
                 f"memory for a dense {n_max}^2 Nystrom solve is available.")
-        previous = xy
+        trusted = xy if converged else None
         n = min(n_max, 2 * n)
 
 

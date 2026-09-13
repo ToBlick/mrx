@@ -9,7 +9,10 @@ from numpy.polynomial.legendre import leggauss
 
 from mrx.gvec import StateField, read_equilibrium
 from mrx.map2disc import (
+    GAP_RATIO,
+    N_BOUNDARY_MAX,
     BoundaryCurve,
+    _invert_nodes,
     boundary_from_fourier,
     boundary_from_samples,
     concentric_nodes,
@@ -77,6 +80,23 @@ def _bean_curve(n: int = 256) -> BoundaryCurve:
     a = 2.0 * np.pi * np.arange(n) / n
     rad = 1.0 + 0.45 * np.cos(a) + 0.25 * np.cos(2.0 * a)
     return boundary_from_samples(np.stack([rad * np.cos(a), 0.7 * rad * np.sin(a)], 1))
+
+
+def _severe_bean_curve(n: int = 2048) -> BoundaryCurve:
+    """A bean so non-convex that the crude Newton start walks out of it.
+
+    Aspect ratio 6.3 between the widest and narrowest radius.
+    """
+    a = 2.0 * np.pi * np.arange(n) / n
+    rad = 1.0 + 0.85 * np.cos(a) + 0.425 * np.cos(2.0 * a)
+    return boundary_from_samples(np.stack([rad * np.cos(a), 0.6 * rad * np.sin(a)], 1))
+
+
+def _crude_start(curve: BoundaryCurve, rho, theta):
+    """The radial Newton guess continuation replaces: ``c + 0.9 rho (gamma - c)``."""
+    center = jnp.mean(curve.samples, axis=0)
+    edge = jax.vmap(curve.interpolate)(theta / (2.0 * jnp.pi))
+    return center[None, :] + (0.9 * rho[:, None]) * (edge - center[None, :])
 
 
 def _roundtrip_error(fh, g, rhos, n_theta: int = 12) -> float:
@@ -439,6 +459,57 @@ def test_under_resolved_fit_raises_instead_of_returning_a_folded_map() -> None:
     """
     with pytest.raises(ValueError, match="not resolved at n_boundary"):
         fit_disc_map(_bean_curve(), M=12, n_max=64)
+
+
+def test_continuation_inverts_a_boundary_the_crude_start_cannot() -> None:
+    """Degree continuation is what makes a severe bean invertible at all.
+
+    From the crude radial guess the Newton leaves the domain and diverges
+    to order ``1e15`` at ``n_boundary = 2048``. Walking the degree up
+    ``2, 3, ..., M`` and starting each rung from the previous rung's fit
+    keeps every start inside, and converges to the same nodes the crude
+    guess only reaches one doubling later.
+    """
+    curve = _severe_bean_curve()
+    rho, theta = concentric_nodes(8)
+    inner = np.flatnonzero(np.asarray(rho) < 1.0 - 1e-10)
+    targets = jnp.stack([rho[inner] * jnp.cos(theta[inner]),
+                         rho[inner] * jnp.sin(theta[inner])], axis=1)
+    crude, crude_residual = invert_harmonic_map(
+        harmonic_map(curve), targets, _crude_start(curve, rho, theta)[inner])
+    assert float(jnp.max(crude_residual)) > 1e-2
+    assert float(jnp.max(jnp.abs(crude))) > 1e2
+
+    nodes, residual, _ = _invert_nodes(curve, 8, 25)
+    assert residual < FIT_FLOOR
+    # Continuation stays inside a boundary whose farthest point is ~2.3.
+    assert float(jnp.max(jnp.abs(nodes))) < 4.0
+
+
+def test_an_unresolved_level_does_not_poison_the_movement_test() -> None:
+    """A level that converged but is gap-short is still a valid comparison.
+
+    Refinement accepts a resolution when its nodes have stopped moving
+    against the previous one. The previous one only has to have CONVERGED
+    -- if it is merely gap-short its nodes are inaccurate, not wrong, and
+    the gap is tested on the current level anyway. Requiring the
+    predecessor to be gap-resolved too would cost a further doubling and
+    push this fit past ``N_BOUNDARY_MAX``; comparing against a DIVERGED
+    predecessor would measure a movement of ``1e15`` and reject a fit
+    that is right to 2.4e-15.
+    """
+    curve = _severe_bean_curve()
+    _, residual, gap = _invert_nodes(curve, 8, 25)
+    assert residual < FIT_FLOOR and gap < GAP_RATIO
+
+    fh = fit_disc_map(curve, M=8, n_max=N_BOUNDARY_MAX)
+    theta = jnp.linspace(0.0, 2.0 * jnp.pi, 400, endpoint=False)
+    boundary = jax.vmap(lambda t: fh(1.0, t))(theta)
+    exact = jax.vmap(curve.interpolate)(theta / (2.0 * jnp.pi))
+    assert float(jnp.max(jnp.abs(boundary - exact))) < FIT_FLOOR
+    det = jax.vmap(jax.vmap(lambda r, t: fh.jacobian_determinant(r, t)))(
+        *jnp.meshgrid(jnp.linspace(0.0, 1.0, 21), theta[::20], indexing="ij"))
+    assert float(jnp.min(det)) > 0.0
 
 
 # ---------------------------------------------------------------------------

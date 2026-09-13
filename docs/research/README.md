@@ -45,6 +45,7 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 - `gvec_h5_vacuum_comparison.md` — MRX vacuum field versus GVEC h5; corrects the previous file on the simsopt exports.
 - `qa_vacuum_convergence_2026-08-28.md` — VMEC QA wout vs the discrete harmonic form by resolution: O(h^p) in the bulk with no floor to 5e-5, the residual is the axis; scale fit = flux match (theorem).
 - `analytic_map_2026-08-28.md` — the polar spline map of a GVEC state / VMEC wout built from the series coefficients (L2 projection, closed-form angular symbols), no evaluation grid; interpolant measured and dropped; axis and wall analysis.
+- `map2disc_2026-09-13.md` — the native map2disc: the blend defect that made every ellipse oracle pass, the degree/Nyquist/boundary resolution laws, why the Newton is warm-started by degree continuation (and why shape continuation is worse than nothing), and the QA vacuum field solved on both maps as a physics-level check.
 
 ## Poincare
 
