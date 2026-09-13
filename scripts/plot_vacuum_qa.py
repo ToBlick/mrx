@@ -50,7 +50,7 @@ def main(cli):
     from mrx.differential_forms import DiscreteFunction, Pushforward
     from mrx.geometry import build_sequence, geometry_nfp
     from mrx.nullspace import compute_nullspaces, get_nullspace
-    from mrx.plotstyle import FIELD_CMAP, house_style
+    from mrx.plotstyle import FIELD_CMAP, FS, figsize, house_style
     from mrx.plotting import get_2d_grids
 
     ns = tuple(int(v) for v in cli.ns.split(","))
@@ -92,9 +92,8 @@ def main(cli):
         # The torus gets its own axes on the left, the colour bar a separate one
         # on the right with a clear gap between them -- 3-D content is not clipped
         # to its axes rectangle, so a shared-axes colour bar would let the surface
-        # spill under it. The figure is embedded at ~half-page width, so the bar
-        # text is a little larger than the house default to stay legible there.
-        fig = plt.figure(figsize=(8.5, 6.0))
+        # spill under it. Column width with the house fonts, like every other figure.
+        fig = plt.figure(figsize=figsize("column", aspect=0.7))
         ax = fig.add_axes([0.0, 0.0, 0.80, 1.0], projection="3d")
         pts = []
         for j in range(nfp):
@@ -119,8 +118,8 @@ def main(cli):
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array(vals)
         cbar = fig.colorbar(sm, cax=cax)
-        cbar.set_label(r"$|B|$", fontsize=18.75)
-        cbar.ax.tick_params(labelsize=15)
+        cbar.set_label(r"$|B|$", fontsize=FS.label)
+        cbar.ax.tick_params(labelsize=FS.tick)
         # A self-contained vector PDF (rasterised surface at --dpi, vector text):
         # \includegraphics{...pdf} with no external rasters. A PNG alongside for viewing.
         stem = os.path.join(cli.out, "vacuum_qa_Bmag")
