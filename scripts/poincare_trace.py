@@ -20,7 +20,7 @@ one iota and one pressure scale.
         --geometry data/wout_LandremanPaul2021_QA_highres.nc --ns 32,64,32 --p 3
 
 Flags (defaults in brackets):
-    --fields F             comma-separated subset of ic,final [ic,final]: ic is
+    --fields F             comma-separated subset of ic,final,best [ic,final]: ic is
                            checkpoints/state_000000.h5, final the highest step;
                            `reconnect` expands to one field reconnect<k> per
                            record of relax.json's ``reconnect`` list (the
@@ -124,6 +124,13 @@ def main():
         fields = [w.strip() for w in cli.fields.split(",")]
         labels = {"ic": f"initial condition ({attrs.get('ic', '?')})", "final": "relaxed field"}
         steps_of = {"ic": min(ckpts), "final": max(ckpts)}
+        best = os.path.join(run_dir, "checkpoints", "best.h5")
+        if os.path.exists(best):
+            # the run's answer: the field of lowest per-step residual (relax.py, State.B_best)
+            with h5py.File(best, "r") as fh:
+                best_step = int(fh.attrs["step"])
+            ckpts["best"], steps_of["best"] = best, "best"
+            labels["best"] = f"best state (step {best_step})"
         if "reconnect" in fields:
             # The field before each reconnection: the checkpoint at the record's step.
             ks = []
