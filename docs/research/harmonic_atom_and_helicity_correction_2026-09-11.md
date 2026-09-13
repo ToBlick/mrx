@@ -370,3 +370,38 @@ chain); seeded 3.03 h_r (IC) -> 2.74 h_r (relaxed): the seeded island survives t
 within 10% of its width, as the li383 seeds did, with the pressure flat across it (p x100 ~ 0.03
 on all island lines, the iota shelf at 5/5 over r = 0.75-0.9). Pages:
 `outputs/figures_2026-09-11/w7x/poincare_fmm002w16{,_seed51}_{ic,best}_zeta0.*`.
+
+## 14. The Newton sweeps on the released code (2026-09-13, `outputs/newton_sweeps_2026-09-13`, `outputs/helicity_2026-09-13`)
+
+Released Newton configuration (harmonic atom kappa = 3, 100 MINRES iterations, C = 0.1, dt-floor
+0.1, floor-tol 1e-8, chunk 20, 200-step budget), li383, mixed precision, every arm stopping itself
+on the floor test. s/step below is the steady rate over the chunks after the first (the first
+chunk carries the compile: 104 s at (16,32,32), 30 min at (48,96,96)); the paper's wall axes put
+that compile before the first step and the operators' setup (2-2.5 min at n = 16) is not on them.
+
+- h sweep at p = 2 (traced ic + best, five planes): (12,24,24) 40 steps, 2.8 s/step, floor 1.9e-8
+  (does not reach 1e-8); (16,32,32) 40 steps, 4.05 s/step, 4.7e-9, 1e-8 at step 19 (2.9 min);
+  (24,48,48) 60, 8.8 s/step, 2.1e-9, 1e-8 at 30; (32,64,64) 80, 16.7 s/step, 4.0e-9, 1e-8 at 51;
+  (48,96,96) 140, 53-61 s/step, 7.8e-9 at step 132, 1e-8 at 121 (126 min), MINRES at its 100
+  budget on every step, no line lost in the trace. Steps to the floor grow like n (40, 40, 60,
+  80, 140), the cost per step like the DoFs (x13 from 16 to 48), so the wall to 1e-8 goes 2.9 ->
+  8.6 -> 26 -> 126 min. The L-BFGS reference at (16,32,32) takes 8.8 min to 1e-8 at 0.32 s/step.
+- p at (16,32,32): p = 1 cannot resolve (floor 2.7e-4 after 80 steps, dH/H -7.5e-5); p = 2 4.7e-9
+  (1e-8 at 19); p = 3 3.1e-9 (1e-8 at 15, 5.7 s/step); p = 4 7.1e-9 at step 65 (1e-8 at 53, 9.0
+  s/step) -- the degrees converge to the same floor, p = 4 needing three times the steps.
+- solver tolerance 1e-6 / 1e-8 / 1e-10: identical trajectories (4, 6, 19 steps to 1e-6/7/8, floor
+  4.6e-9 in all three) at 3.1 / 4.05 / 5.0 s/step: the inexact Newton step does not see the inner
+  tolerance, only the cost does.
+- precision: float32 floors at 1.4e-7 (1e-6 at 17, never 1e-7; 1.6 s/step); mixed and float64 agree
+  (4.7e-9 vs 4.2e-9, 1e-8 at 19 vs 17) at 4.05 vs 6.2 s/step.
+- helicity table, six explicit L-BFGS arms (m = 1, gamma = 0, 1000 steps, midpoint rows dropped):
+  |dH/H| auxiliary H 9.3e-7 (mixed) / 1.5e-6 (float64), B only 1.0e-5 / 1.0e-5, B corrected
+  1.9e-7 / 1.7e-15. The H arms run the Leray route (the potential velocity is refused with the
+  auxiliary field), the other four the potential route.
+- the reconnection ladder with C = 0.1 (`outputs/newton_demos/ladder4`, one 5% reconnection after
+  60 steps): the first 60 steps floor at 4.2e-9 like the reference run; the reconnection spends
+  4.23% (the dose estimate is linear), residual 4e-9 -> 9.1e-6, J/B 0.64 -> 0.51; after it NOT ONE
+  step is accepted in 60 (dt = 0, fallback on every step, dt* < 0): the regularised slope
+  -eps <J, curl dB> outweighs <F, u> on every direction of the reconnected field, as the driver's
+  comment says. C = 0 with a reconnection series stays (Tobias: keep the relaxation as is); the
+  paper's ladder remains `ladder3` (four reconnections at 2.5%).
