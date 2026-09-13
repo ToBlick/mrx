@@ -339,3 +339,18 @@ file): no line of 160 lost, 2 / 6 chaotic, iota 0.915-1.056 / 0.856-0.978, neste
 and a smooth p throughout; fmm16 shows the small 5/5 chain at r ~ 0.83. Pages in
 `outputs/figures_2026-09-11/w7x/poincare_{fmm16,wout16}_{ic,best}_zeta0.*`; both drafts'
 W7-X subsection rewritten around these two (which one to show is open).
+
+## 12. The descent block on the released code (2026-09-13, `outputs/lbfgs_2026-09-13`)
+
+Eight L-BFGS arms (li383 (16,32,32) p=2 mixed, potential route, smooth first, Powell restart,
+`--floor-tol 0`, 5000 steps unless noted), ~5.4 GPU h: anchor (m=1, gamma=1, c=0.02) 0.33 s/step,
+8.1e-9 at 5000, minimum 1.9e-9, first below 1e-8 at step 1481; m=0 1.0e-7 at 5000 (no restart to
+help gradient descent); m=5 1.9e-8 at 5000, minimum 1.4e-9, first below 1e-8 at 1142 -- with the
+restart it no longer reconnects (the 2026-09-11 m=5 arm gained 125% helicity); gamma=0 at 20 000
+steps and 0.21 s/step reaches 2.2e-7 at step 2228 and then DEGRADES to 1.9e-5 with the helicity
+drifting by +8.2e-4 (smoothing is what keeps the descent on the ideal manifold, not just a speedup);
+c = 0.004 / 0.1 / 0.5: 7.4e-7 / 7.3e-8 / 1.4e-7 at 5000 (0.1 is faster over the first 1000 steps
+and stalls), c = 0.02 stays the optimum; Leray 9.2e-9 at 5000 against the potential anchor's
+8.1e-9, at 0.44 against 0.33 s/step. Figures m_sweep, gamma_sweep, c_sweep and lbfgs_tables.tex
+(the c table and the two-row velocity table) come from paper_figures.py and are in the draft
+(captions placeholders; the prose still quotes the 2026-09-11 numbers).
