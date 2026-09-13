@@ -325,3 +325,17 @@ system whose floor is above `--floor-tol` must stop at the floor (set `--floor-t
 floor, or stop on no improvement over a window); the W7-X state to show is the first floored one
 (step 10-20), re-traced with more steps per period; and the paper's W7-X subsection has to say
 this rather than present step 177.
+
+## 11. W7-X done right: fmm002 and the wout reference at (16,32,32) p=2 (2026-09-12, late)
+
+Tobias: the high-beta file is a bad starting equilibrium; p = 2 only. `outputs/w7x_p2/fmm16`
+(`data/GVEC_State_final.dat`, the fmm002 GVEC state) and `outputs/w7x_p2/wout16`
+(`data/wout_W7-X_without_coil_ripple_beta0p05_d23p4_tm_reference.nc`), released Newton
+configuration, 200-step budget: both stop on the floor test at step 40. fmm16: resid 7.0e-5 ->
+3.6e-10 (best, step 39), 5.4 s/step, 217 s, dH/H -1.7e-4, dE/E -3.5e-7, beta_vol 1.1%. wout16:
+1.2e-5 -> 7.8e-9 (step 38), 6.2 s/step, 249 s, dH/H -5.7e-4, dE/E -1.1e-6, beta_vol 4.4%
+(axis 11%). Traces at 96 steps/period (h/2 drift 1e-4, against 0.09-0.17 at 24 on the high-beta
+file): no line of 160 lost, 2 / 6 chaotic, iota 0.915-1.056 / 0.856-0.978, nested surfaces
+and a smooth p throughout; fmm16 shows the small 5/5 chain at r ~ 0.83. Pages in
+`outputs/figures_2026-09-11/w7x/poincare_{fmm16,wout16}_{ic,best}_zeta0.*`; both drafts'
+W7-X subsection rewritten around these two (which one to show is open).
