@@ -48,7 +48,7 @@ ap.add_argument("--warm-start",
 ap.add_argument("--eps", type=float, default=1e-4,
                 help="resistive dose eps = eta*dt of the single reconnection step")
 ap.add_argument("--seed", default="",
-                help='optional resonant seed "m,n,rho0,width[,phase]" (used only when building the IC)')
+                help='optional resonant seed "m,n,rho0,width" (used only when building the IC)')
 ap.add_argument("--seed-eps", type=float, default=0.0)
 ap.add_argument("--newton-steps", type=int, default=5,
                 help="Newton steps of the ideal tail after the resistive step (a multiple of 5)")
@@ -76,7 +76,7 @@ import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import build_sequence, geometry_nfp
-from mrx.initial_conditions import initial_field, parse_seed
+from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
@@ -116,9 +116,9 @@ for run in cli.warm_start.split(","):
 if B0 is None:
     seed = None
     if cli.seed:
-        seed = parse_seed(cli.seed, cli.seed_eps)
-        m, n, rho0 = seed[:3]
-        print(f"[ic] seed (m, n) = ({m}, {n}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
+        m, n, rho0, width = (float(v) for v in cli.seed.split(","))
+        seed = (int(m), int(n), rho0, width, cli.seed_eps)
+        print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
     B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")

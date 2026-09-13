@@ -53,7 +53,7 @@ ap.add_argument("--geometry", default="data/wout_li383_1.4m.nc",
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--seed", default="6,1,0.544,0.1",
-                help='resonant seed "m,n,rho0,width[,phase]"; (6,1) is the iota=1/2 surface')
+                help='resonant seed "m,n,rho0,width"; (6,1) is the iota=1/2 surface')
 ap.add_argument("--seed-eps", type=float, default=1e-2,
                 help="resonant normal field |dB^rho|/|B^zeta| at rho0; width ~ sqrt(eps)")
 ap.add_argument("--descent-steps", type=int, default=200,
@@ -81,8 +81,7 @@ import numpy as np
 import mrx
 from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
-from mrx.initial_conditions import (clebsch_potential_form, parse_seed, potential_two_form,
-                                    resonant_rho)
+from mrx.initial_conditions import (clebsch_potential_form, potential_two_form, resonant_rho)
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
 from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
@@ -98,8 +97,8 @@ compute_nullspaces(seq)
 # %%
 # Now we build two initial fields: the plain equilibrium, and the same field
 # with a resonant seed added on the Clebsch potential.
-seed = parse_seed(cli.seed, cli.seed_eps)
-m, n, rho0, width = seed[:4]
+m, n, rho0, width = (float(v) for v in cli.seed.split(","))
+seed = (int(m), int(n), rho0, width, cli.seed_eps)
 cb = load_clebsch(seq.equilibrium)
 nfp = int(cb["nfp"])
 rho_res = resonant_rho(cb, int(m), int(n))
