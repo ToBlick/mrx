@@ -260,3 +260,14 @@ rerun: 1.4e-6, 1.3e-7, 5.0e-8, 2.9e-8, 2.1e-8, 1.6e-8, 9.6e-9, 5.6e-9, 3.8e-9. T
 steps restarted) is a plateau at 2.5e-8 with a transient dip to 5e-9 at step 1830; once the
 restarts stop the run descends to a floor 1.5x below the rerun's. Whether the paper's descent
 arms are rerun with the restart is Tobias's call.
+
+## 8. Smoothing the Newton direction (2026-09-12): negative
+
+Prototype (not committed): the descent's smoother `(Id - eps L)^-1` applied to the Newton
+direction before the line search, released configuration otherwise (harmonic kappa = 3, 100 it,
+C = 0.1), li383 (16,32,32), 100 steps, stops off (`outputs/newton_smooth/k3_it100_c0.1_smooth`
+against `outputs/stepreg_sweep/k3_it100_c0.1`): minimum 5.5e-6 at step 3, then the residual
+rises to 3.6e-5 and the accepted step goes to 0 from step ~15 (the regularised search rejects
+the smoothed direction: its curvature term dominates), energy removed 1.79e-6 against 1.97e-6.
+The smoother removes exactly the content the Newton solve put in; the step-length
+regularisation is the right place for the roughness, not the direction. Reverted.
