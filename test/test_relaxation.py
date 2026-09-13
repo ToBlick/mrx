@@ -17,7 +17,8 @@ import numpy as np
 
 from mrx.precision import DTYPE, eps, sqrt_eps
 
-from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
+from mrx.relaxation import (IntegrationScheme, TimeStepper, compute_divergence_norm,
+                            initial_state, logical_cfl_weights, read_checkpoint,
                             relax, write_checkpoint)
 
 STEPS, CHUNK = 50, 25
@@ -129,3 +130,13 @@ def test_potential_force_is_the_leray_force(seq, b0):
     assert rel < band
     assert rel_s < band
     assert div < 1e2 * eps()
+
+
+def test_divergence_norm_and_cfl_weights(seq, b0) -> None:
+    """Incidence divergence of the equilibrium field, and CFL weights of shape ``(n_q, 3)``."""
+    assert compute_divergence_norm(b0, seq) < 1e2 * seq.tol
+    w = logical_cfl_weights(seq)
+    assert w.shape == (seq.quad.x.shape[0], 3)
+    assert jnp.all(jnp.isfinite(w[:, 0]))
+    assert float(jnp.min(w[:, 1])) == 0.0
+    assert float(jnp.max(w[:, 1])) > 0.0

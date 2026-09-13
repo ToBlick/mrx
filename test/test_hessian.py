@@ -11,8 +11,16 @@ with the force.
 """
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
 
-from mrx.hessian import newton_direction, second_variation
+from mrx.hessian import (
+    PRECONDITIONERS,
+    _preconditioner,
+    harmonic_preconditioner,
+    newton_direction,
+    second_variation,
+)
 from mrx.precision import DTYPE, eps
 from mrx.relaxation import compute_force
 
@@ -61,3 +69,30 @@ def test_newton_direction_is_divergence_free_and_descends(seq, b0):
     print(f"\n  MINRES info {int(info)}, ||div u|| {div:.2e}, descent cosine {cos:+.4f}")
     assert div < 1e2 * eps() * float(seq.l2_norm(u, 2))
     assert cos > 0.0
+
+
+def test_preconditioners_apply_and_unknown_name_raises(seq) -> None:
+    """Each named preconditioner applies once; no extra Newton solves."""
+    x = jnp.ones(seq.n(1, True), dtype=DTYPE)
+    for name in PRECONDITIONERS:
+        apply = _preconditioner(seq, name)
+        y = apply(x)
+        assert y.shape == x.shape
+        assert jnp.all(jnp.isfinite(y))
+    passthrough = _preconditioner(seq, lambda v: 2 * v)
+    np.testing.assert_allclose(np.asarray(passthrough(x)), np.asarray(2 * x))
+    with pytest.raises(ValueError, match="newton_precond"):
+        _preconditioner(seq, "not-a-precond")
+    apply_h = harmonic_preconditioner(seq)
+    assert apply_h(x).shape == x.shape
+
+
+def test_newton_direction_with_the_harmonic_preconditioner(seq, b0):
+    F, _, J, _, _ = compute_force(b0, seq)
+    MF = seq.apply_mass_matrix(F, 2)
+    u, _, _ = newton_direction(
+        seq, b0, J, MF, jnp.zeros(seq.n(1, True), dtype=DTYPE),
+        tol=1e-2, maxiter=40, precond="harmonic")
+    div = float(seq.l2_norm(seq.apply_incidence_matrix(u, 2), 3))
+    assert div < 1e2 * eps() * float(seq.l2_norm(u, 2))
+    assert jnp.all(jnp.isfinite(u))

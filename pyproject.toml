@@ -72,6 +72,18 @@ mrx = ["*.mplstyle"]
 
 [project.optional-dependencies]
 DOCS = ["sphinx", "myst-parser", "sphinx-rtd-theme"]
+TEST = ["pytest", "pytest-cov"]
+
+[tool.coverage.run]
+source = ["mrx"]
+branch = false
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
 
 [project.urls]
 Homepage = "https://github.com/ToBlick/mrx"

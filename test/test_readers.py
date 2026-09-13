@@ -6,10 +6,11 @@ to round-off (the writer is the parser's inverse). VMEC: the tracked li383 wout
 reads with the expected layout and a sane axis.
 """
 import numpy as np
+import pytest
 from scipy.interpolate import BSpline
 
 import mrx
-from mrx.gvec import evaluate, profile_spline, read_state
+from mrx.gvec import evaluate, knots_at_data, profile_spline, read_state
 from mrx.vmec import read_nfp, read_wout
 from test.synthetic_gvec import TWO_PI, write_synthetic_state
 
@@ -63,3 +64,24 @@ def test_vmec_li383_reads_and_reproduces_the_file():
     R_nodes = design @ st["X1"]["coef"].T          # (ns, n_modes)
     assert np.isfinite(R_nodes).all()
     assert abs(R_nodes[0, 0] - 1.41) < 0.2    # NCSX axis R ~ 1.4 m
+
+
+def test_vmec_qa_lowres_reads() -> None:
+    path = "data/wout_LandremanPaul2021_QA_lowres.nc"
+    st = read_wout(path)
+    assert read_nfp(path) == int(st["nfp"])
+    assert st["nfp"] >= 1
+    assert st["ns"] >= 2
+    assert np.isfinite(st["X1"]["coef"]).all()
+
+
+def test_knots_at_data_clamped_and_periodic() -> None:
+    x = np.linspace(0.0, 1.0, 9)
+    t_clamped = np.asarray(knots_at_data(x, 3, "clamped"))
+    assert t_clamped[0] == 0.0 and t_clamped[-1] == 1.0
+    t_periodic = np.asarray(knots_at_data(x[:-1], 3, "periodic"))
+    assert t_periodic[0] < 0.0 < t_periodic[-1]
+    with pytest.raises(ValueError, match="strictly increasing"):
+        knots_at_data(np.array([0.0, 0.2, 0.2, 1.0]), 3, "clamped")
+    with pytest.raises(ValueError, match="spline type"):
+        knots_at_data(x, 3, "open")

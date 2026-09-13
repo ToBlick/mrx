@@ -12,8 +12,15 @@ import numpy.testing as npt
 import pytest
 
 import mrx
-from mrx.nullspace import get_nullspace
-from mrx.precision import eps
+from mrx.nullspace import (
+    _n_vectors,
+    direct_construction_unsupported_reason,
+    estimate_spectral_gap,
+    get_nullspace,
+    harmonic_rayleigh,
+    laplacian_pair,
+)
+from mrx.precision import RESIDUAL_DTYPE, eps
 
 # The polar strong derivative carries the Gram inverse of the axis
 # extraction: 1e4 eps (2.2e-12 f64 / 1.2e-3 f32).
@@ -53,3 +60,31 @@ def test_harmonic_forms(seq, k, dirichlet):
     v = vs[0]
     rayleigh = float(v @ seq.apply_laplacian(v, k, dirichlet=dirichlet)) / float(v @ mass_vs[0])
     assert abs(rayleigh) < HARMONIC, f"k={k} dirichlet={dirichlet}: Rayleigh {rayleigh:.2e}"
+    lv, mv = laplacian_pair(seq, v, k, dirichlet=dirichlet)
+    residual_rq = harmonic_rayleigh(seq, v, k, dirichlet=dirichlet)
+    assert lv.dtype == RESIDUAL_DTYPE
+    assert abs(residual_rq) < HARMONIC
+
+
+def test_n_vectors_is_the_poincare_lefschetz_table() -> None:
+    """Worked example in ``_n_vectors``: ``betti = (1, 1, 0, 0)``."""
+    betti = (1, 1, 0, 0)
+    assert [_n_vectors(betti, k, False) for k in range(4)] == [1, 1, 0, 0]
+    assert [_n_vectors(betti, k, True) for k in range(4)] == [0, 0, 1, 1]
+
+
+def test_direct_construction_reason_names_the_offending_betti() -> None:
+    assert direct_construction_unsupported_reason((1, 1, 0, 0)) is None
+    assert "b0 = 2" in (direct_construction_unsupported_reason((2, 1, 0, 0)) or "")
+    assert "b3 = 1" in (direct_construction_unsupported_reason((1, 1, 0, 1)) or "")
+    assert "b2 = 1" in (direct_construction_unsupported_reason((1, 0, 1, 0)) or "")
+
+
+def test_spectral_gap_is_above_the_harmonic_rayleigh(seq) -> None:
+    """One pair only: a handful of inverse-iteration sweeps, not a digit hunt."""
+    lam, n_sweeps = estimate_spectral_gap(
+        seq, seq.operators, 2, True, maxiter=2)
+    vs = get_nullspace(seq.operators, 2, True)
+    rq = abs(harmonic_rayleigh(seq, vs[0], 2, True))
+    assert n_sweeps >= 1
+    assert lam > rq
