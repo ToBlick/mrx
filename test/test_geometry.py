@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from mrx.differential_forms import DifferentialForm
 from mrx.geometry import (
     geometry_kind,
     geometry_nfp,
@@ -17,7 +18,22 @@ from mrx.geometry import (
     parse_knots,
     read_analytic,
 )
-from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map
+from mrx.mappings import (
+    SplineMap,
+    approx_inverse_map,
+    cylinder_map,
+    extend_map_half_period,
+    extend_map_nfp,
+    invert_map,
+    one_size_fits_all_map,
+    rotating_ellipse_map,
+    stellarator_map,
+    stellarator_symmetric_coefficients,
+    stellarator_symmetrize,
+    stellarator_symmetry_defect,
+    toroid_map,
+)
+from mrx.spline_bases import SplineBasis
 
 WOUT = "data/wout_li383_low_res_reference.nc"
 
@@ -110,3 +126,230 @@ def test_grad_1d_clamped_and_periodic() -> None:
     periodic = grad_1d(d, "periodic")
     np.testing.assert_allclose(np.asarray(periodic),
                                np.asarray(jnp.roll(d, 1, axis=0) - d))
+
+
+_SYMMETRY_POINTS = jnp.array([
+    [0.20, 0.10, 0.15],
+    [0.45, 0.30, 0.40],
+    [0.70, 0.80, 0.65],
+    [0.55, 0.05, 0.90],
+    [0.35, 0.60, 0.25],
+])
+
+
+def _tilted_toroid(amplitude: float = 0.1):
+    """``toroid_map`` plus an even-in-theta ``Z`` tilt, which breaks symmetry."""
+    base = toroid_map()
+
+    def F(x):
+        r, θ, _ = x
+        y = base(x)
+        return y.at[2].add(amplitude * jnp.cos(2.0 * jnp.pi * θ))
+
+    return F
+
+
+def _collocate_map(F, basis_0: DifferentialForm) -> jnp.ndarray:
+    """Tensor-product Greville interpolant of ``F`` as ``(3, n_r, n_t, n_z)``."""
+    br, bt, bz = basis_0.Λ
+    gr, gt, gz = br.greville_points(), bt.greville_points(), bz.greville_points()
+    rr, tt, zz = jnp.meshgrid(gr, gt, gz, indexing="ij")
+    pts = jnp.stack([rr, tt, zz], axis=-1).reshape(-1, 3)
+    vals = jax.vmap(F)(pts).T.reshape(3, br.n, bt.n, bz.n)
+
+    def _solve_axis(matrix, arr, axis):
+        moved = jnp.moveaxis(arr, axis, 0)
+        solved = jnp.linalg.solve(matrix, moved.reshape(moved.shape[0], -1))
+        return jnp.moveaxis(solved.reshape(moved.shape), 0, axis)
+
+    coeffs = vals
+    for axis, basis in enumerate((br, bt, bz), start=1):
+        coeffs = _solve_axis(basis.collocation_matrix(), coeffs, axis)
+    return coeffs
+
+
+class _ScalarFn:
+    """Minimal ``DiscreteFunction`` stand-in: ``__call__`` returns shape ``(1,)``."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __call__(self, x):
+        return jnp.reshape(jnp.asarray(self.fn(x)), (1,))
+
+
+def test_existing_maps_have_zero_stellarator_defect() -> None:
+    """``toroid``, ``cylinder`` and ``rotating_ellipse`` are exact fixed points."""
+    for F in (toroid_map(), cylinder_map(), rotating_ellipse_map(nfp=3)):
+        assert float(stellarator_symmetry_defect(F, _SYMMETRY_POINTS)) < 1e-14
+
+
+def test_stellarator_symmetrize_is_idempotent_and_fixes_symmetric_maps() -> None:
+    """The projector is the identity on already-symmetric maps, and P^2 = P."""
+    F = rotating_ellipse_map()
+    P = stellarator_symmetrize(F)
+    PP = stellarator_symmetrize(P)
+    for x in _SYMMETRY_POINTS:
+        np.testing.assert_allclose(np.asarray(P(x)), np.asarray(F(x)), atol=1e-14)
+        np.testing.assert_allclose(np.asarray(PP(x)), np.asarray(P(x)), atol=1e-14)
+
+
+def test_stellarator_symmetrize_kills_an_even_z_tilt() -> None:
+    """An even-in-theta ``Z`` tilt of size 0.1 is projected out exactly.
+
+    The odd part of the tilted ``Z`` is the original ``toroid_map`` ``Z``.
+    """
+    base = toroid_map()
+    tilted = _tilted_toroid(0.1)
+    assert float(stellarator_symmetry_defect(tilted, _SYMMETRY_POINTS)) > 0.05
+    P = stellarator_symmetrize(tilted)
+    assert float(stellarator_symmetry_defect(P, _SYMMETRY_POINTS)) < 1e-14
+    for x in _SYMMETRY_POINTS:
+        np.testing.assert_allclose(np.asarray(P(x)), np.asarray(base(x)), atol=1e-12)
+        odd_z = 0.5 * (tilted(x)[2] - tilted(jnp.array([x[0], -x[1], -x[2]]))[2])
+        assert abs(float(P(x)[2] - odd_z)) < 1e-12
+
+
+def test_periodic_basis_reflection_is_the_index_permutation() -> None:
+    """``B_j(-x) = B_{(p - 1 - j) mod n}(x)`` on a 400-point grid."""
+    xs = jnp.linspace(0.0, 1.0, 401)[:-1]
+    for n, p in ((8, 2), (8, 3), (7, 1), (12, 2)):
+        b = SplineBasis(n, p, "periodic")
+        perm = (p - 1 - jnp.arange(n)) % n
+        at_x = jax.vmap(lambda t: jax.vmap(lambda i: b(t, i))(jnp.arange(n)))(xs)
+        at_minus = jax.vmap(lambda t: jax.vmap(lambda i: b(t, i))(jnp.arange(n)))(
+            jnp.mod(-xs, 1.0))
+        np.testing.assert_allclose(
+            np.asarray(at_minus), np.asarray(at_x[:, perm]), atol=1e-10)
+
+
+def test_spline_map_stellarator_flag_is_the_coefficient_projector() -> None:
+    """The flag is a no-op on a symmetric interpolant and equals the
+    pointwise projector on a tilted one."""
+    basis_0 = DifferentialForm(
+        0, (4, 6, 6), (2, 2, 2), ("clamped", "periodic", "periodic"))
+    extraction = jnp.eye(basis_0.n)
+    points = _SYMMETRY_POINTS
+
+    # nfp=1: Cartesian components are periodic in logical zeta. For nfp>1
+    # they pick up a 2 pi / nfp rotation per period and a periodic spline
+    # cannot represent them.
+    raw_sym = _collocate_map(rotating_ellipse_map(nfp=1), basis_0)
+    plain = SplineMap(raw_sym.reshape(3, -1), extraction, basis_0)
+    flagged = SplineMap(raw_sym.reshape(3, -1), extraction, basis_0,
+                        stellarator_symmetric=True)
+    np.testing.assert_allclose(np.asarray(plain.raw), np.asarray(flagged.raw),
+                               atol=1e-10)
+    for x in points:
+        np.testing.assert_allclose(np.asarray(plain(x)), np.asarray(flagged(x)),
+                                   atol=1e-10)
+
+    raw_tilt = _collocate_map(_tilted_toroid(0.1), basis_0)
+    unflagged = SplineMap(raw_tilt.reshape(3, -1), extraction, basis_0)
+    flagged_tilt = SplineMap(raw_tilt.reshape(3, -1), extraction, basis_0,
+                             stellarator_symmetric=True)
+    projected = stellarator_symmetrize(unflagged)
+    np.testing.assert_allclose(
+        np.asarray(flagged_tilt.raw),
+        np.asarray(stellarator_symmetric_coefficients(raw_tilt, basis_0)),
+        atol=1e-12)
+    for x in points:
+        np.testing.assert_allclose(
+            np.asarray(flagged_tilt(x)), np.asarray(projected(x)), atol=1e-10)
+    assert float(stellarator_symmetry_defect(flagged_tilt, points)) < 1e-10
+
+
+def test_stellarator_symmetric_coefficients_rejects_bad_axes() -> None:
+    """Non-periodic angular axes and a shape mismatch raise ``ValueError``."""
+    clamped = DifferentialForm(
+        0, (4, 6, 6), (2, 2, 2), ("clamped", "clamped", "periodic"))
+    raw = jnp.zeros((3,) + clamped.shape[0])
+    with pytest.raises(ValueError, match="theta axis"):
+        stellarator_symmetric_coefficients(raw, clamped)
+    periodic = DifferentialForm(
+        0, (4, 6, 6), (2, 2, 2), ("clamped", "periodic", "periodic"))
+    with pytest.raises(ValueError, match="shape"):
+        stellarator_symmetric_coefficients(jnp.zeros((3, 2, 2, 2)), periodic)
+
+
+def test_extend_map_half_period_reproduces_a_symmetric_map() -> None:
+    """Reflection across ``zeta = 1/2`` rebuilds ``rotating_ellipse_map``."""
+    F = rotating_ellipse_map()
+    F_ext = extend_map_half_period(F, nfp=3)
+    for x in _SYMMETRY_POINTS:
+        np.testing.assert_allclose(np.asarray(F_ext(x)), np.asarray(F(x)),
+                                   atol=1e-12)
+    with pytest.raises(ValueError, match="nfp"):
+        extend_map_half_period(F, nfp=0)
+
+
+def test_invert_map_round_trips_toroid_map() -> None:
+    """Newton inversion with ``approx_inverse_map`` recovers logical points."""
+    eps, R0 = 1.0 / 3.0, 1.0
+    F = toroid_map(epsilon=eps, R0=R0)
+    x = jnp.array([0.4, 0.2, 0.1])
+    y = F(x)
+    x0 = approx_inverse_map(y, eps=eps, R0=R0)
+    np.testing.assert_allclose(np.asarray(x0), np.asarray(x), atol=1e-12)
+    recovered = invert_map(F, y, lambda yt: approx_inverse_map(yt, eps, R0))
+    np.testing.assert_allclose(np.asarray(recovered), np.asarray(x), atol=1e-10)
+    np.testing.assert_allclose(np.asarray(F(recovered)), np.asarray(y), atol=1e-10)
+
+
+def test_extend_map_nfp_rotates_each_period() -> None:
+    """``zeta`` in ``[0, 1]`` covers the full device; each wedge is a
+    negative-z rotation of the first field period (GVEC convention)."""
+    nfp = 3
+    F_one = rotating_ellipse_map(nfp=nfp)
+    F_full = extend_map_nfp(F_one, nfp=nfp)
+    x_loc = jnp.array([0.5, 0.3, 0.4])
+    y0 = F_one(x_loc)
+    # First wedge: full-device zeta = zeta_loc / nfp.
+    x_full = x_loc.at[2].set(x_loc[2] / nfp)
+    np.testing.assert_allclose(np.asarray(F_full(x_full)), np.asarray(y0),
+                               atol=1e-12)
+    delta = 2.0 * np.pi / nfp
+    rot = jnp.array([[jnp.cos(delta), jnp.sin(delta), 0.0],
+                     [-jnp.sin(delta), jnp.cos(delta), 0.0],
+                     [0.0, 0.0, 1.0]])
+    y1 = F_full(x_full.at[2].add(1.0 / nfp))
+    np.testing.assert_allclose(np.asarray(y1), np.asarray(rot @ y0), atol=1e-6)
+    with pytest.raises(ValueError, match="nfp"):
+        extend_map_nfp(F_one, nfp=0)
+
+
+def test_one_size_fits_all_circle_matches_toroid() -> None:
+    """``alpha = 0``, ``kappa = 1`` is the circular ``toroid_map``."""
+    osfa = one_size_fits_all_map(epsilon=1.0 / 3.0, kappa=1.0, alpha=0.0, R0=1.0)
+    donut = toroid_map(epsilon=1.0 / 3.0, kappa=1.0, R0=1.0)
+    for x in _SYMMETRY_POINTS:
+        np.testing.assert_allclose(np.asarray(osfa(x)), np.asarray(donut(x)),
+                                   atol=1e-10)
+    assert float(stellarator_symmetry_defect(osfa, _SYMMETRY_POINTS)) < 1e-12
+
+
+def test_stellarator_map_from_cylindrical_radius_and_z() -> None:
+    """A circular ``R``, ``Z`` pair with ``nfp = 1`` reproduces ``toroid_map``."""
+    eps, R0 = 1.0 / 3.0, 1.0
+
+    def R_fn(x):
+        r, θ, _ = x
+        return R0 + eps * r * jnp.cos(2.0 * jnp.pi * θ)
+
+    def Z_fn(x):
+        r, θ, _ = x
+        return eps * r * jnp.sin(2.0 * jnp.pi * θ)
+
+    F = stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=1)
+    donut = toroid_map(epsilon=eps, R0=R0)
+    for x in _SYMMETRY_POINTS:
+        np.testing.assert_allclose(np.asarray(F(x)), np.asarray(donut(x)),
+                                   atol=1e-12)
+    flipped = stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=1,
+                              flip_zeta=True)
+    x = jnp.array([0.4, 0.2, 0.1])
+    np.testing.assert_allclose(np.asarray(flipped(x)),
+                               np.asarray(F(x.at[2].set(1.0 - x[2]))),
+                               atol=1e-12)
+    with pytest.raises(ValueError, match="nfp"):
+        stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=0)
