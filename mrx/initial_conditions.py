@@ -129,16 +129,11 @@ def clebsch_potential_form(cb, seed=None):
     (both are ``rho^2`` there).
 
     ``seed = (m, n, rho0, width, eps)`` adds the resonant term
-    ``sigma eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta))``
-    to ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
-    (1 - rho0^2)``, ``s`` the sign of the file's ``iota`` and ``sigma`` the
-    sign of its shear ``iota'(rho0)``: ``eps`` is the resonant normal field
-    ``|dB^rho| / |B^zeta|`` at ``rho0``, the chain sits where ``|iota| =
-    nfp n / m`` (:func:`resonant_rho`) with its O-points at ``theta = 0`` in
-    the ``zeta = 0`` plane (the elliptic points of the island Hamiltonian
-    ``iota' x^2 / 2 + delta cos(m theta)`` are at ``cos = -sign(iota'
-    delta)``, so the sign of the term has to follow the shear; the chain
-    turns by ``n`` island periods over one field period), the wall trace
+    ``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta))`` to
+    ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
+    (1 - rho0^2)`` and ``s`` the sign of the file's ``iota``: ``eps`` is the
+    resonant normal field ``|dB^rho| / |B^zeta|`` at ``rho0``, the chain
+    sits where ``|iota| = nfp n / m`` (:func:`resonant_rho`), the wall trace
     stays a function of ``rho`` alone (``B . n = 0`` exactly), and the
     island the seed opens has full width about
     ``1.6 sqrt(eps nfp / (m |iota'|))`` in ``rho`` (pendulum estimate; the
@@ -168,10 +163,8 @@ def clebsch_potential_form(cb, seed=None):
             return 0.0
     else:
         m, n, rho0, width, eps = seed
-        iota = np.asarray(cb["dchi"], dtype=np.float64) / np.asarray(cb["dPhi"], dtype=np.float64)
-        s = float(np.sign(np.mean(iota)))
-        sigma = float(np.sign(np.interp(rho0, rho, np.gradient(iota, rho))))
-        amp = sigma * eps * abs(float(np.interp(rho0, rho, cb["dPhi"]))) / m
+        s = float(np.sign(np.mean(np.asarray(cb["dchi"]) / np.asarray(cb["dPhi"]))))
+        amp = eps * abs(float(np.interp(rho0, rho, cb["dPhi"]))) / m
 
         def seed_zeta(x):
             r = x[0]
