@@ -271,3 +271,23 @@ rises to 3.6e-5 and the accepted step goes to 0 from step ~15 (the regularised s
 the smoothed direction: its curvature term dominates), energy removed 1.79e-6 against 1.97e-6.
 The smoother removes exactly the content the Newton solve put in; the step-length
 regularisation is the right place for the roughness, not the direction. Reverted.
+
+## 9. The reconnection ladder and the island seeds as Newton runs (2026-09-12)
+
+`outputs/newton_demos/ladder3` (li383 (16,32,32) p=2, harmonic kappa = 3, 100 MINRES it, plain
+line search, five rungs of 60 Newton steps, a resistive solve spending 2.5% of the helicity
+between them): every rung reaches its floor, 4.9e-9 / 3.2e-9 / 1.6e-9 / 1.7e-9 / 1.7e-9, no
+fallbacks, dt = 1 throughout, helicity -2.26 / -2.28 / -2.30 / -2.31% per solve, beta_vol
+4.42 -> 2.63%; 300 steps in 22 min against the descent ladder's 40 000 steps (3.3 h). With the
+regularised search (C = 0.1) the rungs after the first did not move: after a resistive step
+the regularised energy E + eps ||J||^2 / 2 RISES along every descent direction (the relaxation
+regrows the current the resistive step diffused), dt* < 0 on all 60 steps of a rung; first the
+plain descent test let the Newton direction through and the step went backwards, then with the
+regularised-slope test every direction was refused. 8ebf010: the Newton descent test is the
+regularised slope along the direction's own increment, dt* <= 0 is no step, and the driver sets
+`--step-regularisation 0` with a reconnection series. The seeds (`seed61_2`, `seed51_2`, released
+defaults): (6,1) floor 5.2e-9 at step 39 (265 s, stop on the floor test); (5,1) floor 1.3e-8 at
+step 41, then a slow climb with the step shrinking, stop on the dt test at step 200 (the same
+factor above the unseeded floor as in the descent table). The best-state file is
+`checkpoints/best.h5` (renamed from `state_best.h5`, which the tracers' `state_*.h5` glob
+mistook for a step).

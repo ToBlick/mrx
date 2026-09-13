@@ -371,7 +371,7 @@ class State(eqx.Module):
         field until a step beats it). A run past its floor (the residual is
         not monotone, and past the resolved floor the ideal descent raises
         it) returns this state as its answer; ``chunk_runner`` keeps it,
-        ``scripts/relax.py`` writes it as ``checkpoints/state_best.h5``.
+        ``scripts/relax.py`` writes it as ``checkpoints/best.h5``.
     """
     B_n: jnp.ndarray
     B_nplus1: Optional[jnp.ndarray] = None

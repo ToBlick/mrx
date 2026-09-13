@@ -392,9 +392,9 @@ def main(cli):
                 dt_floor=cli.dt_floor,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
-    write_checkpoint(os.path.join(ckpt_dir, "state_best.h5"),
+    write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
                      initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
-    print(f"wrote {out}/relax.json and {ckpt_dir}/ (state_best.h5: step {int(res.state.step_best)}, "
+    print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.step_best)}, "
           f"residual {float(res.state.resid_best):.3e})", flush=True)
 
 
