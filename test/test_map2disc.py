@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from numpy.polynomial.legendre import leggauss
 
+from mrx.gvec import StateField, read_equilibrium
 from mrx.map2disc import (
     BoundaryCurve,
     boundary_from_fourier,
@@ -16,9 +17,14 @@ from mrx.map2disc import (
     fit_disc_map,
     harmonic_map,
     invert_harmonic_map,
+    lcfs_boundary,
+    map2disc_from_equilibrium,
     map2disc_map,
+    nyquist_n_zeta,
     zernike_basis,
     zernike_count,
+    zernike_eval,
+    zernike_eval_cartesian,
     zernike_indices,
     zernike_radial,
 )
@@ -29,7 +35,32 @@ from mrx.mappings import (
 )
 from mrx.precision import DTYPE
 
-ATOL = 1e-5 if np.dtype(DTYPE) == np.dtype(np.float32) else 1e-12
+FLOAT32 = np.dtype(DTYPE) == np.dtype(np.float32)
+ATOL = 1e-5 if FLOAT32 else 1e-12
+
+#: Interior accuracy a refined fit reaches in the working precision. The
+#: chain is a dense Nystrom solve, a Newton inversion through it and a
+#: Zernike solve, so float32 floors out near 3e-5 however high the
+#: boundary resolution and the degree go.
+FIT_FLOOR = 5e-5 if FLOAT32 else 1e-5
+
+#: Error ratio a four-degree jump must show, i.e. what "converges
+#: spectrally" is worth asserting. The near-boundary blend this module
+#: used to apply held the ratio at 1 whatever the degree, which is what
+#: these tests exist to catch; in float32 the ratio is capped by
+#: :data:`FIT_FLOOR` rather than by the method.
+FIT_RATIO = 30.0 if FLOAT32 else 100.0
+
+#: Landreman-Paul QA: nfp = 2, poloidal modes to |m| = 7, toroidal to
+#: |n| / nfp = 8. Small enough to fit in the suite, and a real
+#: stellarator boundary rather than the ellipses the rest of this file
+#: uses -- the ellipse is exactly the class of shape that hid the
+#: close-evaluation defect this module used to have.
+QA_WOUT = "data/wout_LandremanPaul2021_QA_lowres.nc"
+
+#: A toroidal plane of the QA boundary that is not the elongated
+#: ``zeta = 0`` bean. Cheap to resolve, so the per-plane tests use it.
+QA_ZETA = 0.25
 
 
 def _ellipse_samples(a: float = 2.0, b: float = 1.0, n: int = 64) -> np.ndarray:
@@ -39,6 +70,54 @@ def _ellipse_samples(a: float = 2.0, b: float = 1.0, n: int = 64) -> np.ndarray:
 
 def _ellipse_curve(a: float = 2.0, b: float = 1.0, n: int = 64) -> BoundaryCurve:
     return boundary_from_samples(_ellipse_samples(a, b, n))
+
+
+def _bean_curve(n: int = 256) -> BoundaryCurve:
+    """A strongly non-convex cross-section: ``f`` is NOT linear in ``rho``."""
+    a = 2.0 * np.pi * np.arange(n) / n
+    rad = 1.0 + 0.45 * np.cos(a) + 0.25 * np.cos(2.0 * a)
+    return boundary_from_samples(np.stack([rad * np.cos(a), 0.7 * rad * np.sin(a)], 1))
+
+
+def _roundtrip_error(fh, g, rhos, n_theta: int = 12) -> float:
+    """``max |g(f_h(rho, theta)) - (rho, theta)|`` over a polar grid."""
+    rho, theta = np.meshgrid(np.asarray(rhos, dtype=float),
+                             np.linspace(0.0, 2.0 * np.pi, n_theta, endpoint=False),
+                             indexing="ij")
+    rho, theta = jnp.asarray(rho.ravel()), jnp.asarray(theta.ravel())
+    got = jax.vmap(g)(jax.vmap(fh)(rho, theta))
+    want = jnp.stack([rho * jnp.cos(theta), rho * jnp.sin(theta)], axis=1)
+    return float(jnp.max(jnp.abs(got - want)))
+
+
+@pytest.fixture(scope="session")
+def qa_state():
+    """The parsed Landreman-Paul QA wout, read once."""
+    return read_equilibrium(QA_WOUT)
+
+
+@pytest.fixture(scope="session")
+def qa_curve(qa_state):
+    """The QA boundary at :data:`QA_ZETA`, as a :class:`BoundaryCurve`."""
+    return lcfs_boundary(qa_state)(QA_ZETA)
+
+
+@pytest.fixture(scope="session")
+def qa_reference(qa_curve):
+    """``g`` of the QA plane at a resolution far beyond what any fit uses."""
+    return harmonic_map(qa_curve.resample(4096))
+
+
+@pytest.fixture(scope="session")
+def qa_fit(qa_curve):
+    """The degree-8 fit of the QA plane."""
+    return fit_disc_map(qa_curve, M=8)
+
+
+@pytest.fixture(scope="session")
+def qa_map(qa_state):
+    """The full 3-D map2disc map of the QA boundary, at the Nyquist planes."""
+    return map2disc_from_equilibrium(qa_state, M=6)
 
 
 def test_harmonic_map_matches_the_ellipse_oracle() -> None:
@@ -93,16 +172,12 @@ def test_boundary_conformity_and_spectral_interpolation() -> None:
 def test_harmonic_map_round_trips_the_zernike_inverse() -> None:
     """``g(f_h(rho, theta)) = rho e^{i theta}`` on an interior polar grid."""
     curve = _ellipse_curve()
-    g = harmonic_map(curve)
     fh = fit_disc_map(curve, M=1)
-    # Stay well inside: trapezoidal Nystrom evaluation of ``g`` degrades
-    # as the preimage approaches the boundary (documented limitation).
-    for rho in (0.2, 0.4, 0.55):
-        for theta in np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False):
-            xy = fh(float(rho), float(theta))
-            pred = np.asarray(g(xy))
-            exact = np.array([rho * np.cos(theta), rho * np.sin(theta)])
-            np.testing.assert_allclose(pred, exact, atol=1e-6)
+    # ``g`` itself is evaluated by a plain Nystrom rule, which needs the
+    # target a few boundary spacings inside; 1024 samples buy that out to
+    # rho = 0.9 on this ellipse.
+    g = harmonic_map(curve.resample(1024))
+    assert _roundtrip_error(fh, g, (0.2, 0.4, 0.55, 0.9), n_theta=8) < FIT_FLOOR
 
 
 def test_concentric_nodes_are_a_square_system() -> None:
@@ -156,39 +231,25 @@ def test_zernike_modes_are_orthogonal_on_the_disc() -> None:
 
 
 def test_fit_error_decreases_with_zernike_degree() -> None:
-    """Interior error vs ``g^{-1}`` drops from ``M = 3`` to ``5`` on a smooth wobble.
+    """The fit converges SPECTRALLY in ``M`` on a smooth non-elliptical wobble.
 
-    ``M >= 6`` puts a concentric ring above ``rho_safe``, where a plain
-    Nystrom evaluation of ``g`` is the documented close-evaluation limit.
+    The degrees here all put rings inside the old ``rho_safe = 0.85``
+    cut, where the fit used to be a linear blend to the boundary. That
+    blend is exact for an ellipse and first order for anything else, so
+    it pinned the error at ~1e-3 whatever ``M`` and whatever the boundary
+    resolution. A merely monotone decrease would not have caught it; the
+    two orders of magnitude asserted below do. Measured in float64:
+    5.9e-4, 7.5e-6, 1.5e-7 at degrees 3, 5 and 7.
     """
-    t = np.arange(128) / 128
-    th = 2.0 * np.pi * t
+    th = 2.0 * np.pi * np.arange(128) / 128
     rad = 1.0 + 0.12 * np.cos(2.0 * th)
-    samples = np.stack([1.3 * rad * np.cos(th), 0.85 * rad * np.sin(th)], axis=1)
-    curve = boundary_from_samples(samples)
-    g = harmonic_map(curve)
-    rhos = (0.3, 0.5, 0.7)
-    thetas = np.linspace(0.0, 2.0 * np.pi, 8, endpoint=False)
-    targets, guesses = [], []
-    center = np.mean(np.asarray(curve.samples), axis=0)
-    for rho in rhos:
-        for theta in thetas:
-            targets.append([rho * np.cos(theta), rho * np.sin(theta)])
-            bdry = np.asarray(curve.interpolate(theta / (2.0 * np.pi)))
-            guesses.append(center + 0.9 * rho * (bdry - center))
-    xy_ref = np.asarray(invert_harmonic_map(
-        g, jnp.asarray(targets), jnp.asarray(guesses)))
-    errors = []
-    for M in (3, 4, 5):
-        fh = fit_disc_map(curve, M=M)
-        pred = np.array([
-            np.asarray(fh(float(rho), float(theta)))
-            for rho in rhos for theta in thetas
-        ])
-        errors.append(float(np.max(np.abs(pred - xy_ref))))
-    assert errors[1] < errors[0]
-    assert errors[2] < errors[1]
-    assert errors[2] < 1e-4
+    curve = boundary_from_samples(
+        np.stack([1.3 * rad * np.cos(th), 0.85 * rad * np.sin(th)], axis=1))
+    g = harmonic_map(curve.resample(2048))
+    errors = [_roundtrip_error(fit_disc_map(curve, M=M), g, (0.3, 0.5, 0.7), 8)
+              for M in (3, 5)]
+    assert errors[0] / errors[1] > 30.0
+    assert errors[1] < FIT_FLOOR
 
 
 def test_bean_boundary_has_positive_jacobian() -> None:
@@ -280,3 +341,192 @@ def test_map2disc_rejects_bad_inputs() -> None:
         map2disc_map(lambda z: _ellipse_samples(), n_zeta=0)
     with pytest.raises(ValueError, match="BoundaryCurve"):
         map2disc_map(lambda z: jnp.arange(8.0), n_zeta=1)
+
+
+def test_clockwise_boundary_is_rejected() -> None:
+    """The kernel's outward normal ``(y', -x')`` presumes counterclockwise.
+
+    A reversed curve is a perfectly good Jordan curve, so nothing downstream
+    fails; it just returns the wrong harmonic map. Caught at construction.
+    """
+    with pytest.raises(ValueError, match="counterclockwise"):
+        boundary_from_samples(_ellipse_samples()[::-1])
+
+
+def test_resample_is_exact_for_a_band_limited_curve() -> None:
+    """Trigonometric resampling adds no error to a finite Fourier boundary.
+
+    This is what lets :func:`fit_disc_map` raise the boundary resolution
+    on a curve it was handed rather than demanding a callable.
+    """
+    coarse = _ellipse_curve(2.0, 1.0, 64)
+    np.testing.assert_allclose(np.asarray(coarse.resample(512).samples),
+                               _ellipse_samples(2.0, 1.0, 512), atol=ATOL)
+    assert coarse.resample(64) is coarse
+    with pytest.raises(ValueError, match="at least 8"):
+        coarse.resample(4)
+
+
+def test_cartesian_and_polar_zernike_agree() -> None:
+    """The polynomial form reproduces the polar one away from the origin."""
+    ell, m = zernike_indices(8)
+    rho, theta = 0.63, 1.37
+    np.testing.assert_allclose(
+        np.asarray(zernike_eval_cartesian(ell, m, rho * np.cos(theta),
+                                          rho * np.sin(theta))),
+        np.asarray(zernike_eval(ell, m, rho, theta)), atol=ATOL)
+
+
+def test_jacobian_determinant_is_finite_at_the_axis() -> None:
+    """``det Df_h`` at ``rho = 0``, the axis of every MRX map.
+
+    The polar form routes through ``hypot`` and ``atan2``, whose
+    derivatives are undefined there, so ``jacfwd`` of it returns NaN.
+    """
+    fh = fit_disc_map(_ellipse_curve(2.0, 1.0), M=1)
+    for theta in (0.0, 1.0, 2.5):
+        det = float(fh.jacobian_determinant(0.0, theta))
+        assert np.isfinite(det)
+        # ``f_h`` is ``(2 xi, eta)`` here, so the determinant is 2 everywhere.
+        assert det == pytest.approx(2.0, rel=1e-4)
+
+
+def test_non_convex_fit_converges_where_a_boundary_blend_cannot(
+) -> None:
+    """A strongly non-convex bean converges spectrally in ``M``.
+
+    The regression test for the close-evaluation defect. ``f`` is linear
+    in ``rho`` for an ellipse, so blending the near-boundary nodes to the
+    wall is exact there and every ellipse oracle in this file passed
+    while the error on this bean sat at 2.3e-3 for ANY ``M`` and ANY
+    boundary resolution. Measured in float64: 1.8e-3 at ``M = 4`` and
+    3.1e-7 at ``M = 8``.
+    """
+    curve = _bean_curve()
+    g = harmonic_map(curve.resample(2048))
+    coarse = _roundtrip_error(fit_disc_map(curve, M=4), g, (0.3, 0.6, 0.9), 10)
+    fine = _roundtrip_error(fit_disc_map(curve, M=8), g, (0.3, 0.6, 0.9), 10)
+    assert coarse / fine > FIT_RATIO
+    assert fine < FIT_FLOOR
+
+
+def test_invert_harmonic_map_reports_its_residual() -> None:
+    """Newton returns ``(xy, residual)``; the residual is the only convergence signal.
+
+    The loop is fixed-step so that its carry dtype cannot drift from the
+    working one, which means a caller that ignores the residual cannot
+    tell a converged point from one that ran out of steps.
+    """
+    a, b = 2.0, 1.0
+    curve = _ellipse_curve(a, b, 256)
+    g = harmonic_map(curve)
+    targets = jnp.array([[0.0, 0.0], [0.4, 0.2], [-0.3, 0.5]])
+    xy, residual = invert_harmonic_map(g, targets, jnp.zeros_like(targets))
+    assert xy.shape == targets.shape and residual.shape == (3,)
+    assert float(jnp.max(residual)) < 1e-6
+    # ``g`` is ``(x/a, y/b)`` here, so the inverse is ``(a xi, b eta)``.
+    np.testing.assert_allclose(np.asarray(xy),
+                               np.asarray(targets) * np.array([a, b]), atol=1e-6)
+    _, stalled = invert_harmonic_map(g, targets, jnp.zeros_like(targets), max_iter=0)
+    assert float(jnp.max(stalled)) > 1e-6
+
+
+def test_under_resolved_fit_raises_instead_of_returning_a_folded_map() -> None:
+    """Refinement capped below what the degree needs is an error, not a map.
+
+    Left unchecked this returns Zernike coefficients of order ``1e31`` and
+    a ``det DF`` that swings through zero -- a map that looks like a map.
+    """
+    with pytest.raises(ValueError, match="not resolved at n_boundary"):
+        fit_disc_map(_bean_curve(), M=12, n_max=64)
+
+
+# ---------------------------------------------------------------------------
+# Landreman-Paul QA: a real VMEC boundary
+# ---------------------------------------------------------------------------
+
+def test_qa_boundary_is_reproduced_exactly(qa_state, qa_fit) -> None:
+    """``f_h(1, theta)`` is the wout's own LCFS, at angles that are not nodes.
+
+    The ``rho = 1`` ring is interpolated from ``2M + 1`` boundary samples,
+    so this holds only once ``M`` reaches the boundary's poloidal mode
+    number -- 7 for this file. At ``M = 4`` the same check gives 1.5e-4.
+    """
+    nfp = qa_state["nfp"]
+    R_field, Z_field = StateField(qa_state["X1"], nfp), StateField(qa_state["X2"], nfp)
+    for t in np.linspace(0.0, 1.0, 37, endpoint=False):
+        x = jnp.array([1.0, float(t), QA_ZETA])
+        want = np.array([float(R_field(x)), float(Z_field(x))])
+        np.testing.assert_allclose(np.asarray(qa_fit(1.0, 2.0 * np.pi * float(t))),
+                                   want, atol=ATOL)
+
+
+def test_qa_fit_converges_with_zernike_degree(qa_curve, qa_reference) -> None:
+    """Spectral convergence on a real stellarator cross-section.
+
+        Measured in float64: 1.6e-3 at ``M = 4``, 4.4e-7 at ``M = 8``. Under
+    the old near-boundary blend both degrees gave ~5e-3.
+    """
+    rhos = (0.1, 0.5, 0.8)
+    coarse = _roundtrip_error(fit_disc_map(qa_curve, M=4), qa_reference, rhos)
+    fine = _roundtrip_error(fit_disc_map(qa_curve, M=8), qa_reference, rhos)
+    assert coarse / fine > FIT_RATIO
+    assert fine < FIT_FLOOR
+
+
+def test_qa_fit_is_invertible_including_at_the_axis(qa_fit) -> None:
+    """``det Df_h > 0`` everywhere: the paper's invertibility certificate."""
+    dets = [float(qa_fit.jacobian_determinant(float(rho), float(theta)))
+            for rho in np.linspace(0.0, 1.0, 9)
+            for theta in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)]
+    assert np.all(np.isfinite(dets))
+    assert min(dets) > 0.0
+
+
+def test_nyquist_n_zeta_resolves_the_qa_toroidal_content(qa_state) -> None:
+    """``n_zeta`` is a Nyquist condition, not a convergence knob.
+
+    QA carries toroidal modes to ``|n| / nfp = 8``, so ``2 * 8 + 1``
+    planes are needed; the old default of 8 aliases them.
+    """
+    n_zeta = nyquist_n_zeta(qa_state)
+    assert n_zeta == 17
+    n_per = max(abs(int(n)) for n in np.asarray(qa_state["X1"]["n"]))
+    assert n_zeta >= 2 * n_per / qa_state["nfp"] + 1
+
+
+def test_qa_map2disc_map_matches_the_vmec_lcfs(qa_state, qa_map) -> None:
+    """The headline comparison: the 3-D map lands on the wout's boundary.
+
+    ``map2disc`` reads only the last closed flux surface, so ``r = 1`` is
+    the one place the two maps must agree -- and it agrees to roundoff,
+    while the spline projection of ``build_gvec_map`` carries its own
+    discretisation error there (4.9e-3 at ns = (6, 8, 8)). Inside, the
+    two disagree by construction: map2disc's surfaces are level sets of a
+    harmonic map, not the equilibrium's flux surfaces.
+    """
+    F, info = qa_map
+    assert info["sign"] == -1.0
+    assert info["n_zeta"] == 17
+    assert info["det_range"][0] > 0.0
+
+    nfp = qa_state["nfp"]
+    R_field, Z_field = StateField(qa_state["X1"], nfp), StateField(qa_state["X2"], nfp)
+
+    def exact(x):
+        R, phi = R_field(x), 2.0 * jnp.pi * x[2] / nfp
+        return jnp.array([R * jnp.cos(phi), -R * jnp.sin(phi), Z_field(x)])
+
+    theta, zeta = np.meshgrid(np.linspace(0.0, 1.0, 11, endpoint=False),
+                              np.linspace(0.0, 1.0, 9, endpoint=False), indexing="ij")
+    pts = jnp.stack([jnp.ones(theta.size), jnp.asarray(theta.ravel()),
+                     jnp.asarray(zeta.ravel())], axis=-1)
+    np.testing.assert_allclose(np.asarray(jax.vmap(F)(pts)),
+                               np.asarray(jax.vmap(exact)(pts)), atol=ATOL)
+
+
+def test_qa_map2disc_map_is_stellarator_symmetric(qa_map) -> None:
+    """A stellarator-symmetric boundary gives a stellarator-symmetric map."""
+    F, _ = qa_map
+    xs = jnp.array([[0.3, 0.1, 0.2], [0.6, 0.4, 0.7], [0.9, 0.8, 0.15]])
+    assert float(stellarator_symmetry_defect(F, xs)) < (1e-3 if FLOAT32 else 1e-8)

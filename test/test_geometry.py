@@ -10,6 +10,7 @@ import pytest
 
 from mrx.differential_forms import DifferentialForm
 from mrx.geometry import (
+    build_sequence,
     geometry_kind,
     geometry_nfp,
     grad_1d,
@@ -36,6 +37,17 @@ from mrx.mappings import (
 from mrx.spline_bases import SplineBasis
 
 WOUT = "data/wout_li383_low_res_reference.nc"
+
+
+def test_build_sequence_rejects_an_unknown_map_source() -> None:
+    """``map_source`` names where an equilibrium's map comes from.
+
+    ``"equilibrium"`` projects the file's own R and Z series;
+    ``"map2disc"`` keeps only its boundary and builds the interior as a
+    harmonic map. A typo must not fall through to the default.
+    """
+    with pytest.raises(ValueError, match="map_source"):
+        build_sequence(WOUT, (4, 4, 4), 2, map_source="harmonic")
 
 
 def test_knot_vector_counts_and_rejects_nonmonotone() -> None:
