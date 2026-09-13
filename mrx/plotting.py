@@ -676,7 +676,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         # Each ray is one MARKER, drawn as the theta = theta0 line in the
         # logical chart so the reader can place it (the physical F(r, theta0)
         # marker is left out -- its per-turn average overshoots the boundary at
-        # the edge).
+        # the edge). No legend: the ray is named in the caption (2026-09-12).
         markers = ["o", "^", "v", "D"]
         lr_all, lth_all = np.asarray(logical[0]), np.asarray(logical[1])
         sn = np.asarray(shown)
@@ -693,7 +693,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             if not m.any():
                 continue
             bx.plot(r_line[m], iota_n[m], linestyle="none", marker=mk, ms=2.0,
-                    color=IOTA_COLOR, label=rf"$\theta = {th0:.2f}$")
+                    color=IOTA_COLOR)
             if has_p:
                 px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=2.0,
                             color=P_COLOR, ecolor=P_COLOR, elinewidth=0.6, capsize=0)
@@ -717,8 +717,6 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if lim.x is not None:
             bx.set_xlim(*lim.x)
         bx.grid(alpha=0.3)
-        bx.legend(loc="upper center", ncol=len(thetas), fontsize=FS.annot,
-                  columnspacing=1.0, handlelength=2.4)
     else:
         x = seed_r if profile_x is None else profile_x
         # The abscissa carries both midplane crossings (see midplane_crossings):
@@ -796,11 +794,7 @@ def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
     ``label_size`` pt, ticks and legends proportionally smaller in the house
     hierarchy (``FS.label : FS.tick : FS.annot``). Call it AFTER
     :func:`render_section`: that one is ``@house_style``-decorated, so its sizes
-    are the mplstyle's until rescaled here. The profile panel's theta-ray legend
-    moves OUT of the axes, above the panel where the (absent) title would be:
-    inside, at one page wide, every corner is taken by one curve or another
-    -- iota low on the left for a rising profile (li383), high for a falling
-    one (QA), p on the opposite side, the Farey labels on the right.
+    are the mplstyle's until rescaled here.
     """
     scale = label_size / FS.label
     label_sz, tick_sz, annot_sz = FS.label * scale, FS.tick * scale, FS.annot * scale
@@ -813,16 +807,7 @@ def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
         for t in a.texts:                           # Farey labels, in-axes notes
             t.set_fontsize(annot_sz)
         leg = a.get_legend()
-        if leg is None:
-            continue
-        labels = [t.get_text() for t in leg.get_texts()]
-        if any("theta" in lab for lab in labels):
-            handles = leg.legend_handles
-            leg.remove()
-            a.legend(handles, labels, loc="lower center", bbox_to_anchor=(0.5, 1.0),
-                     ncol=len(labels), fontsize=annot_sz, frameon=False,
-                     handlelength=1.8, handletextpad=0.4, columnspacing=1.2)
-        else:
+        if leg is not None:
             for txt in leg.get_texts():
                 txt.set_fontsize(annot_sz)
 
