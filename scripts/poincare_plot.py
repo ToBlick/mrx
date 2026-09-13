@@ -34,8 +34,9 @@ Flags (defaults in brackets):
                            that --min-sep is the rule that stops them [300]
     --profile-coord C      profile abscissa: logical r on golden-spaced rays
                            [logical], or physical R on the midplane through the axis
-    --profile-rays N       golden-angle poloidal rays on the logical profile,
-                           marked on both section panels [3]
+    --profile-rays N       poloidal rays on the logical profile (theta = 0.5,
+                           then 1/3, 0.2, ...), one marker style each, drawn
+                           on the logical chart [1]
     --dot-scale F          crossing-marker size relative to the house rule (which
                            sets it from the point count); a third, for a dense
                            section on a page [0.33]
@@ -140,7 +141,7 @@ def main():
     ap.add_argument("--min-sep", type=float, default=0.12)
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
-    ap.add_argument("--profile-rays", type=int, default=3)
+    ap.add_argument("--profile-rays", type=int, default=1)
     ap.add_argument("--dot-scale", type=float, default=0.33)
     ap.add_argument("--paper", action="store_true")
     ap.add_argument("--label-size", type=float, default=6.0)

@@ -378,12 +378,13 @@ def resonant_rationals(iota_min, iota_max, nfp, denom_max=30, min_sep=0.06):
 IOTA_COLOR = "black"
 P_COLOR = "#6a3d9a"
 
-#: Poloidal rays for the logical profile, in order. theta = 0 is deliberately
-#: NOT used: it is the branch point of the poloidal angle, where the ray flips
-#: across the midplane (see :func:`_ray_line`). theta = 0.5 is where odd island
-#: chains are fattest (their O-points); 1/3 and 0.2 sit off the symmetry line
-#: and are non-resonant. Further rays fill in.
-PROFILE_RAY_THETAS = (1.0 / 3.0, 0.5, 0.2, 1.0 / 6.0, 0.25, 0.75)
+#: Poloidal rays for the logical profile, in order: theta = 0.5 first, the
+#: only ray drawn by default (2026-09-12), where odd island chains are fattest
+#: (their O-points). theta = 0 is deliberately NOT used: it is the branch point
+#: of the poloidal angle, where the ray flips across the midplane (see
+#: :func:`_ray_line`). 1/3 and 0.2 sit off the symmetry line and are
+#: non-resonant. Further rays fill in.
+PROFILE_RAY_THETAS = (0.5, 1.0 / 3.0, 0.2, 1.0 / 6.0, 0.25, 0.75)
 
 
 def _profile_ray_thetas(n):
@@ -397,23 +398,23 @@ def _profile_ray_thetas(n):
     return base + [((k + 1) * golden) % 1.0 for k in range(n - len(base))]
 
 
-def _ray_line(lr, lth, pressure, th0):
-    """Per-line logical r and p at the crossing nearest the poloidal ray
-    ``theta = th0`` (circular nearest, one crossing per line): r is the radius
+def _ray_line(lr, lth, th0):
+    """Per-line logical r at the crossing nearest the poloidal ray
+    ``theta = th0`` (circular nearest, one crossing per line): the radius
     that field line actually sits at where it crosses the ray -- the surface it
     is on -- so a resonant line reads at its own r and an island chain keeps its
     true radial width in the profile.
 
     Averaging each line over its turns was tried (to smooth a ray drawn on the
     physical section); it collapses island lines to their mean radius and erases
-    the resonant shelf, so it is NOT used. Those physical ray-markers are gone,
-    and p is sampled the same way as r, so both stay per-line, un-averaged.
+    the resonant shelf, so it is NOT used. p is NOT sampled here: the profile
+    draws each line's mean p over all its crossings with the std as the bar
+    (2026-09-12), the along-line statistic that shows an island chain's
+    flattened pressure as one shared value.
     """
     dth = np.abs(((lth - th0 + 0.5) % 1.0) - 0.5)      # (nL, nC) circular distance
     k = np.argmin(dth, axis=1)                          # nearest crossing per line
-    rows = np.arange(lr.shape[0])
-    p_at = None if pressure is None else pressure[rows, k]
-    return lr[rows, k], p_at
+    return lr[np.arange(lr.shape[0]), k]
 
 
 @house_style()
@@ -423,7 +424,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,
-                   profile_coord="logical", profile_rays=3, axis_marker=True,
+                   profile_coord="logical", profile_rays=1, axis_marker=True,
                    dot_scale=1.0, rationals=None):
     """The section coloured by iota, with the iota profile and optionally p.
 
@@ -446,23 +447,23 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     pressure at all; a vacuum run leaves it ``None`` and gets exactly the
     previous figure. When it is given, the pressure PROFILE joins the iota
     profile on the right axis of the same panel (:func:`mrx.plotting.plot_twin_axis`,
-    the house twin-axis style): per line, the mean of p over its crossings
-    with a one-standard-deviation band, against the same surface label
-    (labelled ``pressure_label``). On a flux surface of an equilibrium p is
-    constant and the band collapses; on an island chain or a chaotic line it
-    is not, and the band width measures how far that line is from
-    ``B . grad p = 0``.
+    the house twin-axis style): per line, one marker at the mean of p over
+    its crossings with a one-standard-deviation error bar, against the same
+    surface label (labelled ``pressure_label``). On a flux surface of an
+    equilibrium p is constant and the bar collapses; on an island chain or a
+    chaotic line it is not, and the bar length measures how far that line is
+    from ``B . grad p = 0``.
 
     ``pressure_scale`` multiplies p wherever it is drawn (colour and profile),
     and the labels say so.
 
-    Every kept line is drawn and fitted, chaotic ones included: the iota
-    profile carries a ribbon, so a line without a rotational transform shows as
-    a point with a wide ribbon rather than as a separate category. The ribbon
-    is ``iota_scatter`` when given -- the std of iota over K equal ζ-windows
-    (:func:`mrx.poincare._iota_window_scatter`), the along-line spread that
-    reads like the pressure band -- else ``iota_err`` (the whole-line fit
-    RMS/N, see :func:`trace_and_classify`).
+    Every kept line is drawn, chaotic ones included, as one marker at its
+    average rotational transform: on the logical profile iota carries NO
+    error bar (2026-09-12) -- the fit uncertainty ``iota_err`` and the window
+    scatter ``iota_scatter`` were tried as ribbons and add nothing the
+    pressure bar does not already say, since a chaotic line shows as a
+    scattered p with a long bar. They are still drawn as the ribbon of the
+    physical-abscissa profile (``profile_coord="physical"``).
 
     ``split_iota_p`` colours the section by iota ABOVE the magnetic axis and by
     p BELOW it, in one panel; the default is on whenever ``pressure`` is given.
@@ -663,42 +664,41 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     if logical_prof:
         # iota (black, left axis) and p (purple, right axis) against LOGICAL r,
         # sampled along ``profile_rays`` poloidal rays (:data:`PROFILE_RAY_THETAS`,
-        # theta = 0.5, 1/3, 0.2 by default): theta = 0.5 is where odd island
-        # chains are fattest (their O-points), the others sit off the symmetry
-        # line and are non-resonant; theta = 0 is avoided (the poloidal-angle
-        # branch point, where the ray flips across the midplane). Each ray is
-        # one LINE STYLE, marked as the theta = theta0 line in the logical chart
-        # so the reader can place it (the physical F(r, theta0) marker is left
-        # out -- its per-turn average overshoots the boundary at the edge).
-        # Where the rays agree logical r is a faithful surface label; where they
-        # fan (edge, islands) it is not, and the fan is the signal.
-        styles = ["-", "--", ":", "-."]
+        # theta = 0.5 alone by default since 2026-09-12): theta = 0.5 is where
+        # odd island chains are fattest (their O-points); theta = 0 is avoided
+        # (the poloidal-angle branch point, where the ray flips across the
+        # midplane). MARKERS ONLY, one per line, no connecting curve: joined
+        # into a curve the island lines, which all sit at the rational, drew a
+        # vertical zigzag through the chain, and a chaotic line's iota joined
+        # its neighbours as if it were on a surface. As points, an island chain
+        # is a shelf of markers at n/m sharing one p, a chaotic line a marker
+        # with a long p bar, and nested surfaces a smooth monotone dotting.
+        # Each ray is one MARKER, drawn as the theta = theta0 line in the
+        # logical chart so the reader can place it (the physical F(r, theta0)
+        # marker is left out -- its per-turn average overshoots the boundary at
+        # the edge).
+        markers = ["o", "^", "v", "D"]
         lr_all, lth_all = np.asarray(logical[0]), np.asarray(logical[1])
         sn = np.asarray(shown)
-        iota_n, band_n = np.asarray(iota), np.asarray(band)
-        pn = None if pressure is None else np.asarray(pressure)
-        pstd = None if pn is None else pressure_scale * np.nanstd(pn, axis=1)
+        iota_n = np.asarray(iota)
+        if has_p:
+            pn = pressure_scale * np.asarray(pressure)
+            pmean, pstd = np.nanmean(pn, axis=1), np.nanstd(pn, axis=1)
         px = bx.twinx() if has_p else None
         thetas = _profile_ray_thetas(profile_rays)
         for i, th0 in enumerate(thetas):
-            ls = styles[i % len(styles)]
-            r_line, p_at = _ray_line(lr_all, lth_all, pn, th0)
+            mk = markers[i % len(markers)]
+            r_line = _ray_line(lr_all, lth_all, th0)
             m = sn & np.isfinite(r_line)
             if not m.any():
                 continue
-            o = np.argsort(r_line[m])
-            rr = r_line[m][o]
-            bx.plot(rr, iota_n[m][o], color=IOTA_COLOR, linestyle=ls, lw=1.2,
-                    label=rf"$\theta = {th0:.2f}$")
-            bx.fill_between(rr, (iota_n - band_n)[m][o], (iota_n + band_n)[m][o],
-                            color=IOTA_COLOR, alpha=0.10, lw=0)
+            bx.plot(r_line[m], iota_n[m], linestyle="none", marker=mk, ms=2.0,
+                    color=IOTA_COLOR, label=rf"$\theta = {th0:.2f}$")
             if has_p:
-                pm = pressure_scale * p_at
-                px.plot(rr, pm[m][o], color=P_COLOR, linestyle=ls, lw=1.2)
-                px.fill_between(rr, (pm - pstd)[m][o], (pm + pstd)[m][o],
-                                color=P_COLOR, alpha=0.10, lw=0)
+                px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=2.0,
+                            color=P_COLOR, ecolor=P_COLOR, elinewidth=0.6, capsize=0)
             if lx is not None:
-                lx.axhline(th0, color="black", linestyle=ls, lw=1.0,
+                lx.axhline(th0, color="black", linestyle="-", lw=1.0,
                            alpha=0.85, zorder=6)
         bx.set_xlabel(r"$r$")
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
