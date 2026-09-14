@@ -45,6 +45,7 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 - `gvec_h5_vacuum_comparison.md` — MRX vacuum field versus GVEC h5; corrects the previous file on the simsopt exports.
 - `qa_vacuum_convergence_2026-08-28.md` — VMEC QA wout vs the discrete harmonic form by resolution: O(h^p) in the bulk with no floor to 5e-5, the residual is the axis; scale fit = flux match (theorem).
 - `analytic_map_2026-08-28.md` — the polar spline map of a GVEC state / VMEC wout built from the series coefficients (L2 projection, closed-form angular symbols), no evaluation grid; interpolant measured and dropped; axis and wall analysis.
+- `desc_interface_2026-09-13.md` — the DESC reader measured three ways: DESC vs VMEC on a grid (R, Z converge; the initial-condition difference contracts 11x through relaxation), a sweep over DESC's own equilibria, and two DESC-side traps — `VMECIO.load`'s poloidal flip and its half-mesh lambda fit. Backs `docs/source/concepts/external_interfaces.md`.
 
 ## Poincare
 

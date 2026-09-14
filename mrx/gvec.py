@@ -265,9 +265,10 @@ def series_spline_dofs(block, nfp, seq):
 
 
 def read_equilibrium(path):
-    """The state dict of a GVEC state (``.dat``) or a VMEC wout (``.nc``,
-    refit into the same blocks by :func:`mrx.vmec.read_wout`), with
-    ``kind`` (``"gvec"`` or ``"vmec"``) and ``path``; any other extension
+    """The state dict of a GVEC state (``.dat``), a VMEC wout (``.nc``, refit
+    into the same blocks by :func:`mrx.vmec.read_wout`) or a DESC output
+    (``.h5``, refit by :func:`mrx.desc.read_desc`), with ``kind``
+    (``"gvec"``, ``"vmec"`` or ``"desc"``) and ``path``; any other extension
     raises. Read once per run: :func:`mrx.geometry.build_sequence` keeps
     it on the sequence (``seq.equilibrium``) for the initial field."""
     if path.endswith(".dat"):
@@ -275,8 +276,11 @@ def read_equilibrium(path):
     if path.endswith(".nc"):
         from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
         return dict(read_wout(path), kind="vmec", path=path)
+    if path.endswith(".h5"):
+        from mrx.desc import read_desc  # noqa: PLC0415  (imports this module)
+        return dict(read_desc(path), kind="desc", path=path)
     raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
-                     "files (.dat) and VMEC wout files (.nc)")
+                     "files (.dat), VMEC wout files (.nc) and DESC outputs (.h5)")
 
 
 def build_gvec_map(st, seq, nfp=None):
@@ -326,11 +330,15 @@ def load_clebsch(st):
     Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (arrays
     on 401 uniform radii from the profile splines, ``chi' = iota Phi'``) and
     ``lam_h`` (the closed-form :class:`StateField` of ``LA``), from the
-    state of :func:`read_equilibrium` (a GVEC state or a VMEC wout, whose
-    profile splines live in ``rho = sqrt(s)``, :func:`mrx.vmec.profile_spline`).
+    state of :func:`read_equilibrium` (a GVEC state, a VMEC wout or a DESC
+    output; the latter two store their profiles as samples in
+    ``rho = sqrt(s)``, fit by :func:`mrx.vmec.profile_spline` and
+    :func:`mrx.desc.profile_spline`).
     """
     if st["kind"] == "vmec":
         from mrx.vmec import profile_spline as spline  # noqa: PLC0415  (imports this module)
+    elif st["kind"] == "desc":
+        from mrx.desc import profile_spline as spline  # noqa: PLC0415  (imports this module)
     else:
         spline = profile_spline
     rho = np.linspace(0.0, 1.0, 401)

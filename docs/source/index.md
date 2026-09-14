@@ -44,6 +44,7 @@ concepts/preconditioning
 concepts/precision
 concepts/relaxation
 concepts/gvec_mrx_interface
+concepts/external_interfaces
 concepts/testing_strategy
 ```
 
