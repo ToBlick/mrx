@@ -24,6 +24,7 @@ data/*
 !data/wout_li383_1.4m.nc
 !data/wout_LandremanPaul2021_QA_lowres.nc
 !data/desc_*.h5
+!data/DESC_LICENSE
 !data/*.json
 !data/tutorials/
 !data/tutorials/**

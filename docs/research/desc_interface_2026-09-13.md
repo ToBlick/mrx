@@ -99,6 +99,19 @@ throughout, force residual 5.53e-2 to 9.35e-4 (VMEC) and 5.64e-2 to 6.31e-4
 each converging to it from its own initial 0.0459 and 0.0462. `JoverB`
 agrees to 7.6e-3 and `JB` to 5.1e-3.
 
+The per-step traces, block-averaged the house way, say the same thing at
+1000 samples rather than five chunk boundaries: both residuals drop, DESC
+ends slightly lower, and most of the energy comes out in the first hundred
+steps.
+
+![traces](desc_interface_2026-09-13/desc_traces.png)
+
+The Poincaré sections make the 11x contraction visible. All four panels
+are nested, the two initial conditions already agree at the eye, and
+relaxation does not open an island or scramble the surfaces.
+
+![li383 poincare](desc_interface_2026-09-13/poincare_li383.png)
+
 ## 4. The poloidal flip, which is the trap
 
 `VMECIO.load` runs `ensure_positive_jacobian`, which for a left-handed wout
@@ -159,10 +172,23 @@ that releases nothing, the second term vanishes and any wandering exceeds
 it. The right reading is that SOLOVEV at this resolution has no relaxation
 to do, not that the relaxation is wrong.
 
+Two of the cases also have Poincaré sections. W7-X is DESC-native, nfp=5,
+`Psi = -2.133`: nested at the initial field and still nested after 1000
+steps, so the negative-flux branch traces as a stellarator rather than a
+mirrored mess.
+
+![W7-X poincare](desc_interface_2026-09-13/poincare_w7x.png)
+
+Landreman–Paul QA is the vacuum check, and it is the consumer of the
+tracked `data/desc_QA_lowres.h5` fixture. A vacuum equilibrium has a known
+answer; VMEC and DESC start and finish on the same nested surfaces.
+
+![QA poincare](desc_interface_2026-09-13/poincare_qa.png)
+
 ## 6. Tests
 
-`test/test_desc.py`, 15 tests, all passing with no DESC installed. The two
-that carry the most weight:
+`test/test_desc.py`, 26 collected tests (23 pass with no DESC installed;
+the three live-DESC items skip). The two that carry the most weight:
 
 - `test/synthetic_desc.py` writes a closed-form DESC-layout file that
   inverts `read_desc`, and describes the **same torus** as
@@ -180,10 +206,12 @@ constrained guards, dispatch through `geometry_kind` / `geometry_nfp` /
 ## 7. Verification
 
 `ruff check . --ignore F403,F405` clean. Locally (`mrx` conda env, jax
-0.10.2, no DESC): **70 passed, 2 skipped**, the skips being the two
-DESC-gated tests. On Torch in the `mrx.ext3` overlay with DESC 0.17.2, one
-H200: **73 passed, nothing skipped** — the live cross-check against
-`eq.compute` and the current-constrained iota path both run there.
+0.10.2, no DESC): **77 passed, 3 skipped**, the skips being the live-DESC
+items. On Torch in the `mrx.ext3` overlay with DESC 0.17.2, one H200:
+**80 passed, nothing skipped** — the live cross-check against `eq.compute`
+and the current-constrained iota path both run there. `mrx.desc` coverage
+on that node is **100%**. Figures regenerate from cache with
+`python -u scripts/desc_figures.py --figure all`.
 
 Two things worth knowing for anyone repeating this:
 
@@ -191,12 +219,12 @@ Two things worth knowing for anyone repeating this:
   installed with `pip install --target /scratch/aak572/pytest-libs` and put
   on `PYTHONPATH`, leaving the overlay untouched.
 - **The overlay's jax 0.8.1 cannot take `batch_size=0`.** MRX's default
-  `MAP_BATCH_SIZE_INNER = 0` means "one `vmap`", and jax 0.10 accepts it,
-  but 0.8.1 divides by it unguarded and every map evaluation raises
-  `ZeroDivisionError` in `mrx/geometry.py:71` — 34 setup errors, the whole
-  suite. Unrelated to anything here and left alone; the runner sets
-  `mrx.MAP_BATCH_SIZE_INNER = 4096` from outside the repo. Worth fixing
-  properly (`batch_size=... or None`) if the overlay's jax is to stay.
+  `MAP_BATCH_SIZE_INNER = 0` means "one `vmap`". That is a documented
+  jax contract as of [jax#33965](https://github.com/jax-ml/jax/pull/33965),
+  first released in **0.8.2** (2025-12-18); `pyproject.toml` now pins
+  `jax>=0.8.2`. The overlay predates the fix (0.8.1, 2025-11-18) and is
+  read-only, so the Torch runner still sets `MAP_BATCH_SIZE_INNER = 4096`
+  from outside the repo. This is a version floor, not an MRX bug.
 
 The suite must run on a **compute node**: on the login node the sequence
 build in the dispatch test had not finished after 50 minutes, against 56 s

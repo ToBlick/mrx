@@ -31,8 +31,8 @@ import numpy as np
 import pytest
 
 import mrx
-from mrx.desc import (_split_weights, _zernike_radial, profile_spline, read_desc,
-                      read_nfp)
+from mrx.desc import (_convert_block, _equilibrium, _nodes, _split_weights,
+                      _zernike_radial, profile_spline, read_desc, read_nfp)
 from mrx.geometry import geometry_kind, geometry_nfp
 from mrx.gvec import evaluate, read_equilibrium
 from test.synthetic_desc import write_synthetic_desc
@@ -320,6 +320,88 @@ def test_desc_iota_of_a_real_current_constrained_file():
     # profile rather than leave the range it is bracketed by.
     lo, hi = min(want[0], want[1]), max(want[0], want[1])
     assert lo - abs(hi - lo) - 1e-12 <= iota[0] <= hi + abs(hi - lo) + 1e-12
+
+
+def test_desc_nodes_refuse_fewer_than_three():
+    """Chebyshev-Lobatto needs the two endpoints and one interior point."""
+    with pytest.raises(ValueError, match="n_rho"):
+        _nodes(2)
+
+
+def test_desc_convert_block_refuses_mixed_parity():
+    """A cosine-of-the-combined-angle field cannot carry a sine partner."""
+    rho = _nodes(9)
+    # (l, m, n) = (0, 0, 0) is cos·cos; (1, -1, 0) is sin·cos. Together they
+    # mix the two parities of (m theta - n zeta), which a stellarator-
+    # symmetric file never does.
+    modes = np.array([[0, 0, 0], [1, -1, 0]], dtype=int)
+    coef = np.array([1.0, 0.3])
+    with pytest.raises(ValueError, match="mixes cos and sin"):
+        _convert_block(modes, coef, nfp=1, rho=rho, name="R")
+
+
+def test_desc_identically_zero_lambda_is_a_zero_block(tmp_path):
+    """An up-down-symmetric field stores no lambda; the block is still well-formed."""
+    _, _, st = _torus(tmp_path, lam_amplitude=0.0)
+    assert st["LA"]["coef"].shape[0] >= 1
+    got = evaluate(st["LA"], RHO, TWO_PI * THETA, TWO_PI * ZETA / NFP)
+    assert np.abs(got).max() <= mrx.eps(64)
+
+
+def test_desc_spline_profile_is_resampled(tmp_path):
+    """A DESC ``SplineProfile`` is read at the sample nodes, not refused."""
+    import h5py
+
+    path, _, _ = _torus(tmp_path, read=False)
+    rho_knots = np.linspace(0.0, 1.0, 5)
+    values = -0.9 - 0.15 * rho_knots ** 2
+    with h5py.File(path, "a") as fh:
+        eq = fh["_equilibria"]["0"]
+        del eq["_iota"]
+        node = eq.create_group("_iota")
+        node["__class__"] = np.bytes_(b"desc.profiles.SplineProfile")
+        node["_params"] = values.astype(np.float64)
+        node["_knots"] = rho_knots.astype(np.float64)
+    iota = read_desc(path)["profiles"]["iota"]
+    assert np.isfinite(iota).all()
+    # The cubic through five samples of a quadratic recovers it tightly.
+    assert abs(float(iota[0]) - values[0]) < 1e-6
+
+
+def test_desc_unknown_profile_class_names_the_way_out(tmp_path):
+    """A profile class we do not parse is refused with the class name."""
+    import h5py
+
+    path, _, _ = _torus(tmp_path, read=False)
+    with h5py.File(path, "a") as fh:
+        eq = fh["_equilibria"]["0"]
+        del eq["_iota"]["__class__"]
+        eq["_iota"]["__class__"] = np.bytes_(b"desc.profiles.NotARealProfile")
+    with pytest.raises(NotImplementedError, match="NotARealProfile"):
+        read_desc(path)
+
+
+def test_desc_empty_family_is_refused(tmp_path):
+    """``/_equilibria`` with no numbered members is not a DESC output."""
+    import h5py
+
+    path, _, _ = _torus(tmp_path, n_family=0, read=False)
+    with h5py.File(path, "r") as fh:
+        with pytest.raises(ValueError, match="holds no equilibrium"):
+            _equilibrium(fh, path)
+
+
+def test_desc_missing_pressure_is_read_as_zero(tmp_path):
+    """A vacuum file that stores no pressure profile is p = 0, not an error."""
+    import h5py
+
+    path, _, _ = _torus(tmp_path, read=False)
+    with h5py.File(path, "a") as fh:
+        eq = fh["_equilibria"]["0"]
+        del eq["_pressure"]
+        eq["_pressure"] = np.bytes_(b"None")
+    pressure = read_desc(path)["profiles"]["pressure"]
+    assert np.allclose(pressure, 0.0)
 
 
 def test_desc_refuses_a_file_that_is_not_desc(tmp_path):

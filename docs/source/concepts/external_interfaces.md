@@ -96,9 +96,10 @@ B-spline by `mrx.vmec._fit_block`, shared with the wout reader. DESC's
 and a Zernike series already satisfies the `rho^m` axis parity that
 `_fit_block` imposes — there the conditions confirm the fit rather than
 correct it. The refit is fourth-order accurate and its error is the only
-thing separating MRX's reading from DESC's own evaluation: measured
-`1e-7` relative on W7-X at the default node count, against a discretisation
-error many orders larger.
+thing separating MRX's reading from DESC's own evaluation. Measured below
+`1e-6` relative on the tracked SOLOVEV and DSHAPE fixtures
+(`test_desc_fixtures_reproduce_their_own_fourier_zernike_series`), against
+a discretisation error many orders larger.
 
 ## 4. The one thing that may be missing: iota
 
