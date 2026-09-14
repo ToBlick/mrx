@@ -29,6 +29,18 @@ Flags, defaults in brackets:
                                    map and that field. Always Leray-projected.
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
+      --map-source {equilibrium,map2disc} [equilibrium]
+                                   for an equilibrium file, where the map
+                                   comes from: the file's own R, Z series
+                                   (coordinate surfaces are flux surfaces)
+                                   or a harmonic map of the disc built from
+                                   the LCFS alone. The Clebsch initial
+                                   condition is the file's own field in
+                                   either case, pulled back through the
+                                   equilibrium map when the source is
+                                   map2disc so both start from the same
+                                   physical field. Ignored for an analytic
+                                   geometry.
       --ns R,T,Z [16,32,32]        spline resolution (also the map's)
       --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
                                    the breakpoints of that axis, comma-

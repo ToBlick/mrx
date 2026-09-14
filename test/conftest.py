@@ -52,6 +52,27 @@ def seq():
 
 
 @pytest.fixture(scope="session")
+def seq_map2disc():
+    """li383 on a map2disc map at the same ``(8, 12, 12)`` p=2 as ``seq``.
+
+    Built only when a test asks for it: the map2disc fit plus a second
+    operator assembly. Used to check that the pulled-back Clebsch
+    initial condition matches the equilibrium-map field.
+    """
+    from mrx.geometry import build_sequence
+    from mrx.nullspace import compute_nullspaces
+
+    t0 = time.perf_counter()
+    s, _ = build_sequence(GEOMETRY, NS, P, map_source="map2disc")
+    t1 = time.perf_counter()
+    compute_nullspaces(s)
+    t2 = time.perf_counter()
+    print(f"\n  li383 map2disc {NS} p={P}: build_sequence {t1 - t0:.0f} s, "
+          f"nullspaces {t2 - t1:.0f} s", flush=True)
+    return s
+
+
+@pytest.fixture(scope="session")
 def b0(seq):
     """The equilibrium's own field, ``B = dA'`` from the histopolated Clebsch
     potential: exactly divergence-free, tangential to the wall."""

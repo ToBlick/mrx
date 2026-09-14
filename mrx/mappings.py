@@ -154,27 +154,25 @@ def stellarator_symmetry_defect(F: Callable, x: jnp.ndarray) -> jnp.ndarray:
     return jnp.max(jax.vmap(_one)(pts))
 
 
-def extend_map_half_period(F_half: Callable, nfp: int = 1) -> Callable:
+def extend_map_half_period(F_half: Callable) -> Callable:
     """Extend a half-field-period map to the full period by reflection.
 
     The input map's ``zeta`` interval ``[0, 1]`` is one field period. For
     ``zeta <= 1/2`` the result equals ``F_half``; for ``zeta > 1/2`` it
     is ``S F_half(r, -theta, -zeta)`` with ``S = diag(1, -1, -1)``. An
-    already-symmetric ``F_half`` is reproduced on the whole period.
+    already-symmetric ``F_half`` is reproduced on the whole period. The
+    fold is at half a field period in the map's own ``zeta``, so there
+    is no separate ``nfp``: a multi-period device already stores one
+    period in ``[0, 1]``.
 
     Args:
         F_half: Map defined on (at least) the first half-period
             ``zeta in [0, 1/2]``. Periodic evaluation at ``-zeta`` is
             used for the reflected half.
-        nfp: Number of field periods of the underlying device. Must be
-            a positive integer; the fold is at half a field period in
-            the map's own ``zeta``.
 
     Returns:
         A map defined on the full period ``zeta in [0, 1]``.
     """
-    if nfp <= 0:
-        raise ValueError(f"nfp must be a positive integer, got {nfp}")
     S = STELLARATOR_REFLECTION
 
     def F(x):
@@ -185,6 +183,90 @@ def extend_map_half_period(F_half: Callable, nfp: int = 1) -> Callable:
         return jnp.where(z_mod <= 0.5, F_half(x_plus), S * F_half(x_minus))
 
     return F
+
+
+def invert_map_poloidal(F: Callable, iters: int = 20) -> Callable:
+    """Invert a logical-to-physical map in the poloidal plane at fixed ``zeta``.
+
+    Both the equilibrium map and a map2disc map of the same boundary use
+    the GVEC toroidal convention ``(R cos 2 pi zeta / nfp, sign R sin
+    2 pi zeta / nfp, Z)``, so logical ``zeta`` is shared and the
+    coordinate change between them is purely poloidal. Returns
+    ``inverse(p, zeta) -> (rho, theta)``, a fixed-trip-count Newton
+    solving ``F([rho, theta, zeta]) = p``.
+
+    The iteration is in ``(u, v) = rho (cos, sin)(2 pi theta)`` so the
+    polar axis is not a degenerate point of the Jacobian, and is seeded
+    from the magnetic axis ``F([0, 0, zeta])``. That is the right seed
+    for a nested equilibrium map, which is star-shaped about the axis
+    (a map2disc crescent is not, and is not inverted here). The body is
+    a ``lax.fori_loop``: ``jit``- and ``vmap``-safe, no Python branch on
+    a traced value. The Jacobian is the chain rule through ``jacfwd(F)``,
+    never through ``atan2``. Steps are capped and the iterate is kept
+    inside a slightly enlarged disc: a full Newton step from the axis
+    toward a near-wall target can leave the domain, where a clamped
+    spline explodes.
+
+    Args:
+        F: Logical-to-physical map ``(rho, theta, zeta) -> (X, Y, Z)``.
+        iters: Newton steps. A Python ``int``, closed over as a static
+            trip count.
+
+    Returns:
+        ``inverse(p, zeta) -> (rho, theta)`` with ``p`` a physical point
+        of shape ``(3,)`` and ``zeta`` the logical toroidal angle.
+    """
+    two_pi = 2.0 * jnp.pi
+
+    def _from_uv(uv: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        return jnp.hypot(uv[0], uv[1]), jnp.atan2(uv[1], uv[0]) / two_pi
+
+    def inverse(p: jnp.ndarray, zeta: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+        def residual(uv: jnp.ndarray) -> jnp.ndarray:
+            rho, theta = _from_uv(uv)
+            return F(jnp.array([rho, theta, zeta])) - p
+
+        def jacobian(uv: jnp.ndarray) -> jnp.ndarray:
+            # Chain-rule Jacobian: ``jacfwd(F)`` never sees ``atan2``.
+            # ``d(rho, theta)/d(u, v)`` is singular on the axis, where
+            # ``dF/dtheta = 0`` and the two columns collapse to
+            # ``dF/drho`` at ``theta = 0`` and ``1/4``.
+            rho, theta = _from_uv(uv)
+            dF = jax.jacfwd(F)(jnp.array([rho, theta, zeta]))[:, :2]
+            cut = jnp.sqrt(jnp.finfo(uv.dtype).eps)
+            rho_s = jnp.maximum(rho, cut)
+            d_rt = jnp.array([[uv[0] / rho_s, uv[1] / rho_s],
+                              [-uv[1] / (rho_s ** 2 * two_pi),
+                               uv[0] / (rho_s ** 2 * two_pi)]])
+            j_off = dF @ d_rt
+            j_axis = jnp.stack([
+                jax.jacfwd(F)(jnp.array([cut, 0.0, zeta]))[:, 0],
+                jax.jacfwd(F)(jnp.array([cut, 0.25, zeta]))[:, 0],
+            ], axis=1)
+            return jnp.where(rho < cut, j_axis, j_off)
+
+        def body(_: int, uv: jnp.ndarray) -> jnp.ndarray:
+            r = residual(uv)
+            jac = jacobian(uv)
+            gram = jac.T @ jac
+            reg = jnp.finfo(uv.dtype).eps * (1.0 + jnp.vdot(gram, gram))
+            delta = jnp.linalg.solve(gram + reg * jnp.eye(2, dtype=uv.dtype), jac.T @ r)
+            # A full step from the axis toward a near-wall target can
+            # leave the disc; a clamped spline then explodes. Cap the
+            # step and keep the iterate inside a slightly enlarged disc.
+            step = jnp.hypot(delta[0], delta[1])
+            delta = jnp.where(step > 0.5, delta * (0.5 / jnp.maximum(step, 1e-30)), delta)
+            nxt = uv - delta
+            rad = jnp.hypot(nxt[0], nxt[1])
+            nxt = jnp.where(rad > 1.05, nxt * (1.05 / rad), nxt)
+            return jnp.where(jnp.isfinite(nxt), nxt, uv)
+
+        uv0 = jnp.zeros(2, dtype=jnp.asarray(p).dtype)
+        uv = jax.lax.fori_loop(0, iters, body, uv0)
+        rho, theta = _from_uv(uv)
+        return rho, jnp.mod(theta, 1.0)
+
+    return inverse
 
 
 def _reflection_permutation(n: int, p: int) -> jnp.ndarray:

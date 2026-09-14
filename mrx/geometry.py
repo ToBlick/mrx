@@ -368,9 +368,13 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
             ``"map2disc"`` uses only the last closed flux surface and
             builds the interior as a harmonic map of the disc
             (:func:`mrx.map2disc.map2disc_from_equilibrium`): the two
-            maps share a boundary and nothing else, but the second needs
-            no interior data and is guaranteed invertible. Ignored for an
-            analytic geometry, whose map is given.
+            maps share a boundary and nothing else, and the second needs
+            no interior data. The continuous harmonic map is invertible
+            by construction; the discrete fit still raises if a
+            cross-section cannot meet the gap certificate or if the
+            assembled map folds at quadrature. Ignored for an analytic
+            geometry, whose map is given. Stored on the sequence as
+            ``seq.map_source``.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -407,6 +411,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     kind = geometry_kind(geometry)
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)
+        seq.map_source = map_source
         map_func, info = builders[map_source](seq.equilibrium, seq, nfp=nfp)
         print(f"[geom] {geometry}: {map_source} nfp={info['nfp']} "
               f"sign={info['sign']:+.0f} det DF in [{info['det_range'][0]:.3e}, "
@@ -415,5 +420,6 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     else:
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
         seq.equilibrium = dict(read_analytic(geometry), kind=kind)
+        seq.map_source = None
         seq.set_map(maps[kind](**seq.equilibrium["map_params"]))
     return seq, seq.build_preconditioners()

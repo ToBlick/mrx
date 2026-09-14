@@ -23,12 +23,14 @@ from mrx.mappings import (
     SplineMap,
     cylinder_map,
     extend_map_half_period,
+    invert_map_poloidal,
     rotating_ellipse_map,
     stellarator_symmetric_coefficients,
     stellarator_symmetrize,
     stellarator_symmetry_defect,
     toroid_map,
 )
+from mrx.precision import eps
 from mrx.spline_bases import SplineBasis
 
 WOUT = "data/wout_li383_low_res_reference.nc"
@@ -269,12 +271,94 @@ def test_stellarator_symmetric_coefficients_rejects_bad_axes() -> None:
         stellarator_symmetric_coefficients(jnp.zeros((3, 2, 2, 2)), periodic)
 
 
+def _poloidal_points() -> jnp.ndarray:
+    """Near-axis, mid-radius and near-wall probes, several zeta."""
+    return jnp.array([
+        [0.04, 0.20, 0.10],
+        [0.04, 0.80, 0.70],
+        [0.50, 0.30, 0.25],
+        [0.50, 0.05, 0.90],
+        [0.95, 0.70, 0.40],
+        [0.95, 0.15, 0.55],
+    ])
+
+
+def _assert_poloidal_roundtrip(F, inverse, xs, atol: float) -> None:
+    """``F(inverse(F(x), x[2]), x[2])`` recovers ``F(x)``, and ``rho`` matches."""
+    for x in xs:
+        p = F(x)
+        rho, theta = inverse(p, x[2])
+        recovered = F(jnp.array([rho, theta, x[2]]))
+        np.testing.assert_allclose(np.asarray(recovered), np.asarray(p), atol=atol)
+        assert abs(float(rho - x[0])) < atol
+
+
+def test_invert_map_poloidal_round_trips_a_rotating_ellipse() -> None:
+    """Analytic nested map: Newton from the axis recovers rho, including the wall."""
+    F = rotating_ellipse_map(nfp=3)
+    inverse = invert_map_poloidal(F)
+    _assert_poloidal_roundtrip(F, inverse, _poloidal_points(), atol=1e3 * float(eps()))
+
+
+def test_invert_map_poloidal_survives_jit_and_vmap() -> None:
+    """The body is a ``lax.fori_loop``; a traced batch must not hit Python."""
+    F = rotating_ellipse_map(nfp=2)
+    inverse = invert_map_poloidal(F)
+    xs = _poloidal_points()
+    ps = jax.vmap(F)(xs)
+
+    def _one(p, zeta):
+        return inverse(p, zeta)
+
+    rhos, thetas = jax.jit(jax.vmap(_one))(ps, xs[:, 2])
+    for i, x in enumerate(xs):
+        recovered = F(jnp.array([rhos[i], thetas[i], x[2]]))
+        np.testing.assert_allclose(np.asarray(recovered), np.asarray(ps[i]),
+                                   atol=1e3 * float(eps()))
+        assert abs(float(rhos[i] - x[0])) < 1e3 * float(eps())
+
+
+def test_invert_map_poloidal_round_trips_the_vmec_map(seq) -> None:
+    """The equilibrium interpolant is nested about the axis, so the same seed works."""
+    inverse = invert_map_poloidal(seq.map)
+    _assert_poloidal_roundtrip(seq.map, inverse, _poloidal_points(),
+                               atol=1e-6)
+
+
+def test_build_sequence_map2disc_installs_an_invertible_map(seq_map2disc) -> None:
+    """The happy path the suite was missing: ``map_source="map2disc"`` builds."""
+    assert seq_map2disc.map_source == "map2disc"
+    dets = jnp.linalg.det(map_jacobian_at(seq_map2disc.map, _poloidal_points()))
+    assert bool(jnp.all(jnp.isfinite(dets)))
+    assert float(jnp.min(dets)) > 0.0
+
+
+def test_relax_cli_accepts_map_source() -> None:
+    """``scripts/relax.py --map-source map2disc`` parses; the default stays equilibrium.
+
+    The parsed value is what :func:`mrx.geometry.build_sequence` receives
+    (``scripts/relax.py`` passes ``cli.map_source`` through). Building the
+    sequence is :func:`test_build_sequence_map2disc_installs_an_invertible_map`.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "relax_cli", "scripts/relax.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    cli = mod.parse_args([
+        "--geometry", WOUT, "--map-source", "map2disc",
+        "--ns", "4,6,6", "--p", "2", "--steps", "1", "--chunk", "1",
+    ])
+    assert cli.map_source == "map2disc"
+    assert mod.parse_args(["--geometry", WOUT]).map_source == "equilibrium"
+
+
 def test_extend_map_half_period_reproduces_a_symmetric_map() -> None:
     """Reflection across ``zeta = 1/2`` rebuilds ``rotating_ellipse_map``."""
     F = rotating_ellipse_map()
-    F_ext = extend_map_half_period(F, nfp=3)
+    F_ext = extend_map_half_period(F)
     for x in _SYMMETRY_POINTS:
         np.testing.assert_allclose(np.asarray(F_ext(x)), np.asarray(F(x)),
                                    atol=1e-12)
-    with pytest.raises(ValueError, match="nfp"):
-        extend_map_half_period(F, nfp=0)

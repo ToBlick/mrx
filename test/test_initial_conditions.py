@@ -7,12 +7,15 @@ import numpy as np
 
 from mrx.initial_conditions import (
     analytic_profile_form,
+    clebsch_potential_form,
     initial_field,
     lambda_dirichlet_energy,
     leray_clean,
     make_lambda,
     make_profiles,
     project_reference_two_form,
+    potential_two_form,
+    pulled_back_clebsch_form,
     resonant_rho,
 )
 from mrx.precision import eps
@@ -85,3 +88,51 @@ def test_project_reference_two_form_and_initial_field(seq) -> None:
     assert info["kind"] == "vmec"
     assert abs(float(seq.l2_norm(field, 2)) - 1.0) < eps(100)
     assert info["nfp"] == 3
+    assert seq.map_source == "equilibrium"
+    assert info["wall_discarded"] < 1e-10
+    assert info["div"] < 1e2 * seq.tol
+
+
+def test_pullback_on_the_equilibrium_map_is_a_noop(seq) -> None:
+    """Inverting the sequence's own map recovers its logical coordinates.
+
+    Then ``A_phys = (DF^T)^{-1} A_ref`` and ``interpolate(..., frame='phys')``
+    applies ``DF^T``, so the pulled-back histopolation is the native one.
+    This is the wall-flux gate: if ``wall_discarded`` is not small, the
+    pullback is wrong.
+    """
+    from mrx.gvec import load_clebsch
+
+    A_ref = clebsch_potential_form(load_clebsch(seq.equilibrium))
+    B_ref, _, wall_ref = potential_two_form(seq, A_ref)
+    B_phys, _, wall_phys = potential_two_form(
+        seq, pulled_back_clebsch_form(seq, A_ref), frame="phys")
+    assert wall_phys < 1e-3
+    rel = float(seq.l2_norm(B_phys - B_ref, 2))
+    assert rel < 1e-5, f"pullback disagreed with the native field by {rel:.2e}"
+
+
+def test_both_maps_start_from_the_same_physical_field(seq, seq_map2disc) -> None:
+    """map2disc of li383, pulled back, matches the equilibrium-map IC.
+
+    Helicity and ``||F||`` are physical, so they must agree;
+    ``wall_discarded`` and ``div`` must stay small. The map2disc path
+    Leray-cleans the small wall remainder.
+    """
+    from mrx.relaxation import compute_force, compute_helicity
+
+    B_eq, ic_eq = initial_field(seq)
+    B_m2d, ic_m2d = initial_field(seq_map2disc)
+    assert ic_eq["wall_discarded"] < 1e-8
+    assert ic_m2d["wall_discarded"] < 1e-3
+    assert ic_eq["div"] < 1e2 * seq.tol
+    assert ic_m2d["div"] < 1e2 * seq_map2disc.tol
+
+    H_eq = float(compute_helicity(B_eq, seq, jnp.zeros(seq.n(1, True)))[0])
+    H_m2d = float(compute_helicity(B_m2d, seq_map2disc, jnp.zeros(seq_map2disc.n(1, True)))[0])
+    F_eq = float(seq.l2_norm(compute_force(B_eq, seq)[0], 2))
+    F_m2d = float(seq_map2disc.l2_norm(compute_force(B_m2d, seq_map2disc)[0], 2))
+    assert abs(H_eq - H_m2d) < 0.05 * abs(H_eq), (
+        f"helicity {H_eq:+.4e} vs {H_m2d:+.4e}")
+    assert abs(F_eq - F_m2d) < 0.5 * F_eq, (
+        f"||F|| {F_eq:.3e} vs {F_m2d:.3e}")

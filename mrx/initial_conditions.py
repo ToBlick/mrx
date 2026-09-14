@@ -30,7 +30,10 @@ Three sources of the profiles:
   ``mrx.geometry.read_analytic``).
 * :func:`clebsch_potential_form` with :func:`potential_two_form`: an
   equilibrium file's own field, ``B = dA'`` from its Clebsch data
-  (:func:`mrx.gvec.load_clebsch`), the production route.
+  (:func:`mrx.gvec.load_clebsch`), the production route. On
+  ``seq.map_source == "map2disc"`` the potential is pulled back through
+  the equilibrium map (:func:`pulled_back_clebsch_form`) so both maps
+  of the same file start from the same physical field.
 
 :func:`project_reference_two_form` turns the analytic form into DoFs. It
 pushes the form forward and uses ``load(frame='phys')``: ``load(frame='ref')``
@@ -194,23 +197,83 @@ def resonant_rho(cb, m, n):
     return float(rho[i] + (target - iota[i]) * (rho[i + 1] - rho[i]) / (iota[i + 1] - iota[i]))
 
 
-def potential_two_form(seq, A_ref):
-    """``B = d A'`` in the complex: histopolate the reference 1-form on the
+def pulled_back_clebsch_form(seq, A_ref):
+    """Physical 1-form of a Clebsch potential written in the equilibrium map.
+
+    ``A_ref`` is the reference 1-form of :func:`clebsch_potential_form`:
+    it reads the file's profiles at the logical radius, which labels
+    flux surfaces only on the equilibrium map. On any other map of the
+    same domain -- in particular a map2disc map, whose surfaces are
+    level sets of a harmonic map of the LCFS -- that would produce a
+    different field. This pulls ``A_ref`` back so the physical 1-form
+    at ``seq.map(x)`` is the equilibrium map's field at the same
+    physical point.
+
+    The two maps share the GVEC toroidal convention, so logical ``zeta``
+    is common and the inversion is poloidal: :func:`mrx.mappings.invert_map_poloidal`
+    of the equilibrium interpolant ``G`` (rebuilt on ``seq.basis_0`` by
+    :func:`mrx.gvec.build_gvec_map`) returns the flux label ``(rho,
+    theta)``. Then ``A_phys = (DG^T)^{-1} A_ref(y)``, which is what
+    :func:`potential_two_form` with ``frame='phys'`` histopolates.
+
+    Args:
+        seq: Sequence whose ``map`` and ``equilibrium`` define the
+            physical point and the file.
+        A_ref: Reference 1-form in the equilibrium map's logical
+            coordinates.
+
+    Returns:
+        A callable of the sequence's logical point returning physical
+        1-form components.
+    """
+    from mrx.gvec import build_gvec_map  # noqa: PLC0415
+    from mrx.mappings import invert_map_poloidal  # noqa: PLC0415
+
+    G, _ = build_gvec_map(seq.equilibrium, seq)
+    inverse = invert_map_poloidal(G)
+    DG = jax.jacfwd(G)
+
+    def A_phys(x):
+        p = seq.map(x)
+        rho, theta = inverse(p, x[2])
+        y = jnp.array([rho, theta, x[2]])
+        return jnp.linalg.solve(DG(y).T, A_ref(y))
+
+    return A_phys
+
+
+def potential_two_form(seq, A_ref, frame: str = "ref"):
+    """``B = d A'`` in the complex: histopolate the 1-form on the
     FREE 1-form space (its wall-tangential part is the toroidal flux, which
     no gauge removes) and apply the exact incidence curl into the Dirichlet
     2-form space.
 
-    ``div B = 0`` to round-off (``d d = 0``) and ``B . n = 0`` on the wall
-    exactly -- the tangential components of ``A'`` there are functions of
-    ``rho`` alone, so every wall face has zero circulation -- so nothing is
+    ``div B = 0`` to round-off (``d d = 0``). ``B . n = 0`` on the wall
+    holds because histopolation computes edge circulations: a wall face's
+    flux is the circulation of ``A'`` around a loop lying in the LCFS, and
+    the true field is tangential there, so it vanishes up to
+    edge-quadrature error (reported as ``wall``). On the equilibrium map
+    the tangential components of ``A'`` are additionally functions of
+    ``rho`` alone, which makes the wall flux identically zero; the
+    physical-frame path used on a map2disc map does not have that extra
+    structure, but the circulation argument still applies. Nothing is
     projected and no Leray step is needed. The only fit is the commuting
     histopolation, whose resolution is the mesh's: this is the route that
     keeps a coarse export's interpolation error out of the current. Returns
     ``(B, norm, wall)``: the DoFs normalised to ``||B||_M = 1``, the norm
     before normalisation, and the relative wall-normal part discarded by the
     Dirichlet restriction (a check, not a correction).
+
+    Args:
+        seq: Sequence the field lives on.
+        A_ref: Callable of a logical point. With ``frame='ref'`` it
+            returns the sequence's own reference 1-form components; with
+            ``frame='phys'`` it returns physical components, and
+            :meth:`DeRhamSequence.interpolate` applies ``DF(x)^T``.
+        frame: ``'ref'`` or ``'phys'``. Default ``'ref'`` is the
+            equilibrium-map path.
     """
-    A = seq.interpolate(A_ref, 1, dirichlet=False, frame='ref')
+    A = seq.interpolate(A_ref, 1, dirichlet=False, frame=frame)
     B_full = seq.apply_incidence_matrix(A, 1, dirichlet_in=False, dirichlet_out=False)
     B = seq.apply_incidence_matrix(A, 1, dirichlet_in=False, dirichlet_out=True)
     n_full, norm = float(seq.l2_norm(B_full, 2, False)), float(seq.l2_norm(B, 2))
@@ -263,8 +326,11 @@ def initial_field(seq, seed=None):
     by :func:`mrx.geometry.build_sequence`): an
     equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
     through the histopolated Clebsch potential, exactly divergence-free,
-    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
-    analytic geometry file gives the logical-grid field of its ``profile``
+    optionally with a resonant ``seed = (m, n, rho0, width, eps)``. On
+    ``seq.map_source == "map2disc"`` the potential is pulled back through
+    the equilibrium map (:func:`pulled_back_clebsch_form`) so both maps
+    of the same file start from the same physical field. An analytic
+    geometry file gives the logical-grid field of its ``profile``
     block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
 
     Returns ``(B, info)`` with ``B`` the Dirichlet 2-form DoFs and ``info``
@@ -290,7 +356,21 @@ def initial_field(seq, seed=None):
                     lambda_norm_sq=float(lam_norm), lambda_dirichlet_energy=float(lam_energy))
         if seed is not None:
             info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
-        B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+        A_ref = clebsch_potential_form(cb, seed)
+        if getattr(seq, "map_source", None) == "map2disc":
+            B, norm, wall = potential_two_form(
+                seq, pulled_back_clebsch_form(seq, A_ref), frame="phys")
+            # The wall flux is only identically zero on the equilibrium
+            # map; after the Dirichlet restriction of a small remainder
+            # the field picks up a divergence, which the flow would
+            # carry forever. Remove it once, as the analytic path does.
+            div_raw = float(compute_divergence_norm(B, seq))
+            B, moved = leray_clean(seq, B)
+            div = float(compute_divergence_norm(B, seq))
+            info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
+                        div_raw=div_raw, div=div, leray_moved=float(moved))
+            return B, info
+        B, norm, wall = potential_two_form(seq, A_ref)
         div = float(compute_divergence_norm(B, seq))
         info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
                     div_raw=div, div=div, leray_moved=0.0)

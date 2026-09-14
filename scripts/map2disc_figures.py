@@ -29,9 +29,10 @@ NCSX (li383) wout files.
     lies outside the plasma, so it gets its own panel.
 
 ``ncsx_relaxation.png``
-    NCSX relaxed on both maps, before and after. The two maps start from
-    DIFFERENT initial fields -- see :func:`_relaxation` -- so this is a
-    comparison at unequal helicity, and the figure says so.
+    NCSX relaxed on both maps, before and after. Both maps start from the
+    same physical Clebsch field -- the file's potential pulled back
+    through the equilibrium map -- so the comparison is at equal
+    helicity; what remains is discretization.
 
     python scripts/map2disc_figures.py --figure all
     python scripts/map2disc_figures.py --figure ncsx-relax --precision float32
@@ -404,17 +405,19 @@ def _vacuum_field(geometry, ns, p, map_source):
 def _relaxation(cli, map_source: str):
     """Relax one geometry on one map and reduce the run to what is plotted.
 
-    The initial condition is the geometry file's own field through the
-    histopolated Clebsch potential, which reads the file's profiles at the
-    LOGICAL radius (``mrx.initial_conditions``: ``r = clip(x[0], 0, 1)``).
-    That treats ``r`` as a flux-surface label -- true for the equilibrium
-    map, whose coordinate surfaces are the file's flux surfaces, and false
-    for map2disc, whose surfaces are level sets of a harmonic map of the
-    LCFS. So the two runs genuinely start from different fields with
-    different helicity, and since the descent minimises energy at fixed
-    helicity they need not land on the same equilibrium. Both are
-    normalised to ``||B||_M = 1``, so their energies are on one scale; the
-    helicities are reported so the reader can price the difference.
+    The initial condition is the geometry file's own Clebsch field. On
+    the equilibrium map that is the histopolated potential in the
+    sequence's logical coordinates; on map2disc the same potential is
+    pulled back through the equilibrium map
+    (:func:`mrx.initial_conditions.pulled_back_clebsch_form`) so both
+    runs start from the same physical field, the same helicity and the
+    same force residual. What remains after an equal step budget is
+    discretization: map2disc's coordinate surfaces are not flux
+    surfaces, so the same field costs more resolution.
+
+    The per-step energy is ``E0 + cumsum(trace["dE"])``, not the
+    per-chunk sample ``qoi["E"]``: at ``--relax-chunk 50`` the latter
+    is 11 points and turns a smooth descent into a vertical jump.
 
     Args:
         cli: Parsed command line.
@@ -454,18 +457,20 @@ def _relaxation(cli, map_source: str):
     before = _poincare(seq, B0, nfp, cli.seeds, cli.periods)
     after = _poincare(seq, B1, nfp, cli.seeds, cli.periods)
     return {
-        "F": F, "E": np.asarray(res.qoi["E"], dtype=float),
-        "E_it": np.asarray(res.qoi["it"], dtype=float),
+        "F": F, "dE": np.asarray(res.trace["dE"], dtype=float),
         "panel_before": _torus_image(seq, _field_magnitude(seq, B0), cli.dpi),
         "panel_after": _torus_image(seq, _field_magnitude(seq, B1), cli.dpi),
         "a_before": before["a"], "iota_before": before["iota"],
         "a_after": after["a"], "iota_after": after["iota"],
         "R_after": after["R"], "Z_after": after["Z"],
         "notes": np.array({"H0": H0, "H1": H1, "F0": float(F[0]),
-                           "F1": float(F[-1]), "steps": int(res.steps),
+                           "F1": float(F[-1]), "E0": float(res.E0),
+                           "steps": int(res.steps),
                            "stop": str(res.stop), "wall": float(res.wall),
                            "iota_axis": float(ic["iota_axis"]),
                            "iota_edge": float(ic["iota_edge"]),
+                           "wall_discarded": float(ic["wall_discarded"]),
+                           "div": float(ic["div"]),
                            "xlabel": after["xlabel"]}, dtype=object)}
 
 
@@ -594,7 +599,7 @@ def figure_symmetry(cli, out: str) -> str:
         return base(x) + jnp.array([0.0, 0.0, shift])
 
     fixed = stellarator_symmetrize(broken)
-    half = extend_map_half_period(broken, nfp=nfp)
+    half = extend_map_half_period(broken)
 
     # The same projector in coefficient space: an index permutation on the
     # two uniform periodic angular axes, applied once when the map is built.
@@ -923,28 +928,28 @@ def figure_ncsx_relax(cli, out: str) -> str:
 
     ns = cli.relax_ns.replace(",", "x")
     runs = {s: _cached(f"relax_ncsx_{s}_{ns}_p{cli.relax_p}_"
-                       f"{cli.relax_steps}_{cli.precision}",
+                       f"{cli.relax_steps}_{cli.precision}_sameic",
                        lambda s=s: _relaxation(cli, s)) for s, _ in SOURCES}
     notes = {s: runs[s]["notes"].item() for s, _ in SOURCES}
 
     fig = plt.figure(figsize=(13.0, 10.0))
-    gs = fig.add_gridspec(3, 4, height_ratios=(1.0, 1.2, 1.05),
-                          hspace=0.30, wspace=0.30)
+    gs = fig.add_gridspec(3, 3, height_ratios=(1.0, 1.25, 1.1),
+                          hspace=0.32, wspace=0.28)
 
     ax = fig.add_subplot(gs[0, :2])
     for source, colour in SOURCES:
-        E = runs[source]["E"]
-        ax.plot(runs[source]["E_it"], E[0] - E, color=colour, lw=1.8,
+        dE = runs[source]["dE"]
+        E = notes[source]["E0"] + np.concatenate([[0.0], np.cumsum(dE)])
+        ax.plot(np.arange(E.size), E[0] - E, color=colour, lw=1.8,
                 label=f"{source}  (total {E[0] - E[-1]:.2e})")
-    ax.set_yscale("log")
     ax.set_xlabel("step")
     ax.set_ylabel(r"$E_0 - E$")
-    ax.set_title(r"energy removed ($\|B\|_M = 1$, so both start at $E = 0.5$)",
+    ax.set_title(r"energy removed per step ($\|B\|_M = 1$, so both start at $E = 0.5$)",
                  fontsize=9)
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3, which="both")
 
-    ax = fig.add_subplot(gs[0, 2:])
+    ax = fig.add_subplot(gs[0, 2])
     for source, colour in SOURCES:
         F = runs[source]["F"]
         ax.semilogy(np.arange(F.size), F, color=colour, lw=1.2,
@@ -953,17 +958,20 @@ def figure_ncsx_relax(cli, out: str) -> str:
     ax.set_xlabel("step")
     ax.set_ylabel(r"$\|F\|$")
     ax.set_title("force residual", fontsize=9)
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=7)
     ax.grid(alpha=0.3, which="both")
 
-    for col, (source, colour) in enumerate(SOURCES):
-        for half, when in enumerate(("before", "after")):
-            ax = fig.add_subplot(gs[1, 2 * col + half])
-            ax.imshow(runs[source][f"panel_{when}"])
-            ax.axis("off")
-            ax.set_title(f"{source}, {when}", fontsize=9, color=colour)
+    # Same physical field on both maps, so one "before" is enough.
+    for col, (title, image, colour) in enumerate((
+            ("same IC, before", runs["equilibrium"]["panel_before"], "0.2"),
+            ("equilibrium, after", runs["equilibrium"]["panel_after"], SOURCES[0][1]),
+            ("map2disc, after", runs["map2disc"]["panel_after"], SOURCES[1][1]))):
+        ax = fig.add_subplot(gs[1, col])
+        ax.imshow(image)
+        ax.axis("off")
+        ax.set_title(title, fontsize=9, color=colour)
 
-    ax = fig.add_subplot(gs[2, :2])
+    ax = fig.add_subplot(gs[2, 0])
     for source, colour in SOURCES:
         _iota_scatter(ax, runs[source]["a_before"], runs[source]["iota_before"],
                       colour, f"{source}, before", marker="o", alpha=0.25)
@@ -971,15 +979,15 @@ def figure_ncsx_relax(cli, out: str) -> str:
                       colour, f"{source}, after", marker="x", alpha=0.9)
     ax.set_xlabel(notes["equilibrium"]["xlabel"])
     ax.set_ylabel(r"$\iota$")
-    ax.set_title(r"$\iota$ against a physical abscissa (faint = before, $\times$ = after)",
+    ax.set_title(r"$\iota$ (faint = before, $\times$ = after)",
                  fontsize=9)
-    ax.legend(fontsize=7)
+    ax.legend(fontsize=6)
     ax.grid(alpha=0.3)
 
     # One colour per traced line, so nested surfaces read as nested rather
     # than as one smear of crossings.
     for col, (source, colour) in enumerate(SOURCES):
-        ax = fig.add_subplot(gs[2, 2 + col])
+        ax = fig.add_subplot(gs[2, 1 + col])
         R, Z = runs[source]["R_after"], runs[source]["Z_after"]
         shades = plt.get_cmap("turbo")(np.linspace(0.05, 0.95, R.shape[0]))
         for line in range(R.shape[0]):
@@ -991,17 +999,14 @@ def figure_ncsx_relax(cli, out: str) -> str:
         ax.set_title(f"{source}, converged  ({R.shape[0]} lines)", fontsize=9,
                      color=colour)
 
-    # The caveat, stated rather than papered over.
     eq, m2d = notes["equilibrium"], notes["map2disc"]
     fig.suptitle(
-        "NCSX relaxed on both maps, before and after  "
+        "NCSX relaxed on both maps from the same physical Clebsch field  "
         f"(ns={cli.relax_ns}, p={cli.relax_p}, {cli.precision})\n"
-        "The Clebsch initial condition reads the file's profiles at the LOGICAL "
-        "radius, which labels flux surfaces for the equilibrium map and does NOT "
-        "for map2disc, so the two\nruns start from different fields:  "
         rf"$H_0$ = {eq['H0']:+.4e} vs {m2d['H0']:+.4e},  "
         rf"$\|F\|_0$ = {eq['F0']:.2e} vs {m2d['F0']:.2e}.  "
-        "The descent minimises energy at fixed helicity, so they need not agree.",
+        "What remains is discretization: map2disc's surfaces are not flux "
+        r"surfaces, so $B^\rho \neq 0$ and the same field costs more resolution.",
         fontsize=9.5)
     path = os.path.join(out, "ncsx_relaxation.png")
     fig.savefig(path, dpi=cli.dpi, bbox_inches="tight")

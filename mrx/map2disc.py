@@ -410,8 +410,15 @@ def zernike_eval(ell: jnp.ndarray, m: jnp.ndarray, rho: jnp.ndarray,
     return jnp.stack(vals, axis=-1)
 
 
-def np_int_list(arr) -> list[int]:
-    """Materialise a static integer array as a Python list of ints."""
+def np_int_list(arr: np.ndarray) -> list[int]:
+    """Materialise a static integer array as a Python list of ints.
+
+    Args:
+        arr: Integer array. Anything array-like is accepted via
+            ``np.asarray``; a traced JAX array is not, which is the
+            point -- callers pass the NumPy ``(l, m)`` of
+            :func:`zernike_indices`.
+    """
     return [int(v) for v in np.asarray(arr).tolist()]
 
 
