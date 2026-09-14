@@ -597,7 +597,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02)
         # Label BELOW the bar, matching iota: a side label is squeezed against
         # the next panel and the wide tick labels leave no room for it.
-        pbar.ax.set_xlabel(pressure_label, fontsize=FS.title)
+        pbar.ax.set_xlabel(p_label, fontsize=FS.title)
         pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
