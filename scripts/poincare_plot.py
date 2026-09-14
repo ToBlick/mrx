@@ -20,6 +20,9 @@ Flags (defaults in brackets):
                            the section and the chart, and as the profile's right
                            axis); it is drawn whenever the archive holds one
     --inner-cells C        lines seeded closer to the axis than C radial cells
+    --pressure-factor F    multiply the pressure before drawing, e.g. 2 / <|B|^2>_Omega
+                           for the local beta against the mean magnetic pressure [1]
+    --pressure-label L     label of the pressure axis and colour bar [p]
                            (r < C / n_r) are not drawn; 0 draws every line
                            (the inner lines are regular; Tobias 2026-09-12).
                            The iota fit of a line inside the polar patch is
@@ -144,6 +147,9 @@ def main():
     ap.add_argument("--profile-rays", type=int, default=1)
     ap.add_argument("--dot-scale", type=float, default=0.33)
     ap.add_argument("--paper", action="store_true")
+    ap.add_argument("--pressure-factor", type=float, default=1.0,
+                    help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta) [1]")
+    ap.add_argument("--pressure-label", default=None, help="label of the pressure axis and colour bar [p]")
     ap.add_argument("--label-size", type=float, default=6.0)
     ap.add_argument("--page-width", type=float, default=6.5)
     ap.add_argument("--dpi", type=int, default=600)
@@ -266,10 +272,10 @@ def main():
             R, Z, aR, aZ, lr, lth = cuts[n, pl]
             R, Z, lr, lth = R[drawn[n]], Z[drawn[n]], lr[drawn[n]], lth[drawn[n]]
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
-            press = None if presses[n][pl] is None else presses[n][pl] - p_min[n]
+            press = None if presses[n][pl] is None else cli.pressure_factor * (presses[n][pl] - p_min[n])
             fig, _ = render_section(
                 R, Z, per[n]["iota"], per[n]["iota_err"], per[n]["seed_r"], per[n]["keep"],
-                pressure=press, pressure_label=PRESSURE_LABELS.get(kind),
+                pressure=press, pressure_label=cli.pressure_label or PRESSURE_LABELS.get(kind),
                 title=None if cli.paper else
                       f"{source}  |  {n}  |  $\\zeta = {pl:g}$\n"
                       f"{str(sec[f'{n}_label'])} -- {R.shape[1]} crossings/line",
