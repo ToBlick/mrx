@@ -221,7 +221,7 @@ def main():
     presses = {n: {pl: (np.asarray(sec[f"{n}_zeta{pl:g}_pressure"])[drawn[n]]
                         if kind != "none" else None) for pl in planes} for n in which}
     p_min = {n: pressure_gauge(kind, presses[n], per[n]["keep"]) for n in which}
-    ps = [100.0 * (presses[n][pl] - p_min[n])[per[n]["keep"]]
+    ps = [100.0 * cli.pressure_factor * (presses[n][pl] - p_min[n])[per[n]["keep"]]
           for n in which for pl in planes if presses[n][pl] is not None]
     limits = {}
     if ps:
