@@ -54,7 +54,7 @@ jobs:
     - name: Install mrx
       run: |
         python -m pip install --upgrade pip
-        pip install -e . pytest
+        pip install -e ".[TEST]"
 
     - name: Restore the XLA compilation cache
       uses: actions/cache@v4
@@ -66,7 +66,11 @@ jobs:
 
     - name: Run the test suite (${{ matrix.dtype }})
       run: |
-        pytest
+        if [ "${{ matrix.dtype }}" = "float64" ]; then
+          pytest --cov=mrx --cov-report=term-missing --cov-fail-under=90
+        else
+          pytest
+        fi
 
   build:
     runs-on: ubuntu-latest

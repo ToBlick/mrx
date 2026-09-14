@@ -3,11 +3,12 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import numpy.testing as npt
 import pytest
 
 import mrx
-from mrx.spline_bases import DerivativeSpline, SplineBasis
+from mrx.spline_bases import DerivativeSpline, SplineBasis, TensorBasis, contract_local
 
 # Pointwise identities (partition of unity, Bernstein baselines, the tensor
 # factorisation) hold to a few ulp: 100 eps = 2.2e-14 f64 / 1.2e-5 f32.
@@ -103,4 +104,31 @@ def test_histopolation_de_rham_periodic(p):
 
 # ── TensorBasis ───────────────────────────────────────────────────────────────
 
+
+def test_tensor_basis_requires_three_axes() -> None:
+    with pytest.raises(ValueError, match="exactly 3"):
+        TensorBasis([_CLAMPED, _PERIODIC])
+
+
+def test_tensor_basis_contract_matches_the_triple_sum() -> None:
+    """``contract`` is the span-local triple product against the coefficient tensor."""
+    bases = [SplineBasis(4, 1, "clamped"),
+             SplineBasis(4, 1, "periodic"),
+             SplineBasis(4, 1, "periodic")]
+    tb = TensorBasis(bases)
+    rng = np.random.default_rng(2)
+    coeffs = jnp.asarray(rng.standard_normal(tuple(b.n for b in bases)))
+    x = jnp.array([0.31, 0.44, 0.67])
+    got = tb.contract(coeffs, x)
+    vals_idx = tb.evaluate_local(x)
+    np.testing.assert_allclose(np.asarray(got),
+                               np.asarray(contract_local(coeffs, vals_idx)),
+                               atol=POINTWISE)
+    explicit = 0.0
+    for i in range(bases[0].n):
+        for j in range(bases[1].n):
+            for k in range(bases[2].n):
+                explicit = explicit + coeffs[i, j, k] * (
+                    bases[0](x[0], i) * bases[1](x[1], j) * bases[2](x[2], k))
+    np.testing.assert_allclose(float(got), float(explicit), atol=POINTWISE)
 

@@ -198,6 +198,13 @@ class DeRhamSequence():
         self.geometry = None
         #: the parsed geometry file of :func:`mrx.geometry.build_sequence`
         self.equilibrium = None
+        #: ``"equilibrium"`` or ``"map2disc"`` for a file geometry; ``None``
+        #: until :func:`mrx.geometry.build_sequence` sets it, and for an
+        #: analytic map. :func:`mrx.initial_conditions.initial_field` uses
+        #: this to decide whether the Clebsch potential is already in the
+        #: sequence's logical coordinates or must be pulled back through
+        #: the equilibrium map.
+        self.map_source = None
         self.operators = None
         #: The dtype of the sequence's arrays and of its solves' results: the
         #: working dtype; the residual dtype on the float64 view.

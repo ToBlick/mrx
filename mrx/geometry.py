@@ -343,7 +343,8 @@ def knot_vector(breakpoints, p, periodic):
     return np.concatenate([np.zeros(p), bp, np.ones(p)])
 
 
-def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None):
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
+                   map_source="equilibrium"):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
@@ -361,6 +362,19 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         knots: ``(r, theta, zeta)`` breakpoints per axis, each a list from
             0 to 1 or ``None`` for the uniform grid of ``ns``; the knot
             vectors are :func:`knot_vector` of them.
+        map_source: for an equilibrium file, where its map comes from.
+            ``"equilibrium"`` projects the file's own ``R`` and ``Z``
+            series, so the coordinate surfaces are its flux surfaces.
+            ``"map2disc"`` uses only the last closed flux surface and
+            builds the interior as a harmonic map of the disc
+            (:func:`mrx.map2disc.map2disc_from_equilibrium`): the two
+            maps share a boundary and nothing else, and the second needs
+            no interior data. The continuous harmonic map is invertible
+            by construction; the discrete fit still raises if a
+            cross-section cannot meet the gap certificate or if the
+            assembled map folds at quadrature. Ignored for an analytic
+            geometry, whose map is given. Stored on the sequence as
+            ``seq.map_source``.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -373,13 +387,19 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         name), read once, for :func:`mrx.initial_conditions.initial_field`.
 
     Raises:
-        ValueError: if ``geometry`` is not a file, is of another kind, or
-            (from ``set_geometry``) if the map folds.
+        ValueError: if ``geometry`` is not a file, is of another kind, if
+            ``map_source`` is not one of the two names, or (from
+            ``set_geometry``) if the map folds.
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
+    from mrx.map2disc import map2disc_from_equilibrium  # noqa: PLC0415
     from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
 
+    builders = {"equilibrium": build_gvec_map, "map2disc": map2disc_from_equilibrium}
+    if map_source not in builders:
+        raise ValueError(f"map_source must be one of {', '.join(builders)}, "
+                         f"got {map_source!r}")
     types = ("clamped", "periodic", "periodic")
     bps = tuple(knots) if knots is not None else (None, None, None)
     Ts = tuple(None if bp is None else knot_vector(bp, p, t == "periodic")
@@ -391,13 +411,15 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     kind = geometry_kind(geometry)
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)
-        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp)
-        print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
-              f"det DF in [{info['det_range'][0]:.3e}, "
+        seq.map_source = map_source
+        map_func, info = builders[map_source](seq.equilibrium, seq, nfp=nfp)
+        print(f"[geom] {geometry}: {map_source} nfp={info['nfp']} "
+              f"sign={info['sign']:+.0f} det DF in [{info['det_range'][0]:.3e}, "
               f"{info['det_range'][1]:.3e}]", flush=True)
         seq.set_map(map_func)
     else:
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
         seq.equilibrium = dict(read_analytic(geometry), kind=kind)
+        seq.map_source = None
         seq.set_map(maps[kind](**seq.equilibrium["map_params"]))
     return seq, seq.build_preconditioners()

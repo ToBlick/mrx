@@ -13,7 +13,7 @@ the toroid session sequence, the points random away from the axis (where
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction, Pullback, Pushforward
+from mrx.differential_forms import DiscreteFunction, Pullback, Pushforward, adj33, det33, inv33
 from test.conftest import TORUS_EPSILON, TORUS_R0
 
 
@@ -40,3 +40,17 @@ def test_pullback_inverts_pushforward(toroid, torus_map):
         want = np.asarray(jnp.stack([f(x) for x in pts]))
         err = np.abs(got - want).max() / np.abs(want).max()
         assert err < 1e3 * toroid.tol, f"k={k}: pullback(pushforward(f)) off by {err:.2e}"
+
+
+def test_det33_inv33_match_linalg_and_adj_stays_finite() -> None:
+    """Sarrus / adjugate formulas, including the polar-axis singular case."""
+    rng = np.random.default_rng(0)
+    a = jnp.asarray(rng.standard_normal((3, 3)))
+    assert abs(float(det33(a) - jnp.linalg.det(a))) < 1e-10
+    np.testing.assert_allclose(np.asarray(inv33(a)), np.asarray(jnp.linalg.inv(a)),
+                               atol=1e-10)
+    np.testing.assert_allclose(np.asarray(adj33(a)),
+                               np.asarray(det33(a) * inv33(a)), atol=1e-10)
+    singular = jnp.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [0.0, 0.0, 1.0]])
+    assert abs(float(det33(singular))) < 1e-12
+    assert bool(jnp.all(jnp.isfinite(adj33(singular))))

@@ -13,6 +13,7 @@ product or the pairing. The cross-product loads are checked for
 antisymmetry across the (m, k) pairs. All on li383 with ``J`` the weak curl
 of the session field ``b0``.
 """
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -104,3 +105,46 @@ def test_trilinear_forms_do_not_depend_on_the_test_factor(seq, fields):
         y = b @ seq.scalar_product_load(c, a, kb, kc, ka, False, False, False)
         z = c @ seq.scalar_product_load(a, b, kc, ka, kb, False, False, False)
         close([y, z], [x, x], seq, f"int a b c: degrees ({ka}, {kb}, {kc})")
+
+
+def test_strong_complex_is_nilpotent(seq) -> None:
+    """``curl grad = 0`` and ``div curl = 0`` on the strong (incidence) operators."""
+    rng = np.random.default_rng(8)
+    u0 = jnp.asarray(rng.standard_normal(seq.n(0, True)))
+    u1 = jnp.asarray(rng.standard_normal(seq.n(1, True)))
+    g = seq.apply_strong_grad(u0)
+    assert float(jnp.linalg.norm(seq.apply_strong_curl(g))) < 1e2 * seq.tol * (
+        1.0 + float(jnp.linalg.norm(g)))
+    c = seq.apply_strong_curl(u1)
+    assert float(jnp.linalg.norm(seq.apply_strong_div(c))) < 1e2 * seq.tol * (
+        1.0 + float(jnp.linalg.norm(c)))
+
+
+def test_weak_div_is_the_adjoint_of_strong_grad(seq) -> None:
+    """``<grad u, v>_{M_1} = -<u, div v>_{M_0}`` on Dirichlet 0- and 1-forms."""
+    rng = np.random.default_rng(9)
+    u = jnp.asarray(rng.standard_normal(seq.n(0, True)))
+    v = jnp.asarray(rng.standard_normal(seq.n(1, True)))
+    g = seq.apply_strong_grad(u)
+    lhs = float(g @ seq.apply_mass_matrix(v, 1, True))
+    d = seq.apply_weak_div(v, dirichlet=True)
+    rhs = -float(u @ seq.apply_mass_matrix(d, 0, True))
+    scale = max(abs(lhs), abs(rhs), 1e-30)
+    assert abs(lhs - rhs) / scale < 1e2 * seq.tol + eps(1e2)
+
+
+def test_stiffness_approx_and_shifted_laplacian(seq) -> None:
+    rng = np.random.default_rng(10)
+    u = jnp.asarray(rng.standard_normal(seq.n(0, True)))
+    su = seq.apply_stiffness(u, 0, True)
+    au = seq.apply_laplacian_approx(u, 0, True)
+    assert su.shape == u.shape and au.shape == u.shape
+    assert jnp.all(jnp.isfinite(su)) and jnp.all(jnp.isfinite(au))
+    w3 = jnp.asarray(rng.standard_normal(seq.n(3, True)))
+    g = seq.apply_weak_grad(w3, dirichlet=True)
+    assert g.shape == (seq.n(2, True),)
+    shift = 0.1
+    rhs = seq.apply_laplacian(u, 0, True) + shift * seq.apply_mass_matrix(u, 0, True)
+    rec = seq.apply_inverse_shifted_laplacian(rhs, 0, shift, True)
+    rel = float(jnp.linalg.norm(rec - u) / jnp.linalg.norm(u))
+    assert rel < 1e2 * seq.tol

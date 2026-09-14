@@ -14,9 +14,19 @@ import os
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 import mrx
-from mrx.precision import cast_arrays
+from mrx.precision import (
+    DTYPE,
+    REFINE,
+    SOLVE_TOL,
+    cast_arrays,
+    default_tol,
+    inner_tol,
+    solve_tol,
+    sqrt_eps,
+)
 
 _NAME = os.environ.get("MRX_DTYPE", "float32")
 _EPS = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}
@@ -36,5 +46,15 @@ def test_dtype_follows_mrx_dtype():
 
 def test_default_matmul_precision_is_highest():
     assert jax.config.jax_default_matmul_precision == "highest"
+
+
+def test_tolerances_follow_the_working_configuration() -> None:
+    assert default_tol(DTYPE, REFINE) == SOLVE_TOL
+    assert solve_tol() == SOLVE_TOL
+    assert inner_tol(1e-4) == pytest.approx(1e-2)
+    assert sqrt_eps() == pytest.approx(mrx.EPS ** 0.5)
+    assert default_tol(jnp.float64, False) == 1e-10
+    assert default_tol(jnp.float32, False) == pytest.approx(float(np.sqrt(np.finfo(np.float32).eps)))
+    assert default_tol(jnp.float32, True) == 1e-8
 
 
