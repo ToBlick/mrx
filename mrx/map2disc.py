@@ -304,11 +304,19 @@ def zernike_count(M: int) -> int:
     return (M + 1) * (M + 2) // 2
 
 
-def zernike_indices(M: int) -> tuple[jnp.ndarray, jnp.ndarray]:
+def zernike_indices(M: int) -> tuple[np.ndarray, np.ndarray]:
     """Degrees ``l`` and azimuthal orders ``m`` of a degree-``M`` Zernike basis.
 
     For each ``l = 0, ..., M`` the orders are ``m = -l, -l+2, ..., l``
     (paper, appendix B).
+
+    NumPy and not JAX on purpose. These are a pure function of the static
+    ``M``, and every consumer treats them as static -- :func:`zernike_eval`
+    materialises them with :func:`np_int_list` and
+    :func:`zernike_eval_cartesian` indexes Python lists with them. Built
+    with ``jnp`` they come back as tracers when the caller is inside
+    ``jax.jit``, which made :class:`ZernikeMap` -- and so every map2disc
+    map -- untraceable: a relaxation on one died in the jitted diagnostics.
 
     Args:
         M: Maximum polynomial degree. Must be a non-negative integer.
@@ -323,7 +331,7 @@ def zernike_indices(M: int) -> tuple[jnp.ndarray, jnp.ndarray]:
         for m in range(-ell, ell + 1, 2):
             ls.append(ell)
             ms.append(m)
-    return jnp.asarray(ls), jnp.asarray(ms)
+    return np.asarray(ls, dtype=int), np.asarray(ms, dtype=int)
 
 
 def _jacobi_p(n: int, alpha: float, beta: float, x: jnp.ndarray) -> jnp.ndarray:
@@ -655,10 +663,55 @@ GAP_RATIO = 6.0
 #: Nystrom matrix is dense, so this caps one solve at ``4096^2``.
 N_BOUNDARY_MAX = 4096
 
+#: Candidates per axis in :func:`_interior_seed`. ``48`` resolves the NCSX
+#: crescent's arms at a tenth of a second, against the ``O(n^3)`` Nystrom
+#: solve it precedes.
+SEED_GRID = 48
+
 
 def _next_pow2(n: int) -> int:
     """Smallest power of two at least ``n`` (and at least 8)."""
     return max(8, 1 << max(0, int(n - 1)).bit_length())
+
+
+def _interior_seed(curve: BoundaryCurve, g: Callable[[jnp.ndarray], jnp.ndarray],
+                   targets: jnp.ndarray, n_grid: int = SEED_GRID) -> jnp.ndarray:
+    """Seed Newton by a nearest-neighbour lookup against ``g`` on a coarse grid.
+
+    Evaluates ``g`` on an ``n_grid``-square covering the boundary's bounding
+    box and returns, for each target in the disc, the grid point whose image
+    is closest to it. Because ``g`` maps the interior onto the unit disc and
+    the Nystrom evaluation of an exterior point leaves it, ``|g| <= 1`` is an
+    exact interior test -- no point-in-polygon is needed. Exterior candidates
+    are pushed far away in image space so they never win the lookup.
+
+    This replaces anchoring every start at the boundary centroid, which
+    assumes the domain is star-shaped about that point. NCSX's ``zeta = 0``
+    cross-section is a crescent whose centroid is *outside* the plasma
+    (``|g(centroid)| = 8.04``), and no single anchor works for a crescent, so
+    the centroid start sends every node to ``1e12`` and Newton never
+    recovers. Only the first continuation rung needs this; later rungs start
+    from the previous rung's :class:`ZernikeMap`.
+
+    Args:
+        curve: Boundary whose bounding box is searched.
+        g: Harmonic map from the domain onto the unit disc.
+        targets: ``(n, 2)`` points in the disc to find starts for.
+        n_grid: Candidates per axis; the cost is ``n_grid ** 2`` evaluations
+            of ``g``, which is small next to the dense Nystrom solve.
+
+    Returns:
+        ``(n, 2)`` interior starting points, one per target.
+    """
+    p = curve.samples
+    X, Y = jnp.meshgrid(jnp.linspace(p[:, 0].min(), p[:, 0].max(), n_grid),
+                        jnp.linspace(p[:, 1].min(), p[:, 1].max(), n_grid),
+                        indexing="ij")
+    cand = jnp.stack([X.ravel(), Y.ravel()], axis=1)
+    gc = jax.lax.map(g, cand)
+    gc = jnp.where((jnp.sum(gc ** 2, axis=1) <= 1.0)[:, None], gc, 1e3)
+    return cand[jnp.argmin(jnp.sum((gc[None] - targets[:, None]) ** 2, axis=2),
+                           axis=1)]
 
 
 def _invert_nodes(curve: BoundaryCurve, M: int, max_iter: int
@@ -667,19 +720,17 @@ def _invert_nodes(curve: BoundaryCurve, M: int, max_iter: int
 
     Newton is warm-started by walking the degree up, ``2, 3, ..., M``, and
     starting each rung from the previous rung's fitted :class:`ZernikeMap`
-    evaluated at the new nodes. Only the first rung uses the crude radial
-    guess ``center + 0.9 rho (gamma(theta) - center)``.
+    evaluated at the new nodes. The first rung is seeded by
+    :func:`_interior_seed`.
 
-    That guess is good enough on mild cross-sections -- an ellipse, the
-    Landreman-Paul QA planes and a moderate bean all converge in one to
-    five Newton steps -- but on a strongly non-convex boundary it lands
-    where the Nystrom evaluation of ``g`` is meaningless and Newton walks
-    off to ``1e15``. Continuation keeps every start inside the domain, so
-    a boundary resolution that the crude guess cannot invert at all is
-    inverted to the same answer, one doubling earlier. It is close to
-    free: the rungs share the single dense Nystrom solve inside
-    :func:`harmonic_map`, which is what a doubling costs eight times more
-    of.
+    Continuation matters on strongly non-convex boundaries, where a start
+    that is merely inside the domain still lands where the Nystrom
+    evaluation of ``g`` is meaningless and Newton walks off to ``1e15``. It
+    keeps every start inside the domain, so a boundary resolution that a
+    cold start cannot invert at all is inverted to the same answer, one
+    doubling earlier. It is close to free: the rungs share the single dense
+    Nystrom solve inside :func:`harmonic_map`, which is what a doubling
+    costs eight times more of.
 
     Args:
         curve: Boundary at the resolution to use.
@@ -701,7 +752,6 @@ def _invert_nodes(curve: BoundaryCurve, M: int, max_iter: int
         return xy, 0.0, np.inf
 
     g = harmonic_map(curve)
-    center = jnp.mean(curve.samples, axis=0)
     coarse, residual = None, jnp.zeros(())
     for degree in range(2, M + 1):
         last = degree == M
@@ -710,13 +760,10 @@ def _invert_nodes(curve: BoundaryCurve, M: int, max_iter: int
                  else np.flatnonzero(np.asarray(rho_d) < 1.0 - 1e-10))
         nodes = xy if last else jax.vmap(curve.interpolate)(theta_d / (2.0 * jnp.pi))
         rho_in, theta_in = rho_d[inner], theta_d[inner]
-        if coarse is None:
-            start = (center[None, :]
-                     + (0.9 * rho_in[:, None]) * (nodes[inner] - center[None, :]))
-        else:
-            start = jax.vmap(lambda r, t, f=coarse: f(r, t))(rho_in, theta_in)
         targets = jnp.stack([rho_in * jnp.cos(theta_in),
                              rho_in * jnp.sin(theta_in)], axis=1)
+        start = (_interior_seed(curve, g, targets) if coarse is None
+                 else jax.vmap(lambda r, t, f=coarse: f(r, t))(rho_in, theta_in))
         solved, residual = invert_harmonic_map(g, targets, start, max_iter=max_iter)
         nodes = nodes.at[inner].set(solved)
         if last:

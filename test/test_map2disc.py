@@ -12,6 +12,7 @@ from mrx.map2disc import (
     GAP_RATIO,
     N_BOUNDARY_MAX,
     BoundaryCurve,
+    _interior_seed,
     _invert_nodes,
     boundary_from_fourier,
     boundary_from_samples,
@@ -64,6 +65,24 @@ QA_WOUT = "data/wout_LandremanPaul2021_QA_lowres.nc"
 #: A toroidal plane of the QA boundary that is not the elongated
 #: ``zeta = 0`` bean. Cheap to resolve, so the per-plane tests use it.
 QA_ZETA = 0.25
+
+#: NCSX (li383): nfp = 3, and harder than QA in the one way that matters
+#: here -- its cross-sections are crescents rather than beans, so the
+#: boundary centroid is not inside the plasma and the domain is not
+#: star-shaped about any point.
+NCSX_WOUT = "data/wout_li383_low_res_reference.nc"
+
+#: The NCSX plane with the most pronounced crescent, and the one where the
+#: centroid sits farthest outside: ``|g(centroid)| = 8.04``.
+NCSX_ZETA = 0.0
+
+#: Interior accuracy the NCSX crescent reaches, and the gain from
+#: ``M = 3`` to ``M = 6``. Both are far short of :data:`FIT_FLOOR` and
+#: :data:`FIT_RATIO`: the crescent's inverse needs a Zernike degree the
+#: resolution gate will not let it have. See the test for the measurement
+#: that shows this is truncation and not close evaluation.
+NCSX_FIT_FLOOR = 5e-3
+NCSX_FIT_RATIO = 5.0
 
 
 def _ellipse_samples(a: float = 2.0, b: float = 1.0, n: int = 64) -> np.ndarray:
@@ -138,6 +157,24 @@ def qa_fit(qa_curve):
 def qa_map(qa_state):
     """The full 3-D map2disc map of the QA boundary, at the Nyquist planes."""
     return map2disc_from_equilibrium(qa_state, M=6)
+
+
+@pytest.fixture(scope="session")
+def ncsx_state():
+    """The parsed NCSX (li383) wout, read once."""
+    return read_equilibrium(NCSX_WOUT)
+
+
+@pytest.fixture(scope="session")
+def ncsx_curve(ncsx_state):
+    """The NCSX crescent at :data:`NCSX_ZETA`, as a :class:`BoundaryCurve`."""
+    return lcfs_boundary(ncsx_state)(NCSX_ZETA)
+
+
+@pytest.fixture(scope="session")
+def ncsx_fit(ncsx_curve):
+    """The degree-6 fit of the NCSX crescent."""
+    return fit_disc_map(ncsx_curve, M=6)
 
 
 def test_harmonic_map_matches_the_ellipse_oracle() -> None:
@@ -227,6 +264,27 @@ def test_zernike_radial_identities_and_constant_mode() -> None:
     assert int(ell[0]) == 0 and int(m[0]) == 0
     with pytest.raises(ValueError, match="non-negative"):
         zernike_indices(-1)
+
+
+def test_a_map2disc_map_survives_jit() -> None:
+    """A map MRX can mesh with is one the jitted solvers can trace.
+
+    ``zernike_indices`` used to build its index arrays with ``jnp``, which
+    makes them TRACERS when the caller is already inside ``jax.jit``.
+    Everything downstream treats them as static -- ``np_int_list``,
+    ``powers[int(a)]`` -- so a jitted call raised
+    ``TracerArrayConversionError`` and ``--map-source map2disc`` could not
+    reach the relaxation's jitted diagnostics at all. ``jax.jacfwd`` alone
+    did not catch this: outside ``jit`` the arrays stay concrete.
+    """
+    ell, m = zernike_indices(3)
+    assert isinstance(ell, np.ndarray) and isinstance(m, np.ndarray)
+
+    F = map2disc_map(lambda z: _ellipse_samples(2.0 + 0.3 * np.cos(2.0 * np.pi * z), 1.0),
+                     nfp=2, M=3, n_zeta=3)
+    x = jnp.array([0.4, 0.2, 0.1])
+    np.testing.assert_allclose(np.asarray(jax.jit(F)(x)), np.asarray(F(x)), atol=ATOL)
+    assert np.all(np.isfinite(np.asarray(jax.jit(jax.jacfwd(F))(x))))
 
 
 def test_zernike_modes_are_orthogonal_on_the_disc() -> None:
@@ -601,3 +659,84 @@ def test_qa_map2disc_map_is_stellarator_symmetric(qa_map) -> None:
     F, _ = qa_map
     xs = jnp.array([[0.3, 0.1, 0.2], [0.6, 0.4, 0.7], [0.9, 0.8, 0.15]])
     assert float(stellarator_symmetry_defect(F, xs)) < (1e-3 if FLOAT32 else 1e-8)
+
+
+# ---------------------------------------------------------------------------
+# NCSX (li383): a crescent, where the boundary centroid is not in the plasma
+# ---------------------------------------------------------------------------
+
+def test_a_crescent_whose_centroid_is_outside_still_inverts(ncsx_curve,
+                                                            ncsx_fit) -> None:
+    """The seed bug that made map2disc fail on every NCSX plane, at every degree.
+
+    ``g`` maps the interior onto the unit disc, so ``|g(x)| > 1`` says ``x``
+    is outside. The NCSX ``zeta = 0`` centroid measures ``8.04``, and the
+    old radial start anchored every Newton there: ``g`` of the start was
+    meaningless, the nodes fled to ``1e12`` and the residual pinned at the
+    target radius. Moving the anchor to the pole of inaccessibility does
+    not help -- a crescent is not star-shaped about any point -- so the
+    start has to come from ``g`` itself.
+    """
+    g = harmonic_map(ncsx_curve)
+    centroid = jnp.mean(ncsx_curve.samples, axis=0)
+    assert float(jnp.linalg.norm(g(centroid))) > 1.0
+
+    dets = [float(ncsx_fit.jacobian_determinant(float(rho), float(theta)))
+            for rho in np.linspace(0.0, 1.0, 9)
+            for theta in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False)]
+    assert np.all(np.isfinite(dets))
+    assert min(dets) > 0.0
+
+
+def test_interior_seed_beats_the_centroid_start_on_the_crescent(ncsx_curve) -> None:
+    """Every seed is inside, and Newton from it converges where the centroid cannot."""
+    g = harmonic_map(ncsx_curve)
+    rho, theta = concentric_nodes(4)
+    inner = np.flatnonzero(np.asarray(rho) < 1.0 - 1e-10)
+    targets = jnp.stack([rho[inner] * jnp.cos(theta[inner]),
+                         rho[inner] * jnp.sin(theta[inner])], axis=1)
+
+    seed = _interior_seed(ncsx_curve, g, targets)
+    assert seed.shape == targets.shape
+    assert float(jnp.max(jnp.linalg.norm(jax.vmap(g)(seed), axis=1))) <= 1.0
+
+    _, crude_residual = invert_harmonic_map(
+        g, targets, _crude_start(ncsx_curve, rho, theta)[inner])
+    assert float(jnp.max(crude_residual)) > 1e-2
+
+    _, residual, _ = _invert_nodes(ncsx_curve, 4, 25)
+    assert residual < FIT_FLOOR
+
+
+def test_ncsx_boundary_is_reproduced_and_the_fit_converges(ncsx_state,
+                                                           ncsx_curve,
+                                                           ncsx_fit) -> None:
+    """``f_h(1, theta)`` is the wout's LCFS, and the interior converges in ``M``.
+
+    The crescent converges far more slowly than the QA bean, and for a
+    reason worth recording: the residual is flat in the boundary
+    resolution (identical against ``g`` at 2048 and at 4096) and peaks at
+    ``rho ~ 0.6``, tens of boundary spacings from the wall, so it is
+    Zernike truncation and not close evaluation. Measured in float64:
+    3.9e-2 at ``M = 3``, 3.6e-3 at 4, 5.1e-4 at 8. Degree 12 cannot be
+    reached at all -- the concentric rings crowd the wall faster than
+    :data:`N_BOUNDARY_MAX` can resolve them, and :func:`fit_disc_map`
+    raises rather than returning the folded map. The mild ``zeta = 0.25``
+    plane of the same file converges spectrally to 2.3e-8 at ``M = 12``,
+    so this is the crescent, not the file.
+    """
+    nfp = ncsx_state["nfp"]
+    R_field = StateField(ncsx_state["X1"], nfp)
+    Z_field = StateField(ncsx_state["X2"], nfp)
+    for t in np.linspace(0.0, 1.0, 25, endpoint=False):
+        x = jnp.array([1.0, float(t), NCSX_ZETA])
+        np.testing.assert_allclose(np.asarray(ncsx_fit(1.0, 2.0 * np.pi * float(t))),
+                                   np.array([float(R_field(x)), float(Z_field(x))]),
+                                   atol=ATOL)
+
+    reference = harmonic_map(ncsx_curve.resample(4096))
+    rhos = (0.1, 0.5, 0.8)
+    coarse = _roundtrip_error(fit_disc_map(ncsx_curve, M=3), reference, rhos)
+    fine = _roundtrip_error(ncsx_fit, reference, rhos)
+    assert coarse / fine > NCSX_FIT_RATIO
+    assert fine < NCSX_FIT_FLOOR

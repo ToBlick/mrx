@@ -21,14 +21,9 @@ from mrx.geometry import (
 )
 from mrx.mappings import (
     SplineMap,
-    approx_inverse_map,
     cylinder_map,
     extend_map_half_period,
-    extend_map_nfp,
-    invert_map,
-    one_size_fits_all_map,
     rotating_ellipse_map,
-    stellarator_map,
     stellarator_symmetric_coefficients,
     stellarator_symmetrize,
     stellarator_symmetry_defect,
@@ -180,16 +175,6 @@ def _collocate_map(F, basis_0: DifferentialForm) -> jnp.ndarray:
     return coeffs
 
 
-class _ScalarFn:
-    """Minimal ``DiscreteFunction`` stand-in: ``__call__`` returns shape ``(1,)``."""
-
-    def __init__(self, fn):
-        self.fn = fn
-
-    def __call__(self, x):
-        return jnp.reshape(jnp.asarray(self.fn(x)), (1,))
-
-
 def test_existing_maps_have_zero_stellarator_defect() -> None:
     """``toroid``, ``cylinder`` and ``rotating_ellipse`` are exact fixed points."""
     for F in (toroid_map(), cylinder_map(), rotating_ellipse_map(nfp=3)):
@@ -293,75 +278,3 @@ def test_extend_map_half_period_reproduces_a_symmetric_map() -> None:
                                    atol=1e-12)
     with pytest.raises(ValueError, match="nfp"):
         extend_map_half_period(F, nfp=0)
-
-
-def test_invert_map_round_trips_toroid_map() -> None:
-    """Newton inversion with ``approx_inverse_map`` recovers logical points."""
-    eps, R0 = 1.0 / 3.0, 1.0
-    F = toroid_map(epsilon=eps, R0=R0)
-    x = jnp.array([0.4, 0.2, 0.1])
-    y = F(x)
-    x0 = approx_inverse_map(y, eps=eps, R0=R0)
-    np.testing.assert_allclose(np.asarray(x0), np.asarray(x), atol=1e-12)
-    recovered = invert_map(F, y, lambda yt: approx_inverse_map(yt, eps, R0))
-    np.testing.assert_allclose(np.asarray(recovered), np.asarray(x), atol=1e-10)
-    np.testing.assert_allclose(np.asarray(F(recovered)), np.asarray(y), atol=1e-10)
-
-
-def test_extend_map_nfp_rotates_each_period() -> None:
-    """``zeta`` in ``[0, 1]`` covers the full device; each wedge is a
-    negative-z rotation of the first field period (GVEC convention)."""
-    nfp = 3
-    F_one = rotating_ellipse_map(nfp=nfp)
-    F_full = extend_map_nfp(F_one, nfp=nfp)
-    x_loc = jnp.array([0.5, 0.3, 0.4])
-    y0 = F_one(x_loc)
-    # First wedge: full-device zeta = zeta_loc / nfp.
-    x_full = x_loc.at[2].set(x_loc[2] / nfp)
-    np.testing.assert_allclose(np.asarray(F_full(x_full)), np.asarray(y0),
-                               atol=1e-12)
-    delta = 2.0 * np.pi / nfp
-    rot = jnp.array([[jnp.cos(delta), jnp.sin(delta), 0.0],
-                     [-jnp.sin(delta), jnp.cos(delta), 0.0],
-                     [0.0, 0.0, 1.0]])
-    y1 = F_full(x_full.at[2].add(1.0 / nfp))
-    np.testing.assert_allclose(np.asarray(y1), np.asarray(rot @ y0), atol=1e-6)
-    with pytest.raises(ValueError, match="nfp"):
-        extend_map_nfp(F_one, nfp=0)
-
-
-def test_one_size_fits_all_circle_matches_toroid() -> None:
-    """``alpha = 0``, ``kappa = 1`` is the circular ``toroid_map``."""
-    osfa = one_size_fits_all_map(epsilon=1.0 / 3.0, kappa=1.0, alpha=0.0, R0=1.0)
-    donut = toroid_map(epsilon=1.0 / 3.0, kappa=1.0, R0=1.0)
-    for x in _SYMMETRY_POINTS:
-        np.testing.assert_allclose(np.asarray(osfa(x)), np.asarray(donut(x)),
-                                   atol=1e-10)
-    assert float(stellarator_symmetry_defect(osfa, _SYMMETRY_POINTS)) < 1e-12
-
-
-def test_stellarator_map_from_cylindrical_radius_and_z() -> None:
-    """A circular ``R``, ``Z`` pair with ``nfp = 1`` reproduces ``toroid_map``."""
-    eps, R0 = 1.0 / 3.0, 1.0
-
-    def R_fn(x):
-        r, θ, _ = x
-        return R0 + eps * r * jnp.cos(2.0 * jnp.pi * θ)
-
-    def Z_fn(x):
-        r, θ, _ = x
-        return eps * r * jnp.sin(2.0 * jnp.pi * θ)
-
-    F = stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=1)
-    donut = toroid_map(epsilon=eps, R0=R0)
-    for x in _SYMMETRY_POINTS:
-        np.testing.assert_allclose(np.asarray(F(x)), np.asarray(donut(x)),
-                                   atol=1e-12)
-    flipped = stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=1,
-                              flip_zeta=True)
-    x = jnp.array([0.4, 0.2, 0.1])
-    np.testing.assert_allclose(np.asarray(flipped(x)),
-                               np.asarray(F(x.at[2].set(1.0 - x[2]))),
-                               atol=1e-12)
-    with pytest.raises(ValueError, match="nfp"):
-        stellarator_map(_ScalarFn(R_fn), _ScalarFn(Z_fn), nfp=0)

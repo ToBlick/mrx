@@ -171,6 +171,11 @@ def parse_args(argv=None):
                     help="a VMEC wout (.nc), a GVEC state (.dat) or an analytic geometry (.json)")
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
+    ap.add_argument("--map-source", default="equilibrium",
+                    choices=("equilibrium", "map2disc"),
+                    help="for an equilibrium file, where the map comes from: its own R, Z "
+                         "series (coordinate surfaces are flux surfaces) or a harmonic map "
+                         "of the disc built from the LCFS alone")
     ap.add_argument("--ns", default="16,32,32")
     for axis in ("r", "theta", "zeta"):
         ap.add_argument(f"--knots-{axis}", default="",
@@ -274,7 +279,7 @@ def main(cli):
     t0 = time.perf_counter()
     knots = [parse_knots(s) for s in (cli.knots_r, cli.knots_theta, cli.knots_zeta)]
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
-                              nfp=cli.nfp, knots=knots)
+                              nfp=cli.nfp, knots=knots, map_source=cli.map_source)
     ns = seq.ns
     params.update(ns=list(ns), knots=knots)
     compute_nullspaces(seq)
