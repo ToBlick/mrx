@@ -280,20 +280,26 @@ def read_analytic(path):
     return spec
 
 
+#: What a geometry file's extension means, for the error messages below.
+GEOMETRY_FILES = ("GVEC state files (.dat), VMEC wout files (.nc), DESC outputs "
+                  "(.h5) and analytic geometry files (.json)")
+
+
 def geometry_kind(geometry):
-    """``"gvec"`` for a state file, ``"vmec"`` for a wout, the map's name for
-    an analytic geometry file; anything else raises."""
+    """``"gvec"`` for a state file, ``"vmec"`` for a wout, ``"desc"`` for a
+    DESC output, the map's name for an analytic geometry file; anything else
+    raises."""
     if not os.path.isfile(geometry):
-        raise ValueError(f"geometry {geometry!r} is not a file; MRX reads GVEC state files "
-                         "(.dat), VMEC wout files (.nc) and analytic geometry files (.json)")
+        raise ValueError(f"geometry {geometry!r} is not a file; MRX reads {GEOMETRY_FILES}")
     if geometry.endswith(".dat"):
         return "gvec"
     if geometry.endswith(".nc"):
         return "vmec"
+    if geometry.endswith(".h5"):
+        return "desc"
     if geometry.endswith(".json"):
         return read_analytic(geometry)["map"]
-    raise ValueError(f"{geometry}: not a geometry file; MRX reads GVEC state files (.dat), "
-                     "VMEC wout files (.nc) and analytic geometry files (.json)")
+    raise ValueError(f"{geometry}: not a geometry file; MRX reads {GEOMETRY_FILES}")
 
 
 def geometry_nfp(geometry, nfp=None):
@@ -317,6 +323,11 @@ def geometry_nfp(geometry, nfp=None):
         if nfp is not None:
             return int(nfp)
         from mrx.vmec import read_nfp  # noqa: PLC0415  (imports this module)
+        return read_nfp(geometry)
+    if kind == "desc":
+        if nfp is not None:
+            return int(nfp)
+        from mrx.desc import read_nfp  # noqa: PLC0415  (imports this module)
         return read_nfp(geometry)
     return int(read_analytic(geometry)["map_params"].get("nfp", 1))
 
@@ -350,6 +361,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         geometry:
             a GVEC state file (``.dat``, read in closed form, ``mrx.gvec``),
             a VMEC wout file (``.nc``, refit in closed form, ``mrx.vmec``),
+            a DESC output (``.h5``, refit in closed form, ``mrx.desc``),
             or an analytic geometry file (``.json``, :func:`read_analytic`).
         ns: ``(n_r, n_theta, n_zeta)``; also the map resolution for a file.
             An axis with breakpoints in ``knots`` takes its ``n`` from them.
@@ -389,7 +401,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, types, polar=True, tol=tol, maxiter=maxiter,
                          knots=Ts, betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
-    if kind in ("gvec", "vmec"):
+    if kind in ("gvec", "vmec", "desc"):
         seq.equilibrium = read_equilibrium(geometry)
         map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "

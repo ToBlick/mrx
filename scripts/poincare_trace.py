@@ -35,7 +35,7 @@ Flags (defaults in brackets):
                            Leray multiplier ``p`` (a 3-form, ``p / det DF``,
                            defined up to a constant -- the plotter gauges it)
     --field-key K          array name in --field-npz [h_dof]
-    --geometry PATH        the mesh of --field-npz: VMEC wout .nc or GVEC .dat
+    --geometry PATH        the mesh of --field-npz: VMEC wout .nc, GVEC .dat or DESC .h5
     --ns N_R,N_T,N_Z       ... its resolution
     --p P                  ... its spline degree
     --seeds N              field lines per ray and field [40]

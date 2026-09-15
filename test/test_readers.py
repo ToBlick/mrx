@@ -46,6 +46,26 @@ def test_gvec_state_file_reproduces_the_formulas(tmp_path):
     assert np.abs(dPhi - np.asarray(torus.dPhi_dr(r))).max() <= mrx.eps(8192)
 
 
+def test_gvec_orientation_pair_is_reader_agnostic(tmp_path):
+    """``match_orientation`` works on a GVEC state, not just a DESC one."""
+    from mrx.gvec import flip_poloidal_angle, match_orientation
+
+    path = str(tmp_path / "GVEC_State_torus.dat")
+    write_synthetic_state(path, R0=R0, a=A, nfp=NFP, iota=IOTA, Phi_edge=PHI_EDGE,
+                          lam_amplitude=LAM_AMPLITUDE, beta=BETA)
+    st = read_state(path)
+    same, sign = match_orientation(st, st)
+    assert sign == 1 and same is st
+    fixed, sign = match_orientation(flip_poloidal_angle(st), st)
+    assert sign == -1
+    rho = np.array([0.2, 0.5, 0.9])
+    th, ze = np.array([0.3, 1.1, 2.4]), np.array([0.1, 0.7])
+    for blk in ("X1", "X2", "LA"):
+        got = evaluate(fixed[blk], rho, th, ze)
+        want = evaluate(st[blk], rho, th, ze)
+        assert np.abs(got - want).max() <= mrx.eps(64), blk
+
+
 def test_vmec_li383_reads_and_reproduces_the_file():
     st = read_wout(LI383)
     assert (st["nfp"], st["ns"], st["mnmax"]) == (3, 16, 25)

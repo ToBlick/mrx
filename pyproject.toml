@@ -31,8 +31,8 @@ keywords = [
 ]
 dependencies = [
     "numpy",
-    "jax",
-    "jaxlib",
+    "jax>=0.8.2",   # lax.map(batch_size=0) is a full vmap; jax#33965, first in 0.8.2
+    "jaxlib>=0.8.2",
     "scipy",
     "matplotlib",
     "ruff",
@@ -72,6 +72,11 @@ mrx = ["*.mplstyle"]
 
 [project.optional-dependencies]
 DOCS = ["sphinx", "myst-parser", "sphinx-rtd-theme"]
+# Reading a DESC .h5 needs only h5py, which is a hard dependency already;
+# DESC itself is needed for three things: regenerating the fixtures
+# (scripts/desc_fixtures.py), the iota of a current-constrained file
+# (mrx.desc._iota_from_desc), and the live cross-check in test/test_desc.py.
+DESC = ["desc-opt>=0.17"]
 
 [project.urls]
 Homepage = "https://github.com/ToBlick/mrx"

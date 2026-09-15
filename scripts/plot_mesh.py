@@ -18,7 +18,7 @@ of the first mesh over the full torus with its poloidal and toroidal knot
 lines. Both also as ``pgf/*.pgf``. Only the map is built (no preconditioners).
 
 Options
-    --geometry PATH      GVEC .dat or VMEC wout .nc (``mrx.geometry.build_sequence`` names)
+    --geometry PATH      GVEC .dat, VMEC wout .nc or DESC .h5 (``mrx.geometry.build_sequence`` names)
     --meshes SPEC        ``n_r,n_t,n_z[|breakpoints]`` per mesh, ``;``-separated;
                          radial breakpoints (comma list, 0 to 1) replace the
                          uniform grid and set ``n_r`` (cells + p)

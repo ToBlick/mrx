@@ -18,7 +18,8 @@ Canonical invocation (one GPU; see slurm/README.md)::
 Flags, defaults in brackets:
     Geometry, initial condition, discretisation:
       --geometry PATH (required)   the geometry AND the initial condition:
-                                   a VMEC wout (.nc) or a GVEC state (.dat)
+                                   a VMEC wout (.nc), a GVEC state (.dat) or a
+                                   DESC output (.h5)
                                    gives the map and the equilibrium's own
                                    field B = dA' from its Clebsch data; an
                                    analytic geometry file (.json: a map of
@@ -168,7 +169,8 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--geometry", required=True,
-                    help="a VMEC wout (.nc), a GVEC state (.dat) or an analytic geometry (.json)")
+                    help="a VMEC wout (.nc), a GVEC state (.dat), a DESC output (.h5) "
+                         "or an analytic geometry (.json)")
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
     ap.add_argument("--ns", default="16,32,32")
@@ -241,9 +243,9 @@ def parse_args(argv=None):
     if cli.chunk < 1 or cli.steps % cli.chunk:
         ap.error("--steps must be a positive multiple of --chunk")
     if not os.path.isfile(cli.geometry):
-        ap.error(f"--geometry {cli.geometry!r} is not a file (a .nc, .dat or .json)")
+        ap.error(f"--geometry {cli.geometry!r} is not a file (a .nc, .dat, .h5 or .json)")
     if cli.seed and cli.geometry.endswith(".json"):
-        ap.error("--seed needs an equilibrium file (.nc or .dat)")
+        ap.error("--seed needs an equilibrium file (.nc, .dat or .h5)")
     return cli
 
 

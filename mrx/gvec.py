@@ -36,12 +36,14 @@ Two conventions the state carries:
 
 :func:`read_equilibrium` takes the file path and the extension decides the
 route -- ``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same
-blocks by ``mrx.vmec``; anything else raises -- and every other function
-takes the parsed state. ``test/synthetic_gvec.py`` writes a state file for
-an analytic circular torus; the test suite reads it through the same
-functions as a real one.
+blocks by ``mrx.vmec``, ``.h5`` a DESC output refit by ``mrx.desc``;
+anything else raises -- and every other function takes the parsed state.
+``test/synthetic_gvec.py`` writes a state file for an analytic circular
+torus; the test suite reads it through the same functions as a real one.
 """
 from __future__ import annotations
+
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -117,6 +119,97 @@ def evaluate(block, s, theta, zeta):
            - np.outer(block["n"], zeta)[:, None, :])                      # (n_modes, n_t, n_z)
     F = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
     return np.einsum("sk,ktz->stz", A, F)
+
+
+def flip_poloidal_angle(st: dict[str, Any]) -> dict[str, Any]:
+    """The same equilibrium re-expressed in ``theta -> -theta``.
+
+    The substitution is exact on the shared block dict, so it applies to a
+    GVEC state, a VMEC wout or a DESC output. Two conversions in the wild
+    write the flipped orientation:
+
+    * DESC's ``VMECIO.load`` runs ``ensure_positive_jacobian``, which for a
+      left-handed wout -- most of them -- silently flips the sign of theta,
+      negating every ``m < 0`` mode of ``R`` and ``Z``, every ``m >= 0``
+      mode of lambda, and ``iota``.
+    * pyGVEC's ``convert-wout`` sets ``phiedge = -phiedge``, a deliberate
+      flux-sign flip that can come with the opposite poloidal orientation.
+
+    Comparing either against the wout it came from at equal ``theta``
+    compares two different points. This undoes that.
+
+    In the single-angle blocks ``trig(m theta - n zeta)`` at ``-theta`` is
+    ``trig(m theta + n zeta)``, i.e. the mode ``(m, -n)``, picking up a
+    minus sign in the sine blocks. With lambda additionally negated --
+    ``theta* = theta + lambda`` must flip with theta -- the three blocks
+    come out as
+
+    * ``X1`` (cosine): ``n -> -n``
+    * ``X2`` (sine): ``n -> -n``, coefficients negated
+    * ``LA`` (sine): ``n -> -n``, the two sign flips cancelling
+
+    and ``iota``, a ratio of the two angles' fluxes, negates. ``phi`` and
+    ``pressure`` are untouched: neither knows about theta.
+
+    Nothing in MRX needs this to *read* a file -- ``build_gvec_map``
+    measures the handedness that makes ``det DF > 0`` either way. It is for
+    holding two readings of the same equilibrium against each other, where
+    the labels must agree.
+
+    Args:
+        st: a state dict from :func:`read_state`, :func:`mrx.vmec.read_wout`
+            or :func:`mrx.desc.read_desc`.
+
+    Returns:
+        A new state dict; the input is not modified.
+    """
+    out = dict(st)
+    for name, flip_sign in (("X1", False), ("X2", True), ("LA", False)):
+        blk = dict(st[name])
+        order = np.lexsort((-blk["n"], blk["m"]))
+        blk["m"], blk["n"] = blk["m"][order], -blk["n"][order]
+        blk["coef"] = blk["coef"][order] * (-1.0 if flip_sign else 1.0)
+        out[name] = blk
+    out["profiles"] = dict(st["profiles"], iota=-np.asarray(st["profiles"]["iota"]))
+    return out
+
+
+def match_orientation(st: dict[str, Any], ref: dict[str, Any],
+                      n_probe: int = 16) -> tuple[dict[str, Any], int]:
+    """``st`` turned to ``ref``'s poloidal orientation, measured not assumed.
+
+    Which way a converter flipped depends on the source file's handedness,
+    so the orientation is decided rather than predicted: ``R`` AND ``Z``
+    are evaluated both ways against the reference and the closer wins. Both
+    are needed. ``R`` alone cannot see the flip on an up-down-symmetric
+    cross-section, where it is even in theta -- the circular torus of
+    ``test/synthetic_gvec.py`` is exactly that case -- while ``Z``, a sine
+    block, changes sign there. No stellarator-symmetric shape hides from
+    the pair, since that would need ``Z`` identically zero.
+
+    Args:
+        st: the state to orient.
+        ref: the reference state, typically :func:`mrx.vmec.read_wout`.
+        n_probe: samples per angle of the probe grid.
+
+    Returns:
+        ``(state, sign)``: the state in ``ref``'s orientation (``st``
+        itself when they already agree) and ``+1`` or ``-1``.
+    """
+    rho = np.linspace(0.2, 1.0, 5)
+    theta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / n_probe
+    zeta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / (n_probe * ref["nfp"])
+
+    def distance(state: dict[str, Any]) -> float:
+        total = 0.0
+        for name in ("X1", "X2"):
+            want = evaluate(ref[name], rho, theta, zeta)
+            got = evaluate(state[name], rho, theta, zeta)
+            total += float(np.abs(got - want).max()) / max(float(np.abs(want).max()), 1e-30)
+        return total
+
+    flipped = flip_poloidal_angle(st)
+    return (st, 1) if distance(st) <= distance(flipped) else (flipped, -1)
 
 
 def profile_spline(st, name):
@@ -265,9 +358,10 @@ def series_spline_dofs(block, nfp, seq):
 
 
 def read_equilibrium(path):
-    """The state dict of a GVEC state (``.dat``) or a VMEC wout (``.nc``,
-    refit into the same blocks by :func:`mrx.vmec.read_wout`), with
-    ``kind`` (``"gvec"`` or ``"vmec"``) and ``path``; any other extension
+    """The state dict of a GVEC state (``.dat``), a VMEC wout (``.nc``, refit
+    into the same blocks by :func:`mrx.vmec.read_wout`) or a DESC output
+    (``.h5``, refit by :func:`mrx.desc.read_desc`), with ``kind``
+    (``"gvec"``, ``"vmec"`` or ``"desc"``) and ``path``; any other extension
     raises. Read once per run: :func:`mrx.geometry.build_sequence` keeps
     it on the sequence (``seq.equilibrium``) for the initial field."""
     if path.endswith(".dat"):
@@ -275,8 +369,11 @@ def read_equilibrium(path):
     if path.endswith(".nc"):
         from mrx.vmec import read_wout  # noqa: PLC0415  (imports this module)
         return dict(read_wout(path), kind="vmec", path=path)
+    if path.endswith(".h5"):
+        from mrx.desc import read_desc  # noqa: PLC0415  (imports this module)
+        return dict(read_desc(path), kind="desc", path=path)
     raise ValueError(f"{path}: not an equilibrium file; MRX reads GVEC state "
-                     "files (.dat) and VMEC wout files (.nc)")
+                     "files (.dat), VMEC wout files (.nc) and DESC outputs (.h5)")
 
 
 def build_gvec_map(st, seq, nfp=None):
@@ -326,11 +423,15 @@ def load_clebsch(st):
     Returns a dict with ``nfp``, ``rho``, ``dPhi``, ``dchi``, ``p`` (arrays
     on 401 uniform radii from the profile splines, ``chi' = iota Phi'``) and
     ``lam_h`` (the closed-form :class:`StateField` of ``LA``), from the
-    state of :func:`read_equilibrium` (a GVEC state or a VMEC wout, whose
-    profile splines live in ``rho = sqrt(s)``, :func:`mrx.vmec.profile_spline`).
+    state of :func:`read_equilibrium` (a GVEC state, a VMEC wout or a DESC
+    output; the latter two store their profiles as samples in
+    ``rho = sqrt(s)``, fit by :func:`mrx.vmec.profile_spline` and
+    :func:`mrx.desc.profile_spline`).
     """
     if st["kind"] == "vmec":
         from mrx.vmec import profile_spline as spline  # noqa: PLC0415  (imports this module)
+    elif st["kind"] == "desc":
+        from mrx.desc import profile_spline as spline  # noqa: PLC0415  (imports this module)
     else:
         spline = profile_spline
     rho = np.linspace(0.0, 1.0, 401)

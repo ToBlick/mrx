@@ -261,9 +261,10 @@ def initial_field(seq, seed=None):
 
     The sequence's geometry file decides (``seq.equilibrium``, parsed once
     by :func:`mrx.geometry.build_sequence`): an
-    equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
-    through the histopolated Clebsch potential, exactly divergence-free,
-    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
+    equilibrium file (VMEC wout, GVEC state, DESC output) gives its own
+    field ``B = dA'`` through the histopolated Clebsch potential, exactly
+    divergence-free, optionally with a resonant
+    ``seed = (m, n, rho0, width, eps)``; an
     analytic geometry file gives the logical-grid field of its ``profile``
     block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
 
@@ -281,7 +282,7 @@ def initial_field(seq, seed=None):
     if eq is None:
         raise ValueError("the sequence has no geometry file: build it with mrx.geometry.build_sequence")
     kind = eq["kind"]
-    if kind in ("gvec", "vmec"):
+    if kind in ("gvec", "vmec", "desc"):
         cb = load_clebsch(eq)
         lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
         info = dict(kind=kind, nfp=int(cb["nfp"]),
