@@ -27,6 +27,8 @@ from typing import Any
 
 import numpy as np
 
+from desc_common import _log, examples_dir, locate
+
 #: Target number of plotted points in a per-step trace; the block width is
 #: derived from the run length so a short run is not reduced to a polyline.
 TRACE_POINTS = 200
@@ -48,7 +50,7 @@ LAMBDA_CORE = 0.3
 #: Cases of ``--figure cases``: name, an explicit path for the ones that
 #: are not shipped DESC examples, and whether to publish the poloidal mesh.
 CASE_FIGURES = (("HELIOTRON", None, True), ("W7-X", None, True),
-                ("ATF", None, False))
+                ("ATF", None, True), ("QA", "data/desc_QA_lowres.h5", True))
 
 FIGURES = ("grid", "gvec", "relax", "traces", "li383", "qa", "cases")
 
@@ -104,15 +106,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--no-mesh", action="store_true",
                     help="skip the plot_mesh.py subprocess of --figure cases")
     return ap.parse_args(argv)
-
-
-def _log(msg: str) -> None:
-    """Print a timestamped progress line.
-
-    Args:
-        msg: the message.
-    """
-    print(f"  [{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
 def _run_tag(cli: argparse.Namespace) -> str:
@@ -207,41 +200,68 @@ def publish(src: str, dest_name: str | None = None) -> str:
     return dest
 
 
-def examples_dir(given: str | None) -> str:
-    """Where the DESC example files live.
+def _save_publish(fig: Any, dest: str, dpi: int = 200) -> str:
+    """Write ``fig`` as a PNG and copy it into the research-note directory.
 
     Args:
-        given: an explicit directory, or ``None`` to discover one.
+        fig: the matplotlib figure, already laid out.
+        dest: destination path under ``--out``.
+        dpi: raster resolution.
 
     Returns:
-        ``given`` if set, else the installed DESC package's ``examples/``
-        if importable, else ``data/``.
+        The published path of :func:`publish`.
     """
-    if given:
-        return given
-    try:
-        import desc  # noqa: PLC0415  (optional dependency)
-        return os.path.join(os.path.dirname(desc.__file__), "examples")
-    except ImportError:
-        return "data"
+    import matplotlib.pyplot as plt
+    from mrx.plotting import save_figure
+
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    save_figure(fig, dest, pgf=False, dpi=dpi)
+    plt.close(fig)
+    _log(f"wrote {dest}")
+    return publish(dest)
 
 
-def locate(root: str, name: str) -> str | None:
-    """The file of one shipped DESC example.
+def _setup_sequence(path: str, cli: argparse.Namespace,
+                    name: str | None = None) -> tuple[Any, Any]:
+    """Build a sequence, compute its nullspaces, and wrap a time stepper.
 
     Args:
-        root: the directory to look in.
-        name: the case name, e.g. ``"W7-X"``.
+        path: geometry file the sequence is built from.
+        cli: parsed arguments, for ``ns``, ``p``, ``cfl`` and ``history``.
+        name: optional log label; ``None`` logs without a prefix.
 
     Returns:
-        The path, or ``None`` if the case is not there.
+        ``(seq, ts)``.
     """
-    for pattern in (f"{name}_output.h5", f"desc_{name}.h5",
-                    f"desc_{name}_lowres.h5", f"{name}.h5"):
-        hit = os.path.join(root, pattern)
-        if os.path.isfile(hit):
-            return hit
-    return None
+    from mrx.geometry import build_sequence
+    from mrx.nullspace import compute_nullspaces
+    from mrx.relaxation import TimeStepper
+
+    ns = tuple(int(v) for v in cli.ns.split(","))
+    t0 = time.perf_counter()
+    seq, _ = build_sequence(path, ns, cli.p)
+    compute_nullspaces(seq)
+    prefix = f"{name}: " if name else ""
+    _log(f"{prefix}sequence {ns} p={cli.p} in {time.perf_counter() - t0:.0f} s")
+    ts = TimeStepper(seq=seq, cfl=cli.cfl, history_size=cli.history,
+                     velocity_smoothing_order=1)
+    return seq, ts
+
+
+def _load_relax_cache(cache: str) -> dict[str, Any]:
+    """Reload a ``fields.npz`` written by :func:`relax_one`.
+
+    Args:
+        cache: path of the npz.
+
+    Returns:
+        The record :func:`relax_one` returns on a cache hit.
+    """
+    data = np.load(cache, allow_pickle=True)
+    rec = {k: data[k] for k in data.files}
+    rec["info"] = rec["info"].item() if rec["info"].shape == () else rec["info"]
+    rec["qoi"] = rec["qoi"].item() if rec["qoi"].shape == () else rec["qoi"]
+    return rec
 
 
 def _cache_path(root: str, *parts: str) -> str:
@@ -282,10 +302,7 @@ def relax_one(seq: Any, eq: dict[str, Any], ts: Any, cli: argparse.Namespace,
     from mrx.relaxation import initial_state, relax
 
     if os.path.isfile(cache) and not cli.force:
-        data = np.load(cache, allow_pickle=True)
-        rec = {k: data[k] for k in data.files}
-        rec["info"] = rec["info"].item() if rec["info"].shape == () else rec["info"]
-        rec["qoi"] = rec["qoi"].item() if rec["qoi"].shape == () else rec["qoi"]
+        rec = _load_relax_cache(cache)
         _log(f"{tag}: loaded {cache}")
         return rec
 
@@ -330,19 +347,10 @@ def pair_from_wout(wout: str, desc: str, cli: argparse.Namespace,
     Returns:
         ``(seq, rec_vmec, rec_desc, orientation)``.
     """
-    from mrx.geometry import build_sequence
     from mrx.gvec import match_orientation, read_equilibrium
-    from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import TimeStepper
     from mrx.vmec import read_wout
 
-    ns = tuple(int(v) for v in cli.ns.split(","))
-    t0 = time.perf_counter()
-    seq, _ = build_sequence(wout, ns, cli.p)
-    compute_nullspaces(seq)
-    _log(f"{name}: sequence {ns} p={cli.p} in {time.perf_counter() - t0:.0f} s")
-    ts = TimeStepper(seq=seq, cfl=cli.cfl, history_size=cli.history,
-                     velocity_smoothing_order=1)
+    seq, ts = _setup_sequence(wout, cli, name)
 
     eq_v = read_equilibrium(wout)
     eq_d, sign = match_orientation(read_equilibrium(desc), read_wout(wout))
@@ -369,18 +377,9 @@ def single_from_desc(path: str, cli: argparse.Namespace,
     Returns:
         ``(seq, rec)``.
     """
-    from mrx.geometry import build_sequence
     from mrx.gvec import read_equilibrium
-    from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import TimeStepper
 
-    ns = tuple(int(v) for v in cli.ns.split(","))
-    t0 = time.perf_counter()
-    seq, _ = build_sequence(path, ns, cli.p)
-    compute_nullspaces(seq)
-    _log(f"{name}: sequence {ns} p={cli.p} in {time.perf_counter() - t0:.0f} s")
-    ts = TimeStepper(seq=seq, cfl=cli.cfl, history_size=cli.history,
-                     velocity_smoothing_order=1)
+    seq, ts = _setup_sequence(path, cli, name)
     rec = relax_one(seq, read_equilibrium(path), ts, cli,
                     _cache_path(cli.out, name, f"fields_{_run_tag(cli)}.npz"), name)
     return seq, rec
@@ -863,13 +862,7 @@ def run_grid(cli: argparse.Namespace) -> None:
         _log_geometry(tag, result["geometry"])
         if cli.ns:
             if seq is None:
-                from mrx.geometry import build_sequence
-                from mrx.nullspace import compute_nullspaces
-                ns = tuple(int(v) for v in cli.ns.split(","))
-                t0 = time.perf_counter()
-                seq, _ = build_sequence(cli.wout, ns, cli.p)
-                compute_nullspaces(seq)
-                _log(f"sequence {ns} p={cli.p} in {time.perf_counter() - t0:.0f} s")
+                seq, _ = _setup_sequence(cli.wout, cli)
             result["ns"], result["p"] = [int(v) for v in cli.ns.split(",")], cli.p
             eq_d, _ = match_orientation(read_equilibrium(path), st_v)
             result["field"] = compare_fields(seq, eq_d, eq_v)
@@ -892,7 +885,6 @@ def figure_grid(cli: argparse.Namespace) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.plotstyle import house_style
-    from mrx.plotting import save_figure
 
     if not cli.plot_only:
         run_grid(cli)
@@ -945,13 +937,9 @@ def figure_grid(cli: argparse.Namespace) -> None:
 
         fig.suptitle(f"DESC vs VMEC, {os.path.basename(results[0]['wout'])}", fontsize=10)
         fig.subplots_adjust(left=0.09, right=0.98, top=0.86, bottom=0.16, wspace=0.28)
-        os.makedirs(cli.out, exist_ok=True)
-        save_figure(fig, dest, pgf=False, dpi=200)
-        plt.close(fig)
+        _save_publish(fig, dest)
     with open(os.path.join(cli.out, "grid_convergence.json"), "w") as fh:
         json.dump(results, fh, indent=2)
-    _log(f"wrote {dest}")
-    publish(dest)
 
 
 def _gvec_pair(wout: str, desc: str, cli: argparse.Namespace, name: str
@@ -1003,7 +991,6 @@ def figure_gvec(cli: argparse.Namespace) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.plotstyle import house_style
-    from mrx.plotting import save_figure
 
     rows = []
     have_gvec = True
@@ -1047,11 +1034,7 @@ def figure_gvec(cli: argparse.Namespace) -> None:
         axes[0].legend(fontsize=7)
         fig.suptitle("DESC vs GVEC refit of the same wout", fontsize=11)
         fig.subplots_adjust(left=0.10, right=0.98, top=0.86, bottom=0.14, wspace=0.22)
-        os.makedirs(cli.out, exist_ok=True)
-        save_figure(fig, dest, pgf=False, dpi=200)
-        plt.close(fig)
-    _log(f"wrote {dest}")
-    publish(dest)
+        _save_publish(fig, dest)
 
 
 def _relax_record(tag: str, rec: dict[str, Any]) -> dict[str, Any]:
@@ -1088,7 +1071,6 @@ def figure_relax(cli: argparse.Namespace) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.plotstyle import house_style
-    from mrx.plotting import save_figure
 
     dest_json = os.path.join(cli.out, "desc_vmec_relax.json")
     if cli.plot_only and os.path.isfile(dest_json):
@@ -1152,11 +1134,7 @@ def figure_relax(cli: argparse.Namespace) -> None:
                      rf"$\|B_d-B_v\|_M/\|B_v\|_M$ {c['initial_B_rel_diff']:.2e} "
                      rf"$\to$ {c['final_B_rel_diff']:.2e}", fontsize=10)
         fig.tight_layout()
-        os.makedirs(cli.out, exist_ok=True)
-        save_figure(fig, dest, pgf=False, dpi=200)
-        plt.close(fig)
-    _log(f"wrote {dest}")
-    publish(dest)
+        _save_publish(fig, dest)
 
 
 def figure_traces(cli: argparse.Namespace) -> None:
@@ -1169,9 +1147,19 @@ def figure_traces(cli: argparse.Namespace) -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from mrx.plotstyle import BLACK, TEAL, house_style
-    from mrx.plotting import save_figure
 
-    _, rec_v, rec_d, _ = pair_from_wout(cli.wout, cli.desc, cli, "li383")
+    tag = _run_tag(cli)
+    cache_v = _cache_path(cli.out, "li383", "vmec", f"fields_{tag}.npz")
+    cache_d = _cache_path(cli.out, "li383", "desc", f"fields_{tag}.npz")
+    if cli.plot_only:
+        if not (os.path.isfile(cache_v) and os.path.isfile(cache_d)):
+            raise SystemExit(
+                f"no cached fields under {cli.out}/li383; run without --plot-only")
+        rec_v, rec_d = _load_relax_cache(cache_v), _load_relax_cache(cache_d)
+        _log(f"li383/vmec: loaded {cache_v}")
+        _log(f"li383/desc: loaded {cache_d}")
+    else:
+        _, rec_v, rec_d, _ = pair_from_wout(cli.wout, cli.desc, cli, "li383")
     dest = os.path.join(cli.out, "desc_traces.png")
     with house_style():
         fig, axes = plt.subplots(2, 1, figsize=(7.0, 5.2), sharex=True)
@@ -1195,11 +1183,7 @@ def figure_traces(cli: argparse.Namespace) -> None:
             ax.legend(fontsize=8)
         fig.suptitle("li383: VMEC vs DESC initial condition", fontsize=11)
         fig.tight_layout()
-        os.makedirs(cli.out, exist_ok=True)
-        save_figure(fig, dest, pgf=False, dpi=200)
-        plt.close(fig)
-    _log(f"wrote {dest}")
-    publish(dest)
+        _save_publish(fig, dest)
 
 
 def figure_pair(cli: argparse.Namespace, name: str, wout: str, desc: str,
@@ -1250,7 +1234,7 @@ def _plot_case_mesh(path: str, cli: argparse.Namespace, slug: str) -> None:
 
 
 def figure_cases(cli: argparse.Namespace) -> None:
-    """Mesh (selected cases) plus initial/relaxed Poincaré for the 3-D examples.
+    """Mesh plus initial/relaxed Poincaré for the 3-D examples and QA.
 
     Args:
         cli: parsed arguments.

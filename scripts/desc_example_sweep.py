@@ -61,6 +61,8 @@ import os
 import time
 import traceback
 
+from desc_common import _log, examples_dir, locate
+
 #: The shipped examples this sweeps, cheapest first. ``current`` marks the
 #: ones that store no iota and so need DESC importable.
 CASES = (
@@ -161,52 +163,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return ap.parse_args(argv)
 
 
-def _log(msg: str) -> None:
-    """Print a timestamped progress line.
-
-    Args:
-        msg: the message.
-    """
-    print(f"  [{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
-
-def examples_dir(given: str | None) -> str:
-    """Where the DESC example files live.
-
-    Args:
-        given: an explicit directory, or ``None`` to discover one.
-
-    Returns:
-        The directory: ``given`` if set, else the installed DESC package's
-        ``examples/`` if importable, else ``data/``.
-    """
-    if given:
-        return given
-    try:
-        import desc  # noqa: PLC0415  (optional dependency)
-        return os.path.join(os.path.dirname(desc.__file__), "examples")
-    except ImportError:
-        return "data"
-
-
-def locate(root: str, name: str) -> str | None:
-    """The file of one case, under either naming convention.
-
-    Args:
-        root: the directory to look in.
-        name: the case name, e.g. ``"HELIOTRON"``.
-
-    Returns:
-        The path, or ``None`` if the case is not there.
-    """
-    for pattern in (f"{name}_output.h5", f"desc_{name}.h5",
-                    f"desc_{name}_lowres.h5", f"{name}.h5"):
-        hit = os.path.join(root, pattern)
-        if os.path.isfile(hit):
-            return hit
-    return None
-
-
 def one_case(path: str, name: str, cli: argparse.Namespace) -> dict:
     """Read, build, relax and measure one example.
 
@@ -284,6 +240,11 @@ def one_case(path: str, name: str, cli: argparse.Namespace) -> dict:
     relaxation = dict(
         energy_monotone=bool(np.all(np.asarray(trace["dE"]) <= 0.0)),
         energy_decreased=last["E"] <= first["E"],
+        # The residual is what the descent is minimising; a run whose
+        # residual ends above where it started has not relaxed, however
+        # well-behaved its energy. HELIOTRON at nfp=19 needs more than the
+        # 500 steps ATF and W7-X floor in.
+        residual_decreased=last["resid"] <= first["resid"],
         helicity_within_budget=drift < budget,
         finite=bool(np.isfinite(np.asarray(res.state.B_n)).all()),
     )
@@ -366,12 +327,13 @@ def plot(root: str) -> None:
     ok.sort(key=lambda r: (not r["vacuum"], r["name"]))
     names = [r["name"] for r in ok]
     x = np.arange(len(ok))
-    # Re-judge the stored runs with the current budget, so tightening or
-    # loosening it does not mean paying for the sweep again.
+    # Re-judge the stored runs with the current budget and residual check,
+    # so tightening either does not mean paying for the sweep again.
     for r in ok:
         r["helicity_budget"] = helicity_budget(r["steps"], r["energy_first"],
                                                r["energy_last"])
         r["relaxation"]["helicity_within_budget"] = r["helicity_drift"] < r["helicity_budget"]
+        r["relaxation"]["residual_decreased"] = r["resid_last"] <= r["resid_first"]
         r["relaxed_well"] = bool(all(r["relaxation"].values()))
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4.4))
@@ -433,4 +395,9 @@ if __name__ == "__main__":
     if args.plot:
         plot(args.plot)
     else:
+        import mrx
+        # jax 0.8.1 (the Torch overlay) cannot take batch_size=0; 0.8.2+ can.
+        _mbs = os.environ.get("MRX_MAP_BATCH_SIZE_INNER")
+        if _mbs:
+            mrx.MAP_BATCH_SIZE_INNER = int(_mbs)
         run(args)

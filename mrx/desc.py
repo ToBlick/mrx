@@ -1,82 +1,26 @@
 """DESC equilibria: the ``.h5`` output read in closed form.
 
-A DESC output file stores a *continuation family* of ``Equilibrium`` objects
-under ``/_equilibria``; the last one is the converged solution. Each carries
-``R``, ``Z`` and the stream function lambda as Fourier-Zernike series
+Turns a DESC Fourier-Zernike series into the same block dict
+:func:`mrx.gvec.read_state` produces, so ``build_gvec_map``,
+``load_clebsch`` and ``clebsch_potential_form`` apply verbatim. Only
+``h5py``, ``numpy`` and ``scipy`` are imported: a file is read without
+DESC installed.
 
-    f(rho, theta, zeta) = sum_lmn c_lmn Z_l^|m|(rho) P_m(theta) T_n(zeta)
+Three conversions happen here and nowhere else: the product-to-sum
+angular basis (each DESC mode becomes the pair ``(m, ±n·nfp)`` at half
+weight), a Chebyshev-Lobatto radial sample refit by
+:func:`mrx.vmec._fit_block`, and the flux-unit factor ``1 / 2π``. A
+current-constrained file stores no iota and falls back to DESC itself
+(:func:`_iota_from_desc`).
 
-with ``Z_l^|m|`` the Zernike radial polynomial, ``P_m`` the real poloidal
-factor (``cos(|m| theta)`` for ``m >= 0``, ``sin(|m| theta)`` for ``m < 0``)
-and ``T_n`` the real toroidal factor (``cos(|n| nfp zeta)`` for ``n >= 0``,
-``sin(|n| nfp zeta)`` for ``n < 0``). The coefficients ``c_lmn`` are
-``_R_lmn`` / ``_Z_lmn`` / ``_L_lmn`` and the ``(l, m, n)`` table is the
-matching ``_R_basis/_modes`` and friends.
+Guards: non-stellarator-symmetric files, mixed-parity modes, an unknown
+profile class, an empty ``_equilibria`` family, and a midpoint refit
+above :data:`REFIT_TOL`. The orientation pair
+:func:`flip_poloidal_angle` / :func:`match_orientation` lives on the
+shared block dict in :mod:`mrx.gvec` and is re-exported here.
 
-This module turns that into the *same* block dict :func:`mrx.gvec.read_state`
-produces, so every consumer downstream -- ``build_gvec_map``,
-``load_clebsch``, ``clebsch_potential_form`` -- applies verbatim, exactly as
-:mod:`mrx.vmec` does for a wout. Only ``h5py``, ``numpy`` and ``scipy`` are
-imported: a DESC file is read without DESC installed. Three conversions
-happen here and nowhere else:
-
-* **Angular basis.** MRX (like GVEC and VMEC) uses a SINGLE trig of the
-  combined angle, ``sum_mn f_mn(rho) trig(m theta_G - n zeta_G)``, while DESC
-  uses a PRODUCT of two real trig factors. The two are related by the
-  product-to-sum identities, so every DESC mode splits into the pair of MRX
-  modes ``(|m|, +|n| nfp)`` and ``(|m|, -|n| nfp)`` at half weight
-  (:func:`_split_weights`), collapsing onto one mode when ``n = 0``. The
-  identities also fix the parity: DESC's ``sym='cos'`` filter keeps the
-  modes with ``sign(m) = sign(n)``, and those are exactly the ones whose
-  product is a cosine of the combined angle, so ``R`` lands in a cosine
-  block and ``Z``/lambda in sine blocks with no further bookkeeping. The
-  block's ``n`` is the full-turn index ``|n| nfp``, VMEC's ``xn`` convention.
-
-* **Radial parameterisation.** DESC's radial label IS MRX's ``rho``
-  (``sqrt(s)`` in both), so unlike the wout refit there is no radial remap.
-  Each mode's radial function ``sum_l c_lmn Z_l^|m|(rho)`` is sampled at
-  Chebyshev-Lobatto nodes -- clustered at both ends, where a Zernike
-  polynomial of degree ``L`` varies fastest -- and refit as a clamped
-  interpolatory B-spline by :func:`mrx.vmec._fit_block`, on data-placed
-  knots (:func:`mrx.gvec.knots_at_data`) carried in the block as ``T``.
-  ``_fit_block`` also imposes the ``rho^m`` axis parity of each mode; a
-  Zernike series satisfies it identically, so here the conditions confirm
-  the fit rather than correct it (they are load-bearing for VMEC, whose
-  ``rmnc`` rows carry no such guarantee).
-
-* **Flux units.** DESC stores the toroidal flux at the boundary as ``_Psi``
-  in Webers, with ``Phi(rho) = Psi rho^2``. GVEC profiles store ``Phi / 2 pi``
-  (flux per radian), so the profile is divided by ``2 pi`` here. ``_Psi`` is
-  NEGATIVE in some files (HSX, W7-X), which reverses the field; nothing
-  special is done, because ``dPhi < 0`` flows correctly through
-  ``load_clebsch`` and the map's handedness is measured, not assumed
-  (:func:`mrx.gvec.build_gvec_map`).
-
-**The one quantity that may be missing is iota.** A DESC equilibrium is
-constrained by either an iota profile or a current profile; in the current
-case ``_iota`` is the string ``None`` in the file and the rotational
-transform is an OUTPUT of the solve that is not stored. Every shipped DESC
-stellarator example of that kind (NCSX, ARIES-CS, ESTELL, HSX, WISTELL-A,
-precise_QA, precise_QH) therefore cannot be read by parsing alone. When
-``_iota`` is absent this module falls back to DESC itself
-(:func:`_iota_from_desc`: ``eq.compute("iota")``) and raises a pointed error
-if DESC is not importable. Files written with an iota constraint (SOLOVEV,
-HELIOTRON, W7-X, ATF, DSHAPE, and anything from
-``VMECIO.load(..., profile="iota")``) need no such fallback.
-
-Both storage layouts are read (:func:`_equilibrium`): the ``/_equilibria``
-family a continuation run and every shipped example writes, whose LAST
-member is the converged solution, and the flat single equilibrium that
-``eq.save()`` -- and therefore ``VMECIO.load(...).save()`` -- produces.
-
-Guards at read time: non-stellarator-symmetric files (``_sym = False``,
-which add the missing-parity partners) are not implemented; a file that is
-neither layout is refused with the HDF5 keys it does have; an under-resolved
-``n_rho`` is refused when the R/Z midpoint refit exceeds :data:`REFIT_TOL`.
-The poloidal-orientation pair :func:`flip_poloidal_angle` and
-:func:`match_orientation` lives on the shared block dict in :mod:`mrx.gvec`
-and is re-exported here. ``test/test_desc.py`` reads a synthetic file
-written by ``test/synthetic_desc.py``, the inverse of this parser.
+The full derivation, the lambda-half-mesh finding, and the reader-parity
+list are in ``docs/source/concepts/external_interfaces.md``.
 """
 from __future__ import annotations
 
@@ -87,7 +31,7 @@ from scipy.interpolate import BSpline
 from scipy.special import eval_jacobi
 
 from mrx.gvec import flip_poloidal_angle, match_orientation  # noqa: F401  (re-exported)
-from mrx.vmec import _fit_block
+from mrx.vmec import _fit_block, profile_spline as _vmec_profile_spline
 
 TWO_PI = 2.0 * np.pi
 
@@ -526,8 +470,4 @@ def profile_spline(st: dict[str, Any], name: str) -> BSpline:
     Returns:
         The profile as a :class:`scipy.interpolate.BSpline` in ``rho``.
     """
-    prof, deg = st["profiles"], st["deg"]
-    values = np.asarray(prof[name], dtype=np.float64)[:, None]
-    blk = _fit_block(prof["rho"], values, 2, np.zeros(1, dtype=int),
-                     np.zeros(1, dtype=int), deg)
-    return BSpline(blk["T"], blk["coef"][0], deg)
+    return _vmec_profile_spline(st, name)

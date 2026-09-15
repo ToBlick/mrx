@@ -237,9 +237,10 @@ it.
   refit uses the file's `ns` and a hard-wired degree 3.
 - **Orientation.** `flip_poloidal_angle` and `match_orientation` live
   on the shared block dict in `mrx.gvec` and apply to all three.
-- **What each refuses.** VMEC: non-NetCDF3, `version_ < 8`, `lasym`,
-  `chipf != iotaf * phipf`. DESC: non-HDF5, `_sym = False`, mixed
-  cos/sin of the combined angle, unknown profile class,
+- **What each refuses.** VMEC: non-NetCDF3, missing wout variables,
+  `version_ < 8`, `lasym`, `chipf != iotaf * phipf`. DESC: non-HDF5,
+  `n_rho < 3`, `_sym = False`, mixed cos/sin of the combined angle,
+  unknown profile class, empty `_equilibria` family,
   current-constrained without DESC, midpoint refit above `REFIT_TOL`.
   GVEC: missing or misshapen blocks only.
 - **Not in this interface.** Current HEAD of `mrx.vmec` no longer reads

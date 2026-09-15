@@ -9,7 +9,7 @@ poloidal flip, the lambda half-mesh bug).
 Do not read it for: how the interface works — that is
 `docs/source/concepts/external_interfaces.md`, which this record backs.
 
-Written 2026-09-13 and revised 2026-09-14. Branch `desc-interface-v2` off
+Written 2026-09-13 and revised 2026-09-15. Branch `desc-interface-v2` off
 `static-dynamic-refactor`, worktree `/Users/aak572/mrx-desc`. Numbers
 below are float64. The reader needs only `h5py`, `numpy`, `scipy`. DESC
 0.17.2 was used once, to generate the fixtures; pyGVEC 1.4.1 converts the
@@ -168,16 +168,16 @@ flip, and the synthetic circular torus is exactly that case.
 ## 5. Sweep over DESC's own saved equilibria (`scripts/desc_example_sweep.py`)
 
 Relaxing MRX from DESC's shipped `_output.h5` files directly, `(8, 14, 8)`
-p=2, 500 steps. Axisymmetric SOLOVEV and DSHAPE are dropped: they are 2-D.
-The three remaining iota-constrained cases are genuinely 3-D. The
-current-constrained ones (NCSX, ARIES-CS, precise_QA, HSX, WISTELL-A) need
-DESC for iota and are Torch-only.
+p=2, 2000 steps on an H200. Axisymmetric SOLOVEV and DSHAPE are dropped:
+they are 2-D. The three remaining iota-constrained cases are genuinely
+3-D. The current-constrained ones (NCSX, ARIES-CS, precise_QA, HSX,
+WISTELL-A) need DESC for iota and have not been run.
 
 | case | nfp | vac | iota axis file/MRX | div | F in → out | dH/2E0 | reader | relax |
 |---|---|---|---|---|---|---|---|---|
-| ATF | 12 | n | 0.35000/0.35000 | 1.5e-15 | 1.16e-4 → 5.94e-6 | 1.50e-5 | ok | ok |
-| HELIOTRON | 19 | n | 1.00000/1.00001 | 4.7e-16 | 5.61e-5 → 3.94e-4 | 8.40e-3 | ok | ok |
-| W7-X | 5 | n | 0.85605/0.85605 | 3.8e-16 | 5.69e-3 → 5.02e-7 | 3.0e-6 | ok | ok |
+| ATF | 12 | n | 0.35000/0.35000 | 1.3e-15 | 1.50e-4 → 1.47e-6 | 3.69e-5 | ok | ok |
+| HELIOTRON | 19 | n | 1.00000/1.00001 | 4.3e-16 | 8.19e-5 → 7.64e-6 | 1.36e-2 | ok | ok |
+| W7-X | 5 | n | 0.85605/0.85605 | 3.6e-16 | 5.69e-3 → 1.76e-8 | 3.68e-6 | ok | ok |
 
 (`desc_sweep.png`). **The reader checks pass on all three** — iota matched
 to the file's own
@@ -187,16 +187,21 @@ profile at both axis and edge to 5-6 digits, `div` at round-off,
 hardest, and W7-X with `Psi = -2.133`, which exercises the negative-flux
 branch.
 
-`--figure cases` draws an initial-versus-relaxed Poincaré section for
-those three (`poincare_case_heliotron.png`, `poincare_case_w7x.png`,
-`poincare_case_atf.png`) and a mesh (`scripts/plot_mesh.py`) for
-HELIOTRON and W7-X (`mesh_heliotron.png`, `mesh_w7x.png`). 5000 steps on
-`(8, 12, 12)` p=2; every case kept 64/64 lines.
+At 500 steps HELIOTRON's residual *rose* (5.61e-5 → 3.94e-4): a mid-run
+spike had not decayed when `stop=steps` ended the run, and the old
+`relaxation` dict never asked whether the residual fell. 2000 steps
+brings it down 11× (8.19e-5 → 7.64e-6). The new `residual_decreased`
+check would have flagged the short run; ATF and W7-X already floored
+inside 500.
 
-Landreman–Paul QA is the vacuum check, and it is the consumer of the
-tracked `data/desc_QA_lowres.h5` fixture. A vacuum equilibrium has a known
-answer; VMEC and DESC start and finish on the same nested surfaces
-(`poincare_qa.png`).
+`--figure cases` draws an initial-versus-relaxed Poincaré section and a
+mesh (`scripts/plot_mesh.py`) for HELIOTRON, W7-X, ATF and Landreman–Paul
+QA (`poincare_case_{heliotron,w7x,atf,qa}.png`,
+`mesh_{heliotron,w7x,atf,qa}.png`). 5000 steps on `(8, 12, 12)` p=2;
+every case kept 64/64 lines.
+
+Landreman–Paul QA is also the vacuum check against VMEC: both start and
+finish on the same nested surfaces (`poincare_qa.png`).
 
 ## 6. Tests
 
@@ -254,5 +259,6 @@ tens of seconds on an H200.
   and now backed by a GVEC control. Worth a DESC issue; it makes any
   lambda comparison through `VMECIO.load` misleading near the axis for
   everyone, not just MRX.
-- **The sweep is local, at `(8, 14, 8)`.** The Torch runs at production
-  resolution, and the current-constrained cases, have not been done.
+- **The current-constrained cases have not been run.** The iota-constrained
+  trio is done at `(8, 14, 8)` p=2, 2000 steps on an H200. NCSX,
+  ARIES-CS, precise_QA, HSX and WISTELL-A still need DESC for iota.
