@@ -97,9 +97,11 @@ and a Zernike series already satisfies the `rho^m` axis parity that
 `_fit_block` imposes — there the conditions confirm the fit rather than
 correct it. The refit is fourth-order accurate and its error is the only
 thing separating MRX's reading from DESC's own evaluation. Measured below
-`1e-6` relative on the tracked SOLOVEV and DSHAPE fixtures
+`1e-6` relative on the tracked HELIOTRON and QA fixtures
 (`test_desc_fixtures_reproduce_their_own_fourier_zernike_series`), against
-a discretisation error many orders larger.
+a discretisation error many orders larger. `read_desc` records that
+midpoint error as `refit_error` and refuses an under-resolved `n_rho`
+above `REFIT_TOL = 1e-4`.
 
 ## 4. The one thing that may be missing: iota
 
@@ -111,7 +113,7 @@ not stored, so no amount of parsing recovers it. This is not a corner case
 current-constrained.
 
 `mrx.desc.read_desc` therefore has two paths. With `_iota` present
-(SOLOVEV, HELIOTRON, W7-X, ATF, DSHAPE, and anything saved from
+(HELIOTRON, W7-X, ATF, DSHAPE, SOLOVEV, and anything saved from
 `VMECIO.load(..., profile="iota")`) the read is pure `h5py` and works with
 no DESC installed, which is what lets CI cover it. With `_iota` absent it
 falls back to DESC itself, `eq.compute("iota")`, and raises an `ImportError`
@@ -130,11 +132,14 @@ measures the handedness that gives `det DF > 0` rather than assuming one,
 so a flipped DESC file builds a perfectly good sequence; only the sign of
 the reported `iota` differs. But comparing a DESC state with the VMEC state
 it came from at equal `theta` compares two different points, and every
-number that falls out is meaningless. `mrx.desc.match_orientation` measures
+number that falls out is meaningless. `mrx.gvec.match_orientation` measures
 the relative orientation (from `R` **and** `Z` — `R` alone cannot see the
 flip on an up-down-symmetric cross-section) and
-`mrx.desc.flip_poloidal_angle` undoes it exactly, in the block
-representation:
+`mrx.gvec.flip_poloidal_angle` undoes it exactly, in the block
+representation. Both are re-exported from `mrx.desc`. They apply to a
+wout or a GVEC state as well: pyGVEC's `convert-wout` is the second
+instance, with its own flux-sign flip (`phiedge = -phiedge`) and an `n`
+sign that has to be undone separately before the labels agree.
 
 | | flip |
 |---|---|
@@ -146,19 +151,43 @@ representation:
 
 ## 6. A known inaccuracy in DESC's wout importer
 
-DESC's `fourier_to_zernike` fits VMEC's lambda at
-`rho = sqrt(linspace(0, 1, ns))`, but `lmns` in a wout lives on the **half
-mesh**, and its first row is a dummy zero. So the fit is misregistered by
-half a radial cell and anchored to zero on the axis, where VMEC's lambda is
-not zero. MRX's own wout reader handles the half mesh correctly
-(`mrx.vmec._lambda_nodes`).
+Two distinct mechanisms, both in DESC, and both visible against a GVEC
+control that refits the same wout.
+
+DESC's `desc/vmec.py` reads VMEC's lambda as
+
+```python
+lmns = file.variables["lmns"][:].filled()
+```
+
+with no `[1:]`, keeping the dummy first row. It then hands that array to
+the same fit as `R` and `Z`. That fit, `fourier_to_zernike` in
+`desc/vmec_utils.py`, uses
+
+```python
+surfs = x_mn.shape[0]
+rho = np.sqrt(np.linspace(0, 1, surfs))
+```
+
+the **full** mesh, with no half-mesh branch. So every `lmns` row, whose
+value belongs at `s_{j-1/2}`, is fit at `s_j` (a half-cell outward shift
+that hurts most where the half-cell is a large fraction of `rho`), and
+row 0 is fit at `rho = 0`, pulling lambda toward zero on the axis where
+the `m = 0` component is not zero.
+
+MRX's own wout reader handles both: it drops row 0 at the call site
+(`raw["lmns"][1:]`) and `mrx.vmec._lambda_nodes` puts the rest on the
+half mesh with an axis and an edge node added, `m > 0` pinned to zero
+from the `rho^m` behaviour and `m = 0` extrapolated linearly in `s`.
 
 The signature is unmistakable: `R` and `Z` converge toward the wout as
-DESC's fit resolution rises, while lambda *diverges* near the axis, because
-a higher resolution only tracks the wrong nodes more faithfully. Outside
-`rho = 0.3` lambda converges like everything else. Measured on li383 in
-`docs/research/desc_interface_2026-09-13.md`; this is a DESC-side issue,
-recorded rather than worked around.
+DESC's fit resolution rises, while lambda *diverges* near the axis,
+because a higher resolution only tracks the wrong nodes more faithfully.
+Outside `rho = 0.3` lambda converges like everything else. A GVEC
+`convert-wout` of the same file, whose radial B-splines have no half-mesh
+confusion, beats DESC on lambda by an order of magnitude — that is the
+control. Measured on li383 in `docs/research/desc_interface.md`; this is
+a DESC-side issue, recorded rather than worked around.
 
 ## 7. Dispatch points
 
@@ -171,6 +200,7 @@ Adding a format touches exactly these:
 - `mrx/geometry.py` `build_sequence` — the equilibrium-file branch
 - `mrx/initial_conditions.py` `initial_field` — the equilibrium-file branch
 - `scripts/relax.py` — `--geometry` help and validation
+- `scripts/plot_mesh.py`, `scripts/poincare_trace.py` — `--geometry` help
 
 ## 8. Testing
 
@@ -187,3 +217,30 @@ against the Fourier-Zernike series rebuilt in DESC's own product form
 (independent of the conversion under test), and, when DESC is importable,
 against `eq.compute` itself. That last one is the only check that settles
 the angle conventions *empirically* rather than by reading DESC's source.
+
+## 9. Reader parity
+
+What each reader exposes, so a new comparison does not have to rediscover
+it.
+
+- **Parse.** `read_state` (`.dat`), `read_wout` (`.nc`), `read_desc`
+  (`.h5`). `read_equilibrium` dispatches on the extension and sets
+  `kind`.
+- **Cheap `nfp`.** VMEC and DESC have `read_nfp`. GVEC does not:
+  `geometry_nfp` parses a whole state for a `.dat`. That is a
+  consistency wart, not a performance bug, and is left as-is.
+- **`profile_spline(st, name)`.** All three share the signature and
+  return a `BSpline` in the radial label. GVEC's knots are the element
+  grid `sp`; VMEC and DESC fit on the sample nodes with the `m = 0`
+  parity of `_fit_block`.
+- **Resolution control.** Only DESC takes `n_rho` and `deg`. A wout
+  refit uses the file's `ns` and a hard-wired degree 3.
+- **Orientation.** `flip_poloidal_angle` and `match_orientation` live
+  on the shared block dict in `mrx.gvec` and apply to all three.
+- **What each refuses.** VMEC: non-NetCDF3, `version_ < 8`, `lasym`,
+  `chipf != iotaf * phipf`. DESC: non-HDF5, `_sym = False`, mixed
+  cos/sin of the combined angle, unknown profile class,
+  current-constrained without DESC, midpoint refit above `REFIT_TOL`.
+  GVEC: missing or misshapen blocks only.
+- **Not in this interface.** Current HEAD of `mrx.vmec` no longer reads
+  `signgs`; handedness is measured by `build_gvec_map`.

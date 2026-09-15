@@ -11,10 +11,11 @@ readers are also held against each other -- a conversion error that the
 formulas somehow tolerate still has to survive being compared with an
 independent parser of an independent format.
 
-*Tracked fixtures.* ``data/desc_SOLOVEV.h5`` and ``data/desc_DSHAPE_lowres.h5``
-are trimmed copies of DESC's own examples (``scripts/desc_fixtures.py``),
-so they were not written by us and catch anything our writer and our parser
-agree on wrongly. The sharp check on them is
+*Tracked fixtures.* ``data/desc_HELIOTRON_lowres.h5`` is a trimmed copy of
+DESC's own HELIOTRON example (``scripts/desc_fixtures.py``), so it was not
+written by us and catches anything our writer and our parser agree on
+wrongly; ``data/desc_QA_lowres.h5`` is the vacuum VMEC refit. The sharp
+check on them is
 :func:`test_desc_fixtures_reproduce_their_own_fourier_zernike_series`, which
 rebuilds the DESC series in DESC's PRODUCT form, independently of the
 product-to-sum conversion under test, and compares.
@@ -44,8 +45,8 @@ IOTA = (-0.9, -0.15)
 PHI_EDGE = np.pi * A ** 2
 LAM_AMPLITUDE, BETA = 0.05, 1e-3
 
-SOLOVEV = "data/desc_SOLOVEV.h5"
-DSHAPE = "data/desc_DSHAPE_lowres.h5"
+HELIOTRON = "data/desc_HELIOTRON_lowres.h5"
+QA = "data/desc_QA_lowres.h5"
 
 #: Radii, poloidal and toroidal angles the fields are compared at. Chosen
 #: off the sample nodes, where an interpolatory refit is unconstrained.
@@ -233,7 +234,8 @@ def test_desc_refit_of_a_wout_matches_it_once_oriented():
     one is tight. ``R`` and ``Z`` agree to the wout's own Fourier content;
     lambda does NOT, and deliberately is not asserted here -- DESC fits
     VMEC's half-mesh ``lmns`` as if it were on the full mesh, which
-    ``scripts/desc_vmec_grid.py`` quantifies and ``docs/research`` records.
+    ``scripts/desc_figures.py --figure grid`` quantifies and
+    ``docs/research/desc_interface.md`` records.
     """
     from mrx.desc import match_orientation
     from mrx.vmec import profile_spline as vmec_profile
@@ -419,7 +421,7 @@ def test_desc_refuses_a_file_that_is_not_desc(tmp_path):
         read_desc(empty)
 
 
-@pytest.mark.parametrize("path", [SOLOVEV, DSHAPE])
+@pytest.mark.parametrize("path", [HELIOTRON, QA])
 def test_desc_fixtures_reproduce_their_own_fourier_zernike_series(path):
     """The tracked examples, against DESC's series in its OWN product form.
 
@@ -463,16 +465,18 @@ def test_desc_dispatch_reaches_the_reader_and_the_initial_field():
     from mrx.geometry import build_sequence
     from mrx.initial_conditions import initial_field
 
-    assert geometry_kind(SOLOVEV) == "desc"
-    assert geometry_nfp(SOLOVEV) == 1 and geometry_nfp(SOLOVEV, nfp=2) == 2
-    assert read_equilibrium(SOLOVEV)["kind"] == "desc"
+    assert geometry_kind(HELIOTRON) == "desc"
+    assert geometry_nfp(HELIOTRON) == 19 and geometry_nfp(HELIOTRON, nfp=2) == 2
+    assert read_equilibrium(HELIOTRON)["kind"] == "desc"
 
-    seq, _ = build_sequence(SOLOVEV, (6, 8, 4), 2)
+    seq, _ = build_sequence(HELIOTRON, (6, 8, 4), 2)
     B, info = initial_field(seq)
-    assert info["kind"] == "desc" and info["nfp"] == 1
-    # SOLOVEV is stored with iota = 1 exactly, at every radius
-    assert abs(info["iota_axis"] - 1.0) < 1e-6 and abs(info["iota_edge"] - 1.0) < 1e-6
-    assert info["div"] <= mrx.eps(1024) and info["wall_discarded"] <= mrx.eps(1024)
+    assert info["kind"] == "desc" and info["nfp"] == 19
+    # build_gvec_map may pick the other handedness, so compare magnitudes.
+    iota = profile_spline(read_desc(HELIOTRON), "iota")
+    assert abs(abs(info["iota_axis"]) - abs(float(iota(0.0)))) < 1e-3
+    assert abs(abs(info["iota_edge"]) - abs(float(iota(1.0)))) < 1e-3
+    assert info["div"] < 1e-6 and info["wall_discarded"] <= mrx.eps(1024)
     assert np.isfinite(np.asarray(B)).all()
 
 
@@ -510,7 +514,7 @@ def _current_constrained_example():
     return None
 
 
-@pytest.mark.parametrize("path", [SOLOVEV, DSHAPE])
+@pytest.mark.parametrize("path", [HELIOTRON, QA])
 def test_desc_parse_matches_desc_itself(path):
     """What MRX parsed against what DESC computes, the convention anchor.
 
@@ -534,3 +538,17 @@ def test_desc_parse_matches_desc_itself(path):
         got = evaluate(st[blk], rho, theta, zeta)
         scale = max(float(np.abs(want).max()), 1e-12)
         assert np.abs(got - want).max() / scale < 1e-6, (path, key)
+
+
+def test_desc_default_read_records_refit_error():
+    """The default ``n_rho`` lands well below :data:`mrx.desc.REFIT_TOL`."""
+    from mrx.desc import REFIT_TOL
+
+    st = read_desc(HELIOTRON)
+    assert 0.0 <= st["refit_error"] < REFIT_TOL
+
+
+def test_desc_starved_n_rho_is_refused():
+    """An under-resolved spline is refused rather than silently fit."""
+    with pytest.raises(ValueError, match="n_rho"):
+        read_desc(HELIOTRON, n_rho=5)

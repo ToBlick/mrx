@@ -71,9 +71,12 @@ member is the converged solution, and the flat single equilibrium that
 
 Guards at read time: non-stellarator-symmetric files (``_sym = False``,
 which add the missing-parity partners) are not implemented; a file that is
-neither layout is refused with the HDF5 keys it does have.
-``test/test_desc.py`` reads a synthetic file written by
-``test/synthetic_desc.py``, the inverse of this parser.
+neither layout is refused with the HDF5 keys it does have; an under-resolved
+``n_rho`` is refused when the R/Z midpoint refit exceeds :data:`REFIT_TOL`.
+The poloidal-orientation pair :func:`flip_poloidal_angle` and
+:func:`match_orientation` lives on the shared block dict in :mod:`mrx.gvec`
+and is re-exported here. ``test/test_desc.py`` reads a synthetic file
+written by ``test/synthetic_desc.py``, the inverse of this parser.
 """
 from __future__ import annotations
 
@@ -83,6 +86,7 @@ import numpy as np
 from scipy.interpolate import BSpline
 from scipy.special import eval_jacobi
 
+from mrx.gvec import flip_poloidal_angle, match_orientation  # noqa: F401  (re-exported)
 from mrx.vmec import _fit_block
 
 TWO_PI = 2.0 * np.pi
@@ -96,6 +100,13 @@ DEG = 3
 #: nodes per extremum is the measured knee (``test_desc.py``).
 MIN_NODES, NODES_PER_L = 65, 4
 MAX_NODES = 257
+
+#: Ceiling on the midpoint refit error of the R and Z blocks. The spline is
+#: interpolatory at the sample nodes, so only the midpoints see an
+#: under-resolved ``n_rho``; this refuses that rather than returning a
+#: smooth wrong answer. A decade above the worst measured default-read
+#: error on the tracked fixtures.
+REFIT_TOL = 1e-4
 
 
 def _nodes(n_rho: int) -> np.ndarray:
@@ -175,6 +186,68 @@ def _is_cosine(m: np.ndarray, n: np.ndarray) -> np.ndarray:
     return (m >= 0) == (n >= 0)
 
 
+def _accumulate_modes(modes: np.ndarray, coef: np.ndarray, nfp: int,
+                      rho: np.ndarray) -> dict[tuple[int, int], np.ndarray]:
+    """DESC modes accumulated onto single-angle ``(m, n)`` columns at ``rho``.
+
+    This is the product-to-sum half of :func:`_convert_block`, shared with
+    :func:`_block_refit_error` so the midpoint check uses the same
+    identities as the fit.
+
+    Args:
+        modes: ``(K, 3)`` table of ``(l, m, n)``.
+        coef: ``(K,)`` coefficients.
+        nfp: field periods, to turn ``n`` into the full-turn index.
+        rho: radial sample nodes.
+
+    Returns:
+        ``{(m, n): values}`` at ``rho``, ``values`` of shape ``(len(rho),)``.
+    """
+    ell, m, n = (modes[:, i].astype(int) for i in range(3))
+    radial = _zernike_radial(rho[:, None], ell[None, :], m[None, :]) * coef[None, :]
+    w_plus, w_minus = _split_weights(m, n)
+    m_abs, n_full = np.abs(m), np.abs(n) * nfp
+    columns: dict[tuple[int, int], np.ndarray] = {}
+    for key_n, weight in ((n_full, w_plus), (-n_full, w_minus)):
+        for i in range(len(ell)):
+            key = (int(m_abs[i]), int(key_n[i]))
+            col = columns.get(key)
+            if col is None:
+                col = columns[key] = np.zeros(len(rho))
+            col += weight[i] * radial[:, i]
+    return columns
+
+
+def _block_refit_error(modes: np.ndarray, coef: np.ndarray, nfp: int,
+                       rho: np.ndarray, blk: dict[str, Any]) -> float:
+    """Relative sup error of a fitted block at the node midpoints.
+
+    The spline is interpolatory at ``rho``, so the nodes themselves cannot
+    see an under-resolved ``n_rho``. The midpoints can.
+
+    Args:
+        modes: ``(K, 3)`` table of ``(l, m, n)``.
+        coef: ``(K,)`` coefficients.
+        nfp: field periods.
+        rho: the nodes the block was fit at.
+        blk: the fitted block dict.
+
+    Returns:
+        ``max |spline - exact| / max |exact|`` on the midpoints, or 0
+        when the field is identically zero.
+    """
+    mid = 0.5 * (rho[:-1] + rho[1:])
+    columns = _accumulate_modes(modes, coef, nfp, mid)
+    design = BSpline.design_matrix(mid, blk["T"], blk["deg"]).toarray()
+    got = design @ blk["coef"].T
+    want = np.stack(
+        [columns.get((int(mm), int(nn)), np.zeros(len(mid)))
+         for mm, nn in zip(blk["m"], blk["n"])],
+        axis=1)
+    scale = max(float(np.abs(want).max()), 1e-30)
+    return float(np.abs(got - want).max()) / scale
+
+
 def _convert_block(modes: np.ndarray, coef: np.ndarray, nfp: int,
                    rho: np.ndarray, name: str, deg: int = DEG) -> dict[str, Any]:
     """One Fourier-Zernike field as a :class:`mrx.gvec.StateField` block.
@@ -199,28 +272,14 @@ def _convert_block(modes: np.ndarray, coef: np.ndarray, nfp: int,
         ValueError: if the field mixes cosine and sine modes of the combined
             angle, which a stellarator-symmetric file never does.
     """
-    ell, m, n = (modes[:, i].astype(int) for i in range(3))
+    m, n = modes[:, 1].astype(int), modes[:, 2].astype(int)
     cosine = _is_cosine(m, n)
     live = np.abs(coef) > 0.0
     if live.any() and not (cosine[live].all() or (~cosine[live]).all()):
         raise ValueError(f"{name}: mixes cos and sin modes of (m theta - n zeta); "
                          "only stellarator-symmetric DESC files are supported")
     sin_cos = 2 if (not live.any() or cosine[live][0]) else 1
-
-    radial = _zernike_radial(rho[:, None], ell[None, :], m[None, :]) * coef[None, :]
-    w_plus, w_minus = _split_weights(m, n)
-    m_abs, n_full = np.abs(m), np.abs(n) * nfp
-
-    # Accumulate the two branches of every DESC mode onto the (m, n) table.
-    columns: dict[tuple[int, int], np.ndarray] = {}
-    for key_n, weight in ((n_full, w_plus), (-n_full, w_minus)):
-        for i in range(len(ell)):
-            key = (int(m_abs[i]), int(key_n[i]))
-            col = columns.get(key)
-            if col is None:
-                col = columns[key] = np.zeros(len(rho))
-            col += weight[i] * radial[:, i]
-
+    columns = _accumulate_modes(modes, coef, nfp, rho)
     keys = sorted(k for k, v in columns.items() if np.abs(v).max() > 0.0)
     if keys:
         samples = np.stack([columns[k] for k in keys], axis=1)
@@ -386,12 +445,15 @@ def read_desc(path: str, n_rho: int | None = None, deg: int = DEG) -> dict[str, 
     Returns:
         ``nfp``, ``deg``, the DESC resolutions ``L``, ``M``, ``N``, the
         toroidal flux ``Psi``, the blocks ``X1``, ``X2``, ``LA`` (each
-        carrying its knot vector ``T``) and ``profiles`` (``rho``, ``phi``,
-        ``iota``, ``pressure`` at the sample nodes, flux in GVEC units).
+        carrying its knot vector ``T``), ``profiles`` (``rho``, ``phi``,
+        ``iota``, ``pressure`` at the sample nodes, flux in GVEC units)
+        and ``refit_error``, the relative midpoint error of the R and Z
+        spline refit.
 
     Raises:
-        ValueError: for a file with no equilibrium family, or one that is
-            not HDF5 at all.
+        ValueError: for a file with no equilibrium family, one that is
+            not HDF5 at all, or whose R/Z spline refit exceeds
+            :data:`REFIT_TOL`.
         NotImplementedError: for a non-stellarator-symmetric file.
         ImportError: for a current-constrained file when DESC is absent.
     """
@@ -406,11 +468,13 @@ def read_desc(path: str, n_rho: int | None = None, deg: int = DEG) -> dict[str, 
         psi = float(eq["_Psi"][()])
         rho = _nodes(n_rho if n_rho is not None
                      else int(np.clip(NODES_PER_L * L + 1, MIN_NODES, MAX_NODES)))
-        blocks = {}
+        blocks: dict[str, Any] = {}
+        raw: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         for block_name, prefix in (("X1", "R"), ("X2", "Z"), ("LA", "L")):
             modes = np.asarray(eq[f"_{prefix}_basis"]["_modes"][()])
             coef = np.asarray(eq[f"_{prefix}_lmn"][()], dtype=np.float64)
             blocks[block_name] = _convert_block(modes, coef, nfp, rho, prefix, deg)
+            raw[block_name] = (modes, coef)
         pressure = _profile_values(eq["_pressure"], rho, "pressure")
         iota = _profile_values(eq["_iota"], rho, "iota")
 
@@ -418,96 +482,19 @@ def read_desc(path: str, n_rho: int | None = None, deg: int = DEG) -> dict[str, 
         iota = _iota_from_desc(path, rho)
     if pressure is None:
         pressure = np.zeros_like(rho)
+    refit_error = max(
+        _block_refit_error(*raw["X1"], nfp, rho, blocks["X1"]),
+        _block_refit_error(*raw["X2"], nfp, rho, blocks["X2"]),
+    )
+    if refit_error > REFIT_TOL:
+        raise ValueError(
+            f"{path}: R/Z spline refit error {refit_error:.3e} > {REFIT_TOL} "
+            f"at n_rho={len(rho)}; raise n_rho")
     return dict(
         nfp=nfp, deg=deg, L=L, M=M, N=N, Psi=psi, n_rho=len(rho),
-        mnmax=blocks["X1"]["coef"].shape[0], **blocks,
+        mnmax=blocks["X1"]["coef"].shape[0], refit_error=refit_error, **blocks,
         profiles=dict(rho=rho, phi=psi * rho ** 2 / TWO_PI,
                       iota=iota, pressure=pressure))
-
-
-def flip_poloidal_angle(st: dict[str, Any]) -> dict[str, Any]:
-    """The same equilibrium re-expressed in ``theta -> -theta``.
-
-    DESC insists on a positive coordinate Jacobian: ``VMECIO.load`` runs
-    ``ensure_positive_jacobian``, which for a LEFT-handed wout -- most of
-    them -- silently flips the sign of theta, negating every ``m < 0`` mode
-    of ``R`` and ``Z``, every ``m >= 0`` mode of lambda, and ``iota``. The
-    resulting DESC equilibrium is the same torus with the opposite poloidal
-    orientation, so comparing it with the wout it came from at equal
-    ``theta`` compares two different points. This undoes that.
-
-    In MRX's single-angle blocks the substitution is exact and local:
-    ``trig(m theta - n zeta)`` at ``-theta`` is ``trig(m theta + n zeta)``,
-    i.e. the mode ``(m, -n)``, picking up a minus sign in the sine blocks.
-    With lambda additionally negated -- ``theta* = theta + lambda`` must
-    flip with theta -- the three blocks come out as
-
-    * ``X1`` (cosine): ``n -> -n``
-    * ``X2`` (sine): ``n -> -n``, coefficients negated
-    * ``LA`` (sine): ``n -> -n``, the two sign flips cancelling
-
-    and ``iota``, a ratio of the two angles' fluxes, negates. ``phi`` and
-    ``pressure`` are untouched: neither knows about theta.
-
-    Nothing in MRX needs this to read a DESC file -- ``build_gvec_map``
-    measures the handedness that makes ``det DF > 0`` either way. It is for
-    holding a DESC state against a VMEC one, where the labels must agree.
-
-    Args:
-        st: a state dict from :func:`read_desc`.
-
-    Returns:
-        A new state dict; the input is not modified.
-    """
-    out = dict(st)
-    for name, flip_sign in (("X1", False), ("X2", True), ("LA", False)):
-        blk = dict(st[name])
-        order = np.lexsort((-blk["n"], blk["m"]))
-        blk["m"], blk["n"] = blk["m"][order], -blk["n"][order]
-        blk["coef"] = blk["coef"][order] * (-1.0 if flip_sign else 1.0)
-        out[name] = blk
-    out["profiles"] = dict(st["profiles"], iota=-np.asarray(st["profiles"]["iota"]))
-    return out
-
-
-def match_orientation(st: dict[str, Any], ref: dict[str, Any],
-                      n_probe: int = 16) -> tuple[dict[str, Any], int]:
-    """``st`` turned to ``ref``'s poloidal orientation, measured not assumed.
-
-    Which way ``VMECIO.load`` flipped depends on the wout's handedness, so
-    the orientation is decided rather than predicted: ``R`` AND ``Z`` are
-    evaluated both ways against the reference and the closer wins. Both are
-    needed. ``R`` alone cannot see the flip on an up-down-symmetric
-    cross-section, where it is even in theta -- the circular torus of
-    ``test/synthetic_desc.py`` is exactly that case -- while ``Z``, a sine
-    block, changes sign there. No stellarator-symmetric shape hides from
-    the pair, since that would need ``Z`` identically zero.
-
-    Args:
-        st: the DESC state to orient.
-        ref: the reference state, typically :func:`mrx.vmec.read_wout`.
-        n_probe: samples per angle of the probe grid.
-
-    Returns:
-        ``(state, sign)``: the state in ``ref``'s orientation (``st``
-        itself when they already agree) and ``+1`` or ``-1``.
-    """
-    from mrx.gvec import evaluate  # noqa: PLC0415  (imports this module)
-
-    rho = np.linspace(0.2, 1.0, 5)
-    theta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / n_probe
-    zeta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / (n_probe * ref["nfp"])
-
-    def distance(state):
-        total = 0.0
-        for name in ("X1", "X2"):
-            want = evaluate(ref[name], rho, theta, zeta)
-            got = evaluate(state[name], rho, theta, zeta)
-            total += float(np.abs(got - want).max()) / max(float(np.abs(want).max()), 1e-30)
-        return total
-
-    flipped = flip_poloidal_angle(st)
-    return (st, 1) if distance(st) <= distance(flipped) else (flipped, -1)
 
 
 def read_nfp(path: str) -> int:

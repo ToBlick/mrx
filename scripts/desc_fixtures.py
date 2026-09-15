@@ -13,8 +13,8 @@ Two kinds of fixture, for two different jobs.
 the same wout that ``mrx.vmec`` refits into splines, so the DESC and VMEC
 states describe the SAME configuration -- identical boundary, identical
 profiles -- and every difference MRX then measures is representation and
-nothing else. This is what ``scripts/desc_vmec_grid.py`` and
-``scripts/desc_vmec_relax.py`` compare, and it is why DESC's own
+nothing else. This is what ``scripts/desc_figures.py --figure grid``
+and ``--figure relax`` compare, and it is why DESC's own
 ``NCSX_output.h5`` will not do: that is a different NCSX from the tracked
 li383 wout (``Psi = 0.497`` against the wout's ``phi_edge = 0.514``).
 
@@ -26,12 +26,12 @@ representation error and the solver difference can be told apart: the
 fit-only file is VMEC's solution in DESC's basis, the solved file is
 DESC's own equilibrium for the same boundary.
 
-**Trimmed DESC examples** (``desc_SOLOVEV.h5``, ``desc_DSHAPE_lowres.h5``).
-A shipped example carries its whole continuation family; only the last
-member is the converged solution, so :func:`trim` copies that one out and
-drops the rest. These are the cheap reader fixtures: small, iota-
-constrained, and not written by us, so they catch anything our synthetic
-writer and our parser happen to agree on wrongly.
+**Trimmed DESC examples** (``desc_HELIOTRON_lowres.h5``). A shipped
+example carries its whole continuation family; only the last member is
+the converged solution, so :func:`trim` copies that one out and drops
+the rest. This is the cheap reader fixture: small, iota-constrained,
+genuinely 3-D (nfp=19), and not written by us, so it catches anything
+our synthetic writer and our parser happen to agree on wrongly.
 
 The DESC examples are MIT-licensed, Copyright (c) 2020 Daniel Dudt, Rory
 Conlin, Dario Panici, Egemen Kolemen; ``data/DESC_LICENSE`` carries the
@@ -51,13 +51,13 @@ FIT_LMN = (8, 8, 5)
 WOUTS = (("data/wout_li383_low_res_reference.nc", "desc_li383_lowres"),
          ("data/wout_LandremanPaul2021_QA_lowres.nc", "desc_QA_lowres"))
 
-#: Shipped DESC examples copied in trimmed, as ``desc_<name>.h5``.
-EXAMPLES = ("SOLOVEV", "DSHAPE_lowres")
+#: Shipped DESC examples copied in trimmed: ``(source stem, fixture stem)``.
+EXAMPLES = (("HELIOTRON", "desc_HELIOTRON_lowres"),)
 
 LICENSE_NOTICE = """\
-The files data/desc_SOLOVEV.h5 and data/desc_DSHAPE_lowres.h5 are trimmed
-copies of the example equilibria shipped with DESC (desc/examples/), used
-as read-only test fixtures by test/test_desc.py.
+The file data/desc_HELIOTRON_lowres.h5 is a trimmed copy of the example
+equilibrium shipped with DESC (desc/examples/HELIOTRON_output.h5), used
+as a read-only test fixture by test/test_desc.py.
 
 DESC is distributed under the MIT License:
 
@@ -146,9 +146,9 @@ def main(cli: argparse.Namespace) -> None:
     os.makedirs(cli.out, exist_ok=True)
     examples = os.path.join(os.path.dirname(desc.__file__), "examples")
     written = []
-    for name in EXAMPLES:
-        dst = os.path.join(cli.out, f"desc_{name}.h5")
-        trim(os.path.join(examples, f"{name}_output.h5"), dst)
+    for src_name, stem in EXAMPLES:
+        dst = os.path.join(cli.out, f"{stem}.h5")
+        trim(os.path.join(examples, f"{src_name}_output.h5"), dst)
         written.append(dst)
     for wout, stem in WOUTS:
         if not os.path.isfile(wout):

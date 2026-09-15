@@ -36,12 +36,14 @@ Two conventions the state carries:
 
 :func:`read_equilibrium` takes the file path and the extension decides the
 route -- ``.dat`` the GVEC state, ``.nc`` a VMEC wout refit into the same
-blocks by ``mrx.vmec``; anything else raises -- and every other function
-takes the parsed state. ``test/synthetic_gvec.py`` writes a state file for
-an analytic circular torus; the test suite reads it through the same
-functions as a real one.
+blocks by ``mrx.vmec``, ``.h5`` a DESC output refit by ``mrx.desc``;
+anything else raises -- and every other function takes the parsed state.
+``test/synthetic_gvec.py`` writes a state file for an analytic circular
+torus; the test suite reads it through the same functions as a real one.
 """
 from __future__ import annotations
+
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -117,6 +119,97 @@ def evaluate(block, s, theta, zeta):
            - np.outer(block["n"], zeta)[:, None, :])                      # (n_modes, n_t, n_z)
     F = np.cos(arg) if block["sin_cos"] == 2 else np.sin(arg)
     return np.einsum("sk,ktz->stz", A, F)
+
+
+def flip_poloidal_angle(st: dict[str, Any]) -> dict[str, Any]:
+    """The same equilibrium re-expressed in ``theta -> -theta``.
+
+    The substitution is exact on the shared block dict, so it applies to a
+    GVEC state, a VMEC wout or a DESC output. Two conversions in the wild
+    write the flipped orientation:
+
+    * DESC's ``VMECIO.load`` runs ``ensure_positive_jacobian``, which for a
+      left-handed wout -- most of them -- silently flips the sign of theta,
+      negating every ``m < 0`` mode of ``R`` and ``Z``, every ``m >= 0``
+      mode of lambda, and ``iota``.
+    * pyGVEC's ``convert-wout`` sets ``phiedge = -phiedge``, a deliberate
+      flux-sign flip that can come with the opposite poloidal orientation.
+
+    Comparing either against the wout it came from at equal ``theta``
+    compares two different points. This undoes that.
+
+    In the single-angle blocks ``trig(m theta - n zeta)`` at ``-theta`` is
+    ``trig(m theta + n zeta)``, i.e. the mode ``(m, -n)``, picking up a
+    minus sign in the sine blocks. With lambda additionally negated --
+    ``theta* = theta + lambda`` must flip with theta -- the three blocks
+    come out as
+
+    * ``X1`` (cosine): ``n -> -n``
+    * ``X2`` (sine): ``n -> -n``, coefficients negated
+    * ``LA`` (sine): ``n -> -n``, the two sign flips cancelling
+
+    and ``iota``, a ratio of the two angles' fluxes, negates. ``phi`` and
+    ``pressure`` are untouched: neither knows about theta.
+
+    Nothing in MRX needs this to *read* a file -- ``build_gvec_map``
+    measures the handedness that makes ``det DF > 0`` either way. It is for
+    holding two readings of the same equilibrium against each other, where
+    the labels must agree.
+
+    Args:
+        st: a state dict from :func:`read_state`, :func:`mrx.vmec.read_wout`
+            or :func:`mrx.desc.read_desc`.
+
+    Returns:
+        A new state dict; the input is not modified.
+    """
+    out = dict(st)
+    for name, flip_sign in (("X1", False), ("X2", True), ("LA", False)):
+        blk = dict(st[name])
+        order = np.lexsort((-blk["n"], blk["m"]))
+        blk["m"], blk["n"] = blk["m"][order], -blk["n"][order]
+        blk["coef"] = blk["coef"][order] * (-1.0 if flip_sign else 1.0)
+        out[name] = blk
+    out["profiles"] = dict(st["profiles"], iota=-np.asarray(st["profiles"]["iota"]))
+    return out
+
+
+def match_orientation(st: dict[str, Any], ref: dict[str, Any],
+                      n_probe: int = 16) -> tuple[dict[str, Any], int]:
+    """``st`` turned to ``ref``'s poloidal orientation, measured not assumed.
+
+    Which way a converter flipped depends on the source file's handedness,
+    so the orientation is decided rather than predicted: ``R`` AND ``Z``
+    are evaluated both ways against the reference and the closer wins. Both
+    are needed. ``R`` alone cannot see the flip on an up-down-symmetric
+    cross-section, where it is even in theta -- the circular torus of
+    ``test/synthetic_gvec.py`` is exactly that case -- while ``Z``, a sine
+    block, changes sign there. No stellarator-symmetric shape hides from
+    the pair, since that would need ``Z`` identically zero.
+
+    Args:
+        st: the state to orient.
+        ref: the reference state, typically :func:`mrx.vmec.read_wout`.
+        n_probe: samples per angle of the probe grid.
+
+    Returns:
+        ``(state, sign)``: the state in ``ref``'s orientation (``st``
+        itself when they already agree) and ``+1`` or ``-1``.
+    """
+    rho = np.linspace(0.2, 1.0, 5)
+    theta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / n_probe
+    zeta = 2.0 * np.pi * (np.arange(n_probe) + 0.5) / (n_probe * ref["nfp"])
+
+    def distance(state: dict[str, Any]) -> float:
+        total = 0.0
+        for name in ("X1", "X2"):
+            want = evaluate(ref[name], rho, theta, zeta)
+            got = evaluate(state[name], rho, theta, zeta)
+            total += float(np.abs(got - want).max()) / max(float(np.abs(want).max()), 1e-30)
+        return total
+
+    flipped = flip_poloidal_angle(st)
+    return (st, 1) if distance(st) <= distance(flipped) else (flipped, -1)
 
 
 def profile_spline(st, name):

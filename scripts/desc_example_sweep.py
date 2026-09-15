@@ -1,7 +1,7 @@
 """Relax MRX from DESC's own saved equilibria, and check the metrics.
 
-The other two scripts compare DESC with VMEC on one configuration. This
-one is breadth: it reads DESC's shipped ``*_output.h5`` examples straight
+``scripts/desc_figures.py`` compares DESC with VMEC on one configuration.
+This one is breadth: it reads DESC's shipped ``*_output.h5`` examples straight
 through :func:`mrx.desc.read_desc`, builds a sequence and an initial field
 from each, relaxes for a fixed budget, and asserts that everything a
 relaxation is supposed to do, it does. A reader can be right on li383 and
@@ -15,9 +15,9 @@ form of its own boundary -- so a bad conversion cannot hide behind
 plausible-looking numbers. These are the sharp cases. The finite-beta ones
 instead check ``beta_vol`` against the file's own volume average.
 
-**Stored iota against stored current.** ``SOLOVEV``, ``HELIOTRON``,
-``W7-X``, ``ATF``, ``DSHAPE`` store an iota profile and run from the pure
-``h5py`` parse, anywhere. ``NCSX``, ``ARIES-CS``, ``precise_QA``, ``HSX``,
+**Stored iota against stored current.** ``HELIOTRON``, ``W7-X`` and
+``ATF`` store an iota profile and run from the pure ``h5py`` parse,
+anywhere. ``NCSX``, ``ARIES-CS``, ``precise_QA``, ``HSX``,
 ``WISTELL-A`` are current-constrained: they store no iota at all and need
 DESC installed for :func:`mrx.desc._iota_from_desc` to recompute it. The
 script skips those with a clear note rather than failing, so it is useful
@@ -45,7 +45,7 @@ Usage::
 
     python -u scripts/desc_example_sweep.py --ns 6,10,10 --p 2 --steps 500 \
         --out outputs/desc_sweep
-    python -u scripts/desc_example_sweep.py --cases SOLOVEV,DSHAPE_lowres --steps 200
+    python -u scripts/desc_example_sweep.py --cases HELIOTRON,W7-X --steps 200
     python -u scripts/desc_example_sweep.py --plot outputs/desc_sweep
 
 ``--precision`` is exported as ``MRX_DTYPE`` before ``mrx`` is imported.
@@ -65,9 +65,6 @@ import traceback
 #: ones that store no iota and so need DESC importable.
 CASES = (
     # name,             nfp, current-constrained
-    ("DSHAPE_lowres",     1, False),
-    ("SOLOVEV",           1, False),
-    ("DSHAPE",            1, False),
     ("HELIOTRON",        19, False),
     ("W7-X",              5, False),
     ("ATF",              12, False),
@@ -95,7 +92,7 @@ HELICITY_DRIFT_C = 25.0
 #: relaxes -- HELIOTRON releases 0.7% of its energy at (8, 14, 8) p=2 --
 #: which says nothing about the reader or the stepper. Measured
 #: 2026-09-13: the ratio of drift to fractional energy release is 1.2 for
-#: HELIOTRON, 0.4 for DSHAPE and 0.3 for ATF, so 2 is the band with room.
+#: HELIOTRON and 0.3 for ATF, so 2 is the band with room.
 HELICITY_EXCURSION_C = 2.0
 
 
@@ -197,12 +194,13 @@ def locate(root: str, name: str) -> str | None:
 
     Args:
         root: the directory to look in.
-        name: the case name, e.g. ``"SOLOVEV"``.
+        name: the case name, e.g. ``"HELIOTRON"``.
 
     Returns:
         The path, or ``None`` if the case is not there.
     """
-    for pattern in (f"{name}_output.h5", f"desc_{name}.h5", f"{name}.h5"):
+    for pattern in (f"{name}_output.h5", f"desc_{name}.h5",
+                    f"desc_{name}_lowres.h5", f"{name}.h5"):
         hit = os.path.join(root, pattern)
         if os.path.isfile(hit):
             return hit
@@ -271,9 +269,8 @@ def one_case(path: str, name: str, cli: argparse.Namespace) -> dict:
     # the one the file describes, and they must all hold. The relaxation
     # checks say the descent then behaved, which is a property of MRX at
     # this resolution and step budget, not of the reader -- a case that
-    # starts at the force floor (SOLOVEV: a pressure-balanced state has a
-    # Leray-projected force of zero) has nothing left to minimise and
-    # wanders, which is honest behaviour rather than a reading error.
+    # starts at the force floor has nothing left to minimise and wanders,
+    # which is honest behaviour rather than a reading error.
     reader = dict(
         div_at_roundoff=info["div"] < 1e-10,
         wall_negligible=info["wall_discarded"] < WALL_DISCARDED_TOL,
