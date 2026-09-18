@@ -241,9 +241,20 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
     return x, jnp.where(converged, -its, its)
 
 
+def _compose_parity(projectors, parity):
+    """The deflation projectors composed with a half-period sequence's parity
+    projectors ``(project_primal, project_dual)`` (:mod:`mrx.symmetry`), or
+    themselves when ``parity`` is None."""
+    if parity is None:
+        return projectors
+    pp, pd = projectors
+    par_p, par_d = parity
+    return (lambda x: par_p(pp(x))), (lambda f: par_d(pd(f)))
+
+
 def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x: x, x0=None,
                       maxiter=None, tol=None, A_res=None, norm=None, inner_tol=None,
-                      inner_dtype=DTYPE):
+                      inner_dtype=DTYPE, parity=None):
     """
     Solve the singular SPSD system for the minimum norm solution using CG.
 
@@ -265,12 +276,17 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
         inner_tol: the CG's tolerance per pass under :func:`refine`;
             ``None`` is the square root of ``tol`` (:func:`mrx.precision.inner_tol`).
         inner_dtype: the dtype the CG runs in under :func:`refine`.
+        parity: ``(project_primal, project_dual)`` of a half-period sequence
+            (:meth:`mrx.symmetry.FreeProjector.projectors`), composed with the
+            deflation: the iterates keep the right-hand side's parity, the
+            residuals lose the other one.
     """
     if mass_matvec is None:
         def mass_matvec(x): return x
 
     if A_res is None:
-        project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=b.dtype), mass_matvec)
+        project_primal, project_dual = _compose_parity(
+            deflation_projectors(jnp.asarray(vs, dtype=b.dtype), mass_matvec), parity)
 
         def A_matvec_safe(x):
             return project_dual(A_matvec(project_primal(x)))
@@ -285,10 +301,10 @@ def solve_singular_cg(A_matvec, b, vs, mass_matvec=None, precond_matvec=lambda x
 
     # The inner iteration's projectors in its own dtype, the outer loop's in
     # the residual precision.
-    project_primal_in, project_dual_in = deflation_projectors(
-        jnp.asarray(vs, dtype=inner_dtype), mass_matvec)
-    project_primal, project_dual = deflation_projectors(
-        jnp.asarray(vs, dtype=RESIDUAL_DTYPE), mass_matvec)
+    project_primal_in, project_dual_in = _compose_parity(deflation_projectors(
+        jnp.asarray(vs, dtype=inner_dtype), mass_matvec), parity)
+    project_primal, project_dual = _compose_parity(deflation_projectors(
+        jnp.asarray(vs, dtype=RESIDUAL_DTYPE), mass_matvec), parity)
 
     def A_matvec_safe(x):
         return project_dual_in(A_matvec(project_primal_in(x)))
@@ -507,7 +523,7 @@ def solve_saddle_point_minres(
         vs_upper=None,
         x0_upper=None, x0_lower=None,
         tol=None, maxiter=None, saddle_res=None, norm_upper=None, norm_lower=None,
-        inner_tol=None, inner_dtype=DTYPE):
+        inner_tol=None, inner_dtype=DTYPE, parity_upper=None, parity_lower=None):
     """
     Solve the saddle-point system using preconditioned MINRES::
 
@@ -567,7 +583,11 @@ def solve_saddle_point_minres(
     def _rows(vs, n):
         return jnp.zeros((0, n), dtype=dtype) if vs is None or len(vs) == 0 else jnp.asarray(vs)
 
-    project_primal_upper, project_dual_upper = deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec)
+    project_primal_upper, project_dual_upper = _compose_parity(
+        deflation_projectors(_rows(vs_upper, n_upper), mass_upper_matvec), parity_upper)
+    # The lower block has no kernel to deflate; ``parity_lower`` is the parity
+    # projectors of its space (the same sign as the upper's: sigma follows u).
+    project_primal_lower, project_dual_lower = _compose_parity(((lambda x: x), (lambda f: f)), parity_lower)
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -577,25 +597,27 @@ def solve_saddle_point_minres(
 
     def project_primal(x):
         u, s = unpack(x)
-        return pack(project_primal_upper(u), s)
+        return pack(project_primal_upper(u), project_primal_lower(s))
 
     # --- Saddle-point matvec ---
     def A_matvec(x):
         u, s = unpack(x)
         u = project_primal_upper(u)
+        s = project_primal_lower(s)
         # Upper block: S @ u + D @ s
         r_upper = stiffness_matvec(u) + derivative_matvec(s)
         # Lower block: D^T @ u - M @ s
         r_lower = derivative_T_matvec(u) - mass_lower_matvec(s)
-        return pack(project_dual_upper(r_upper), r_lower)
+        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
 
     # --- Block-diagonal preconditioner ---
     def precond(x):
         u, s = unpack(x)
         u = project_dual_upper(u)
+        s = project_dual_lower(s)
         pu = precond_upper(u) if precond_upper is not None else u
         ps = precond_lower(s) if precond_lower is not None else s
-        return pack(project_primal_upper(pu), ps)
+        return pack(project_primal_upper(pu), project_primal_lower(ps))
 
     # --- RHS and initial guess ---
     b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
@@ -615,8 +637,8 @@ def solve_saddle_point_minres(
 
     def apply_res(x):
         u, s = unpack(x)
-        r_upper, r_lower = saddle_res(project_primal_upper(u), s)
-        return pack(project_dual_upper(r_upper), r_lower)
+        r_upper, r_lower = saddle_res(project_primal_upper(u), project_primal_lower(s))
+        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
 
     tol = solve_tol() if tol is None else tol
     inner = default_inner_tol(tol) if inner_tol is None else inner_tol

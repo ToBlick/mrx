@@ -220,8 +220,12 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     curl, curl_t, A = chain(seq)
     A_res = chain(on)[2]
     P = _preconditioner(seq, precond)
+    rhs = curl_t(MF)
+    # a half-period sequence: the residual loses the round-off of the other parity
+    pj = seq.free_projector(1, True)
+    project_dual = None if pj is None else pj.projectors(rhs)[1]
     a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=0.0, maxiter=maxiter),
-                     curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
-                     max_passes=1, inner_dtype=seq.dtype)
+                     rhs, x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
+                     max_passes=1, inner_dtype=seq.dtype, project_dual=project_dual)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)

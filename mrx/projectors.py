@@ -182,7 +182,7 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
 #: function that already lives in the target space returns its own DOFs.
 
 
-def _conforming_restriction(e, c_full):
+def _conforming_restriction(e, c_full, dtype=DTYPE):
     """Restrict full tensor-product coefficients onto the extracted space.
 
     ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
@@ -225,7 +225,7 @@ def _conforming_restriction(e, c_full):
     for lab in np.unique(labels[core]):
         idx = order[bounds[lab]:bounds[lab + 1]]
         out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
-    return jnp.asarray(out, dtype=jnp.asarray(c_full).dtype)
+    return jnp.asarray(out, dtype=dtype)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:

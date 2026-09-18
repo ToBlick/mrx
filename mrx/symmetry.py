@@ -225,7 +225,30 @@ class FreeProjector:
             c = gram_inv(e64 @ reflect(e64.T @ y64, plan))
             return (0.5 * (y64 + s * c)).astype(jnp.asarray(y).dtype)
 
-        self.pre, self.post = pre, post
+        @jax.jit
+        def dual(r, s):
+            r64 = jnp.asarray(r, jnp.float64)
+            c = e64 @ reflect(e64.T @ gram_inv(r64), plan)
+            return (0.5 * (r64 + s * c)).astype(jnp.asarray(r).dtype)
+
+        @jax.jit
+        def parity(r):
+            return parity_of(e64.T @ jnp.asarray(r, jnp.float64), plan)
+
+        self.pre, self.post, self.dual, self.parity = pre, post, dual, parity
+
+    def projectors(self, b):
+        """``(project_primal, project_dual)`` of the parity of the dual
+        vector ``b`` (a solve's right-hand side): what a solver composes with
+        its deflation projectors so that its iterates stay of that parity
+        and its residuals lose the round-off of the other one -- the part
+        the half-period applies cannot reduce, which otherwise dominates a
+        converged residual and runs the inner CG to its cap."""
+        return self.with_sign(self.parity(b))
+
+    def with_sign(self, s):
+        """``(project_primal, project_dual)`` for the parity ``s``."""
+        return (lambda y: self.post(y, s)), (lambda r: self.dual(r, s))
 
     def __call__(self, apply, x):
         """``Pi P Pi^T x`` for the raw preconditioner apply ``apply``."""

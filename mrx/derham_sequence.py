@@ -50,7 +50,7 @@ from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.spline_bases import basis_derivative_table, basis_table
-from mrx.symmetry import parity_of, reflection_plan, symmetrize
+from mrx.symmetry import free_projector, parity_of, reflection_plan, symmetrize
 from mrx.geometry import SequenceGeometry
 
 
@@ -619,6 +619,18 @@ class DeRhamSequence():
                              "+1 (even: velocities, forces, pressures) or -1 (odd: B, A, J, H)")
         return symmetrize(y_raw, self.reflection_plan[k], parity)
 
+    def free_projector(self, k, dirichlet=True):
+        """The :class:`mrx.symmetry.FreeProjector` of the extracted
+        ``(k, dirichlet)`` space (built once), ``None`` on a full-period
+        sequence: what the preconditioners and the solvers project with."""
+        if not self.half_period:
+            return None
+        cache = self.__dict__.setdefault("_free_projectors", {})
+        key = (int(k), bool(dirichlet))
+        if key not in cache:
+            cache[key] = free_projector(self, int(k), bool(dirichlet))
+        return cache[key]
+
     def project_parity(self, v, k, parity, dirichlet=True):
         """The part of the k-form DoF vector ``v`` of the given parity
         (:mod:`mrx.symmetry`), on a half-period sequence: the raw projector
@@ -631,7 +643,7 @@ class DeRhamSequence():
         e = self.E(k, dirichlet)
         v = jnp.asarray(v)
         raw = symmetrize(e.T @ v.astype(jnp.float64), self.reflection_plan[k], parity)
-        return _conforming_restriction(e, raw).astype(v.dtype)
+        return _conforming_restriction(e, raw, dtype=jnp.float64).astype(v.dtype)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
         """Return the squared L² norm of a k-form DOF vector ``v``."""

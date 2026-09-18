@@ -19,6 +19,7 @@ from mrx.relaxation import compute_force
 
 def _divergence_free(seq, key):
     w = jax.random.normal(key, (seq.n(2, True),), dtype=DTYPE)
+    w = seq.project_parity(w, 2, 1)          # a velocity is even (a half-period sequence needs it)
     w, _ = seq.apply_leray_projection(w, k=2)
     return w / seq.l2_norm(w, 2)
 
