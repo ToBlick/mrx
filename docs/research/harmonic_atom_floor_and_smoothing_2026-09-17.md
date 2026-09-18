@@ -189,6 +189,18 @@ The optimum is at 0.3 or above it, not below.
   rising: the undamped descent, mild. The soft continuum must be lifted to about 0.3 in
   the units of H against M_2, i.e. to the middle of the perpendicular spectrum's soft end
   (the peer's LOBPCG: the softest perpendicular modes at 0.07-0.16 with alpha 1).
+**(32,64,64)** (`B_strain_a0.3_c0_h32`, job 18648615, 16.6 s/step) against the September
+kappa 3 arm (`kappa_sweep/k3_it100_h32`, 16.5 s/step), both 100 steps:
+
+| arm | F2 at 30 / 60 / 90 | min F2 (step) | last20 | E_rem | dH/H | dt | fb |
+|---|---|---|---|---|---|---|---|
+| alpha 0.3, strain, C 0 | 9.5e-9 / 1.4e-9 / 5.7e-10 | 4.5e-10 (98) | 5.7e-10 | 1.70e-6 | -3.0e-6 | 1.00 | 0 |
+| kappa 3, C 0 (September) | 3.6e-8 / 6.9e-9 / 3.5e-9 | 3.1e-9 (82) | 3.7e-9 | 1.67e-6 | -2.5e-6 | 0.65 | 0 |
+
+Chunk means 1.7e-5, 1.2e-8, 2.4e-9, 1.1e-9, 5.7e-10: 1e-8 near step 40 (the September arm:
+53, the paper's Laplacian arm: 256), 7x lower at step 100, the same energy and helicity,
+still descending. The gain carries to the resolution where W7-X lost its surfaces.
+
 - **Candidate default: `--newton-parallel-penalty 0.3 --harmonic-floor strain`, C 0, dt
   floor off, cap 1.** Field h or B (identical on li383; B costs nothing and follows the
   transform). Pending the (32,64,64) sections and Tobias's word.
