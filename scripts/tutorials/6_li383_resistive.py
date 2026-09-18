@@ -136,7 +136,7 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
 # the truncated MINRES solve of the second variation, the line search capped at
 # the Newton step). The ideal tail conserves helicity and just settles the
 # reconnected field.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
+ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
                         newton=True, newton_tol=0.1, newton_maxiter=100,
                         newton_precond="harmonic", newton_dt_cap=1.0)
 print(f"[relax] {cli.newton_steps} Newton steps to a clean floor")

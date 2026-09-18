@@ -22,10 +22,11 @@ from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_
                             relax, write_checkpoint)
 
 STEPS, CHUNK = 50, 25
-# ||F||_end / ||F||_0 after 50 steps on li383 (8, 12, 12) p=2, measured
-# 2026-09-02: 0.113 .. 0.143 in float64, 0.154 in float32 across three runs
-# (the line search is not bitwise reproducible); band 1.25x the largest.
-FORCE_DROP = 0.20
+# ||F||_end / ||F||_0 after 50 steps on li383 (8, 12, 12) p=2: gradient
+# descent on the smoothed force, measured 2026-09-17 0.205 in mixed precision
+# (the L-BFGS direction of before, removed that day, gave 0.113 .. 0.154 on
+# 2026-09-02; the line search is not bitwise reproducible); band 1.25x.
+FORCE_DROP = 0.26
 # |H_end - H_0| / (2 E_0): the helicity drifts by the rounding of the stored
 # field, not by a solve (the solves are refined to 1e-8 in float64 whatever
 # the working dtype), so the band is a multiple of sqrt(eps) of the working
@@ -34,7 +35,7 @@ HELICITY_DRIFT_TOL = 25.0
 
 
 def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+    ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 on_chunk=lambda r: saved.append(r.steps))
@@ -65,7 +66,7 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     write_checkpoint(path, res.state, STEPS)
     state, step = read_checkpoint(path, ts)
     assert step == STEPS
-    assert np.array_equal(np.asarray(state.s_history), np.asarray(res.state.s_history))
+    assert np.array_equal(np.asarray(state.F_prev), np.asarray(res.state.F_prev))
     assert float(state.dt) == float(res.state.dt)
 
 
@@ -73,7 +74,7 @@ def test_reconnection_spends_the_helicity_asked_for(seq, b0):
     """One reconnection at the first chunk boundary, 2% of the helicity: the
     dose estimate ``eps = X |H| / (2 |int J . B|)`` is first order, the
     measured price must be within a third of the target and of its sign."""
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+    ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 reconnect_every=CHUNK, reconnect_helicity=0.02)
     assert len(res.reconnect) == 1 and res.reconnect_every == CHUNK
@@ -90,7 +91,7 @@ def test_midpoint_conserves_helicity(seq, b0):
     """Midpoint-implicit induction with the auxiliary field: Picard converges
     on every step, the energy falls, and helicity is conserved to the solves'
     tolerance."""
-    ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5, history_size=1,
+    ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5,
                      scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
     res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
     dE = np.asarray(res.trace["dE"], dtype=float)
@@ -113,8 +114,8 @@ def test_potential_force_is_the_leray_force(seq, b0):
     from mrx.relaxation import compute_force
 
     F, _, _, _, JxB = compute_force(b0, seq)
-    ts = TimeStepper(seq=seq, history_size=0, potential_velocity=True, velocity_smoothing_order=1)
-    Fp, _, Fs, _, _, _ = ts._potential_force(b0, jnp.zeros(seq.n(1, True), dtype=DTYPE), None)
+    ts = TimeStepper(seq=seq, potential_velocity=True, velocity_smoothing_order=1)
+    Fp, _, Fs, _, _ = ts._potential_force(b0, jnp.zeros(seq.n(1, True), dtype=DTYPE), None)
     Fs_leray = seq.apply_inverse_mass_plus_eps_laplace_matrix(
         seq.apply_mass_matrix(F, 2), 2, ts.velocity_smoothing_scale, dirichlet=True)
     rel = float(seq.l2_norm(Fp - F, 2) / seq.l2_norm(F, 2))
@@ -137,7 +138,7 @@ def test_helicity_correction_conserves_helicity(seq, b0):
     one scalar per step zeroes the discrete helicity change exactly, the
     energy still falls, and the correction is small (of the size of the
     leak it cancels, not of the induction)."""
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, helicity_correction=True)
+    ts = TimeStepper(seq=seq, cfl=0.5, helicity_correction=True)
     res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
     dE = np.asarray(res.trace["dE"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)

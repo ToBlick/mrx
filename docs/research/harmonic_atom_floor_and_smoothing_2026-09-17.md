@@ -1,5 +1,9 @@
 # The harmonic atom's floor computed, its profiles from B, and the smoothed Newton direction (2026-09-17)
 
+**Status:** measured 2026-09-17; the candidate Newton default (parallel penalty + strain floor) waits for Tobias's word.
+**Read for:** why kappa was LM damping, the alpha sweep, the surface checks, what is inert or negative.
+**Do not read for:** how to run Newton today (`docs/source/concepts/relaxation.md`); alpha here is absolute, /4 on li383 since 4271bc0.
+
 Branch `worktree-newton-atom-smoothing` off `newton-second-variation` (1b9bfd3). Three changes
 to the Newton preconditioner and direction, each a switch, and one seven-arm study on li383
 (16,32,32) p=2 mixed, Newton from the VMEC field, 100 steps, chunk 20, `--floor-tol 0

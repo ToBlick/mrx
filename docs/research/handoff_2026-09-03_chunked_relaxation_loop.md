@@ -1,5 +1,9 @@
 # Handoff 2026-09-03: the chunked relaxation loop and the reconnect controller
 
+**Status:** historical (2026-09-03); the loop's structure holds, the state no longer carries an L-BFGS pair (removed 2026-09-17).
+**Read for:** the chunked scan, the trace and the checkpoint layout.
+**Do not read for:** the State's fields today (`docs/source/concepts/relaxation.md`).
+
 Decided with Tobias on 2026-09-03 (li383 session, branch li383-followups). Status
 at the end of this document.
 

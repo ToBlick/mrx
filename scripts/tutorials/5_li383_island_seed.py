@@ -151,7 +151,7 @@ sections(B_seeded, f"seeded_eps{cli.seed_eps:g}",
 # only move and change shape.
 B = B_seeded
 if cli.descent_steps:
-    ts_descent = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+    ts_descent = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
     res_d = relax(initial_state(B, ts_descent), ts_descent, steps=cli.descent_steps, chunk=50,
                   floor_tol=1e-6)
     F = np.asarray(res_d.trace["F"], dtype=float)
@@ -160,7 +160,7 @@ if cli.descent_steps:
           f"dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}")
     B = res_d.state.B_n
 if cli.newton_steps:
-    ts_newton = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
+    ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
                             newton=True, newton_tol=0.1, newton_maxiter=100,
                             newton_precond="harmonic", newton_dt_cap=1.0)
     res_n = relax(initial_state(B, ts_newton), ts_newton, steps=cli.newton_steps, chunk=5,

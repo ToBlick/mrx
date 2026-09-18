@@ -1,5 +1,9 @@
 # The paper's descent block rerun at m = 0 (2026-09-17)
 
+**Status:** done 2026-09-17; the paper's descent block is gradient descent, the L-BFGS memory is gone from the code.
+**Read for:** the m = 0 numbers behind the paper's descent figures and tables, and what the red TeX blocks refer to.
+**Do not read for:** the L-BFGS results (historical: `lbfgs_batch` notes of 2026-09-13).
+
 Tobias: the L-BFGS arms with memory are too finicky for the paper (Powell restart and all);
 the descent block is steepest descent on the smoothed force, `--history 0`. Every arm of
 the September batch (`lbfgs_2026-09-13/batch.sh` and the helicity block of
@@ -45,3 +49,13 @@ rows of `appendix_run_parameters*.tex` and `hyperparameters_table.tex` edited an
 `% TODO(m = 0):` comment carrying the new numbers; the paper compiles (49 pages). Originals in
 `outputs/paper/old_m1/`. The figure script copy with the m = 0 manifest:
 `outputs/paper_m0/paper_figures.py` (this worktree), its output in `outputs/paper_m0/out/`.
+
+**Later the same evening.** The descent's label in the paper is "gradient descent" (Tobias: no
+mention of m; the memory is dropped from the paper and the code). The gamma = 0 arm is an exact
+2-cycle (lag-1 correlation of the residual -1.000: residual 2.7e-6 / 4.6e-7 with steps 3e-5 /
+1.7e-4 on every pair of steps, steepest descent zig-zagging on the stiffest grid-scale mode), so
+`lbfgs_smoothing.pdf` draws its odd and even steps as two dashed lines (`Arm(..., branches=2)` in
+`outputs/paper_m0/paper_figures.py`); both branches descend parallel to the smoothed run, the
+lower ending at 1.7e-7 against 1.1e-7. The L-BFGS memory was then removed from the code on this
+branch (`history_size`, the two-loop recursion, Powell's restart, `--history`, `--method lbfgs`
+-> `--method gradient`).

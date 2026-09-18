@@ -71,7 +71,7 @@ Flags, defaults in brackets:
                                    shortened; at the resolved floor the
                                    Newton step shrinks to a few per cent
                                    and --dt-floor ends the run. On the
-                                   L-BFGS descent it changes the
+                                   gradient descent it changes the
                                    trajectory (dt* is the binding step
                                    there) and is off by default
       --helicity-correction {false,true} [false]
@@ -82,24 +82,21 @@ Flags, defaults in brackets:
                                    natural, either scheme
                                    (TimeStepper.helicity_correction); the
                                    trace records the multiple as hcorr
-      --method {newton,lbfgs} [newton]
+      --method {newton,gradient} [newton]
                                    the direction: Newton on the second
-                                   variation (the Newton flags below) or the
-                                   L-BFGS descent
-      --history M [1]              L-BFGS secant pairs: 0 is steepest
-                                   descent, 1 memoryless BFGS (= CG)
+                                   variation (the Newton flags below) or
+                                   gradient descent on the smoothed force
       --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.02 / n_r^2]
                                    descent direction v = (I - MU L)^-G F
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
                                    disables it
-      --potential-velocity {false,true} [true for the L-BFGS descent]
+      --potential-velocity {false,true} [true for the gradient descent]
                                    the projected force as curl a + c h from
                                    the k=1 Hodge solve of curl^T load(J x B)
                                    instead of the Leray saddle solve
                                    (divergence-free to roundoff), the
-                                   smoothing on the potential, L-BFGS on
-                                   the smoothed forces; Newton and the
+                                   smoothing on the potential; Newton and the
                                    auxiliary field have their own routes
     Newton (--method newton): the direction u = curl a with
     curl^T H curl a = curl^T M F by MINRES (mrx.hessian); a non-descending
@@ -134,9 +131,9 @@ Flags, defaults in brackets:
                                    the field-aligned component only, the
                                    Hessian's null space; mrx.hessian)
     Budgets and output:
-      --steps N [100 Newton, 3000 L-BFGS]
+      --steps N [100 Newton, 3000 gradient]
                                    maximum number of steps
-      --chunk N [20 Newton, 500 L-BFGS]
+      --chunk N [20 Newton, 500 gradient]
                                    steps per compiled chunk (one lax.scan):
                                    the trace comes back, the quantities of
                                    interest are sampled (helicity, the two
@@ -152,7 +149,7 @@ Flags, defaults in brackets:
                                    ||F||^2_M / ||grad(B^2/2)||^2 is below
                                    this (the residual is not monotone; the
                                    window mean is the quantity)
-      --dt-floor DT [0.1 Newton, 0 L-BFGS]
+      --dt-floor DT [0.1 Newton, 0 gradient]
                                    stop when the last chunk's mean accepted
                                    step is below this (the regularised
                                    line search's step shrinks at the
@@ -235,11 +232,9 @@ def parse_args(argv=None):
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
     ap.add_argument("--step-regularisation", type=float, default=None,
                     help="eps of the regularised energy the line search minimises, in units of 1 / n_r^2 "
-                         "[0.1 Newton, 0 L-BFGS]")
+                         "[0.1 Newton, 0 gradient]")
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
-    ap.add_argument("--history", type=int, default=1,
-                    help="L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG)")
     ap.add_argument("--velocity-smoothing-order", type=int, default=1,
                     help="descent direction v = (I - scale L)^-order F; 0 is off and fragile: the "
                          "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
@@ -249,9 +244,9 @@ def parse_args(argv=None):
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
                     help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
-                         "[true for the L-BFGS descent; Newton and the auxiliary field have their own routes]")
-    ap.add_argument("--method", default="newton", choices=("newton", "lbfgs"),
-                    help="the direction: Newton on the second variation, or the L-BFGS descent")
+                         "[true for the gradient descent; Newton and the auxiliary field have their own routes]")
+    ap.add_argument("--method", default="newton", choices=("newton", "gradient"),
+                    help="the direction: Newton on the second variation, or gradient descent on the smoothed force")
     ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="relative residual tolerance of the Newton MINRES solve")
     ap.add_argument("--newton-maxiter", type=int, default=100,
@@ -268,12 +263,12 @@ def parse_args(argv=None):
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--newton-parallel-penalty", type=float, default=0.0,
                     help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve")
-    ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 L-BFGS]")
+    ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
     ap.add_argument("--dt-floor", type=float, default=None,
-                    help="stop when the last chunk's mean accepted step is below this [0.1 Newton, 0 L-BFGS]")
+                    help="stop when the last chunk's mean accepted step is below this [0.1 Newton, 0 gradient]")
     ap.add_argument("--floor-tol", type=float, default=1e-8,
                     help="stop when the last chunk's mean squared normalised force residual is below this")
     ap.add_argument("--reconnect-every", type=int, default=0,
@@ -308,8 +303,6 @@ def parse_args(argv=None):
     if cli.dt_floor is None:
         cli.dt_floor = 0.1 if cli.newton else 0.0
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
-    if cli.history < 0:
-        ap.error("--history must be non-negative (0 is steepest descent)")
     if cli.chunk < 1 or cli.steps % cli.chunk:
         ap.error("--steps must be a positive multiple of --chunk")
     if not os.path.isfile(cli.geometry):
@@ -371,7 +364,7 @@ def main(cli):
         seq=seq, auxiliary_B_field=cli.auxiliary_B_field,
         scheme={"explicit": IntegrationScheme.EXPLICIT,
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
-        cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
+        cfl=cli.cfl,
         helicity_correction=cli.helicity_correction,
         step_regularisation=cli.step_regularisation / ns[0] ** 2,
         velocity_smoothing_order=cli.velocity_smoothing_order,
@@ -403,7 +396,7 @@ def main(cli):
                       f"{st[i, 0]:.3e} {st[i, 1]:.3e} {st[i, 2]:.3e}", flush=True)
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
-    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}"
           f"{'  step-regularisation=%.3e' % ts.step_regularisation if cli.step_regularisation else ''}  "
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
