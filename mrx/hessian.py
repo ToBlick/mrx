@@ -292,16 +292,21 @@ def newton_direction_tr(seq, B, J, MF, delta, tol=0.03, maxiter=300, precond="ha
     """The trust-region Newton direction (Nocedal & Wright 7.2): the minimiser of the quadratic
     model ``m(a) = -b^T a + a^T A a / 2``, ``b = curl^T M_2 F``, over ``||a||_{P^-1} <= delta`` by
     :func:`mrx.solvers.pcg_steihaug_tr` from a zero guess. Returns ``(u, a, info, hit,
-    predicted)`` with ``predicted = -m(a) = b^T a - a^T A a / 2`` the model's energy decrease
-    for the step ``dt = 1`` along ``u = curl a``, and ``hit`` True when the step is on the
-    boundary; the caller takes the step, measures the actual decrease, and moves ``delta``.
+    predicted, delta)`` with ``predicted = -m(a) = b^T a - a^T A a / 2`` the model's energy
+    decrease for the step ``dt = 1`` along ``u = curl a``, ``hit`` True when the step is on the
+    boundary, and ``delta`` the radius used (``delta = 0`` on entry means the natural unit,
+    ``||b||_P``); the caller takes the step, measures the actual decrease, and moves ``delta``.
     """
     curl, curl_t, A = _newton_system(seq, B, J, parallel_penalty)
     P = _preconditioner(seq, precond)
     b = curl_t(MF)
+    # a radius of 0 asks for the natural unit: ||b||_P = ||P b||_{P^-1}, the preconditioned
+    # gradient's length in the region's norm (the Newton step's when P ~ A^-1); the ball must be
+    # finite from the first solve (an infinite one sends a negative-curvature step to infinity)
+    delta = jnp.where(delta > 0, delta, jnp.sqrt(b @ P(b)))
     a, info, hit = pcg_steihaug_tr(A, b, delta, M=P, tol=tol, maxiter=maxiter)
     predicted = b @ a - 0.5 * (a @ A(a))
-    return curl(a), a, jnp.asarray(info, dtype=jnp.int32), hit, predicted
+    return curl(a), a, jnp.asarray(info, dtype=jnp.int32), hit, predicted, delta
 
 
 def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",

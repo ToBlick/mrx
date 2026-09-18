@@ -804,11 +804,11 @@ class TimeStepper(eqx.Module):
             if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
                 precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
                                                   self.newton_parallel_penalty)
-            delta = jnp.where(state.trust_radius > 0, state.trust_radius, jnp.inf)
-            u, a, newton_it, hit, predicted = newton_direction_tr(
-                seq, B, J, MF, delta, self.newton_inner_tol, self.newton_maxiter, precond,
+            u, a, newton_it, hit, predicted, delta = newton_direction_tr(
+                seq, B, J, MF, state.trust_radius, self.newton_inner_tol, self.newton_maxiter, precond,
                 self.newton_parallel_penalty)
             newton_fallback = jnp.int32(0)
+            predicted = (predicted, delta)
         elif self.newton:
             precond = self.newton_precond_apply or self.newton_precond
             if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
@@ -920,18 +920,16 @@ class TimeStepper(eqx.Module):
         increment: the step is ``dt = 1`` when the actual energy decrease of the (linear)
         induction step, ``<F, u>_M - ||dB||_M^2 / 2``, is more than ``newton_trust_eta``
         times the model's ``predicted``, else ``dt = 0``; ``Delta`` moves by the ratio
-        (Nocedal & Wright Algorithm 4.1). A first step with ``Delta = 0`` (unconstrained)
-        sets ``Delta`` to the norm of its solution (``||a||_M``, the mass norm as the
-        proxy of ``||a||_{P^-1}`` at the same scale)."""
+        (Nocedal & Wright Algorithm 4.1); ``inc.predicted`` carries the model's decrease
+        and the radius the solve used (the natural unit ``||b||_P`` on the first step)."""
         slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
+        predicted, delta = inc.predicted
         actual = slope - 0.5 * curvature
-        ratio = actual / jnp.where(inc.predicted > 0, inc.predicted, 1.0)
-        ratio = jnp.where(inc.predicted > 0, ratio, -1.0)
+        ratio = actual / jnp.where(predicted > 0, predicted, 1.0)
+        ratio = jnp.where(predicted > 0, ratio, -1.0)
         accept = ratio > self.newton_trust_eta
         dtype = trust_radius.dtype
         dt = jnp.where(accept, 1.0, 0.0).astype(dtype)
-        a_norm = jnp.sqrt(inc.a @ self.seq.apply_mass_matrix(inc.a, 1, True))
-        delta = jnp.where(trust_radius > 0, trust_radius, a_norm)
         delta = jnp.where(ratio < 0.25, 0.25 * delta,
                           jnp.where((ratio > 0.75) & inc.hit, 2.0 * delta, delta))
         return dt, ratio.astype(dtype), delta.astype(dtype)
