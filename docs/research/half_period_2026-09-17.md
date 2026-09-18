@@ -208,3 +208,10 @@ tests and initial fields, never in a loop.
 
 The paper carries the three-model table (`outputs/paper/mrx_jcp.tex`,
 red, `tables/symmetry_table_jcp.tex`, Tobias 2026-09-18).
+
+**Superseded numbers (2026-09-18).** The "s/step" of sections 4 and 5
+include the chunk's compile, which the closure-captured constants
+dominated; on the pure chunk runner (`pure_runner_2026-09-18.md`) the
+steady rates are 5.45 / 2.05 / 1.47 s per step at n=32 and 22.9 / 8.20 /
+4.78 at n=48 for torus / period / half: 2.7x and 1.4-1.7x. The paper's
+table carries those.

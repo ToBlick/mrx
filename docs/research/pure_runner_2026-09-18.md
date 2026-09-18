@@ -90,3 +90,29 @@ job. The step kernels are unchanged, so the steady per-step rate is the
 same; the paper's three-model table (`outputs/paper`) is remeasured on
 the pure runner so that its compile-inclusive numbers mean the same
 thing in every row.
+
+## The three-model table, remeasured (runs `outputs/half_period/t2_*`)
+
+Two chunks of 20 L-BFGS steps, refined float32; setup = operators +
+harmonic forms, compile = the first chunk's excess over 20 steady steps,
+s/step = the second chunk. (`table_t2.py` in the job scratch read the
+qoi walls; the paper's `tables/symmetry_table_jcp.tex` is this.)
+
+| model | resolution | DoFs | setup [s] | compile [s] | s/step |
+|---|---|---|---|---|---|
+| whole torus, no symmetry | (32,64,192) | 1,094,016 | 197 | 29 | 5.45 |
+| one field period | (32,64,64) | 364,672 | 107 | 26 | 2.05 |
+| half a period | (32,64,64) | 364,672 | 229 | 52 | 1.47 |
+| whole torus, no symmetry | (48,96,288) | 3,788,352 | 548 | 34 | 22.9 |
+| one field period | (48,96,96) | 1,262,784 | 168 | 27 | 8.20 |
+| half a period | (48,96,96) | 1,262,784 | 293 | 45 | 4.78 |
+
+Field period against torus 2.7x per step for 3x fewer DoFs; half against
+field period 1.39x at n=32 and 1.72x at n=48. The earlier compile-inclusive
+"s/step" (half-period note, section 5) mixed a constants-heavy compile
+into the rate: 24.2 / 9.9 / 7.2 at n=32 there against 5.45 / 2.05 / 1.47
+steady here. What the half period still pays: the compile (45-52 s
+against 26, the projector's kernels) and the cold setup (229 against 107,
+293 against 168; in a warm process the build is 70 against 71 s, so the
+excess is compilation of the half-period apply path, `symmetrize_like`
+and the projector, and the probes on both parities) -- open, small.
