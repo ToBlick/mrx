@@ -122,4 +122,152 @@ Section 5 measures the force projections and the remedy.
 
 ## 5. Force projection and the parallel-flow penalty
 
-(filled in from job 18648058)
+**Force projection.** With ||F||_M = 1 at the state, the coefficient of the Newton
+step along a soft mode is <u_j, F>_M / lambda_j:
+
+| block | sum_j <u_j,F>^2 | max |<u_j,F>| | max proj/lambda | rms proj/lambda |
+|---|---|---|---|---|
+| reconnected, unmasked (axis) | 2.2e-4 | 7e-3 | 2.1 | 0.40 |
+| nested, unmasked (axis) | 1.8e-4 | 7e-3 | 0.9 | 0.24 |
+| reconnected, 1 cell masked | 6.2e-3 | 3e-2 | 7.8 | 2.0 |
+| nested, 1 cell masked | 6.1e-3 | 5e-2 | 5.7 | 1.6 |
+| reconnected, 2 cells masked (3/5 island modes) | 1.6e-2 | 5e-2 | 24 | 9.0 |
+
+The force puts almost nothing on these modes (2e-4 .. 2e-2 of its energy on a block of
+32), but a bulk mode with lambda ~ 10..100 contributes ~1e-3..1e-2 to the step and the
+soft ones 1..24: an exact Newton step would be parallel-flow garbage ten to a hundred
+times the physical step. The regularisation eps = C h_r^2 = 5e-4 is the size of these
+lambda and halves them at best. What tames them in the released configuration is the
+truncated MINRES with the harmonic atom, which believes them 10^3 stiffer and so moves
+them by proj / (atom stiffness) ~ 1e-2 in 100 iterations: Levenberg-Marquardt damping
+at the atom's floor level, by accident of the iteration count. (The peer session
+measured the floor: kappa = 3 puts it at ~12 on every layer while the physical lumped
+strain is 0.01..0.5, so the floor has been standing in for exactly this.)
+
+**The penalty.** H_alpha = H + alpha M_par, <v, M_par u> = int (v . B)(u . B) / |B|^2 J:
+Levenberg-Marquardt on the parallel component alone (Tobias's phrase). It lifts the
+null space to alpha, leaves the energy descent unchanged (<F, f B> = 0) and the
+perpendicular step untouched; one quadrature load per Hessian apply. alpha in the units
+of H against M_2, a parallel unit mode sees lambda + alpha; the atom's consistent floor
+is then strain + alpha. LOBPCG on H_1 (`reconnected_par1_lobpcg.npz`,
+`nested_par1_lobpcg.npz`):
+
+| | without penalty | alpha = 1 |
+|---|---|---|
+| lowest 32 eigenvalues | 2.6e-4 .. 0.16, still sliding at it 200 | 0.069 .. 0.16 (reconnected), 0.066 .. 0.15 (nested), flattening |
+| alignment | 0.70 .. 0.98 | 0.01 .. 0.03 |
+| <u,Hu> / <u,H_h u> | 0.001 .. 0.05 | 0.06 .. 0.30 |
+| max proj / lambda | 2.1 / 0.9 | 0.026 / 0.032 |
+
+The soft end is perpendicular now: an m = 1 axis shift at 0.07 in both states, then
+(7, -1) / (6, -1) / (8, -1) modes at r = 0.15..0.25 (the flat-iota region near the
+axis, 3..10 % of the energy in the axis cell), nothing at the 1/2 or 3/5 surfaces. The
+atom is 3..15x off on them (the floor kappa = 3 is ~12 against their 0.07), which is
+the remaining preconditioner question and the peer session's (strain floor).
+
+Code: `second_variation(seq, B, J, parallel_penalty=alpha)`,
+`TimeStepper.newton_parallel_penalty`, `relax.py --newton-parallel-penalty A` (default
+0), commit 64ffbd9.
+
+## 6. Newton arms with the penalty
+
+li383 (16,32,32) p=2 mixed from the VMEC IC, harmonic atom, 100 MINRES iterations, NO
+floor stop and no dt floor (the behaviour past the resolved floor is the point), F2 the
+squared normalised residual (chunk means), E_rem the energy removed, dH/H the helicity
+drift. The released configuration (kappa = 3, C = 0.1, alpha = 0) is
+newton_sweeps_2026-09-13/h16: floor 4.7e-9 at step 39 (floor stop).
+
+**Released atom (kappa = 3) + alpha**, 200 steps, jobs 18648564-66,
+`outputs/newton_second_variation/spectrum/arms/`:
+
+| arm | F2@60 | F2@100 | F2@140 | F2@200 | E_rem | dH/H | dt |
+|---|---|---|---|---|---|---|---|
+| C 0.1, alpha 1 | 1.77e-9 | 6.65e-10 | 3.61e-10 | 2.19e-10 | 1.98e-6 | -1.0e-5 | 1.000 every step |
+| C 0, alpha 1 | 1.77e-9 | 6.66e-10 | 3.61e-10 | 2.19e-10 | 1.98e-6 | -1.1e-5 | 1.000 every step |
+| C 0, alpha 0 (control) | 7.8e-9 | 7.9e-9 | 7.5e-9 | 1.34e-8, climbing | 2.90e-6 | +6.5e-5 | 0.57 .. 1 |
+
+The penalty arms descend 20x past the old floor and are still descending at step 200;
+C is irrelevant to every digit (the regularised search never binds at dt = 1). The
+control is the failure mode in the run: it floors at 8e-9, then climbs, removes 50 %
+more energy, and the helicity RISES - the parallel-flow garbage going through the mesh.
+
+**Physical (strain) floor + alpha**, the peer session's arms (worktree
+`.claude/worktrees/newton-atom-smoothing`, branch `worktree-newton-atom-smoothing` on
+64ffbd9, `outputs/atom_study/`; atom floor = lumped strain + alpha, `--harmonic-floor
+strain`, field h or B), 100 steps, jobs 18648567-71:
+
+| arm | min F2 (step) | F2@30 | F2@60 | F2@90 | E_rem | dH/H | dt | fallbacks |
+|---|---|---|---|---|---|---|---|---|
+| B strain, alpha 0.3, C 0 | 2.50e-10 (100) | 1.24e-9 | 5.08e-10 | 2.72e-10 | 2.00e-6 | -1.0e-5 | 1.000 | 0 |
+| B strain, alpha 1, C 0 | 5.58e-10 (100) | 3.34e-9 | 1.31e-9 | 6.68e-10 | 1.96e-6 | -9.8e-6 | 1.000 | 0 |
+| B strain, alpha 3, C 0 | 2.70e-9 (100) | 8.37e-9 | 4.51e-9 | 3.03e-9 | 1.88e-6 | -9.6e-6 | 1.000 | 0 |
+| h strain, alpha 1, C 0 | 5.59e-10 (100) | 3.29e-9 | 1.30e-9 | 6.69e-10 | 1.95e-6 | -9.7e-6 | 1.000 | 0 |
+| B strain, alpha 1, C 0.1 | 5.58e-10 (100) | 3.34e-9 | 1.31e-9 | 6.68e-10 | 1.96e-6 | -9.8e-6 | 1.000 | 0 |
+| B strain, alpha 0, C 0 (control) | 4.82e-8 (19) | 1.1e-7 | 6.9e-8 | 6.7e-8 | 2.77e-6 | +3.6e-5 | 0.95 | 0 |
+| h strain, alpha 0, C 0.1 | 6.76e-9 (54) | 1.1e-8 | 6.8e-9 | 7.8e-9 | 1.98e-6 | -9.3e-6 | 0.11 | 6 |
+| h kappa 3, alpha 0, C 0.1 (released) | 3.85e-9 (65) | 5.8e-9 | 3.9e-9 | 4.5e-9 | 1.97e-6 | -1.1e-5 | 0.25 | 0 |
+
+Same energy removed and helicity drift as the released configuration, i.e. the same
+equilibrium, resolved further: the 4e-9 "resolved floor" of September was the method's,
+not the mesh's. Smaller alpha is better down to 0.3 (0.3 < 1 < 3, ~2x each); alpha 0
+climbs. h and B profiles identical at alpha 1 (li383 is 96 % harmonic). With the
+strain floor and no penalty the direction is exact enough on the continuum to descend
+the grid-scale energy (min at step 15-19, then up, 40 % more energy removed, 100x the
+helicity drift): kappa = 3 was the Levenberg-Marquardt damping. Smoothing the Newton
+potential (mu = 0.02/n_r^2) is a negative in both configurations (fallbacks, MINRES
+converging to nothing).
+
+Peer's round three (jobs 18648612-15): alpha {0.03, 0.1, 0.3} at 200 steps, and
+(32,64,64) at alpha 0.3.
+
+**Open before a default change: the surfaces.** On W7-X, Newton past the floor was what
+destroyed the surfaces (2026-09-12), and no state 20x past the old floor has been traced
+yet. Poincare traces of the alpha 1 and the control final states: jobs 18648630/31
+(`arms/c0_a1`, `arms/c0_a0`), section 7.
+
+Suggested default if the sections are clean (peer's proposal, I agree):
+`--newton-parallel-penalty 0.3 --harmonic-floor strain --step-regularisation 0`, dt
+floor off; kappa deleted, the regularised search kept for the reconnection series at
+most.
+
+## 7. Surfaces past the old floor
+
+Poincare sections (160 lines, 400 periods, five planes; `arms/<arm>/poincare/`):
+
+| state | F2 | chaotic lines | iota |
+|---|---|---|---|
+| h16 ic (VMEC) | - | 0 / 160 | 0.395 .. 0.660 |
+| h16 best, released, step 39 | 4.7e-9 | 4 / 160 (r 0.55, 0.72, 0.80, 0.86) | 0.394 .. 0.660 |
+| C 0, alpha 1, step 200 | 2.2e-10 | 3 / 160 | 0.393 .. 0.660 |
+| peer: B strain, alpha 0.3, step 100 | 2.5e-10 | 3 / 160 (r 0.54, 0.67, 0.80) | 0.394 .. 0.660 |
+| C 0, alpha 0 control, step 200 | 1.3e-8 | **51 / 160** | flat at 1/2 over r = 0.6 .. 0.7, scattered outside |
+
+The penalty states 20x past the old floor are as clean as the released floor state:
+the same nested structure, the same small chains at 1/2 (r ~ 0.55) and 3/7 (r ~ 0.28),
+the same wavy edge outside r 0.75, the same iota profile. The unregularised control is
+stochastic outside r ~ 0.4 with iota flattened at 1/2 - the W7-X picture of 2026-09-12
+(Newton past the floor destroying the surfaces), reproduced on li383 by taking the
+damping away. So the surface destruction was the parallel-flow null space, not the
+depth of the descent.
+
+One number moved and is not understood: the regular-line drift is 4.8e-3 (alpha 1) and
+5.2e-3 (alpha 0.3) against 8.8e-4 for the September best; the sections do not show what
+it measures. Open, one sentence's worth. The (32,64,64) alpha 0.3 arm (peer, job
+18648615) is the stricter test, since that is the mesh where W7-X lost its surfaces.
+
+## 8. Summary
+
+* The Hessian's soft end is a continuum of field-aligned flows u = f B, the discrete
+  remnant of its exact null space, at the axis and on the rational surfaces with the
+  resonant helicity, island or not. Not resonant outliers. Krylov extremes cannot see
+  this; LOBPCG with the atom can.
+* The force puts round-off on them and Newton divides by 1e-4..1e-3: an exact step
+  would be parallel-flow garbage 10-100x the physical step. kappa = 3 in the atom and the
+  100-iteration truncation were the Levenberg-Marquardt damping in disguise; eps = C h_r^2
+  is the same size as the eigenvalues and does little.
+* alpha M_par in the operator (Levenberg-Marquardt on the parallel component alone)
+  lifts the null space, leaves the descent unchanged, and lets Newton go 20x past the
+  September floor at dt = 1 with the surfaces intact; with the atom's floor at the
+  physical strain, alpha 0.3 is the best measured (peer). Candidate default:
+  `--newton-parallel-penalty 0.3 --harmonic-floor strain --step-regularisation 0`, dt
+  floor off; pending the (32,64,64) sections and Tobias.
