@@ -201,39 +201,75 @@ class FreeProjector:
     half-period applies cannot reduce."""
 
     def __init__(self, seq, k, dirichlet):
+        from scipy import sparse  # noqa: PLC0415
+
         e = seq.E(k, dirichlet)
-        e64 = jax.tree_util.tree_map(
-            lambda a: a.astype(jnp.float64) if jnp.issubdtype(a.dtype, jnp.floating) else a, e)
         plan = seq.reflection_plan[k]
+        rows, cols = np.asarray(e.rows), np.asarray(e.cols)
+        vals = np.asarray(e.vals, dtype=np.float64)
+        n_free, n_raw = (int(v) for v in e.forward_shape)
+        # The raw reflection as a signed permutation: (R x)[i] = sign[i] x[perm[i]].
+        perm, sign, off = np.empty(n_raw, dtype=np.int64), np.empty(n_raw), 0
+        for perm_t, perm_z, sgn, shape in plan:
+            n_c = int(np.prod(shape))
+            idx = np.arange(n_c).reshape(shape)
+            perm[off:off + n_c] = off + idx[:, list(perm_t), :][:, :, list(perm_z)].ravel()
+            sign[off:off + n_c] = sgn
+            off += n_c
         core, inverse = _extraction_gram_core(seq, k, dirichlet)
-        core_j, inv_j = jnp.asarray(core), jnp.asarray(inverse, dtype=jnp.float64)
+        # R_free = (E E^T)^-1 E R E^T. The extraction is a selection on every
+        # row but the polar core rows, and the reflection maps ring DoFs to
+        # ring DoFs, so R_free is a signed permutation of the bulk rows plus
+        # a dense block on the core rows: one gather and a tiny matvec.
+        E = sparse.csr_matrix((vals, (rows, cols)), shape=(n_free, n_raw))
+        R = sparse.csr_matrix((sign, (np.arange(n_raw), perm)), shape=(n_raw, n_raw))
+        ERE = (E @ R @ E.T).tocsr()
+        is_core = np.zeros(n_free, dtype=bool)
+        is_core[core] = True
+        bulk = np.flatnonzero(~is_core)
+        block = ERE[bulk].tocoo()
+        if block.nnz != bulk.size or np.any(is_core[block.col]):
+            raise RuntimeError("the free-space reflection is not a permutation on the bulk rows")
+        perm_free, sign_free = np.arange(n_free), np.ones(n_free)
+        perm_free[bulk[block.row]], sign_free[bulk[block.row]] = block.col, block.data
+        core_block = inverse @ ERE[np.ix_(core, core)].toarray() if core.size else np.zeros((0, 0))
+        if core.size and np.abs(ERE[np.ix_(core, bulk)]).max() > 0:
+            raise RuntimeError("the free-space reflection couples core and bulk rows")
+        perm_j, sign_j = jnp.asarray(perm_free), jnp.asarray(sign_free, dtype=jnp.float64)
+        inv_perm_j = jnp.asarray(np.argsort(perm_free))
+        core_j, block_j = jnp.asarray(core), jnp.asarray(core_block, dtype=jnp.float64)
+        blockT_j = jnp.asarray(core_block.T, dtype=jnp.float64)
         has_core = bool(core.size)
 
-        def gram_inv(c):
-            return c.at[core_j].set(inv_j @ c[core_j]) if has_core else c
+        def reflect_free(y):
+            r = sign_j * y[perm_j]
+            return r.at[core_j].set(block_j @ y[core_j]) if has_core else r
 
-        @jax.jit
-        def pre(x):
-            x64 = jnp.asarray(x, jnp.float64)
-            s = parity_of(e64.T @ x64, plan)
-            c = e64 @ reflect(e64.T @ gram_inv(x64), plan)
-            return (0.5 * (x64 + s * c)).astype(jnp.asarray(x).dtype), s
+        def reflect_free_T(r):
+            y = (sign_j * r)[inv_perm_j]
+            return y.at[core_j].set(blockT_j @ r[core_j]) if has_core else y
 
         @jax.jit
         def post(y, s):
             y64 = jnp.asarray(y, jnp.float64)
-            c = gram_inv(e64 @ reflect(e64.T @ y64, plan))
-            return (0.5 * (y64 + s * c)).astype(jnp.asarray(y).dtype)
+            return (0.5 * (y64 + s * reflect_free(y64))).astype(jnp.asarray(y).dtype)
 
         @jax.jit
         def dual(r, s):
             r64 = jnp.asarray(r, jnp.float64)
-            c = e64 @ reflect(e64.T @ gram_inv(r64), plan)
-            return (0.5 * (r64 + s * c)).astype(jnp.asarray(r).dtype)
+            return (0.5 * (r64 + s * reflect_free_T(r64))).astype(jnp.asarray(r).dtype)
 
         @jax.jit
         def parity(r):
-            return parity_of(e64.T @ jnp.asarray(r, jnp.float64), plan)
+            # the sign of r . R r, +-|r|^2 for a vector of definite parity
+            # (a dual one too: the bulk rows decide)
+            r64 = jnp.asarray(r, jnp.float64)
+            return jnp.where(jnp.vdot(r64, reflect_free(r64)) >= 0.0, 1.0, -1.0)
+
+        @jax.jit
+        def pre(x):
+            s = parity(x)
+            return dual(x, s), s
 
         self.pre, self.post, self.dual, self.parity = pre, post, dual, parity
 
