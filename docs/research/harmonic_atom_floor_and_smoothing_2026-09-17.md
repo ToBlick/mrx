@@ -227,4 +227,36 @@ profiles identical in range and shape. A residual 17x lower did not cost surface
 (16,32,32). The control with the continuum undamped, 200 steps past the floor, is the
 destroyed-surfaces case of W7-X 2026-09-12 reproduced on li383: 51 chaotic lines. The one
 number that moved is the regular-line drift (5e-3 against 9e-4); the pictures do not show
-what it measures. The (32,64,64) arm is the stricter test (W7-X lost its surfaces there).
+what it measures.
+
+**(32,64,64)** (job 18648698, `outputs/atom_study/B_strain_a0.3_c0_h32/{trace.npz,poincare/}`):
+the alpha 0.3 final at F2 4.5e-10 has **0 chaotic lines of 160**, drift 2.2e-3, iota
+0.3927..0.6610; the September h32 best (200 steps, F2 3e-9) has 0, drift 1.6e-3, iota
+0.3949..0.6610. Nested surfaces throughout, the small 1/2 and 3/5 chains and the wavy edge of
+every li383 state, a smooth iota profile without scatter. Surfaces intact at the resolution
+where W7-X lost them (2026-09-12), 7x past the September residual.
+
+## 9. Verdict
+
+1. **kappa is gone.** The harmonic atom's floor is the lumped strain of the field, computed
+   (`--harmonic-floor strain`); the Levenberg-Marquardt damping that kappa = 3 was
+   providing by accident now sits where it belongs, in the operator, as the peer session's
+   parallel-flow penalty `alpha M_par` (`--newton-parallel-penalty 0.3`), and the atom adds
+   the same alpha to its floor so that operator and preconditioner agree at both ends.
+2. **The regularised line search and the dt floor are inert** at that configuration
+   (C 0.1 = C 0 to every digit at dt = 1). The step cap stays at 1 (lifting it reflects the
+   resolved modes at dt* = 2). Smoothing the Newton direction is a negative twice over.
+3. **Profiles from B or from h are identical on li383** (96% harmonic); B costs nothing and
+   follows the field's transform, so it is the better default on a case with current.
+4. The residual reaches 1.9e-10 at 200 steps on (16,32,32) and 4.5e-10 at 100 steps on
+   (32,64,64), 7-20x below the September floor, at the Newton step on every step, no
+   fallbacks, the same energy and helicity as before, surfaces intact. September's
+   "resolved floor" was the method's.
+5. **Candidate default** (pending Tobias): `--newton-parallel-penalty 0.3 --harmonic-floor
+   strain --harmonic-field B --step-regularisation 0`, dt floor off, cap 1. On his word the
+   code loses: the kappa floor path and `HARMONIC_FLOOR`, `newton_smoothing`, the Newton
+   default of the regularised search and the dt floor (the search stays only if the
+   reconnection series wants it; it is already off there), the `h` field option if B is
+   the default. Not done here: no default flipped, no option deleted.
+
+Budget: 18 GPU jobs, about 6 GPU-hours of the 50.
