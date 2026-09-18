@@ -33,10 +33,12 @@ k=1 Laplacian atom is the alternative). The one divergence-free direction
 ``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import _dual_norm
+from mrx.precision import RESIDUAL_DTYPE
 from mrx.solvers import minres, pcg_steihaug, pcg_steihaug_tr, refine
 
 #: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
@@ -376,9 +378,49 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     P = _preconditioner(seq, precond)
     if solver not in NEWTON_SOLVERS:
         raise ValueError(f"newton_solver {solver!r} is not one of {NEWTON_SOLVERS}")
-    inner = minres if solver == "minres" else pcg_steihaug
-    a, info = refine(A_res, lambda r: inner(A, r, M=P, tol=inner_tol, maxiter=maxiter),
-                     curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
-                     max_passes=passes, inner_dtype=seq.dtype)
+    if solver == "cg":
+        a, info = refine(A_res, lambda r: pcg_steihaug(A, r, M=P, tol=inner_tol, maxiter=maxiter),
+                         curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
+                         max_passes=passes, inner_dtype=seq.dtype)
+        return curl(a.astype(seq.dtype)), a.astype(seq.dtype), jnp.asarray(info, dtype=jnp.int32)
+    a, info, npc = newton_mr(A_res, A, P, curl_t(MF), a_guess, tol, maxiter, passes,
+                             _dual_norm(ops, 1, True), inner_dtype=seq.dtype, inner_tol=inner_tol)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
+
+
+def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner_tol=0.0):
+    """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): MINRES on the float64 residual
+    in passes of ``maxiter`` iterations from the warm start ``x0``, until ``norm(b - A x) <=
+    tol norm(b)`` (the forcing term, in the residual's norm and precision) or ``passes`` are
+    spent, with the nonpositive-curvature exit: a pass that meets an NPC direction returns
+    it ALONE as the answer (the preconditioned residual of that pass's frozen iterate, a
+    descent direction of the model; the warm start and the earlier corrections are
+    dropped, since a sum with them has no such guarantee). Each pass solves for the
+    correction from zero on the residual at unit norm, as :func:`mrx.solvers.refine` does.
+    Returns ``(x, info, npc)`` with ``info`` the inner iterations of all passes, negative
+    when the residual test was met."""
+    b = b.astype(RESIDUAL_DTYPE)
+    x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
+    bnorm = norm(b)
+    bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+
+    def cond(carry):
+        _, r, k, _, npc = carry
+        return jnp.logical_and(jnp.logical_and(norm(r) > tol * bnorm_safe, k < passes), ~npc)
+
+    def body(carry):
+        x, r, k, its, _ = carry
+        rnorm = norm(r)
+        rnorm_safe = jnp.where(rnorm > 0, rnorm, 1.0)
+        d, info, npc = minres(A, (r / rnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
+                              maxiter=maxiter, npc_exit=True)
+        d = d.astype(RESIDUAL_DTYPE) * rnorm_safe
+        x_new = jnp.where(npc, d, x + d)
+        r_new = b - A_res(x_new)
+        return x_new, r_new, k + 1, its + jnp.abs(info), npc
+
+    r0 = b - A_res(x)
+    x, r, k, its, npc = jax.lax.while_loop(cond, body, (x, r0, 0, jnp.int32(0), False))
+    converged = norm(r) <= tol * bnorm_safe
+    return x, jnp.where(converged, -its, its), npc

@@ -433,9 +433,10 @@ class _MinresState(NamedTuple):
     w_pp: jnp.ndarray
     k: int
     converged: bool
+    npc: bool
 
 
-def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
+def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None, npc_exit=False):
     """
     MINRES solver for symmetric (possibly indefinite) linear systems.
 
@@ -450,6 +451,17 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
            Must be symmetric positive definite.
         tol: Relative residual tolerance; ``None`` is ``mrx.precision.SOLVE_TOL``.
         maxiter: Maximum number of iterations (default: len(b)).
+        npc_exit: the nonpositive-curvature exit of Newton-MR (Liu & Roosta
+            2022, Algorithm 1): stop at the first iteration ``t`` whose
+            residual ``r_{t-1}`` has ``<r_{t-1}, A r_{t-1}> <= 0`` -- read
+            off the Givens recurrences as ``c_{t-1} gamma_t >= 0``, no
+            extra product -- and return the preconditioned residual
+            ``M r_{t-1}`` in place of the iterate: a direction of nonpositive
+            curvature that is a descent direction of the quadratic model's
+            objective (their Lemma 11), where the iterates after it need not
+            be. From a zero guess ``r_0 = b`` and the exit at ``t = 1`` is
+            the preconditioned gradient. With ``npc_exit`` the return is
+            ``(x, info, npc)``.
 
     Returns:
         x: Solution vector.
@@ -516,14 +528,15 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         w_pp=jnp.zeros_like(b),
         k=0,
         converged=False,
+        npc=False,
     )
 
     def cond_fn(state):
-        return jnp.logical_and(state.k < maxiter, ~state.converged)
+        return jnp.logical_and(state.k < maxiter, ~(state.converged | state.npc))
 
     def body_fn(state):
         (x, y, r1, r2, beta, oldbeta, cs, sn, dbar, epsln, phibar,
-         w_prev, w_pp, k, converged) = state
+         w_prev, w_pp, k, converged, _) = state
 
         # Normalize Lanczos vector: v = y / beta
         safe_beta = jnp.where(beta > 0, beta, 1.0)
@@ -559,6 +572,10 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         gbar = sn * dbar - cs * alpha
         epsln_new = sn * beta_new
         dbar_new = -cs * beta_new
+        # Newton-MR's nonpositive-curvature test on the previous residual: in Liu & Roosta's
+        # notation gamma_t is this gbar and c_{t-1} the rotation before this one (cs = -1 at
+        # t = 1: the test reads alpha_1 <= 0, b itself an NPC direction)
+        npc_new = npc_exit & (cs * gbar >= 0.0)
 
         # New Givens rotation to eliminate beta_new from column k
         gamma = jnp.sqrt(gbar**2 + beta_new**2)
@@ -570,9 +587,10 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
         phi = cs_new * phibar
         phibar_new = sn_new * phibar
 
-        # Update direction vector and solution
+        # Update direction vector and solution (frozen at the NPC exit: the
+        # iterate before this step, s_{t-1}, is what the residual belongs to)
         w_new = (v - oldeps * w_pp - delta * w_prev) / safe_gamma
-        x_new = x + phi * w_new
+        x_new = jnp.where(npc_new, x, x + phi * w_new)
 
         # Check convergence. phibar is a residual-norm estimate built as
         # sn*phibar from phibar_0 = beta1 >= 0 and sn = beta/gamma >= 0, so it
@@ -595,13 +613,21 @@ def minres(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
             w_prev=w_new,
             w_pp=w_prev,
             k=k + 1,
-            converged=converged_new,
+            converged=converged_new & ~npc_new,
+            npc=npc_new,
         )
 
     final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
     x_final = final_state.x
     k_final = final_state.k
     converged_final = final_state.converged
+    if npc_exit:
+        # the NPC direction: the preconditioned residual of the frozen iterate (one extra
+        # product, only on this path; the iterate is returned unchanged otherwise)
+        d_npc = M(b - A_matvec(x_final))
+        x_final = jnp.where(final_state.npc, d_npc, x_final)
+        info = jnp.where(converged_final, -k_final, k_final)
+        return x_final, info, final_state.npc
 
     # info < 0: converged (|info| = iteration count); info > 0: NOT converged
     info = jnp.where(converged_final, -k_final, k_final)
