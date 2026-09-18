@@ -114,7 +114,7 @@ print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {compute_divergence_nor
 # island at the resonant chain shows in the seeded sections, not the unseeded.
 # Trace once per field, cut five planes over half a field period.
 def sections(B_dof, tag, title):
-    res = poincare(seq, B_dof, nfp, lines=cli.lines, periods=cli.periods, name=tag)
+    res = poincare(seq, B_dof, lines=cli.lines, periods=cli.periods, name=tag)
     for plane, sec in res["sections"].items():
         R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)

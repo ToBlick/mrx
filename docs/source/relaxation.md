@@ -101,6 +101,7 @@ Flags, defaults in brackets:
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
 | `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): `nfp` field periods and stellarator symmetry `(R, phi, Z) -> (R, -phi, -Z)`, onto which the spline map is projected (`R` even, `Z` odd under `(theta, zeta) -> (-theta, -zeta)`; the `[geom]` line prints the defect), field periods only, or none (`zeta` in `[0, 1]` is the whole torus, `nfp = 1`); recorded in `relax.json`, read by the tracer, which sections half a period or the whole one accordingly |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`) |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
@@ -237,11 +238,14 @@ B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 
 `mrx.poincare` traces field lines of a discrete 2-form with the toroidal
 angle as the independent variable, so every crossing of a section plane is
 an integration time and nothing is interpolated. One call does it all:
-`poincare(seq, B, nfp, lines=160, periods=400, planes=(0, .125, .25, .375, .5), seed=0)`
+`poincare(seq, B, lines=160, periods=400, planes=5, seed=0)`
 seeds `lines` field lines from the magnetic axis to the edge, each at its own
 radius and at a random poloidal angle (`seed`), follows them for `periods`
-field periods, measures iota per line and flags the chaotic ones, and cuts
-the trajectories at every plane; the step count follows from the planes
+field periods (`seq.nfp` per toroidal turn), measures iota per line and
+flags the chaotic ones, and cuts the trajectories at `planes` planes -- a
+count spread over half a period for a stellarator-symmetric map, the whole
+period otherwise (`seq.symmetry`), or the planes themselves as fractions of
+a period; the step count follows from the planes
 (every plane a step endpoint, at least 24 per period) and the returned
 `drift` (h against h/2) justifies it. The building blocks underneath are
 `logical_field`, `seed_from_axis`, `trace`, `rotational_transform` and

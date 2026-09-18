@@ -33,18 +33,20 @@ Flags (defaults in brackets):
                            the magnetic axis to the edge, at a random poloidal
                            angle [160]
     --periods N            toroidal periods per line [400]
-    --planes LIST          zeta planes in [0,1) as fractions of a period; the
-                           steps per period follow from them (every plane a
-                           step endpoint, at least 24; a fly-along-zeta movie
-                           wants --planes 0,0.015625,...,0.984375)
-                           [0,0.125,0.25,0.375,0.5 -- half a period; the other
-                           half is stellarator-symmetric]
+    --planes N|LIST        N zeta planes equispaced over what the map's
+                           symmetry leaves distinct (half a period for a
+                           stellarator-symmetric map, the whole period
+                           otherwise), or the planes themselves as fractions
+                           of a period; the steps per period follow from them
+                           (every plane a step endpoint, at least 24; a
+                           fly-along-zeta movie wants --planes 64 on a
+                           field-period-symmetric run) [5]
     --seed N               the random seed of the poloidal angles [0]
     --precision P          tracing precision float64|float32 [float64]
     --out PATH             the archive path [<run>/trace.npz]
 
 Archive (numpy .npz): ``fields`` (names, in order), ``planes``, ``ns``, ``p``,
-``nfp``, ``steps`` (per period), ``source`` (one line naming the run),
+``nfp``, ``symmetry``, ``steps`` (per period), ``source`` (one line naming the run),
 ``pressure_kind`` (weak|strong), ``trace_precision``, ``movie``; per field
 ``<f>_label``, ``<f>_iota``, ``<f>_iota_err``, ``<f>_iota_scatter`` (the window
 std, the profile ribbon), ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``,
@@ -75,7 +77,7 @@ def main():
     ap.add_argument("--geometry", default=None)
     ap.add_argument("--lines", type=int, default=160)
     ap.add_argument("--periods", type=int, default=400)
-    ap.add_argument("--planes", default="0,0.125,0.25,0.375,0.5")
+    ap.add_argument("--planes", default="5", help="a count, or a comma-separated list")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     ap.add_argument("--out", default=None, help="archive path [<run>/trace.npz]")
@@ -88,10 +90,10 @@ def main():
     import jax
     import jax.numpy as jnp
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, geometry_nfp, map_jacobian_at
-    from mrx.poincare import poincare, steps_for
+    from mrx.geometry import build_sequence, map_jacobian_at
+    from mrx.poincare import planes_for, poincare, steps_for
 
-    planes = [float(v) for v in cli.planes.split(",")]
+    planes = int(cli.planes) if cli.planes.isdigit() else [float(v) for v in cli.planes.split(",")]
     run_dir = os.path.abspath(cli.run)
     with open(os.path.join(run_dir, "relax.json")) as fh:
         results = json.load(fh)
@@ -135,17 +137,19 @@ def main():
     ns = tuple(int(v) for v in attrs["ns"])
     p = int(attrs["p"])
     nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
+    symmetry = attrs.get("symmetry", "stellarator")
     knots = attrs.get("knots")
     aux = bool(attrs.get("auxiliary_B_field", False))
     source = (f"{os.path.basename(geometry)} {ns} p={p}, relaxed in {attrs.get('precision')} "
               f"for {attrs.get('steps')} steps")
     archive = cli.out or os.path.join(run_dir, "trace.npz")
-    nfp = geometry_nfp(geometry, nfp_override)
-    print(f"[trace] {source}: nfp={nfp}, fields {fields}, planes {planes} "
-          f"({steps_for(planes)} steps per period), pressure {cli.pressure}, "
-          f"tracing in {cli.precision}", flush=True)
+    print(f"[trace] {source}: fields {fields}, pressure {cli.pressure}, tracing in {cli.precision}",
+          flush=True)
 
-    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, knots=knots)
+    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, knots=knots, symmetry=symmetry)
+    planes = planes_for(seq, planes)
+    print(f"[trace] nfp={seq.nfp}, symmetry {seq.symmetry}, planes {[f'{v:g}' for v in planes]} "
+          f"({steps_for(planes)} steps per period)", flush=True)
     if cli.pressure == "weak":
         # The weak pressure is a diagnostic of the field, not state: two solves per field.
         from mrx.relaxation import compute_force, weak_pressure
@@ -176,14 +180,15 @@ def main():
         return np.asarray(val).reshape(lr.shape)
 
     sections = {"fields": np.array(fields), "planes": np.array(planes), "ns": np.array(ns),
-                "p": p, "nfp": nfp, "steps": steps_for(planes), "source": np.array(source),
+                "p": p, "nfp": seq.nfp, "symmetry": np.array(seq.symmetry),
+                "steps": steps_for(planes), "source": np.array(source),
                 "pressure_kind": np.array(cli.pressure),
                 "trace_precision": np.array(cli.precision), "movie": movie}
     for i, name in enumerate(fields):
         t_field = time.perf_counter()
         B = dofs["B_" + name]
         assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
-        res = poincare(seq, B, nfp, lines=cli.lines, periods=cli.periods, planes=planes,
+        res = poincare(seq, B, lines=cli.lines, periods=cli.periods, planes=planes,
                        seed=cli.seed, name=name)
         sections[f"{name}_label"] = np.array(labels[name])
         for key in ("iota", "iota_err", "iota_scatter", "seed_r", "keep", "chaotic", "shown", "drift"):

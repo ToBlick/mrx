@@ -198,6 +198,11 @@ class DeRhamSequence():
         self.geometry = None
         #: the parsed geometry file of :func:`mrx.geometry.build_sequence`
         self.equilibrium = None
+        #: field periods spanned by logical zeta in [0, 1], and the map's
+        #: symmetry, one of :data:`mrx.geometry.SYMMETRIES`; both set by
+        #: :func:`mrx.geometry.build_sequence`
+        self.nfp = None
+        self.symmetry = None
         self.operators = None
         #: The dtype of the sequence's arrays and of its solves' results: the
         #: working dtype; the residual dtype on the float64 view.

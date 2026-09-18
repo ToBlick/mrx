@@ -343,7 +343,21 @@ def knot_vector(breakpoints, p, periodic):
     return np.concatenate([np.zeros(p), bp, np.ones(p)])
 
 
-def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None):
+#: What a map is assumed to satisfy, in logical ``(r, theta, zeta)`` with
+#: ``zeta`` in ``[0, 1]`` one field period:
+#: ``"stellarator"`` -- ``nfp`` field periods AND stellarator symmetry
+#: ``(R, phi, Z) -> (R, -phi, -Z)``, i.e. ``F(r, -theta, -zeta) = S F(r,
+#: theta, zeta)`` with ``S = diag(1, -1, -1)``; half a period determines the
+#: rest, and the spline map is projected onto exactly that (``R`` even, ``Z``
+#: odd; :func:`mrx.mappings.stellarator_symmetric_scalar`);
+#: ``"field-period"`` -- ``nfp`` field periods only;
+#: ``"none"`` -- no symmetry: ``zeta`` in ``[0, 1]`` is the whole torus,
+#: ``nfp = 1``.
+SYMMETRIES = ("stellarator", "field-period", "none")
+
+
+def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
+                   symmetry="stellarator"):
     """Build the sequence for a geometry and assemble its solver operators.
 
     Args:
@@ -361,6 +375,13 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         knots: ``(r, theta, zeta)`` breakpoints per axis, each a list from
             0 to 1 or ``None`` for the uniform grid of ``ns``; the knot
             vectors are :func:`knot_vector` of them.
+        symmetry: one of :data:`SYMMETRIES`. The default is what every
+            supported input has: a VMEC wout (the reader refuses ``lasym``),
+            a GVEC state, and the analytic maps. With ``"stellarator"`` an
+            equilibrium map is projected onto the symmetric subspace, which
+            needs uniform angular knots (a map on other knots keeps its
+            series projection, and ``[geom]`` says so); ``"none"`` requires
+            ``nfp = 1``. Stored as ``seq.symmetry``, with ``seq.nfp``.
 
     Returns:
         ``(seq, ops)``: the sequence with its geometry installed and every
@@ -378,8 +399,11 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
-    from mrx.mappings import cylinder_map, rotating_ellipse_map, toroid_map  # noqa: PLC0415
+    from mrx.mappings import (angular_reflection_allowed, cylinder_map,  # noqa: PLC0415
+                              rotating_ellipse_map, toroid_map)
 
+    if symmetry not in SYMMETRIES:
+        raise ValueError(f"symmetry must be one of {SYMMETRIES}, got {symmetry!r}")
     types = ("clamped", "periodic", "periodic")
     bps = tuple(knots) if knots is not None else (None, None, None)
     Ts = tuple(None if bp is None else knot_vector(bp, p, t == "periodic")
@@ -389,12 +413,21 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     seq = DeRhamSequence(ns, (p,) * 3, p + 1, types, polar=True, tol=tol, maxiter=maxiter,
                          knots=Ts, betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
+    seq.nfp, seq.symmetry = geometry_nfp(geometry, nfp), symmetry
+    if symmetry == "none" and seq.nfp != 1:
+        raise ValueError(f"symmetry 'none' means zeta in [0, 1] is the whole torus, "
+                         f"but {geometry} has nfp = {seq.nfp}")
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)
-        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp)
+        project = symmetry == "stellarator" and angular_reflection_allowed(seq.basis_0)
+        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp, stellarator_symmetric=project)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
-              f"det DF in [{info['det_range'][0]:.3e}, "
-              f"{info['det_range'][1]:.3e}]", flush=True)
+              f"det DF in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
+              f"symmetry {symmetry}"
+              + (f" (projected, defect {info['symmetry_defect']:.1e})" if project else
+                 f" (defect {info['symmetry_defect']:.1e}"
+                 + (", not projected: non-uniform angular knots)" if symmetry == "stellarator" else ")")),
+              flush=True)
         seq.set_map(map_func)
     else:
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}

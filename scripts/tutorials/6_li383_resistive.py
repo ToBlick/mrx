@@ -75,7 +75,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
-from mrx.geometry import build_sequence, geometry_nfp
+from mrx.geometry import build_sequence
 from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
@@ -88,8 +88,8 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # %%
 # Now we build the de Rham sequence on li383's geometry and its harmonic forms,
 # the operators every solve and the Poincare tracing lean on.
-nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
+nfp = seq.nfp
 compute_nullspaces(seq)
 
 # %%
@@ -170,7 +170,7 @@ print(f"  -> {path}")
 # islands show: the resistive step can open or heal a chain the ideal descent
 # would have frozen. Each field is traced once and cut at all five planes.
 def sections(B_dof, tag, title):
-    res = poincare(seq, B_dof, nfp, lines=cli.lines, periods=cli.periods, name=tag)
+    res = poincare(seq, B_dof, lines=cli.lines, periods=cli.periods, name=tag)
     for plane, sec in res["sections"].items():
         R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)

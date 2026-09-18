@@ -593,9 +593,17 @@ def seed_from_axis(field, dof, n_lines, steps_per_period=MIN_STEPS_PER_PERIOD, *
 # The section
 # ---------------------------------------------------------------------------
 
-#: The standing planes: half a field period, the other half being
-#: stellarator-symmetric.
-PLANES = (0.0, 0.125, 0.25, 0.375, 0.5)
+def planes_for(seq, planes):
+    """The section planes as fractions of a field period: ``planes`` itself
+    if it is a sequence, or ``planes`` equispaced planes over what the map's
+    symmetry leaves distinct -- half a period for a stellarator-symmetric
+    map (five: 0, 1/8, 1/4, 3/8, 1/2; the other half is the mirror image),
+    the whole period otherwise (``k / planes``)."""
+    if not isinstance(planes, int):
+        return tuple(float(p) for p in planes)
+    if seq.symmetry == "stellarator":
+        return tuple(np.linspace(0.0, 0.5, planes).tolist())
+    return tuple((np.arange(planes) / planes).tolist())
 
 
 def steps_for(planes):
@@ -641,15 +649,16 @@ def surface_label(R, Z, axis_R, axis_Z):
             r"$R$ on the midplane through the axis  [m]")
 
 
-def poincare(seq, dof, nfp, *, lines=160, periods=400, planes=PLANES, seed=0, name="field"):
+def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"):
     """The Poincare sections of the Dirichlet 2-form ``dof`` on ``seq``.
 
     Seed ``lines`` field lines from the magnetic axis to the edge
-    (:func:`seed_from_axis`), follow each for ``periods`` field periods with
-    :func:`steps_for` steps per period, measure iota, say which lines have
-    one, and cut the trajectories at every plane of ``planes`` (fractions of
-    a period, each a step endpoint). One integration, every plane a column
-    of it.
+    (:func:`seed_from_axis`), follow each for ``periods`` field periods
+    (``seq.nfp`` of them per toroidal turn) with :func:`steps_for` steps per
+    period, measure iota, say which lines have one, and cut the trajectories
+    at every plane of :func:`planes_for` -- a count, spread over what the
+    map's symmetry leaves distinct, or the planes themselves as fractions of
+    a period. One integration, every plane a column of it.
 
     Returns a dict, the archive layout of ``scripts/poincare_trace.py``:
 
@@ -678,7 +687,8 @@ def poincare(seq, dof, nfp, *, lines=160, periods=400, planes=PLANES, seed=0, na
     integration error, and does not fall under refinement -- which is exactly
     the signature of a broken zeta parameterisation on a regular line.
     """
-    field, dof = logical_field(seq, 2, True), jnp.asarray(dof)
+    field, dof, nfp = logical_field(seq, 2, True), jnp.asarray(dof), seq.nfp
+    planes = planes_for(seq, planes)
     steps = steps_for(planes)
     info = require_zeta_parameterisation(field, dof, name)
     seeds = seed_from_axis(field, dof, lines, steps, seed=seed)
@@ -712,5 +722,5 @@ def poincare(seq, dof, nfp, *, lines=160, periods=400, planes=PLANES, seed=0, na
             "seed_r": np.asarray(seeds[1:, 0]), "keep": keep, "chaotic": chaotic,
             "shown": keep & ~chaotic,
             "sections": {plane: _section_RZ(seq, ys[1:], ys[0], steps, plane) for plane in planes},
-            "drift": drift, "steps": steps,
+            "drift": drift, "steps": steps, "nfp": nfp,
             "bz_over_b": (info["bz_over_b_min"], info["bz_over_b_max"]), "walltime": walltime}

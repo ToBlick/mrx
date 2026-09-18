@@ -49,7 +49,7 @@ import numpy as np
 from scipy.interpolate import BSpline
 
 from mrx.precision import DTYPE
-from mrx.differential_forms import DiscreteFunction, det33
+from mrx.differential_forms import det33
 from mrx.projectors import _conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -160,20 +160,23 @@ def _map_with_sign(R_h, Z_h, nfp, sign):
 
     def F(x):
         ang = a * x[2]
-        r = R_h(x)[0]
-        return jnp.array([r * jnp.cos(ang), sign * r * jnp.sin(ang), Z_h(x)[0]])
+        r = R_h(x)
+        return jnp.array([r * jnp.cos(ang), sign * r * jnp.sin(ang), Z_h(x)])
     return F
 
 
-def _det_DF(map_func, n=64, seed=0):
-    """Sample det(DF) away from the axis and from the r=1 knot, where a
+def _sample_points(n=64, seed=0):
+    """Logical points away from the axis and from the r=1 knot, where a
     spline map has det DF = 0 exactly."""
     rng = np.random.default_rng(seed)
-    xs = jnp.asarray(np.column_stack([
+    return jnp.asarray(np.column_stack([
         rng.uniform(0.15, 0.95, n), rng.uniform(0.0, 1.0, n),
         rng.uniform(0.0, 1.0, n)]))
-    dets = jax.vmap(lambda x: det33(jax.jacfwd(map_func)(x)))(xs)
-    return np.asarray(dets)
+
+
+def _det_DF(map_func):
+    """det(DF) at :func:`_sample_points`."""
+    return np.asarray(jax.vmap(lambda x: det33(jax.jacfwd(map_func)(x)))(_sample_points()))
 
 
 def _angular_coefficients(basis, freqs):
@@ -279,7 +282,7 @@ def read_equilibrium(path):
                      "files (.dat) and VMEC wout files (.nc)")
 
 
-def build_gvec_map(st, seq, nfp=None):
+def build_gvec_map(st, seq, nfp=None, stellarator_symmetric=False):
     """Build the stellarator map of a GVEC state or a VMEC wout (``st``,
     the parsed file of :func:`read_equilibrium`) as a C1 polar spline map
     on ``seq.basis_0``.
@@ -287,14 +290,34 @@ def build_gvec_map(st, seq, nfp=None):
     The state supplies ``R`` and ``Z`` as radial-spline x Fourier series,
     and the map's spline coefficients are the L2 projection built from the
     series coefficients (:func:`series_spline_dofs`) -- nothing is
-    evaluated on a grid. Returns ``(F, info)`` with ``info`` the ``nfp``,
-    the measured toroidal handedness ``sign`` (``Y = sign * R sin(2 pi
-    zeta/nfp)``; a file that is degenerate under both signs raises) and the
-    sampled ``det_range``.
+    evaluated on a grid. With ``stellarator_symmetric`` the coefficients
+    are projected onto ``R`` even and ``Z`` odd under ``(theta, zeta) ->
+    (-theta, -zeta)`` (:func:`mrx.mappings.stellarator_symmetric_scalar`;
+    the angular knots must be uniform). Returns ``(F, info)`` with ``info``
+    the ``nfp``, the measured toroidal handedness ``sign`` (``Y = sign * R
+    sin(2 pi zeta/nfp)``; a file that is degenerate under both signs
+    raises), the sampled ``det_range`` and the ``symmetry_defect`` of
+    :func:`mrx.mappings.stellarator_symmetry_defect` on the same sample.
     """
+    from mrx.mappings import (stellarator_symmetric_scalar,  # noqa: PLC0415  (imports this module)
+                              stellarator_symmetry_defect)
+
     nfp = st["nfp"] if nfp is None else int(nfp)
-    R_h = DiscreteFunction(series_spline_dofs(st["X1"], st["nfp"], seq), seq.basis_0, seq.E(0))
-    Z_h = DiscreteFunction(series_spline_dofs(st["X2"], st["nfp"], seq), seq.basis_0, seq.E(0))
+    basis = seq.basis_0.bases[0]
+
+    def raw(block):
+        return (seq.E(0).T @ series_spline_dofs(block, st["nfp"], seq)).reshape(seq.basis_0.shape[0])
+
+    raw_R, raw_Z = raw(st["X1"]), raw(st["X2"])
+    if stellarator_symmetric:
+        raw_R = stellarator_symmetric_scalar(raw_R, seq.basis_0, even=True)
+        raw_Z = stellarator_symmetric_scalar(raw_Z, seq.basis_0, even=False)
+
+    def R_h(x):
+        return basis.contract(raw_R, x)
+
+    def Z_h(x):
+        return basis.contract(raw_Z, x)
 
     tried = {}
     for s in (1.0, -1.0):
@@ -302,7 +325,8 @@ def build_gvec_map(st, seq, nfp=None):
         d = _det_DF(F)
         tried[s] = (float(d.min()), float(d.max()))
         if np.isfinite(d).all() and d.min() > 0:
-            return F, {"nfp": nfp, "sign": s, "det_range": tried[s]}
+            return F, {"nfp": nfp, "sign": s, "det_range": tried[s],
+                       "symmetry_defect": float(stellarator_symmetry_defect(F, _sample_points()))}
     raise RuntimeError(f"{st['path']}: no handedness gives det DF > 0; "
                        f"sampled ranges {tried}")
 

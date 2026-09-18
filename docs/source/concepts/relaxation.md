@@ -327,6 +327,7 @@ method per run. Flags, defaults in brackets:
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`): the geometry and the initial condition (sections 4, 5) |
 | `--nfp N [file value]` | field periods, for a file that declares them wrong |
+| `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): field periods and stellarator symmetry (the spline map is projected onto it), field periods only, or none (`nfp = 1`, `zeta` in `[0, 1]` the whole torus) |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis from 0 to 1 instead of the uniform grid; the axis takes its `n` from them (`knot_vector`) |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`precision.md`) |

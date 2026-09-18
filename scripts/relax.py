@@ -29,6 +29,12 @@ Flags, defaults in brackets:
                                    map and that field. Always Leray-projected.
       --nfp N [file value]         field periods of a file that declares
                                    them wrong
+      --symmetry {stellarator,field-period,none} [stellarator]
+                                   what the map satisfies: nfp field periods
+                                   and stellarator symmetry (the map is
+                                   projected onto it), field periods only,
+                                   or nothing (zeta in [0, 1] is the whole
+                                   torus, nfp = 1); mrx.geometry.SYMMETRIES
       --ns R,T,Z [16,32,32]        spline resolution (also the map's)
       --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
                                    the breakpoints of that axis, comma-
@@ -171,6 +177,8 @@ def parse_args(argv=None):
                     help="a VMEC wout (.nc), a GVEC state (.dat) or an analytic geometry (.json)")
     ap.add_argument("--nfp", type=int, default=None,
                     help="field periods; overrides the file's nfp attribute")
+    ap.add_argument("--symmetry", default="stellarator", choices=("stellarator", "field-period", "none"),
+                    help="what the map satisfies (mrx.geometry.SYMMETRIES)")
     ap.add_argument("--ns", default="16,32,32")
     for axis in ("r", "theta", "zeta"):
         ap.add_argument(f"--knots-{axis}", default="",
@@ -274,7 +282,7 @@ def main(cli):
     t0 = time.perf_counter()
     knots = [parse_knots(s) for s in (cli.knots_r, cli.knots_theta, cli.knots_zeta)]
     seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
-                              nfp=cli.nfp, knots=knots)
+                              nfp=cli.nfp, knots=knots, symmetry=cli.symmetry)
     ns = seq.ns
     params.update(ns=list(ns), knots=knots)
     compute_nullspaces(seq)

@@ -66,15 +66,15 @@ if not _INTERACTIVE:
 import matplotlib.pyplot as plt
 import numpy as np
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.geometry import build_sequence, geometry_nfp
+from mrx.geometry import build_sequence
 from mrx.relaxation import compute_divergence_norm
 from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
 from mrx.plotting import get_2d_grids, plot_torus, render_section
 from mrx.poincare import poincare, surface_label
 from mrx.relaxation import compute_force
 
-nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
+nfp = seq.nfp
 compute_nullspaces(seq)
 
 # %%
@@ -129,7 +129,7 @@ print(f"  -> {path}")
 # A Poincare section integrates the field lines once; each toroidal plane is a
 # different cut through the same trajectories (five planes over half a field
 # period, the other half being stellarator-symmetric).
-res = poincare(seq, B, nfp, lines=cli.lines, periods=cli.periods)
+res = poincare(seq, B, lines=cli.lines, periods=cli.periods)
 for plane, sec in res["sections"].items():
     R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
     a_eff, xlabel = surface_label(R, Z, aR, aZ)
