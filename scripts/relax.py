@@ -131,6 +131,10 @@ Flags, defaults in brackets:
                                    --newton-maxiter is the cap; 0 runs the
                                    whole budget; "sqrt" = min(1/2, sqrt(rho_k))
                                    with rho_k the dimensionless force residual
+      --newton-passes N [1]        refinement passes of the Newton solve,
+                                   --newton-maxiter iterations each until the
+                                   float64 residual is below --newton-tol:
+                                   the forcing term in the code's convention
       --newton-trust-region {false,true} [false]
                                    the trust-region Newton-CG (Nocedal-Wright
                                    7.2): dt = 1 along the model's minimiser in
@@ -287,6 +291,9 @@ def parse_args(argv=None):
                     help="start the inner solve from the previous step's potential, or from zero (diagnostic)")
     ap.add_argument("--newton-trust-region", default="false", choices=("false", "true"),
                     help="the trust-region Newton-CG method (Nocedal-Wright 7.2) in place of the line search")
+    ap.add_argument("--newton-passes", type=int, default=1,
+                    help="refinement passes of the Newton solve, --newton-maxiter iterations each until the float64 "
+                         "residual is below --newton-tol (1: the fixed budget)")
     ap.add_argument("--newton-solver", default="minres", choices=("minres", "cg"),
                     help="the inner solver: MINRES or CG with the Steihaug negative-curvature exit")
     ap.add_argument("--newton-parallel-penalty", default="0",
@@ -406,6 +413,7 @@ def main(cli):
         newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
         newton_parallel_penalty=cli.newton_parallel_penalty, newton_inner_tol=cli.newton_inner_tol,
         newton_solver=cli.newton_solver, newton_warm_start=cli.newton_warm_start == "true",
+        newton_passes=cli.newton_passes,
         newton_trust_region=cli.newton_trust_region == "true",
         newton_atom_field=cli.harmonic_field, newton_atom_floor=cli.harmonic_floor,
         newton_smoothing=cli.newton_smoothing)

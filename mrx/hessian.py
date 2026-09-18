@@ -310,7 +310,7 @@ def newton_direction_tr(seq, B, J, MF, delta, tol=0.03, maxiter=300, precond="ha
 
 
 def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",
-                     parallel_penalty=0.0, inner_tol=0.0, solver="minres"):
+                     parallel_penalty=0.0, inner_tol=0.0, solver="minres", passes=1):
     """The Newton direction ``u = curl a`` at the field ``B``.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -340,12 +340,17 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     docs/research/hessian_spectrum_2026-09-17.md 7e). Then ONE pass of
     :func:`mrx.solvers.refine` measures the true residual like every solve
     in the code, in the mass-atom norm of the dual 1-forms on the residual
-    view, ``tol`` relative to the right-hand side, and reports it: one pass
-    because with the parallel penalty the direction stops changing once that
-    residual is ~0.1 (200 iterations on li383; 400 and 800 give the same
-    relaxation to three digits), and without it more iterations put more of
-    the null space into the step. Returns ``(u, a, info)`` with ``info`` the
-    iteration count, negative when the true residual met ``tol``.
+    view, ``tol`` relative to the right-hand side, and reports it. With
+    ``passes > 1`` that measurement is the forcing term of the inexact Newton
+    method in the code's own convention (the float64 residual, not the
+    solver's float32 recurrence): another ``maxiter`` iterations on the
+    residual until it is below ``tol`` or the passes are spent, one float64
+    operator apply per pass. One pass was the released choice because with the
+    parallel penalty the direction stops changing once that residual is ~0.1
+    (200 iterations on li383; 400 and 800 give the same relaxation to three
+    digits), and without it more iterations put more of the null space into
+    the step. Returns ``(u, a, info)`` with ``info`` the iteration count,
+    negative when the true residual met ``tol``.
     """
     ops = seq._require_operators(None)
     on = seq if seq.residual is None else seq.residual
@@ -374,6 +379,6 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     inner = minres if solver == "minres" else pcg_steihaug
     a, info = refine(A_res, lambda r: inner(A, r, M=P, tol=inner_tol, maxiter=maxiter),
                      curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
-                     max_passes=1, inner_dtype=seq.dtype)
+                     max_passes=passes, inner_dtype=seq.dtype)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
