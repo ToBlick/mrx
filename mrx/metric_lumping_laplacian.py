@@ -95,6 +95,7 @@ from mrx.operators import (
 )
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, sqrt_eps
 from mrx.preconditioners import _assemble_weighted_1d_mass, _simultaneous_diagonalize_pair
+from mrx.symmetry import mirror_component, mirror_zeta_1d
 
 #: Relative cut-off below which an eigenvalue of the probed dense core is
 #: treated as exactly zero: 4096 machine epsilons of the RESIDUAL precision,
@@ -481,6 +482,8 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
         # folded into K_r by averaging over exactly those directions, so
         # weighting the masses as well double counts it.
         m_full = _assemble_weighted_1d_mass(basis, quad_w[a])
+        if a == 2:
+            m_full = mirror_zeta_1d(seq, m_full, a in deriv_axes)
         masses.append(cut(m_full, a))
         if a in deriv_axes:
             # The honest thing: the 1-D stiffness OF the derivative splines.
@@ -496,8 +499,10 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
                 # degree 0, which is that same convention on the face.
                 kt = cut(_fd_stiffness_degree0(seq, a, prof), a)
             else:
-                kt = cut(_assemble_weighted_1d_mass(
-                    seq.dd_basis_jk[a], quad_w[a] * prof), a)
+                kt = _assemble_weighted_1d_mass(seq.dd_basis_jk[a], quad_w[a] * prof)
+                if a == 2:
+                    kt = mirror_zeta_1d(seq, kt, True)
+                kt = cut(kt, a)
             # a is a derivative axis here; the trace only lives on the
             # RADIAL one (a == 0), the boundary face being r = 1.
             if bc_entry == "ibpd" and a == 0:
@@ -528,6 +533,8 @@ def component_factors(seq, k, c, window=None, bc_entry="ibpd",
                 primal[a], deriv[a], quad_w[a] * stiff_prof[a],
                 _dense_incidence_1d(int(m_full.shape[0]),
                                     seq.basis_0.types[a]))
+            if a == 2:
+                k_full = mirror_zeta_1d(seq, k_full, False)
             stiffs.append(cut(k_full, a))
 
     # One alpha per Kronecker term. The honest stiffness carries its own
@@ -560,8 +567,10 @@ def component_diagonal(seq, k, c, shape):
         t2 = jnp.einsum('by,ayz->abz', tabs[1], t1)
         return jnp.einsum('cz,abz->abc', tabs[2], t2)
 
-    num = contract(w_comp * jac)
-    den = contract(jac)
+    # Half-period sequence: both are 2 * (the half integral); the full ones
+    # are the means with their mirror images.
+    num = mirror_component(seq, contract(w_comp * jac), deriv_axes)
+    den = mirror_component(seq, contract(jac), deriv_axes)
     return (num / den).reshape(shape)
 
 
@@ -673,11 +682,22 @@ def core_rows(seq, k, dirichlet):
     return core, bulk, e
 
 
-def _probe_rows(apply, size, rows, dtype=DTYPE):
+def _parity_split(seq, k, dirichlet):
+    """On a half-period sequence, ``x -> (x_even, x_odd)`` in the extracted
+    k-form space (:meth:`DeRhamSequence.project_parity`): a unit vector is
+    of no parity, and the applies of a half-period sequence are exact only
+    on one, so a probe applies to the two parts and adds. ``None`` on a
+    full-period sequence."""
+    if not seq.half_period:
+        return None
+    return lambda x: (seq.project_parity(x, k, 1, dirichlet), seq.project_parity(x, k, -1, dirichlet))
+
+
+def _probe_rows(apply, size, rows, dtype=DTYPE, split=None):
     """Dense ``A`` restricted to ``rows``, by one apply per row, on device,
     in ``dtype``: the cores are probed on the residual-precision sequence
     (:func:`_probing_sequence`) so that their inversion at :data:`CORE_TOL`
-    drops the kernel and nothing else.
+    drops the kernel and nothing else. ``split`` is :func:`_parity_split`.
 
     A Python loop of ASYNCHRONOUS dispatches: nothing here touches the host
     until the block is used, whereas the previous form copied every column
@@ -689,9 +709,12 @@ def _probe_rows(apply, size, rows, dtype=DTYPE):
     if rows.size == 0:
         return jnp.zeros((0, 0), dtype=dtype)
     rows_j = jnp.asarray(rows)
-    block = jnp.stack(
-        [apply(jnp.zeros(size, dtype=dtype).at[int(i)].set(1.0))[rows_j]
-         for i in rows], axis=1)
+
+    def column(i):
+        e = jnp.zeros(size, dtype=dtype).at[int(i)].set(1.0)
+        return apply(e) if split is None else sum(apply(part) for part in split(e))
+
+    block = jnp.stack([column(i)[rows_j] for i in rows], axis=1)
     return 0.5 * (block + block.T)
 
 
@@ -719,7 +742,7 @@ def probe_core_block(seq, operators, k, dirichlet, rows):
     return _probe_rows(
         lambda x: apply_laplacian_approx(seq, operators, x, k,
                                                dirichlet=dirichlet),
-        size, rows, dtype=seq.dtype)
+        size, rows, dtype=seq.dtype, split=_parity_split(seq, k, dirichlet))
 # --------------------------------------------------------------------------- #
 # The applied payload, as a pytree                                             #
 # --------------------------------------------------------------------------- #
@@ -1053,10 +1076,13 @@ class MetricLumpingLaplacian:
         # of M + eps S per solve, i.e. twice per relaxation step.)
         from mrx.operators import apply_mass_matrix, apply_stiffness  # noqa: PLC0415
         size = int(seq.n(k, dirichlet))
+        split = _parity_split(on, k, dirichlet)
         mass_core = _probe_rows(
-            lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype)
+            lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype,
+            split=split)
         stiffness_core = _probe_rows(
-            lambda x: apply_stiffness(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype)
+            lambda x: apply_stiffness(on, x, k, dirichlet=dirichlet), size, core, dtype=on.dtype,
+            split=split)
         if core.size > 0:
             self.core_V, self.core_mu = _simultaneous_diagonalize_pair(mass_core, stiffness_core)
         else:
@@ -1244,7 +1270,7 @@ class MetricLumpingMass:
         on = _probing_sequence(seq)
         self.core_inv = _dense_symmetric_inverse(_probe_rows(
             lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet),
-            size, core, dtype=on.dtype), core_tol)
+            size, core, dtype=on.dtype, split=_parity_split(on, k, dirichlet)), core_tol)
         self._flat = _flatten_payload(self._build_payload())
         self._apply_in = {}
 

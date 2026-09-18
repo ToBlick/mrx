@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from mrx.extraction_operators import MatrixFreeExtraction
 from mrx.mass import sumfact_apply
+from mrx.symmetry import symmetrize_like
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
@@ -170,7 +171,27 @@ def mass_core_apply(seq, k: int):
     if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.mass_plan[k], seq.geometry.mass_weights[k]
-    return lambda x: sumfact_apply(plan, weights, x)
+    return _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k, k)
+
+
+def _half_period_apply(seq, core, k_in, k_out):
+    """``core`` (a raw apply ``x -> 2 * (half-period moments)`` that
+    commutes with the reflection) made the full-period apply on a
+    half-period sequence: the output projected onto the parity read off
+    the input (:func:`mrx.symmetry.parity_of`). Exact for an input of
+    definite parity, which is every vector a half-period run produces (the
+    projector also removes the round-off symmetry breaking a long run
+    accumulates); a mixed input has to be split by the caller, as the
+    dense-core probes of the preconditioner build do
+    (:func:`mrx.metric_lumping_laplacian._probe_rows`). A full-period
+    sequence gets ``core`` itself."""
+    if not seq.half_period:
+        return core
+    plan_in, plan_out = seq.reflection_plan[k_in], seq.reflection_plan[k_out]
+
+    def apply(x):
+        return symmetrize_like(core(x), x, plan_out, plan_in)
+    return apply
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +665,7 @@ def projection_core_apply(seq, k_in: int, k_out: int):
     if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.projection_plan[(k_out, k_in)], seq.geometry.reference_weights
-    return lambda x: sumfact_apply(plan, weights, x)
+    return _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k_in, k_out)
 
 
 def extraction(seq, k: int, dirichlet: bool):

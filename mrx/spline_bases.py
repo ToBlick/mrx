@@ -511,15 +511,14 @@ def evaluate_basis_local(basis, x_q_flat, q_per_elem):
     p = basis.p
     n = basis.n
     n_local = p + 1
+    # The points cover the FIRST ``n_elem`` knot spans of the axis: all of
+    # them, or the first half of a periodic axis on a half-period rule.
+    n_elem = x_q_flat.shape[0] // q_per_elem
+    elems = jnp.arange(n_elem)
+    ks = jnp.arange(n_local)
     if basis.type == "periodic":
-        n_elem = n
-        elems = jnp.arange(n_elem)
-        ks = jnp.arange(n_local)
         gdof = (elems[:, None] + ks[None, :]) % n
     else:
-        n_elem = n - p
-        elems = jnp.arange(n_elem)
-        ks = jnp.arange(n_local)
         gdof = elems[:, None] + ks[None, :]
 
     x_local = x_q_flat.reshape(n_elem, q_per_elem)

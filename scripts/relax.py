@@ -32,7 +32,9 @@ Flags, defaults in brackets:
       --symmetry {stellarator,field-period,none} [stellarator]
                                    what the map satisfies: nfp field periods
                                    and stellarator symmetry (the map is
-                                   projected onto it), field periods only,
+                                   projected onto it, the quadrature covers
+                                   half the period and the fields keep their
+                                   parity: mrx.symmetry), field periods only,
                                    or nothing (zeta in [0, 1] is the whole
                                    torus, nfp = 1); mrx.geometry.SYMMETRIES
       --ns R,T,Z [16,32,32]        spline resolution (also the map's)

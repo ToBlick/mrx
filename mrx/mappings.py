@@ -4,10 +4,10 @@ from typing import Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax.numpy import cos, pi, sin
 
 from mrx.differential_forms import DifferentialForm
+from mrx.symmetry import is_uniform_periodic, reflection_permutation
 
 
 class SplineMap(eqx.Module):
@@ -115,26 +115,11 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
 STELLARATOR_REFLECTION = jnp.array([1.0, -1.0, -1.0])
 
 
-def _reflection_permutation(n: int, p: int) -> np.ndarray:
-    """Index permutation implementing ``x -> -x`` on a uniform periodic basis:
-    ``B_j(-x) = B_{(p - 1 - j) mod n}(x)`` for the ``n`` uniform periodic
-    B-splines of degree ``p``."""
-    return (p - 1 - np.arange(n)) % n
-
-
-def _is_uniform_periodic(basis) -> bool:
-    """Whether ``basis`` is a uniform periodic B-spline basis on ``[0, 1]``."""
-    if getattr(basis, "type", None) != "periodic":
-        return False
-    unique = np.asarray(basis.T[basis.p:basis.p + basis.n + 1])
-    return bool(np.allclose(unique, np.linspace(0.0, 1.0, basis.n + 1), atol=1e-8, rtol=0.0))
-
-
 def angular_reflection_allowed(basis_0: DifferentialForm) -> bool:
     """Whether the two angular axes of ``basis_0`` are uniform periodic
     bases, on which ``(theta, zeta) -> (-theta, -zeta)`` is an index
     permutation of the coefficients."""
-    return all(_is_uniform_periodic(basis_0.Λ[axis]) for axis in (1, 2))
+    return all(is_uniform_periodic(basis_0.Λ[axis]) for axis in (1, 2))
 
 
 def stellarator_symmetric_scalar(raw: jnp.ndarray, basis_0: DifferentialForm, even: bool) -> jnp.ndarray:
@@ -142,8 +127,8 @@ def stellarator_symmetric_scalar(raw: jnp.ndarray, basis_0: DifferentialForm, ev
     the part even (``R``) or odd (``Z``) under ``(theta, zeta) -> (-theta,
     -zeta)``, by the index permutation of the two uniform periodic angular
     axes (:func:`angular_reflection_allowed`)."""
-    perm_t = _reflection_permutation(basis_0.Λ[1].n, basis_0.Λ[1].p)
-    perm_z = _reflection_permutation(basis_0.Λ[2].n, basis_0.Λ[2].p)
+    perm_t = reflection_permutation(basis_0.Λ[1].n, basis_0.Λ[1].p)
+    perm_z = reflection_permutation(basis_0.Λ[2].n, basis_0.Λ[2].p)
     reflected = raw[:, perm_t, :][:, :, perm_z]
     return 0.5 * (raw + reflected) if even else 0.5 * (raw - reflected)
 

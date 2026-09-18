@@ -716,7 +716,7 @@ class TimeStepper(eqx.Module):
         seq = self.seq
         k = 1 if self.auxiliary_B_field else 2
         X_jk = seq.evaluate_at_quadrature(X, k, True)
-        E_dual = seq.cross_product_load_values(u_jk, X_jk, 1, 2, k, True)
+        E_dual = seq.cross_product_load_values(u_jk, X_jk, 1, 2, k, True, parity=-1)
         return seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
 
     def _potential_force(self, B: jnp.ndarray, a_guess: jnp.ndarray, J_guess: jnp.ndarray):

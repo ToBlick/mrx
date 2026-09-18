@@ -399,7 +399,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     """
     from mrx.derham_sequence import DeRhamSequence  # noqa: PLC0415  (imports this module)
     from mrx.gvec import build_gvec_map, read_equilibrium  # noqa: PLC0415
-    from mrx.mappings import (angular_reflection_allowed, cylinder_map,  # noqa: PLC0415
+    from mrx.mappings import (cylinder_map,  # noqa: PLC0415
                               rotating_ellipse_map, toroid_map)
 
     if symmetry not in SYMMETRIES:
@@ -410,23 +410,26 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
                for bp, t in zip(bps, types))
     ns = tuple(n if bp is None else len(bp) - 1 + (p if t == "clamped" else 0)
                for n, bp, t in zip(ns, bps, types))
-    seq = DeRhamSequence(ns, (p,) * 3, p + 1, types, polar=True, tol=tol, maxiter=maxiter,
-                         knots=Ts, betti_numbers=(1, 1, 0, 0))
     kind = geometry_kind(geometry)
+    # A stellarator-symmetric map on uniform angular knots: the map is
+    # projected onto the symmetry and the quadrature covers half the period
+    # (mrx.symmetry); the fields are then kept of definite parity.
+    exploit = symmetry == "stellarator" and all(bp is None for bp in bps[1:])
+    seq = DeRhamSequence(ns, (p,) * 3, p + 1, types, polar=True, tol=tol, maxiter=maxiter,
+                         knots=Ts, betti_numbers=(1, 1, 0, 0), half_period=exploit)
     seq.nfp, seq.symmetry = geometry_nfp(geometry, nfp), symmetry
     if symmetry == "none" and seq.nfp != 1:
         raise ValueError(f"symmetry 'none' means zeta in [0, 1] is the whole torus, "
                          f"but {geometry} has nfp = {seq.nfp}")
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)
-        project = symmetry == "stellarator" and angular_reflection_allowed(seq.basis_0)
-        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp, stellarator_symmetric=project)
+        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp, stellarator_symmetric=exploit)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
               f"symmetry {symmetry}"
-              + (f" (projected, defect {info['symmetry_defect']:.1e})" if project else
-                 f" (defect {info['symmetry_defect']:.1e}"
-                 + (", not projected: non-uniform angular knots)" if symmetry == "stellarator" else ")")),
+              + (f" (map projected, defect {info['symmetry_defect']:.1e}; half-period quadrature)"
+                 if exploit else f" (defect {info['symmetry_defect']:.1e}"
+                 + (", not exploited: non-uniform angular knots)" if symmetry == "stellarator" else ")")),
               flush=True)
         seq.set_map(map_func)
     else:

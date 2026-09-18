@@ -234,7 +234,7 @@ def project_reference_two_form(seq, omega_ref):
         return dF @ omega_ref(x) / jnp.linalg.det(dF)
 
     B_raw = seq.apply_inverse_mass_matrix(
-        seq.load(B_phys, 2, dirichlet=True), 2, dirichlet=True)
+        seq.load(B_phys, 2, dirichlet=True, parity=-1), 2, dirichlet=True)
     norm = float(seq.l2_norm(B_raw, 2))
     return B_raw / norm, norm
 
@@ -291,6 +291,12 @@ def initial_field(seq, seed=None):
         if seed is not None:
             info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+        # A half-period sequence keeps the fields of definite parity; the
+        # histopolated B = dA' is odd to round-off already (the Greville
+        # points reflect onto each other), and this makes it so exactly.
+        B_odd = seq.project_parity(B, 2, -1)
+        info["parity_discarded"] = float(seq.l2_norm(B - B_odd, 2) / seq.l2_norm(B, 2))
+        B = B_odd
         div = float(compute_divergence_norm(B, seq))
         info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
                     div_raw=div, div=div, leray_moved=0.0)

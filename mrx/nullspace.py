@@ -395,7 +395,7 @@ def _logical_constant_seed(seq, operators, k, dirichlet, components):
     """
     comps = jnp.asarray(components, dtype=mrx.DTYPE)
     return seq.apply_inverse_mass_matrix(
-        seq.load(lambda x_hat: comps, k, dirichlet=dirichlet, frame='ref'),
+        seq.load(lambda x_hat: comps, k, dirichlet=dirichlet, frame='ref', parity=-1),
         k, dirichlet=dirichlet, operators=operators)
 
 

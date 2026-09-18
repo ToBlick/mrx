@@ -127,6 +127,10 @@ def second_variation(seq, B, J, tol=None):
     curl^T load(J x u)``; then
 
         H u = load(B x dJ) + [load(Q x J) + load(B x W)] / 2.
+
+    Parities (:mod:`mrx.symmetry`): ``u`` even, ``B`` and ``J`` odd, so
+    ``u x B`` and ``J x u`` are odd (``E``, ``Q``, ``dJ`` and ``W`` with
+    them) and the three loads of ``H u`` even.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
@@ -136,19 +140,19 @@ def second_variation(seq, B, J, tol=None):
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)
-        E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True))
+        E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True, parity=-1))
         Q = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         Q_jk = seq.evaluate_at_quadrature(Q, 2, True)
         dJ = m1_inv(seq.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
                                                 transpose=True))
         dJ_jk = seq.evaluate_at_quadrature(dJ, 1, True)
-        JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True)
+        JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True, parity=-1)
         W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
                                               transpose=True))
         W_jk = seq.evaluate_at_quadrature(W, 1, True)
-        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
-                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
-                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
+        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True, parity=1)
+                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True, parity=1)
+                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True, parity=1)))
 
     return apply
 

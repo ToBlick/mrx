@@ -33,7 +33,8 @@ def close(x, y, seq, what, tol=0.0):
 @pytest.fixture(scope="module")
 def fields(seq, b0):
     J = seq.apply_weak_curl(b0, dirichlet=True)
-    one = seq.apply_inverse_mass_matrix(seq.load(lambda x: 1.0, 0, dirichlet=False), 0, dirichlet=False)
+    one = seq.apply_inverse_mass_matrix(seq.load(lambda x: 1.0, 0, dirichlet=False, parity=1), 0,
+                                        dirichlet=False)
     one3 = seq.apply_inverse_mass_matrix(
         seq.scalar_product_load(one, one, 3, 0, 0, False, False, False), 3, dirichlet=False)
     # The 0-forms contain the constant exactly (partition of unity); the
