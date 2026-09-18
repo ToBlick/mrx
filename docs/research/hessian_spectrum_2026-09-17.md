@@ -360,6 +360,40 @@ released configuration also holds its surfaces on FMM002 at this mesh (9.7e-11 a
 0.2-0.5). So on the W7-X reference the penalty buys full steps and a 1.5x lower residual
 with the same topology; the surface-loss mechanism itself is documented on li383 (section 7).
 
+## 7d. c * strain, and what the MINRES budget buys (2026-09-18)
+
+**The true residual of the Newton solve** (`minres_residual_probe.py`, the alpha 0.1 state
+at step 200, ||b - A a|| / ||b|| in the mass-atom norm, the number `--newton-tol 0.1` is
+compared with): penalised operator 0.20 / 0.14 / 0.081 / 0.034 / 0.018 at 50 / 100 / 200 /
+400 / 800 iterations, the direction's energy <a, A a> saturating (200 has 78 % of the
+converged value, 400 94 %; the run is identical to three digits from 200 on). Unpenalised:
+0.22 / 0.24 / 0.26 / 0.29 / 0.32 - the residual RISES with the budget and the direction's
+energy grows without bound (1.1e-9 at 800, 4x the converged value): more iterations put more
+parallel-flow garbage into the step, September's observation measured directly. The
+tolerance is inert in the code (one refine pass, MINRES at tol 0); 0.1 is met at ~200 on
+li383. Keep the fixed budget 200, or make the tolerance an active stop at 0.1 with a cap of
+400 (adapts: W7-X gains 3x from 100 -> 200).
+
+**c * strain** (Tobias: a swept constant in front of the computed strain should transfer
+better than a swept alpha; `--newton-parallel-penalty c*strain`, d93641d; batch6/, MINRES
+200, strain floor, C 0, 200 steps):
+
+| penalty | li383 (16,32,32) | W7-X FMM002 (16,32,32) |
+|---|---|---|
+| 1 * strain | 2.26e-10 | 1.2e-10 (100 it) |
+| 2 * strain | 1.70e-10 | 2.55e-11 |
+| 3 * strain | 1.62e-10 | 2.62e-11 |
+| 5 * strain | 1.63e-10 | 2.57e-11 |
+| alpha 0.1 | 1.53e-10 | 2.47e-11 |
+| alpha 0.075 | - | 2.51e-11 |
+
+c = 3 is within 6 % of the best constant on both devices; flat above 3 on li383, flat
+everywhere on W7-X (which therefore cannot discriminate, but does not object). c measures
+how much the angle-averaged, direction-diagonal strain undercounts the parallel modes'
+coupling: a property of the lumping, ~3, not of the geometry, and the profile carries the
+radial and device scaling by itself. Recommended over the constant: `--newton-parallel-penalty
+3*strain`.
+
 ## 8. Summary
 
 * The Hessian's soft end is a continuum of field-aligned flows u = f B, the discrete
@@ -379,9 +413,11 @@ with the same topology; the surface-loss mechanism itself is documented on li383
   ~2x worse. The MINRES budget is a pure cost knob now, saturating at 200. C, the dt floor
   and (so far) the fallback are inert. The regular-line drift 5e-3 vs 9e-4 is the one open
   number.
-* **Recommended default** (Tobias to decide): `--method newton --newton-parallel-penalty 0.1
-  --harmonic-floor strain --harmonic-field B --newton-maxiter 200 --step-regularisation 0
-  --dt-floor 0`, cap 1, floor-tol as a stop criterion only. Then delete kappa
+* **Recommended default** (Tobias to decide): `--method newton --newton-parallel-penalty
+  3*strain --harmonic-floor strain --harmonic-field B --newton-maxiter 200
+  --step-regularisation 0 --dt-floor 0`, cap 1, floor-tol as a stop criterion only
+  (`--newton-parallel-penalty 0.1` is equivalent on li383 and W7-X to 6 %; 3*strain carries
+  the radial profile and the device scaling on its own). Then delete kappa
   (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
   again, the Newton fallback and its two smoothing parameters.
-* GPU spent on this session: ~25 h of the 50 (spectrum probes 2, arms 20, traces 3).
+* GPU spent on this session: ~33 h of the 50 (spectrum probes 2, arms 27, traces 3, probes 1).
