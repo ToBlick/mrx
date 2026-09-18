@@ -423,12 +423,12 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner
         def from_zero(_):
             d0, info0, _ = minres(A, (b / bnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
                                   maxiter=maxiter, npc_exit=True)
-            return d0.astype(RESIDUAL_DTYPE) * bnorm_safe, jnp.abs(info0)
+            return (d0.astype(RESIDUAL_DTYPE) * bnorm_safe).astype(RESIDUAL_DTYPE), jnp.abs(info0).astype(jnp.int32)
 
-        x_npc, its_npc = jax.lax.cond(npc, from_zero, lambda _: (x + d, jnp.int32(0)), None)
+        x_npc, its_npc = jax.lax.cond(npc, from_zero, lambda _: ((x + d).astype(RESIDUAL_DTYPE), jnp.zeros((), jnp.int32)), None)
         x_new = jnp.where(npc, x_npc, x + d)
         r_new = b - A_res(x_new)
-        return x_new, r_new, k + 1, its + jnp.abs(info) + its_npc, npc
+        return x_new, r_new, k + 1, (its + jnp.abs(info) + its_npc).astype(jnp.int32), npc
 
     r0 = b - A_res(x)
     x, r, k, its, npc = jax.lax.while_loop(cond, body, (x, r0, 0, jnp.int32(0), False))
