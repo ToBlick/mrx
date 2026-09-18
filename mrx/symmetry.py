@@ -183,34 +183,57 @@ def _extraction_gram_core(seq, k, dirichlet):
     return cache[key]
 
 
-def free_projector(seq, k, dirichlet):
-    """``(y, x) -> Pi y`` on the EXTRACTED k-form space of a half-period
-    sequence, ``Pi`` the projector onto the parity of ``x``: jitted and
-    device-only, for the preconditioners. ``R_free y = (E E^T)^-1 E R E^T y``
-    with the small dense inverse of :func:`_extraction_gram_core`; the
-    extraction is used in float64 so a float64 probe of the atoms stays
-    exact, the result is in ``y``'s dtype. ``None`` on a full-period
-    sequence.
+class FreeProjector:
+    """``Pi P Pi^T`` for a preconditioner ``P`` on the EXTRACTED k-form space
+    of a half-period sequence: ``pre`` projects the input (a dual vector)
+    onto the parity it reads off it, ``post`` the output (a primal vector)
+    onto the same parity. Jitted, device-only. The primal projector is
+    ``(I + s R_free) / 2`` with ``R_free = (E E^T)^-1 E R E^T``, the dual one
+    its transpose ``E R E^T (E E^T)^-1``, ``(E E^T)^-1`` the identity but for
+    the dense polar block of :func:`_extraction_gram_core`; the extraction is
+    used in float64 so a float64 probe of the atoms stays exact.
 
     The metric-lumping atoms are only approximately reflection-equivariant
-    (the polar rows), and a preconditioned CG whose preconditioner leaks
-    the other parity feeds the half-period applies vectors they are not
-    exact on: ``Pi P Pi`` is what they apply, SPD on the pure subspace."""
-    if not seq.half_period:
-        return None
-    e = seq.E(k, dirichlet)
-    e64 = jax.tree_util.tree_map(
-        lambda a: a.astype(jnp.float64) if jnp.issubdtype(a.dtype, jnp.floating) else a, e)
-    plan = seq.reflection_plan[k]
-    core, inverse = _extraction_gram_core(seq, k, dirichlet)
-    core_j, inv_j = jnp.asarray(core), jnp.asarray(inverse, dtype=jnp.float64)
+    (the polar rows), and a residual assembled by cancellation carries an
+    impure round-off part. ``Pi P Pi^T`` is symmetric, positive on the pure
+    subspace, returns pure vectors, and is blind to that part -- so a CG
+    measuring in its norm stops where it should instead of chasing what the
+    half-period applies cannot reduce."""
 
-    @jax.jit
-    def project(y, x):
-        y64 = jnp.asarray(y, jnp.float64)
-        s = parity_of(e64.T @ jnp.asarray(x, jnp.float64), plan)
-        c = e64 @ reflect(e64.T @ y64, plan)
-        if core.size:
-            c = c.at[core_j].set(inv_j @ c[core_j])
-        return (0.5 * (y64 + s * c)).astype(jnp.asarray(y).dtype)
-    return project
+    def __init__(self, seq, k, dirichlet):
+        e = seq.E(k, dirichlet)
+        e64 = jax.tree_util.tree_map(
+            lambda a: a.astype(jnp.float64) if jnp.issubdtype(a.dtype, jnp.floating) else a, e)
+        plan = seq.reflection_plan[k]
+        core, inverse = _extraction_gram_core(seq, k, dirichlet)
+        core_j, inv_j = jnp.asarray(core), jnp.asarray(inverse, dtype=jnp.float64)
+        has_core = bool(core.size)
+
+        def gram_inv(c):
+            return c.at[core_j].set(inv_j @ c[core_j]) if has_core else c
+
+        @jax.jit
+        def pre(x):
+            x64 = jnp.asarray(x, jnp.float64)
+            s = parity_of(e64.T @ x64, plan)
+            c = e64 @ reflect(e64.T @ gram_inv(x64), plan)
+            return (0.5 * (x64 + s * c)).astype(jnp.asarray(x).dtype), s
+
+        @jax.jit
+        def post(y, s):
+            y64 = jnp.asarray(y, jnp.float64)
+            c = gram_inv(e64 @ reflect(e64.T @ y64, plan))
+            return (0.5 * (y64 + s * c)).astype(jnp.asarray(y).dtype)
+
+        self.pre, self.post = pre, post
+
+    def __call__(self, apply, x):
+        """``Pi P Pi^T x`` for the raw preconditioner apply ``apply``."""
+        xp, s = self.pre(x)
+        return self.post(apply(xp), s)
+
+
+def free_projector(seq, k, dirichlet):
+    """The :class:`FreeProjector` of ``(k, dirichlet)``, or ``None`` on a
+    full-period sequence."""
+    return FreeProjector(seq, k, dirichlet) if seq.half_period else None

@@ -1122,8 +1122,9 @@ class MetricLumpingLaplacian:
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
-        y = jitted(leaves, jnp.asarray(x))
-        return y if self.parity_projector is None else self.parity_projector(y, x)
+        if self.parity_projector is None:
+            return jitted(leaves, jnp.asarray(x))
+        return self.parity_projector(lambda v: jitted(leaves, v), jnp.asarray(x))
 
     def _pack_blocks(self, alpha_of):
         """The component blocks as :class:`_LumpBlock` leaves with ``alpha =
@@ -1319,8 +1320,9 @@ class MetricLumpingMass:
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
-        y = jitted(leaves, jnp.asarray(x))
-        return y if self.parity_projector is None else self.parity_projector(y, x)
+        if self.parity_projector is None:
+            return jitted(leaves, jnp.asarray(x))
+        return self.parity_projector(lambda v: jitted(leaves, v), jnp.asarray(x))
 
     def apply_in(self, dtype):
         """``apply`` with the payload in ``dtype``: the atom as part of an
@@ -1340,7 +1342,8 @@ class MetricLumpingMass:
             project = self.parity_projector
 
             def apply(x):
-                y = jitted(leaves, jnp.asarray(x, dtype))
-                return y if project is None else project(y, x)
+                if project is None:
+                    return jitted(leaves, jnp.asarray(x, dtype))
+                return project(lambda v: jitted(leaves, jnp.asarray(v, dtype)), jnp.asarray(x, dtype))
             self._apply_in[dtype] = apply
             return apply

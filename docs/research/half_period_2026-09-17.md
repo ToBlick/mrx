@@ -71,6 +71,18 @@ the DoFs as they are.
    solves ran to 10000 iterations: the atom's output leaks the other
    parity, the half-period apply projects it away, CG loses conjugacy.
    Fixed by `Pi P Pi` on every atom (measured in section 4).
+4. A sparse shortcut for the free-space reflection (`(E E^T)^-1 E R E^T`
+   assembled with per-component blocks) was wrong at 1e-3; the exact
+   `_conforming_restriction` is kept (returned in the input's dtype), and
+   the device projector of the atoms is checked against it (1e-16).
+5. Primal against dual purity. A free vector `x` is pure when its lift
+   `E^T x` is; a DUAL vector (a load, `M x`) is pure when `E R E^T (E
+   E^T)^-1 r = +-r`. On the polar rows, where `E E^T` is not the identity,
+   the two differ: a primal-pure random vector used as a right-hand side is
+   dual-impure, the projected preconditioner annihilates that part, and CG
+   stalls. That was my test, not the code -- every load and apply produces
+   dual-pure vectors -- and it cost an evening: the `M_k^-1` lines of the
+   operator diagnostic have to use `M_full x` as the right-hand side.
 
 ## 4. Measurements
 
