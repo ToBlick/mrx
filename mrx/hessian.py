@@ -270,7 +270,7 @@ def _preconditioner(seq, name):
 
 
 def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",
-                     parallel_penalty=0.0):
+                     parallel_penalty=0.0, inner_tol=0.0):
     """The Newton direction ``u = curl a`` at the field ``B``.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -280,23 +280,27 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     MINRES solve), ``tol`` the relative residual of the solve in the
     preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
     of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
-    callable), ``parallel_penalty`` the ``alpha`` of :func:`second_variation`;
-    the Hessian's mass solves run at the sequence's tolerance.
+    callable), ``parallel_penalty`` the ``alpha`` of :func:`second_variation`,
+    ``inner_tol`` MINRES's own stopping tolerance (below); the Hessian's mass
+    solves run at the sequence's tolerance.
 
-    A truncated solve by design: MINRES runs the ``maxiter`` budget with no
-    criterion of its own (its residual is in the preconditioner's norm, not
-    comparable across preconditioners, and for one that is small on the
-    energy-carrying modes it stops far short of them: the harmonic
-    preconditioner met sqrt(0.1) after 62 of 1000 iterations), and ONE pass
-    of :func:`mrx.solvers.refine` measures the true residual like every
-    solve in the code, in the mass-atom norm of the dual 1-forms on the
-    residual view, ``tol`` relative to the right-hand side. One pass because
-    no preconditioner brings that residual below 0.3 in 300 iterations
-    (measured 2026-09-07 on li383 (16,32,32) from the step-5000 state) while
-    the directions' energies differ 7x: they differ in which modes they
-    resolve first, not in how far they get, and a second pass would only
-    double the cost. Returns ``(u, a, info)`` with ``info`` the iteration
-    count, negative when the true residual met ``tol``.
+    The inner solve: MINRES from ``a_guess`` up to ``maxiter`` iterations,
+    stopping early when its residual estimate is below ``inner_tol`` times
+    the right-hand side in the PRECONDITIONER's norm (the forcing term of an
+    inexact Newton method, Dembo-Eisenstat-Steihaug); ``inner_tol = 0`` runs
+    the whole budget. That norm is not the true residual's: the harmonic
+    atom met sqrt(0.1) in it after 62 of 1000 iterations while the true
+    residual was far above (2026-09-07), so ``inner_tol`` is calibrated, not
+    chosen (2026-09-18, li383 with the parallel penalty: see
+    docs/research/hessian_spectrum_2026-09-17.md 7e). Then ONE pass of
+    :func:`mrx.solvers.refine` measures the true residual like every solve
+    in the code, in the mass-atom norm of the dual 1-forms on the residual
+    view, ``tol`` relative to the right-hand side, and reports it: one pass
+    because with the parallel penalty the direction stops changing once that
+    residual is ~0.1 (200 iterations on li383; 400 and 800 give the same
+    relaxation to three digits), and without it more iterations put more of
+    the null space into the step. Returns ``(u, a, info)`` with ``info`` the
+    iteration count, negative when the true residual met ``tol``.
     """
     ops = seq._require_operators(None)
     on = seq if seq.residual is None else seq.residual
@@ -320,7 +324,7 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     curl, curl_t, A = chain(seq)
     A_res = chain(on)[2]
     P = _preconditioner(seq, precond)
-    a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=0.0, maxiter=maxiter),
+    a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=inner_tol, maxiter=maxiter),
                      curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
                      max_passes=1, inner_dtype=seq.dtype)
     a = a.astype(seq.dtype)

@@ -543,6 +543,10 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
+        newton_inner_tol: MINRES's own stopping tolerance in the
+            preconditioner's norm (:func:`mrx.hessian.newton_direction`):
+            the solve stops early once met, ``newton_maxiter`` is the cap.
+            0 (the default) runs the whole budget.
         newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
             ``H + alpha M_par`` in the Newton solve
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
@@ -615,6 +619,7 @@ class TimeStepper(eqx.Module):
     newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
     newton_parallel_penalty: Union[float, str] = 0.0
+    newton_inner_tol: float = 0.0
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
     newton_atom_floor: Optional[float] = HARMONIC_FLOOR
@@ -766,7 +771,7 @@ class TimeStepper(eqx.Module):
                                                   self.newton_parallel_penalty)
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter, precond,
-                self.newton_parallel_penalty)
+                self.newton_parallel_penalty, self.newton_inner_tol)
             if self.newton_smoothing:
                 # the descent's filter on the Newton potential, as on the
                 # potential route: (M_1 + mu L_1)^-1 M_1 on a, then the

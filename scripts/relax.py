@@ -125,6 +125,10 @@ Flags, defaults in brackets:
       --newton-dt-cap C [1]        cap the line-search step along a Newton
                                    direction (1 = the Newton step, inf
                                    leaves the line search alone)
+      --newton-inner-tol T [0]     MINRES's own stop (preconditioner norm,
+                                   calibrated, not the true residual); the
+                                   solve ends early once met, --newton-maxiter
+                                   is the cap; 0 runs the whole budget
       --newton-parallel-penalty A [0]
                                    alpha of the parallel-flow penalty
                                    H + alpha M_par (Levenberg-Marquardt on
@@ -264,6 +268,8 @@ def parse_args(argv=None):
                     help="filter the Newton potential with the velocity smoother before the curl")
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
+    ap.add_argument("--newton-inner-tol", type=float, default=0.0,
+                    help="MINRES's own stopping tolerance (preconditioner norm); 0 runs the whole --newton-maxiter budget")
     ap.add_argument("--newton-parallel-penalty", default="0",
                     help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve, or 'strain' / 'c*strain'")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
@@ -377,7 +383,7 @@ def main(cli):
         potential_velocity=cli.potential_velocity,
         newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
         newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
-        newton_parallel_penalty=cli.newton_parallel_penalty,
+        newton_parallel_penalty=cli.newton_parallel_penalty, newton_inner_tol=cli.newton_inner_tol,
         newton_atom_field=cli.harmonic_field, newton_atom_floor=cli.harmonic_floor,
         newton_smoothing=cli.newton_smoothing)
     if cli.restart:
