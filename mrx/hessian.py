@@ -112,9 +112,10 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     is ``k^2 I + S^T S`` with no cross term: the floor is computed, not
     tuned). The field carries the rotational transform, so the symbol
     vanishes on the resonant modes ``h_theta m + h_zeta n = 0`` and the floor
-    is what they see. ``shift`` is added to the whole symbol: the
+    is what they see. ``shift`` is added to the whole symbol in the floor's
+    units, ``shift * (2 pi)^2 (h_theta^2 + h_zeta^2)``: the
     ``parallel_penalty`` of :func:`second_variation`, so that the atom and
-    the operator agree on what a parallel mode sees (``lambda + alpha``).
+    the operator agree on what a parallel mode sees.
     Traceable in ``field``: built from the current ``B`` inside the step at
     the cost of one quadrature evaluation.
 
@@ -143,7 +144,7 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
             flo = jnp.interp(r, r_q, strain[:, c])[:, None, None]
         else:
             flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
-        scale.append((1.0 / jnp.sqrt(lam + flo + shift)).astype(seq.dtype))
+        scale.append((1.0 / jnp.sqrt(lam + flo + shift * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None])).astype(seq.dtype))
     E = seq.E(1, True)
 
     def C(x):
@@ -183,21 +184,30 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
     2026-09-17, docs/research/hessian_spectrum_2026-09-17.md) that Newton
     divides the force's round-off components by. The penalty is
     Levenberg-Marquardt damping on the parallel component alone: it lifts
-    those modes to ``alpha`` (in the units of ``H`` against ``M_2``), leaves
-    the energy descent unchanged (``<F, f B> = 0``) and the perpendicular
-    step untouched. One quadrature load per apply.
+    those modes, leaves the energy descent unchanged (``<F, f B> = 0``) and
+    the perpendicular step untouched. ``alpha`` is in the units of the
+    harmonic atom's floor, ``(2 pi)^2 (h_theta^2 + h_zeta^2)(r)`` with the
+    profiles of ``B`` (:func:`harmonic_atom_profiles`): the Hessian's scale
+    is the field's logical gradient scale, 35x smaller on W7-X than on li383,
+    so a parallel unit mode sees ``lambda + alpha (2 pi)^2 (h_theta^2 +
+    h_zeta^2)`` and ``alpha = kappa`` is exactly the atom's floor moved into
+    the operator (li383 optimum 0.075, measured 2026-09-17). One quadrature
+    load per apply.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
     if parallel_penalty:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
+        prof_t, prof_z, _ = harmonic_atom_profiles(seq, B)
+        n_r, n_angles = int(seq.quad.shape[0]), int(seq.quad.shape[1]) * int(seq.quad.shape[2])
+        weight = jnp.repeat(parallel_penalty * (2 * np.pi) ** 2 * (prof_t ** 2 + prof_z ** 2), n_angles)
 
     def m1_inv(rhs):
         return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True, tol=tol)
 
     def parallel(u_jk):
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
-        return parallel_penalty * seq._vector_load_values(B_jk * s[:, None], 2, 2, True)
+        return seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True)
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)

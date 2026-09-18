@@ -606,8 +606,9 @@ class TimeStepper(eqx.Module):
             ``H + alpha M_par`` in the Newton solve
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
             damping on the field-aligned component alone, the Hessian's null
-            space. 0 (the default) solves with the bare Hessian, where the
-            truncated MINRES and the atom's floor stand in for it. The
+            space, in the units of the atom's floor ``kappa`` (li383 optimum
+            0.075, 2026-09-17). 0 (the default) solves with the bare Hessian,
+            where the truncated MINRES and the atom's floor stand in for it. The
             harmonic atom adds ``alpha`` to its floor (a parallel unit mode
             sees ``lambda + alpha``).
         newton_atom_field: The 2-form the harmonic atom lumps: ``"h"`` (the

@@ -132,7 +132,8 @@ Flags, defaults in brackets:
                                    alpha of the parallel-flow penalty
                                    H + alpha M_par (Levenberg-Marquardt on
                                    the field-aligned component only, the
-                                   Hessian's null space; mrx.hessian)
+                                   Hessian's null space; mrx.hessian), in
+                                   the units of the atom's floor kappa
     Budgets and output:
       --steps N [100 Newton, 3000 L-BFGS]
                                    maximum number of steps
