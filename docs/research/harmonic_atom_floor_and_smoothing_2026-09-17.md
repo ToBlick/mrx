@@ -159,3 +159,26 @@ alpha 1 C 0.1.
 ## 7. Round three (running): alpha {0.03, 0.1, 0.3} at 200 steps, (32,64,64) at alpha 0.3, the step cap {4, inf}
 
 Jobs 18648612-15, 18648617-18. Results pending.
+
+## 8. Surfaces: the alpha 0.3 (16,32,32) final against the September best
+
+Poincare traces (`poincare_trace.py --fields ic,final --periods 400`, 160 lines, five
+planes; job 18648633; `outputs/atom_study/B_strain_a0.3_c0/{trace.npz,poincare/}`) against
+the archives on disk:
+
+| state | F2 | chaotic lines | at r | regular-line drift | iota |
+|---|---|---|---|---|---|
+| VMEC IC | 2.5e-4 | 0 / 160 | - | 2.2e-4 | 0.3947..0.6603 |
+| alpha 0.3, strain, 100 steps (this study) | 2.5e-10 | 3 / 160 | 0.54, 0.67, 0.80 | 5.2e-3 | 0.3935..0.6603 |
+| September h16 best (kappa 3, 200 steps) | 4e-9 | 4 / 160 | 0.55, 0.72, 0.80, 0.86 | 8.8e-4 | 0.3939..0.6599 |
+| peer: kappa 3 + alpha 1, 200 steps | 2.2e-10 | 3 / 160 | 0.55, 0.68, 0.74 | 4.8e-3 | 0.3932..0.6602 |
+| peer: kappa 3, alpha 0, 200 steps (control) | 1.3e-8 climbing | 51 / 160 | 0.10..0.89 | 1.3e-3 | 0.3952..0.6600 |
+
+The zeta = 0 sections of the first three are the same picture: nested surfaces, the same
+small chains at 1/2 (r ~ 0.55) and 3/7 (r ~ 0.28), the same wavy edge outside r ~ 0.75,
+the September best's islands in the 0.45-0.7 band if anything slightly larger, the iota
+profiles identical in range and shape. A residual 17x lower did not cost surface quality at
+(16,32,32). The control with the continuum undamped, 200 steps past the floor, is the
+destroyed-surfaces case of W7-X 2026-09-12 reproduced on li383: 51 chaotic lines. The one
+number that moved is the regular-line drift (5e-3 against 9e-4); the pictures do not show
+what it measures. The (32,64,64) arm is the stricter test (W7-X lost its surfaces there).
