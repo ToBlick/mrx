@@ -750,20 +750,26 @@ def return_map(field, dof, periods, steps_per_period=MIN_STEPS_PER_PERIOD):
     return phi
 
 
-@partial(jax.jit, static_argnames=("phi", "iters", "step_cap"))
-def _newton_fixed_point(phi, y0, iters, step_cap):
-    """Newton on ``Phi(y) - y = 0`` in the ``(u, v)`` chart from ``y0``,
-    ``iters`` steps each capped at ``step_cap``: ``(y, |Phi(y) - y|)``."""
-    def body(_, carry):
-        y, _ = carry
-        f = phi(y) - y
-        d = jnp.linalg.solve(jax.jacrev(phi)(y) - jnp.eye(2, dtype=y.dtype), f)
-        size = jnp.linalg.norm(d)
-        d = jnp.where(size > step_cap, d * (step_cap / size), d)
-        return y - d, jnp.linalg.norm(f)
+@partial(jax.jit, static_argnames=("field", "periods", "steps_per_period", "iters", "step_cap"))
+def _fixed_points(field, dof, y0s, periods, steps_per_period, iters, step_cap):
+    """Newton on ``Phi(y) - y = 0`` in the ``(u, v)`` chart from every row of
+    ``y0s`` at once, ``iters`` steps each capped at ``step_cap``:
+    ``(y, |Phi(y) - y|, DPhi(y))``. The coefficients are an ARGUMENT, the
+    field function static: one compile per sequence and chain order, every
+    further field of a run is execution."""
+    phi = return_map(field, dof, periods, steps_per_period)
+    eye = jnp.eye(2, dtype=jnp.float64)
 
-    y, defect = jax.lax.fori_loop(0, iters, body, (y0, jnp.asarray(jnp.inf, dtype=y0.dtype)))
-    return y, jnp.linalg.norm(phi(y) - y)
+    def solve(y0):
+        def body(_, y):
+            d = jnp.linalg.solve(jax.jacrev(phi)(y) - eye, phi(y) - y)
+            size = jnp.linalg.norm(d)
+            return y - jnp.where(size > step_cap, d * (step_cap / size), d)
+
+        y = jax.lax.fori_loop(0, iters, body, y0)
+        return y, jnp.linalg.norm(phi(y) - y), jax.jacrev(phi)(y)
+
+    return jax.vmap(solve)(y0s)
 
 
 def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_PER_PERIOD,
@@ -796,12 +802,10 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     (``"O"``, ``"X"`` or ``"reflecting"``).
     """
     field, dof = logical_field(seq, 2, True), jnp.asarray(dof)
-    phi = return_map(field, dof, periods, steps_per_period)
     guesses = jnp.asarray(guesses, dtype=jnp.float64).reshape(-1, 2)
     y0 = jnp.stack([guesses[:, 0] * jnp.cos(TWO_PI * guesses[:, 1]),
                     guesses[:, 0] * jnp.sin(TWO_PI * guesses[:, 1])], axis=1)
-    ys, defect = jax.vmap(lambda y: _newton_fixed_point(phi, y, int(iters), float(step_cap)))(y0)
-    S = jax.vmap(jax.jacrev(phi))(ys)
+    ys, defect, S = _fixed_points(field, dof, y0, int(periods), int(steps_per_period), int(iters), float(step_cap))
     residue = 0.5 - jnp.trace(S, axis1=1, axis2=2) / 4.0
     kind = np.where(residue < 0.0, "X", np.where(residue < 1.0, "O", "reflecting"))
     return {"r": np.asarray(jnp.sqrt(ys[:, 0] ** 2 + ys[:, 1] ** 2)),
