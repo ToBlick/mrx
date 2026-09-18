@@ -733,41 +733,55 @@ def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"
 
 
 # ---------------------------------------------------------------------------
-# Fixed points of the return map: O and X points, residue, island width
+# Island chains: fixed points of the return map, widths by tracing through them
 # ---------------------------------------------------------------------------
 
-def return_map(field, dof, periods, steps_per_period=MIN_STEPS_PER_PERIOD):
-    """``y -> Phi(y)``: the ``(u, v)`` cross-section point after ``periods``
-    field periods, from ``y`` at ``zeta = 0``. The same fixed-step
-    integration as :func:`trace` on one seed, so a jitted, differentiable
-    (reverse mode) function of the point -- what the fixed-point search
-    and the tangent map are taken from. Always float64 in and out, whatever
-    the field's dtype: the Newton below needs the digits."""
-    def phi(y):
-        seeds = jnp.array([[jnp.sqrt(y[0] ** 2 + y[1] ** 2), jnp.arctan2(y[1], y[0]) / TWO_PI % 1.0]])
-        ys, _ = _trace(field, dof, seeds, int(periods), int(steps_per_period))
-        return ys[0, -1].astype(jnp.float64)
-    return phi
+def _period_map(field, steps_per_period):
+    """``(y, dof) ->`` the ``(u, v)`` cross-section point one field period on
+    from ``y`` at ``zeta = 0``: the fixed-step integration of :func:`trace`,
+    forward-mode differentiable. The field is periodic in ``zeta``, so the
+    return map over ``m`` periods is this map composed ``m`` times and its
+    tangent map the product of the one-period Jacobians -- one compiled
+    program for every chain order."""
+    term = dfx.ODETerm(cross_section_rhs(field))
+    ts = jnp.arange(steps_per_period + 1) / steps_per_period
+
+    def one(y, dof):
+        sol = dfx.diffeqsolve(
+            terms=term, solver=dfx.Tsit5(), t0=0.0, t1=1.0, dt0=None, y0=y, args=dof,
+            saveat=dfx.SaveAt(t1=True), stepsize_controller=dfx.StepTo(ts=ts),
+            max_steps=steps_per_period + 1, throw=False, adjoint=dfx.ForwardMode())
+        return sol.ys[0]
+    return one
 
 
-@partial(jax.jit, static_argnames=("field", "periods", "steps_per_period", "iters", "step_cap"))
+@partial(jax.jit, static_argnames=("field", "steps_per_period", "iters", "step_cap"))
 def _fixed_points(field, dof, y0s, periods, steps_per_period, iters, step_cap):
-    """Newton on ``Phi(y) - y = 0`` in the ``(u, v)`` chart from every row of
-    ``y0s`` at once, ``iters`` steps each capped at ``step_cap``:
-    ``(y, |Phi(y) - y|, DPhi(y))``. The coefficients are an ARGUMENT, the
-    field function static: one compile per sequence and chain order, every
-    further field of a run is execution."""
-    phi = return_map(field, dof, periods, steps_per_period)
+    """Newton on ``Phi^m(y) - y = 0`` in the ``(u, v)`` chart from every row
+    of ``y0s`` at once, ``iters`` steps each capped at ``step_cap``:
+    ``(y, |Phi^m(y) - y|, D Phi^m(y))``. ``periods`` (``m``) is a traced loop
+    bound and the coefficients an argument, so one compile serves every
+    chain and every field of a sequence."""
+    one = _period_map(field, steps_per_period)
     eye = jnp.eye(2, dtype=jnp.float64)
+    step = jax.jacfwd(lambda y: (one(y, dof),) * 2, has_aux=True)      # (Jacobian, value) in one pass
+
+    def phi(y):
+        def body(_, c):
+            J, y_next = step(c[0])
+            return y_next, J @ c[1]
+        return jax.lax.fori_loop(0, periods, body, (y, eye))
 
     def solve(y0):
         def body(_, y):
-            d = jnp.linalg.solve(jax.jacrev(phi)(y) - eye, phi(y) - y)
+            y_m, S = phi(y)
+            d = jnp.linalg.solve(S - eye, y_m - y)
             size = jnp.linalg.norm(d)
             return y - jnp.where(size > step_cap, d * (step_cap / size), d)
 
         y = jax.lax.fori_loop(0, iters, body, y0)
-        return y, jnp.linalg.norm(phi(y) - y), jax.jacrev(phi)(y)
+        y_m, S = phi(y)
+        return y, jnp.linalg.norm(y_m - y), S
 
     return jax.vmap(solve)(y0s)
 
@@ -779,23 +793,22 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     chain that closes after ``periods`` field periods -- and Greene's
     residue of each (Cary & Hanson, Phys. Fluids 29, 2464 (1986)).
 
-    Newton on ``Phi(y) - y`` with the tangent map ``S = DPhi`` by reverse-mode
-    autodiff through the integrator, a capped step, ``iters`` iterations
-    from every guess at once. The residue ``R = 1/2 - tr(S) / 4`` of an
-    area-preserving map classifies the point: ``0 < R < 1`` elliptic (an
-    O-point, the map rotates about it by ``2 pi nu`` per return with ``R =
-    sin^2(pi nu)``), ``R < 0`` hyperbolic (an X-point), ``R > 1`` hyperbolic
-    with reflection. ``det S`` is 1 for an exact flux-surface map; its
-    departure is the discretisation of the field, and ``defect`` is
-    ``|Phi(y) - y|`` at the end, the Newton's own measure.
+    Newton on ``Phi^m(y) - y`` with the tangent map ``S`` the product of the
+    one-period Jacobians (forward mode through the integrator), a capped
+    step, ``iters`` iterations from every guess at once. The residue
+    ``R = 1/2 - tr(S) / 4`` of an area-preserving map classifies the point:
+    ``0 < R < 1`` elliptic (an O-point, the map rotates about it by
+    ``2 pi nu`` per return with ``R = sin^2(pi nu)``), ``R < 0`` hyperbolic
+    (an X-point), ``R > 1`` hyperbolic with reflection. ``det S`` is 1 for a
+    divergence-free field; its departure is the tangent map's integration
+    error, and ``defect`` is ``|Phi^m(y) - y|`` at the end.
 
-    An ``(m, n)`` chain has ``m`` O-points and ``m`` X-points in the
-    ``zeta = 0`` plane, alternating every ``1/(2m)`` in ``theta``; on a
-    stellarator-symmetric field one of each kind sits on the symmetry line
-    ``theta = 0``, so ``(r, 0)`` and ``(r, 1/(2m))`` at the chain's radius
-    are one guess per kind (``theta = 1/2`` is the same kind as ``0`` for
-    even ``m``); :func:`islands` finds the radius from a section's iota
-    profile.
+    The residue is a property of the fixed point, NOT a width: the
+    constant-shear single-harmonic pendulum relation between the two
+    overestimated the traced separatrix by 1.35 to 1.6 on the paper's
+    fields (``docs/research/island_diagnostic_2026-09-18.md``). Use the fixed
+    points for a chain's existence and phase and to aim a width measurement
+    (:func:`islands`).
 
     Returns a dict of arrays over the guesses: ``r``, ``theta`` (logical, at
     ``zeta = 0``), ``uv``, ``residue``, ``det``, ``defect``, ``kind``
@@ -805,7 +818,8 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     guesses = jnp.asarray(guesses, dtype=jnp.float64).reshape(-1, 2)
     y0 = jnp.stack([guesses[:, 0] * jnp.cos(TWO_PI * guesses[:, 1]),
                     guesses[:, 0] * jnp.sin(TWO_PI * guesses[:, 1])], axis=1)
-    ys, defect, S = _fixed_points(field, dof, y0, int(periods), int(steps_per_period), int(iters), float(step_cap))
+    ys, defect, S = _fixed_points(field, dof, y0, jnp.asarray(int(periods)), int(steps_per_period), int(iters),
+                                  float(step_cap))
     residue = 0.5 - jnp.trace(S, axis1=1, axis2=2) / 4.0
     kind = np.where(residue < 0.0, "X", np.where(residue < 1.0, "O", "reflecting"))
     return {"r": np.asarray(jnp.sqrt(ys[:, 0] ** 2 + ys[:, 1] ** 2)),
@@ -814,65 +828,128 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
             "det": np.asarray(jnp.linalg.det(S)), "defect": np.asarray(defect), "kind": kind}
 
 
-def island_width(residue, m, iota_prime, nfp):
-    r"""Full width in logical ``r`` of the island chain that closes after
-    ``m`` field periods, from the residue ``R`` of its O-point and the
-    shear ``iota_prime = d iota / dr`` (iota per toroidal turn, as
-    :func:`poincare` reports it) -- the pendulum model of a thin island.
+def resonances(iota_lo, iota_hi, nfp, m_max):
+    """The chains that can sit between two rotational transforms: ``(m, n)``
+    coprime with ``m <= m_max`` and ``iota_lo < nfp n / m < iota_hi``, by
+    increasing ``m`` -- a chain at ``iota = nfp n / m`` closes after ``m``
+    field periods (the seeds' convention, ``mrx.initial_conditions``)."""
+    out = []
+    for m in range(1, int(m_max) + 1):
+        for n in range(1, m + 1):
+            if gcd(m, n) == 1 and iota_lo < nfp * n / m < iota_hi:
+                out.append((m, n))
+    return out
 
-    With ``phi = m theta - n zeta`` in turns and ``zeta`` in field periods
-    the chain's neighbourhood is ``phi'' = -(2 pi)^2 eps m^2 iota_p' phi``
-    near the O-point (``iota_p = iota / nfp`` the transform per period),
-    i.e. small oscillations at ``omega = 2 pi m sqrt(eps iota_p')`` radians
-    per period, while the separatrix of ``H = iota_p' dr^2 / 2 - eps cos(2
-    pi phi)`` sits at ``dr = 2 sqrt(eps / iota_p')``; eliminating ``eps``,
-    the full width is ``2 omega / (pi m |iota_p'|)``. The return map over
-    ``m`` periods rotates by ``2 pi nu = m omega`` about the O-point and its
-    residue is ``R = sin^2(pi nu)``, so ``omega = 2 arcsin(sqrt R) / m`` and
 
-        width = 4 arcsin(sqrt R) / (pi m^2 |iota_p'|) = 4 nfp arcsin(sqrt R) / (pi m^2 |iota'|).
+def _chain_radii(r, iota, target, tol):
+    """The radii at which a profile meets a rational: the mean radius of
+    every contiguous run of locked lines (iota within ``tol`` of it), and
+    every crossing between two lines on either side that no locked run
+    already covers (a reversed-shear profile meets a rational twice)."""
+    d = iota - target
+    d = np.where(np.abs(d) < tol, 0.0, d)
+    radii, i = [], 0
+    while i < d.size:
+        if d[i] == 0.0:
+            j = i
+            while j + 1 < d.size and d[j + 1] == 0.0:
+                j += 1
+            radii.append(float(r[i:j + 1].mean()))
+            i = j + 1
+        else:
+            if i + 1 < d.size and d[i + 1] != 0.0 and d[i] * d[i + 1] < 0.0:
+                radii.append(float(r[i] + (0.0 - d[i]) * (r[i + 1] - r[i]) / (d[i + 1] - d[i])))
+            i += 1
+    return radii
 
-    Compare with ``max(r) - min(r)`` over the chain's crossings in a
-    section, the width the figures quote.
+
+def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window=0.08, ray_seeds=81,
+            ray_halfwidth=0.2, periods=300, tol=2e-3):
+    """Every island chain of a field and its width.
+
+    ``res`` is a section of the same field (:func:`poincare`'s result: its
+    regular lines' ``seed_r`` and ``iota`` are the profile searched); left
+    ``None`` the section is traced here with :func:`poincare`'s defaults.
+    A chain inside a chaotic band, with no regular line either side of
+    its rational, is not looked for. For every
+    rational ``nfp n / m`` with ``m <= m_max`` inside the iota range of its
+    regular lines (:func:`resonances`) and every radius at which the profile
+    meets it, Newton looks for the chain's fixed points from ``n_theta``
+    poloidal guesses across one chain period ``1/m`` (a chain dominated by
+    its second harmonic has them every ``1/(4m)``, and nothing fixes the
+    phase on a field without stellarator symmetry). A chain is reported when
+    an O-point is found (residue above ``residue_min``, within ``window`` of
+    the radius) AND lines locked to the chain pass through it; a closed
+    rational surface has residue zero up to integration error and no
+    locked line, and is not.
+
+    The width is MEASURED, not inferred from the residue: ``ray_seeds``
+    lines on the radial ray through the O-point, ``+- ray_halfwidth`` about
+    it, traced for ``periods`` field periods in one batch for all chains;
+    the lines locked to the chain (fitted iota within ``tol`` of the
+    rational) contiguous with the O-point are the island. ``width`` is the
+    largest ``max(r) - min(r)`` of such a line over eight planes per period
+    (the figures' and the paper's measure, here aimed through the O-point
+    instead of left to where uniform seeds fall), ``ray`` the radial extent
+    of the locked set on the ray.
+
+    Returns a list of dicts by increasing radius: ``m``, ``n``, ``iota``,
+    ``r_chain``, ``O`` and ``X`` (lists of ``(r, theta, residue)``),
+    ``residue`` (the largest O-point residue), ``width``, ``ray``,
+    ``ray_lo``, ``ray_hi``, ``n_locked``.
     """
-    residue = np.clip(np.asarray(residue, dtype=float), 0.0, 1.0)
-    return 4.0 * nfp * np.arcsin(np.sqrt(residue)) / (np.pi * m ** 2 * abs(iota_prime))
-
-
-def islands(seq, dof, m, n, res, *, iota_prime=None, window=0.1, locked_tol=2e-3, **kwargs):
-    """The O and X points, residues and pendulum width of the ``(m, n)`` chain
-    -- the one at ``iota = nfp n / m`` that closes after ``m`` field periods
-    (the convention of ``mrx.initial_conditions``'s seeds) -- from a
-    section ``res`` of :func:`poincare` on the same field: the chain's
-    radius is where the regular lines' iota crosses ``nfp n / m``; the
-    guesses are ``(r, 0)`` and ``(r, 1/(2m))``, one per kind of fixed
-    point. The shear ``iota_prime`` is the UNPERTURBED profile's, which a
-    seeded section does not carry (the island flattens iota over its
-    width, and the fit follows the seed: 0.32 against 0.22 for the same
-    equilibrium at eps 3e-3 and 1e-2); pass it from a section of the
-    unseeded field. Left ``None``, it is a linear fit of iota over
-    ``+- window`` in ``r`` around the chain with the locked lines (iota
-    within ``locked_tol`` of the target) left out -- good for a thin
-    island.
-
-    Returns :func:`fixed_points`'s dict plus ``r_chain``, ``iota_prime``,
-    ``width`` (of the O-points; nan for the X-points) and ``target``.
-    """
-    nfp, target = seq.nfp, seq.nfp * n / m
+    nfp = seq.nfp
+    if res is None:
+        res = poincare(seq, dof)
     shown = np.asarray(res["shown"])
-    r, iota = np.asarray(res["seed_r"])[shown], np.asarray(res["iota"])[shown]
+    r, iota = np.asarray(res["seed_r"])[shown], np.abs(np.asarray(res["iota"])[shown])
     order = np.argsort(r)
     r, iota = r[order], iota[order]
-    cross = np.flatnonzero(np.diff(np.sign(iota - target)))
-    if cross.size == 0:
-        raise ValueError(f"no regular line crosses iota = {target:.4f} = nfp n / m")
-    i = int(cross[0])
-    r_chain = float(r[i] + (target - iota[i]) * (r[i + 1] - r[i]) / (iota[i + 1] - iota[i]))
-    if iota_prime is None:
-        near = (np.abs(r - r_chain) <= window) & (np.abs(iota - target) > locked_tol)
-        iota_prime = float(np.polyfit(r[near], iota[near], 1)[0]) if near.sum() >= 3 else float("nan")
-    out = fixed_points(seq, dof, m, [(r_chain, 0.0), (r_chain, 0.5 / m)], **kwargs)
-    width = island_width(out["residue"], m, iota_prime, nfp)
-    out.update(r_chain=r_chain, iota_prime=iota_prime, target=target,
-               width=np.where(out["kind"] == "O", width, np.nan))
-    return out
+
+    chains = []
+    for m, n in resonances(float(iota.min()), float(iota.max()), nfp, m_max):
+        target = nfp * n / m
+        for r_chain in _chain_radii(r, iota, target, tol):
+            guesses = [(r_chain, j / (n_theta * m)) for j in range(n_theta)]
+            fp = fixed_points(seq, dof, m, guesses)
+            ok = (fp["defect"] < 1e-8) & (np.abs(fp["r"] - r_chain) < window)
+            pts = []
+            for k in np.flatnonzero(ok):                      # one entry per distinct fixed point
+                if all(np.hypot(*(fp["uv"][k] - fp["uv"][j])) > 1e-4 for j in pts):
+                    pts.append(int(k))
+            o_pts = [(float(fp["r"][k]), float(fp["theta"][k]), float(fp["residue"][k])) for k in pts
+                 if residue_min < fp["residue"][k] < 1.0]
+            x_pts = [(float(fp["r"][k]), float(fp["theta"][k]), float(fp["residue"][k])) for k in pts
+                 if fp["residue"][k] < -residue_min]
+            if o_pts:
+                o_pts.sort(key=lambda p: -p[2])
+                chains.append(dict(m=m, n=n, iota=target, r_chain=r_chain, O=o_pts, X=x_pts, residue=o_pts[0][2]))
+    if not chains:
+        return []
+
+    # the widths: one batched trace of the rays through the O-points
+    field, dof = logical_field(seq, 2, True), jnp.asarray(dof)
+    steps = MIN_STEPS_PER_PERIOD
+    rays = [np.linspace(max(c["O"][0][0] - ray_halfwidth, R_AXIS), min(c["O"][0][0] + ray_halfwidth, R_EDGE), ray_seeds)
+            for c in chains]
+    seeds = np.concatenate([np.stack([ray, np.full_like(ray, c["O"][0][1])], axis=1) for ray, c in zip(rays, chains)])
+    ys, _ = trace(field, dof, seeds, periods, steps)
+    line_iota, _ = rotational_transform(ys, steps, nfp)
+    line_iota = np.abs(np.asarray(line_iota)).reshape(len(chains), ray_seeds)
+    rr = np.sqrt(np.sum(np.asarray(ys)[:, ::steps // 8, :] ** 2, axis=-1)).reshape(len(chains), ray_seeds, -1)
+    for c, ray, li, rc in zip(chains, rays, line_iota, rr):
+        locked = np.abs(li - c["iota"]) < tol
+        lo = hi = int(np.argmin(np.abs(ray - c["O"][0][0])))
+        if locked[lo]:
+            while lo > 0 and locked[lo - 1]:
+                lo -= 1
+            while hi < ray_seeds - 1 and locked[hi + 1]:
+                hi += 1
+            inside = rc[lo:hi + 1]
+            c.update(width=float(np.max(inside.max(axis=1) - inside.min(axis=1))), ray=float(ray[hi] - ray[lo]),
+                     ray_lo=float(ray[lo]), ray_hi=float(ray[hi]), n_locked=hi - lo + 1)
+        else:
+            c.update(width=0.0, ray=0.0, ray_lo=float(ray[lo]), ray_hi=float(ray[lo]), n_locked=0)
+    # An intact rational surface is a curve of fixed points whose residue is zero up to the tangent map's
+    # integration error, which can pass ``residue_min`` at high ``m``; an island has lines locked to it.
+    return sorted((c for c in chains if c["width"] > 0.0), key=lambda c: c["r_chain"])

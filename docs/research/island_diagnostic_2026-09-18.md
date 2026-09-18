@@ -147,3 +147,46 @@ theta = 0 initially, at 0.108 from event 3 on). Use the diagnostic for
 the O-point's position and rotation rate and to PLACE the seeds of a
 width measurement (the ray through the O-point); quote widths from the
 traced lines.
+
+
+## The diagnostic as it stands: find every chain, measure its width (2026-09-18, evening)
+
+Tobias: "The Cary-Hanson stuff should stay as a diagnostic, which should
+try and find all islands in the state and then give the width for them."
+`mrx.poincare.islands(seq, B, res=None, m_max=12, n_theta=8, ...)`:
+
+1. the iota profile of the section's regular lines (`res`, traced with
+   `poincare`'s defaults when left out -- random poloidal seeds, so the
+   profile is a guess of where to look, nothing more);
+2. `resonances(iota_lo, iota_hi, nfp, m_max)`: the coprime `(m, n)` with
+   `nfp n / m` in range; `_chain_radii`: every radius where the profile
+   meets the rational (a plateau of locked lines, or a crossing; a
+   reversed-shear profile meets it twice);
+3. `fixed_points` from `n_theta = 8` guesses across one chain period `1/m`
+   -- the two-guess version missed doubled chains and any chain off the
+   symmetry line; distinct converged points within `window` of the radius
+   are the chain's O and X points;
+4. the width by tracing: `ray_seeds = 81` lines on the radial ray through
+   the strongest O-point, `+- 0.2`, all chains in ONE batched trace of 300
+   periods; the locked lines contiguous with the O-point are the island,
+   `width` their largest `max(r) - min(r)` over eight planes per period;
+5. a chain with no locked line through its O-point is dropped: on the
+   unseeded initial field the first version reported an (11,2) "chain"
+   with residue 0.005 and zero width -- an intact rational surface, whose
+   residue is zero only up to the tangent map's integration error.
+
+The return map over `m` periods is the one-period map composed `m` times
+(the field is periodic in zeta), the tangent map the product of the
+one-period Jacobians by `jax.jacfwd` through diffrax's `ForwardMode`
+adjoint, `m` a traced loop bound: one compile for every chain order. The
+first implementation differentiated the whole `m`-period trace in reverse
+mode and compiled once per `m` and per call (a minute an evaluation).
+First timing, li383 (16,32,32), unseeded initial field: section 61 s,
+island search 116 s including its compile.
+
+`island_width` (the pendulum formula) and `return_map` are gone from the
+module; the scripts of this folder that import them (`check_islands.py`,
+`paper_widths*.py`, `ray_widths.py`) ran at commit 0ff2369 and are the
+record of the tables above. `find_islands.py` is the check of the new
+function on fields with known islands (job 18657661; its results are not
+in this note yet).

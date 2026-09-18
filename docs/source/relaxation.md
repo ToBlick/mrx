@@ -270,30 +270,36 @@ The module docstrings list the flags.
 A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_trace.py --fields snapshots --planes 0.5` traces every
 checkpoint, and the plotter then renders one frame per checkpoint with every axis held fixed, ready for `ffmpeg`.
 
-An island chain is measured, not read off the picture:
-`mrx.poincare.islands(seq, B, m, n, res)` takes a section `res`, locates
-the `(m, n)` chain where the regular lines' iota crosses `nfp n / m` and
-fits the shear there, runs Newton on the `m`-period return map from the two
-symmetry lines with the tangent map by autodiff through the integrator
-(`fixed_points`), classifies each fixed point by Greene's residue
-`R = 1/2 - tr S / 4` (an O-point for `0 < R < 1`, an X-point for `R < 0`),
-and turns the O-point's residue into the pendulum width
-`4 nfp arcsin(sqrt R) / (pi m^2 |iota'|)` in logical `r` (`island_width`,
-the derivation in its docstring; Cary and Hanson, Phys. Fluids 29, 2464
-(1986)) -- a width that does not depend on which seeds happened to lock
-onto the chain, to set against the `max(r) - min(r)` of the locked lines
-that the figures quote. The shear is the unperturbed profile's: pass
-`iota_prime` from a section of the unseeded field, since the island
-flattens iota over its width and a fit to the seeded section follows the
-seed. On the seeded li383 (6,1) chain at (10,16,16) the width agrees with
-the seed's linear estimate to 8% at `eps = 3e-3` and 1% at `1e-2` -- both
-are the constant-shear single-harmonic pendulum, and on the paper's
-fields they overestimate the traced separatrix by 1.35 to 1.6, so the
-width to quote stays the traced one. What the fixed points are for: the
-chain's existence and phase, the rotation rate about the O-point, and
-placing the seeds of a width measurement on the ray through the O-point.
-The tangent map needs 96 steps per period, four times the trajectory's,
-for `det S = 1` to 1e-4 (`docs/research/island_diagnostic_2026-09-18.md`).
+The island chains of a state are found, not read off the picture:
+`mrx.poincare.islands(seq, B, res=None)` returns every chain and its width.
+From a section `res` (`poincare`'s result; traced here when left out) it
+takes the iota profile of the regular lines, lists the rationals
+`nfp n / m` with `m <= m_max` inside its range (`resonances`), and at every
+radius where the profile meets one it runs Newton on the `m`-period return
+map from eight poloidal guesses across one chain period (`fixed_points`;
+Cary and Hanson, Phys. Fluids 29, 2464 (1986)). The map over `m` periods is
+the one-period map composed `m` times and its tangent map the product of
+the one-period Jacobians, forward mode through the integrator, so one
+compiled program serves every chain order and every field of a sequence.
+Greene's residue `R = 1/2 - tr S / 4` classifies each fixed point (an
+O-point for `0 < R < 1`, an X-point for `R < 0`). The width is then
+MEASURED: lines seeded on the radial ray through the O-point, all chains
+in one batched trace, and the largest `max(r) - min(r)` of the lines locked
+to the chain -- the measure the figures and the paper quote, aimed through
+the O-point instead of left to where the section's random seeds fall. A
+chain is reported only when locked lines pass through its O-point: an
+intact rational surface is a curve of fixed points with residue zero up to
+integration error. Each entry carries `m`, `n`, `iota`, `r_chain`, the O
+and X points with their residues, `width`, and the ray's extent.
+
+The residue is a property of the O-point (the rotation rate about it), not
+a width: the constant-shear single-harmonic pendulum relation between the
+two overestimated the traced separatrix by 1.35 to 1.6 on the paper's
+fields. What the fixed points give reliably is a chain's existence and its
+phase (where the O-point sits). The tangent map needs 96 steps per period,
+four times the trajectory's, for `det S = 1` to 1e-4. A chain inside a
+chaotic band, with no regular line either side of its rational, is not
+looked for (`docs/research/island_diagnostic_2026-09-18.md`).
 
 ## Figures
 
