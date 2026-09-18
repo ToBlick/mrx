@@ -1,0 +1,76 @@
+# The Cary-Hanson island diagnostic (2026-09-18)
+
+`mrx.poincare.fixed_points`, `island_width`, `islands`: the O and X points
+of an island chain by Newton on the return map, Greene's residue from the
+tangent map, and the pendulum width from the residue -- a width that does
+not depend on which seeds happened to lock onto the chain, unlike the
+`max(r) - min(r)` of the locked lines the figures quote. Tobias
+2026-09-17: "Do that, it is good to have."
+
+## What it does
+
+* `return_map(field, dof, periods)`: `y -> Phi(y)` in the `(u, v)` chart of
+  the `zeta = 0` plane after `periods` field periods, the same fixed-step
+  Tsit5 integration as `trace`, jitted and reverse-mode differentiable.
+  Float64 in and out whatever the field's dtype.
+* `fixed_points(seq, dof, periods, guesses)`: Newton on `Phi(y) - y` with
+  `S = jacrev(Phi)`, a capped step, 12 iterations from every guess at once
+  (vmap). Residue `R = 1/2 - tr S / 4`: `0 < R < 1` an O-point, `R < 0` an
+  X-point, `R > 1` hyperbolic with reflection. `det S` should be 1 (a
+  divergence-free field preserves the flux measure, and at a fixed point
+  the chart's weights cancel) -- its departure is the tangent map's
+  integration error. `defect = |Phi(y) - y|`.
+* `island_width(R, m, iota', nfp) = 4 nfp arcsin(sqrt R) / (pi m^2 |iota'|)`
+  in logical `r`, `iota'` per toroidal turn as `poincare` reports it. The
+  derivation (docstring): with `phi = m theta - n zeta` in turns and
+  `zeta` in periods, `iota_p = iota / nfp`, the thin-island pendulum has
+  small oscillations `omega = 2 pi m sqrt(eps iota_p')` per period and the
+  separatrix at `dr = 2 sqrt(eps / iota_p')`; eliminating `eps` the full
+  width is `2 omega / (pi m |iota_p'|)`; the `m`-period return map rotates
+  by `m omega` about the O-point with `R = sin^2(m omega / 2)`.
+* `islands(seq, dof, m, n, res, iota_prime=None)`: the chain radius from
+  the section `res` (where the regular lines' iota crosses `nfp n / m`),
+  guesses `(r, 0)` and `(r, 1/(2m))` -- one per kind: the `m` O-points and
+  `m` X-points alternate every `1/(2m)` in `theta`, and for even `m` both
+  symmetry lines `theta = 0, 1/2` are the SAME kind (the first version
+  guessed the two symmetry lines and found the O-point twice).
+
+## The check (`island_diagnostic_2026-09-18/check_islands.py`)
+
+li383 (10,16,16) p=2, the (6,1) seed at `rho0 = 0.544`, width 0.1, eps 3e-3
+and 1e-2; `poincare(lines=48, periods=200)`; the unseeded field's section
+gives the shear `iota' = 0.3002` by a linear fit over `+-0.1` around the
+chain (10 lines).
+
+| eps | point | r | theta | residue | det S | defect | width (residue) | seed estimate | section max-min |
+|---|---|---|---|---|---|---|---|---|---|
+| 3e-3 | O | 0.5423 | 0.0000 | +0.0842 | 1.00005 | 1.5e-15 | 0.104 | 0.113 | 0.052 (2 lines) |
+| 3e-3 | X | 0.5405 | 0.0778 | -0.0751 | 1.0033 | 1.7e-15 | | | |
+| 1e-2 | O | 0.5438 | 0.0000 | +0.3001 | 1.0008 | 1.0e-15 | 0.205 | 0.207 | 0.144 (5 lines) |
+| 1e-2 | X | 0.5373 | 0.0777 | -0.2102 | 1.0034 | 7.4e-16 | | | |
+
+The seed estimate is `1.6 sqrt(eps nfp / (m |iota'|))` (the docs' formula
+for `--seed-eps`). The residue width agrees with it to 8% and 1%; the
+section's `max(r) - min(r)` is a lower bound, half the width with 48
+seeds over the radius (two and five of them inside the island).
+
+Three things the check taught:
+
+1. **The tangent map needs more steps than the trajectory.** At 24 steps
+   per period the O-point residue was 0.0877 / 0.3057 with `det S =
+   0.989`; at 48, 0.0831 / 0.3005 (det 1.006); at 96, 0.0842 / 0.3001
+   (det 1.00005 / 1.0008). `TANGENT_STEPS_PER_PERIOD = 96` is the default
+   of `fixed_points`; the trajectory's 24 stay for `poincare`.
+2. **The shear must be the unperturbed profile's.** The island flattens
+   iota over its width, and a fit to the seeded section follows the seed:
+   0.32 at eps 3e-3, 0.22 at 1e-2 (locked lines excluded), against 0.30
+   unseeded -- a 30% error in the width at the larger seed. `islands`
+   takes `iota_prime=`; the fit is the fallback for a thin island.
+3. **The chain radius from the seeded profile is only a guess** (0.566 and
+   0.484 for a chain at 0.544 -- the flattened profile crosses the target
+   away from the chain), and Newton does not care: it converged from both
+   to the same points to 1e-15. `r_chain` is reported for what it is.
+
+The X-point's `det S` converges more slowly (1.0033 at 96 steps): the
+hyperbolic tangent map amplifies its own integration error. The residue
+does not suffer (-0.0744, -0.0751, -0.0751).

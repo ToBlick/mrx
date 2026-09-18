@@ -100,7 +100,7 @@ Flags, defaults in brackets:
 | flag | meaning |
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
-| `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--nfp N [file attribute]` | field periods, for a file that declares them wrong, or `1` for the whole torus: the map is then the file's full series (every period of it, projected over `zeta` in `[0, 1]`), so the `zeta` resolution grows by the file's `nfp`; needs `--symmetry none` or `field-period` |
 | `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): `nfp` field periods and stellarator symmetry `(R, phi, Z) -> (R, -phi, -Z)`, onto which the spline map is projected (`R` even, `Z` odd under `(theta, zeta) -> (-theta, -zeta)`; the `[geom]` line prints the defect) and which the run then keeps: the quadrature covers half the period (`mrx.symmetry`, an even number of `zeta` cells on uniform knots), every field stays of definite parity (`B`, `A`, `J` odd, velocities and pressures even), island chains keep their O-points on the symmetry planes, and a step costs about half; field periods only (the full period, no restriction), or none (`zeta` in `[0, 1]` is the whole torus, `nfp = 1`); recorded in `relax.json`, read by the tracer, which sections half a period or the whole one accordingly |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`) |
@@ -269,6 +269,27 @@ The module docstrings list the flags.
 
 A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_trace.py --fields snapshots --planes 0.5` traces every
 checkpoint, and the plotter then renders one frame per checkpoint with every axis held fixed, ready for `ffmpeg`.
+
+An island chain is measured, not read off the picture:
+`mrx.poincare.islands(seq, B, m, n, res)` takes a section `res`, locates
+the `(m, n)` chain where the regular lines' iota crosses `nfp n / m` and
+fits the shear there, runs Newton on the `m`-period return map from the two
+symmetry lines with the tangent map by autodiff through the integrator
+(`fixed_points`), classifies each fixed point by Greene's residue
+`R = 1/2 - tr S / 4` (an O-point for `0 < R < 1`, an X-point for `R < 0`),
+and turns the O-point's residue into the pendulum width
+`4 nfp arcsin(sqrt R) / (pi m^2 |iota'|)` in logical `r` (`island_width`,
+the derivation in its docstring; Cary and Hanson, Phys. Fluids 29, 2464
+(1986)) -- a width that does not depend on which seeds happened to lock
+onto the chain, to set against the `max(r) - min(r)` of the locked lines
+that the figures quote. The shear is the unperturbed profile's: pass
+`iota_prime` from a section of the unseeded field, since the island
+flattens iota over its width and a fit to the seeded section follows the
+seed. On the seeded li383 (6,1) chain at (10,16,16) the width agrees with
+the seed's linear estimate to 8% at `eps = 3e-3` and 1% at `1e-2`, while
+the locked lines' `max(r) - min(r)` is a lower bound (half the width with
+48 seeds); the tangent map needs 96 steps per period, four times the
+trajectory's, for `det S = 1` to 1e-4 (`docs/research/island_diagnostic_2026-09-18.md`).
 
 ## Figures
 

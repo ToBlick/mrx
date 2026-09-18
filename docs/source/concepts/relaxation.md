@@ -326,7 +326,7 @@ method per run. Flags, defaults in brackets:
 | flag | meaning |
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`): the geometry and the initial condition (sections 4, 5) |
-| `--nfp N [file value]` | field periods, for a file that declares them wrong |
+| `--nfp N [file value]` | field periods, for a file that declares them wrong, or `1` for the whole torus (the map is the file's full series over `zeta` in `[0, 1]`, so `--ns` grows by the file's `nfp` in `zeta`; `--symmetry none` or `field-period`) |
 | `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): field periods and stellarator symmetry (the spline map is projected onto it), field periods only, or none (`nfp = 1`, `zeta` in `[0, 1]` the whole torus) |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis from 0 to 1 instead of the uniform grid; the axis takes its `n` from them (`knot_vector`) |
