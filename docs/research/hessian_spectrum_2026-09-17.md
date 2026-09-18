@@ -272,6 +272,63 @@ it measures. Open, one sentence's worth.
   53, same energy and helicity. Its sections (job 18648698) go into the peer's note; the
   September h32 best has 0 chaotic lines, the comparison is the last check.
 
+## 7b. alpha in the floor's units, and the extended tests (batches 2-4, 2026-09-17 night)
+
+**Units.** The Hessian's scale is the field's logical gradient scale, (2 pi)^2 (h_theta^2 +
+h_zeta^2): ~4 on li383 (the kappa = 3 floor is ~12) but 0.115 on W7-X (h^zeta 0.053, floor
+0.34). An absolute alpha of 0.3 was therefore li383's optimum but kappa 2.6 on W7-X. Since
+4271bc0 alpha is relative to that scale, per radius, in both the operator and the atom's
+shift: alpha = kappa is exactly the floor moved into the operator, and li383's numbers
+translate as alpha_abs / 4 (optimum 0.3 -> 0.075, cliff 0.03 -> 0.0075). 5d078f9 adds
+`--newton-parallel-penalty strain`: the penalty as the strain seen along the field,
+(h_theta^2 s_theta + h_zeta^2 s_zeta) / (h_theta^2 + h_zeta^2), no number.
+Normalising the devices to major radius 1 would not remove this: h^zeta ~ nfp / (R^{3/2} a),
+so nfp / a remains, and it is physics (the stiffness of the perpendicular modes).
+
+**alpha sweep, li383 (16,32,32), strain floor, C 0, 200 steps** (batch3/, per-step
+residual at 200; `arm_table.py`): 0.025 -> 3.2e-10 (min 2.8e-10 at 164, then up, 8 % more
+energy removed: the undamped signature begins); 0.05 -> 2.0e-10; 0.075 -> 1.9e-10 (peer);
+0.1 -> 1.6e-10, still descending; 0.2 -> 2.1e-10; strain -> 4.0e-10 (min at 161; the
+strain is ~3x too weak on li383). Optimum broad, 0.05-0.2 within 30 %, centred on 0.1.
+
+**MINRES budget with alpha 0.075, li383**: 50 -> 4.7e-10 (2.8 s/step), 100 -> 2.2e-10 (4.6),
+200 -> 1.6e-10 (8.1). Monotone, no degradation: September's "more iterations = past the
+floor sooner" was the null space. In wall time 50 leads for ~5 min, 200 from ~10 min on.
+400 and 800 (li383) and 200, 400 (W7-X) running (batch4_minres.sh).
+
+**p = 3, alpha 0.075**: 1.4e-10 at 200 (released p = 3 floored at 3.1e-9 at step 60).
+**Seeded (6,1), alpha 0.075**: 3.8e-10 (released 5.2e-9 at 40).
+
+**W7-X FMM002 (16,32,32)**, 200 steps, no floor stop, B-field atom: released (kappa 3, C 0.1)
+7.4e-11 at dt 0.34 and it does NOT degrade at this mesh; alpha 0.075 (floor units) 7.8e-11
+at dt 1.00; alpha 0.3 absolute (= kappa 2.6) 2.3e-10; strain 1.2e-10. The same relative
+number is right on both geometries. (32,64,64), the mesh of the September surface loss:
+running (batch2/w7x32_*).
+
+**Reconnection series** (the paper's: 300 steps, 3 % every 60; alpha 0.075, strain floor,
+C 0; batch2/rc_unseeded, rc_seed61): residual before the reconnections 4.8e-10 / 3.9e-10 /
+8e-10 / 1.5e-9 (paper: ~6e-9 / 6e-9 / 2e-9 / 2e-9), dt 1.00 throughout, 0 fallbacks over
+eight reconnections. So C is not needed there either and the fallback never fires. Island
+widths (logical r; the paper's widths.py): the driven 3/5 chain grows the same way (final
+0.229 vs 0.213); the seeded 1/2 island decays less through the reconnections (0.121 vs
+0.093 at the end); the spurious 1/2 and 3/7 chains are roughly halved (0.033 vs 0.059, 0.036
+vs 0.055). Physics unchanged, numerical island generation down.
+
+**Fallback smoothing**: 0 firings in every alpha arm (li383, W7-X, p = 3, seeded, eight
+reconnections). It fired only when the null space made the direction bad (peer's
+strain-floor-without-penalty and smoothed-potential arms). Candidate for deletion under
+Newton once the default flips; kept for now.
+
+**Cary-Hanson island width** (d8b1539, `mrx.poincare.island_width`): from the residue of
+the O-point of the m-turn return map, w = 4 omega / (m |iota'|), omega = arccos(1 - 2R) /
+(2 pi m). On the reconnected run's 3/5 chain: 0.0496 vs 0.0503 from the lines at the first
+reconnection (residue 0.2); 1.7x over for the wide chains (residue 0.9-0.96, the pendulum's
+limit); 9e-3 in r at the VMEC IC, an eighth of a cell, where the lines see nothing.
+`island_width_check.py`.
+
+Figures: `traces_li383.pdf`, `traces_w7x16.pdf`, `traces_reconnect.pdf` (raw per-step
+residual vs step and vs wall time at the steady rate; `plot_arms.sh`).
+
 ## 8. Summary
 
 * The Hessian's soft end is a continuum of field-aligned flows u = f B, the discrete
