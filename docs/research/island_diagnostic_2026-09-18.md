@@ -74,3 +74,44 @@ Three things the check taught:
 The X-point's `det S` converges more slowly (1.0033 at 96 steps): the
 hyperbolic tangent map amplifies its own integration error. The residue
 does not suffer (-0.0744, -0.0751, -0.0751).
+
+## The paper's island widths, re-measured (2026-09-18)
+
+`island_diagnostic_2026-09-18/paper_widths.py` (the seeded-reconnection
+table, the ladder `ladder3`, the seeded table `seed61_2` / `seed51_2`;
+runs of the newton branch) and `paper_widths_mesh.py` (fig:mesh_refinement,
+`outputs/li383_pulse/reconnect_l5_{h16,h32u,h32r}_p2_g1`, the refined mesh
+rebuilt with the `radial_knots` of commit 3740157). Logs under
+`outputs/half_period/2026-09-18/{10-03-47,10-05-51,11-20-05}`; about a
+minute per evaluation (12 Newton steps with a Jacobian through m periods
+at 96 steps), so 54 entries do not fit a 90-minute job. Widths in h_r =
+1/16, "residue" with the run's own shear at that field (linear fit over
++-0.12, locked lines out); equilibrium shears 0.472 / 0.311 / 0.215 at
+the 3/5, 1/2, 3/7 surfaces (r = 0.797, 0.543, 0.268).
+
+* Residue over section width is 1.35-1.6 on every clean entry (one O and
+  one X found, defect 1e-15): the section measure is a lower bound by a
+  steady factor, the trends survive.
+* Seeded table: 1/2 chain 3.7 -> 4.0 (paper 2.6 -> 2.7), 3/5 chain 3.2 ->
+  2.9 (paper 2.3 -> 2.1); "within 10%" holds. The (5,1) run's island keeps
+  shrinking after its best state: R 0.275 -> 0.125 by step 200.
+* Ladder, 3/5 chain: paper 0.8, 1.5, 2.0, 2.5, 3.0; residue n/m, 2.4, 2.8,
+  3.6, 4.5 with R = 0.160, 0.168, 0.192, 0.206 while the local shear falls
+  0.42 -> 0.26: the late growth is shear flattening, the resonant field
+  nearly saturates after the second event. With the equilibrium shear the
+  widths read 2.1-2.4: for an island as wide as the fit window quote R.
+* Seeded-reconnection table, 3/5 chain final: section 3.4 / 3.3 / 3.4,
+  residues 0.198 / 0.133 / 0.211 (unseeded / (5,1) / (6,1)): the widths do
+  NOT converge across the runs the way the section numbers suggest. The
+  dip in the (5,1) row is a PHASE FLIP: the seeded O-point sits on theta =
+  0, the chain the reconnection grows has it at theta = 0.108; the seeded
+  island closes around event 2 and re-opens in the natural phase.
+* Seeded 1/2 chain: R 0.39, 0.62, 0.27, 0.16, 0.066, 0.025; final width
+  1.0 h_r against the paper's "> 1.0 h_r".
+* Mesh figure: 3/5 chain after the solve 0.0605 / 0.0538 / 0.0578 in r
+  (final 0.0634 / 0.0596 / 0.0556): agreement to 6%, not the 2% of the
+  section widths 0.049 / 0.050 / 0.050.
+* Not measured: the 3/7 chain everywhere and the unseeded 1/2 chain
+  (|R| < 0.02, the two guesses return fixed points of the same kind --
+  presumably a doubled chain, fixed points every 1/(4m); guesses at
+  1/(4m) would settle it), and the 3/5 chain as it opens (paper 0.7-0.8).
