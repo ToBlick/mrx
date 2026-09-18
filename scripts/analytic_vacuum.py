@@ -53,9 +53,16 @@ def parse_args(argv=None):
     ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
                     help="equilibrium file or analytic name; domain only (its "
                          "field is ignored, B* is analytic).")
-    ap.add_argument("--field", default="coil", choices=("coil", "polynomial", "toroidal"))
+    ap.add_argument("--field", default="coil", choices=("coil", "coil-ss", "polynomial", "toroidal"))
     ap.add_argument("--lam", type=float, default=1.0,
-                    help="ripple amplitude for --field coil: B* = e_phi/R + lam grad(R^2 cos 2phi).")
+                    help="ripple amplitude for --field coil: B* = e_phi/R + lam grad(R^2 cos 2phi); "
+                         "coil-ss: lam grad(R^2 sin 2phi), the stellarator-symmetric ripple.")
+    ap.add_argument("--symmetry", default="field-period", choices=("field-period", "stellarator", "none"),
+                    help="the map's symmetry (mrx.geometry.build_sequence): one field period, half a "
+                         "period (the parity projector; needs a stellarator-symmetric field, coil-ss or "
+                         "toroidal), or none (with --nfp 1 the whole torus, n_zeta for all of it)")
+    ap.add_argument("--nfp", type=int, default=None,
+                    help="override the geometry's field periods (1 with --symmetry none: the whole torus)")
     ap.add_argument("--ns", default="6,12,6:8,16,8:10,20,10:12,24,12",
                     help="colon-separated n_r,n_theta,n_zeta rungs (colon is "
                          "shell-safe inside slurm/run.sh's wrapped command).")
@@ -82,6 +89,10 @@ def b_star_phys(seq, field, lam=1.0):
     * ``toroidal``:   ``e_phi / R = grad(phi_geo)``     (1-form-exact; degenerate for A)
     * ``polynomial``: ``grad Psi``, ``Psi = (x^3-3xy^2) + z(x^2-y^2)``
     * ``coil``:       ``e_phi/R + lam grad(R^2 cos 2phi)`` -- TF flux + n=2 ripple.
+    * ``coil-ss``:    ``e_phi/R + lam grad(R^2 sin 2phi)`` -- the same with the ripple
+      stellarator-symmetric: under ``(R, phi, Z) -> (R, -phi, -Z)`` a symmetric field has
+      ``B_R`` odd and ``B_phi, B_Z`` even; ``grad(R^2 cos 2phi)`` has ``B_R = 2R cos 2phi``
+      even, so ``coil`` is not symmetric and a half-period run would project its ripple away.
     """
     import jax
     import jax.numpy as jnp
@@ -94,8 +105,10 @@ def b_star_phys(seq, field, lam=1.0):
             return tf(seq.map(xi))
         return f
 
-    if field == "coil":
-        grad_ripple = jax.grad(lambda X: X[0] ** 2 - X[1] ** 2)  # grad(R^2 cos 2phi)
+    if field in ("coil", "coil-ss"):
+        ripple = ((lambda X: X[0] ** 2 - X[1] ** 2) if field == "coil"      # R^2 cos 2phi
+                  else (lambda X: 2.0 * X[0] * X[1]))                     # R^2 sin 2phi
+        grad_ripple = jax.grad(ripple)
 
         def f(xi):
             X = seq.map(xi)
@@ -167,7 +180,7 @@ def run_rung(seq, ops, routes, field, lam, tag, gap_sweeps=5):
     if "A" in routes:
         # --- Route A: 0-form scalar potential, H in V1 (free) ----------------
         t0 = time.perf_counter()
-        load1 = seq.load(Bphys, 1, dirichlet=False)                 # int L1 . B*
+        load1 = seq.load(Bphys, 1, dirichlet=False, parity=-1)      # int L1 . B*; B* odd
         rhs = seq.apply_incidence_matrix(load1, 0, dirichlet_in=False,
                                          dirichlet_out=False, transpose=True)  # G0^T load1
         f = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, operators=ops)
@@ -208,7 +221,7 @@ def run_rung(seq, ops, routes, field, lam, tag, gap_sweeps=5):
         # acts as curl-curl; solved by the preconditioned k=1 Hodge-Laplacian
         # saddle (well conditioned -- and no k=2 Laplacian inverse anywhere).
         t0 = time.perf_counter()
-        load2 = seq.load(Bphys, 2, dirichlet=False)                # M2-load of B*
+        load2 = seq.load(Bphys, 2, dirichlet=False, parity=-1)     # M2-load of B*; B* odd
         rhs1 = seq.apply_incidence_matrix(load2, 1, dirichlet_in=False,
                                           dirichlet_out=False, transpose=True)  # C^T load2
         A, info = seq.apply_inverse_laplacian(rhs1, 1, dirichlet=False,
@@ -245,22 +258,29 @@ def main(cli):
     os.makedirs(cli.out, exist_ok=True)
     routes = [r.strip() for r in cli.routes.split(",") if r.strip()]
     rungs = [tuple(int(v) for v in chunk.split(",")) for chunk in cli.ns.split(":")]
-    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}  field {cli.field}", flush=True)
+    if cli.symmetry == "stellarator" and cli.field not in ("coil-ss", "toroidal"):
+        raise SystemExit(f"--field {cli.field} is not stellarator-symmetric: a half-period run would "
+                         "project part of it away; use --field coil-ss or --symmetry field-period")
+    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE}  field {cli.field}  "
+          f"symmetry {cli.symmetry}  nfp {cli.nfp}", flush=True)
 
     records = []
     for ns in rungs:
         tag = f"{ns[0]}x{ns[1]}x{ns[2]}_p{cli.p}"
         t0 = time.perf_counter()
-        seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol)
+        seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.maxiter, tol=cli.tol, nfp=cli.nfp,
+                                  symmetry=cli.symmetry)
         ops = compute_nullspaces(seq, gap_sweeps=cli.gap_sweeps)
+        t_setup = time.perf_counter() - t0
         rec = run_rung(seq, ops, routes, cli.field, cli.lam, tag, gap_sweeps=cli.gap_sweeps)
         rec.update(ns=list(ns), p=cli.p, h=1.0 / (ns[0] - cli.p),
-                   n_elements=ns[0] - cli.p, tol=float(seq.tol),
-                   t_total=time.perf_counter() - t0)
+                   n_elements=ns[0] - cli.p, tol=float(seq.tol), symmetry=cli.symmetry, nfp=cli.nfp,
+                   t_setup=t_setup, t_total=time.perf_counter() - t0)
         records.append(rec)
         with open(os.path.join(cli.out, "analytic_vacuum.json"), "w") as fh:
             json.dump(dict(geometry=os.path.abspath(cli.geometry), field=cli.field,
-                           lam=cli.lam, p=cli.p, records=records), fh, indent=2)
+                           lam=cli.lam, p=cli.p, symmetry=cli.symmetry, nfp=cli.nfp,
+                           records=records), fh, indent=2)
 
     print("\n=== convergence (relerr vs h = 1/n_el) ===", flush=True)
     for r in routes:
