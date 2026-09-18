@@ -87,6 +87,8 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from mrx.pytree import register_arrays
+
 from mrx.operators import (
     _fd_apply_3d,
     _fd_apply_3d_shifted,
@@ -999,6 +1001,7 @@ def _flatten_payload(payload):
     return tuple(leaves), _jitted_for(treedef, impl)
 
 
+@register_arrays
 class MetricLumpingLaplacian:
     """Bulk FD atoms + a dense core inverse, applied independently.
 
@@ -1231,6 +1234,7 @@ def _apply_mass_payload(payload: _MassPayload, x):
     return _place(payload, parts)
 
 
+@register_arrays
 class MetricLumpingMass:
     """``M_k^-1`` as a separable bulk plus a densely-probed core.
 

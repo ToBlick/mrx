@@ -10,7 +10,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from mrx.pytree import register_arrays
 
+
+@register_arrays
 class QuadratureRule:
     """Tensor-product Gauss quadrature on the logical cube of a 0-form basis.
 

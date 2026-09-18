@@ -578,7 +578,7 @@ class TimeStepper(eqx.Module):
     newton_maxiter: int = 300
     newton_precond: str = "laplacian"
     newton_dt_cap: float = 1.0
-    newton_precond_apply: Callable = None
+    newton_precond_apply: Callable = None      # the harmonic atom (mrx.hessian.HarmonicAtom), a pytree
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -591,7 +591,7 @@ class TimeStepper(eqx.Module):
             raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
         if self.newton and self.newton_precond == "harmonic":
             # built once: the profiles of h and the Fourier symbols
-            self.newton_precond_apply = harmonic_preconditioner(self.seq)
+            self.newton_precond_apply = harmonic_preconditioner(self.seq)   # a HarmonicAtom, a pytree
         if self.potential_velocity is None:
             self.potential_velocity = not (self.newton or self.auxiliary_B_field)
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
@@ -813,7 +813,8 @@ class TimeStepper(eqx.Module):
         if self.newton:
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter,
-                self.newton_precond_apply or self.newton_precond)
+                self.newton_precond if self.newton_precond_apply is None
+                else (lambda x: self.newton_precond_apply(seq, x)))
             # The line search's sign: a Newton direction that does not
             # descend (H indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.
@@ -1106,16 +1107,25 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     evaluations and final defect; 1 and 0 for the explicit step),
     ``newton_it`` and ``newton_fallback`` (the Newton solve's signed MINRES
     count and whether its direction was replaced; 0 without ``newton``), plus
-    ``extra[name](state)`` for every extra probe.
+    ``extra[name](seq, state)`` for every extra probe.
 
     Compile time is the body's whatever ``n_chunk`` (a ``While`` trip
     count); the chunk is the cadence at which the host sees the trace and
     may act on the state.
+
+    A PURE function of the stepper: ``ts`` (and through it the sequence,
+    a pytree, :mod:`mrx.pytree`) is an argument of the jitted function, so
+    the geometry, the element weights, the extraction tables and the atoms
+    reach the program as device inputs, not as constants captured by a
+    closure (3.5 GB of them at (48,96,96), 10.6 GB for the whole torus,
+    constant-folded and held on the host through the compile). The step
+    index is an array for the same reason: a Python int is static under
+    ``filter_jit`` and would recompile every chunk.
     """
-    seq = ts.seq
     extra = extra or {}
 
-    def body(state, it):
+    def body(ts, state, it):
+        seq = ts.seq
         state = ts.relaxation_step(state)
         B_n, B_new = state.B_n, state.B_nplus1
         dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
@@ -1127,23 +1137,23 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, newton_fallback=state.newton_fallback,
-            **{k: f(state) for k, f in extra.items()})
+            **{k: f(seq, state) for k, f in extra.items()})
         return state, trace
 
-    @jax.jit
-    def run(state, it0):
-        return jax.lax.scan(body, state, it0 + jnp.arange(1, n_chunk + 1))
+    @eqx.filter_jit
+    def run(ts, state, it0):
+        return jax.lax.scan(lambda st, it: body(ts, st, it), state, it0 + jnp.arange(1, n_chunk + 1))
 
-    return run
+    return lambda state, it0: run(ts, state, jnp.asarray(it0))
 
 
 # ---------------------------------------------------------------------------
 # The run: the residual scale, the diagnostics sampler, checkpoints, the loop
 # ---------------------------------------------------------------------------
 
-def force_scale(seq: DeRhamSequence) -> Callable[[jnp.ndarray], jnp.ndarray]:
-    """``||grad(B^2/2)||_L2`` as a jitted function of the 2-form DoFs: the
-    scale the force residual is measured against.
+def force_scale_value(seq: DeRhamSequence, B: jnp.ndarray) -> jnp.ndarray:
+    """``||grad(B^2/2)||_L2`` of the 2-form DoFs ``B``: the scale the force
+    residual is measured against (:func:`force_scale` is its jitted form).
 
     ``grad p`` is a real scale too (the scheme converges to ``J x B = grad
     p``) but vanishes in the low-beta limit; ``grad(B^2/2)`` has the same
@@ -1151,13 +1161,19 @@ def force_scale(seq: DeRhamSequence) -> Callable[[jnp.ndarray], jnp.ndarray]:
     ``B^2/2`` (:meth:`dot_product_load`), one natural ``M_0`` solve, the
     strong gradient, its norm.
     """
-    @jax.jit
-    def scale(B):
-        q = 0.5 * seq.dot_product_load(B, B, 0, 2, 2, dirichlet_n=False)
-        w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
-        g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
-        return seq.l2_norm(g1, 1, dirichlet=False)
-    return scale
+    q = 0.5 * seq.dot_product_load(B, B, 0, 2, 2, dirichlet_n=False)
+    w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
+    g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
+    return seq.l2_norm(g1, 1, dirichlet=False)
+
+
+_force_scale_jit = eqx.filter_jit(force_scale_value)
+
+
+def force_scale(seq: DeRhamSequence) -> Callable[[jnp.ndarray], jnp.ndarray]:
+    """``B -> ||grad(B^2/2)||_L2`` jitted, the sequence an argument of the
+    compiled function (:func:`force_scale_value`)."""
+    return lambda B: _force_scale_jit(seq, B)
 
 
 def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
@@ -1180,7 +1196,7 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     aux = ts.auxiliary_B_field
     on = seq if seq.residual is None else seq.residual      # the energy, in the residual precision
 
-    def probe(B, p, H, JxH, J, F_prev, pw_guess, A):
+    def probe(seq, aux, B, p, H, JxH, J, F_prev, pw_guess, A):
         F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
                                         J_guess=J, F_guess=F_prev)
         p_w, F_w, v = weak_pressure(J, X, seq, aux, p_guess=pw_guess)
@@ -1190,12 +1206,12 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
         JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
         return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag
 
-    probe_jit = jax.jit(probe)
+    probe_jit = eqx.filter_jit(probe)      # the sequence an argument, not a captured constant
 
     def sample(state: State, pw_guess: jnp.ndarray, eager: bool = False):
         f = probe if eager else probe_jit
         p, H, JxH, J, A, p_w, h, JoverB, JB, diag = f(
-            state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
+            seq, aux, state.B_n, state.p, state.H, state.JxH, state.J, state.F_prev, pw_guess, state.A)
         state = eqx.tree_at(lambda s: (s.p, s.H, s.JxH, s.J, s.A), state, (p, H, JxH, J, A))
         E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
         scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB),
@@ -1309,9 +1325,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
     scale = force_scale(seq)
-    run = chunk_runner(ts, chunk, extra=dict(resid=lambda st: (st.F_norm / scale(st.B_n)) ** 2))
+    run = chunk_runner(ts, chunk, extra=dict(resid=lambda sq, st: (st.F_norm / force_scale_value(sq, st.B_n)) ** 2))
     sample = make_sampler(seq, ts)
-    reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
+    reconnect_jit = eqx.filter_jit(lambda sq, B, eps: resistive_step(B, sq, eps))
+    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps))      # noqa: E731
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
                              "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback")}

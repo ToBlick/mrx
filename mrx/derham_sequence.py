@@ -39,6 +39,7 @@ import numpy as np
 import copy
 
 import mrx
+from mrx.pytree import register_arrays
 from mrx.differential_forms import DifferentialForm
 from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, default_tol, solve_tol
 from mrx.extraction_operators import (PolarExtractionOperator,
@@ -1300,3 +1301,13 @@ class DeRhamSequence():
                 div_v, 0, dirichlet=dirichlet_p, guess=-p_guess)
             σ = -self.apply_strong_grad(q, dirichlet_p, False)
             return v - σ, -q
+
+
+# The sequence as a pytree: its device arrays -- the geometry at the
+# quadrature points, the element weights of the sum-factorised applies, the
+# extraction tables, the atoms, the harmonic forms, the float64 twin -- are
+# children, so a function of the sequence under ``eqx.filter_jit`` takes them
+# as inputs instead of baking them into the program as constants
+# (:mod:`mrx.pytree`). The equilibrium's host data and the host-side
+# extraction gram cores stay static.
+register_arrays(DeRhamSequence, static=("equilibrium", "_gram_core"))

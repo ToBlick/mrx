@@ -32,6 +32,7 @@ k=1 Laplacian atom as the preconditioner. The one divergence-free direction
 ``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
@@ -49,8 +50,33 @@ PRECONDITIONERS = ("laplacian", "laplacian2", "mass", "harmonic")
 HARMONIC_FLOOR = 1e-2
 
 
+class HarmonicAtom(eqx.Module):
+    """The harmonic atom of :func:`harmonic_preconditioner` as a pytree: the
+    per-component Fourier scalings are its arrays, applied through the
+    sequence it is CALLED with (``atom(seq, x)``), so that inside a jitted
+    function of the sequence nothing is a captured constant."""
+
+    scale: tuple
+    shapes: tuple = eqx.field(static=True)
+
+    def _C(self, x):
+        out, off = [], 0
+        for sc, s in zip(self.scale, self.shapes):
+            n_c = s[0] * s[1] * s[2]
+            X = x[off:off + n_c].reshape(s)
+            out.append(jnp.fft.ifft2(jnp.fft.fft2(X, axes=(1, 2)) * sc, axes=(1, 2)).real.ravel())
+            off += n_c
+        return jnp.concatenate(out)
+
+    def __call__(self, seq, x):
+        E = seq.E(1, True)
+        y = E @ self._C(E.T @ x)
+        y = seq.apply_laplacian_preconditioner(y, 1, dirichlet=True)
+        return E @ self._C(E.T @ y)
+
+
 def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
-    """``x -> W P_L W^T x``: the harmonic atom, an approximate inverse of the Newton
+    """``(seq, x) -> W P_L W^T x`` (a :class:`HarmonicAtom`): the harmonic atom, an approximate inverse of the Newton
     operator ``curl^T H curl`` built from the harmonic 2-form ``h`` of the sequence.
 
     The Hessian is, to a percent, the Gauss-Newton form ``||curl(u x B)||^2``,
@@ -98,23 +124,7 @@ def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
         lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
         flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
         scale.append(jnp.asarray(1.0 / np.sqrt(lam + flo), dtype=seq.dtype))
-    E = seq.E(1, True)
-
-    def C(x):
-        out, off = [], 0
-        for sc, s in zip(scale, shapes):
-            n_c = s[0] * s[1] * s[2]
-            X = x[off:off + n_c].reshape(s)
-            out.append(jnp.fft.ifft2(jnp.fft.fft2(X, axes=(1, 2)) * sc, axes=(1, 2)).real.ravel())
-            off += n_c
-        return jnp.concatenate(out)
-
-    def apply(x):
-        y = E @ C(E.T @ x)
-        y = seq.apply_laplacian_preconditioner(y, 1, dirichlet=True)
-        return E @ C(E.T @ y)
-
-    return apply
+    return HarmonicAtom(scale=tuple(scale), shapes=tuple(shapes))
 
 
 def second_variation(seq, B, J, tol=None):

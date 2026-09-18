@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import functools
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -183,11 +184,15 @@ def _extraction_gram_core(seq, k, dirichlet):
     return cache[key]
 
 
-class FreeProjector:
+class FreeProjector(eqx.Module):
     """``Pi P Pi^T`` for a preconditioner ``P`` on the EXTRACTED k-form space
     of a half-period sequence: ``pre`` projects the input (a dual vector)
     onto the parity it reads off it, ``post`` the output (a primal vector)
-    onto the same parity. Jitted, device-only. The primal projector is
+    onto the same parity. A pytree of its arrays (a signed permutation of
+    the bulk rows, the dense polar core block), so that inside a jitted
+    function of the sequence they are traced inputs, not captured
+    constants (:mod:`mrx.pytree`); eagerly it is a handful of gathers. The
+    primal projector is
     ``(I + s R_free) / 2`` with ``R_free = (E E^T)^-1 E R E^T``, the dual one
     its transpose ``E R E^T (E E^T)^-1``, ``(E E^T)^-1`` the identity but for
     the dense polar block of :func:`_extraction_gram_core`; the extraction is
@@ -235,43 +240,53 @@ class FreeProjector:
         core_block = inverse @ ERE[np.ix_(core, core)].toarray() if core.size else np.zeros((0, 0))
         if core.size and np.abs(ERE[np.ix_(core, bulk)]).max() > 0:
             raise RuntimeError("the free-space reflection couples core and bulk rows")
-        perm_j, sign_j = jnp.asarray(perm_free), jnp.asarray(sign_free, dtype=jnp.float64)
-        inv_perm_j = jnp.asarray(np.argsort(perm_free))
-        core_j, block_j = jnp.asarray(core), jnp.asarray(core_block, dtype=jnp.float64)
-        blockT_j = jnp.asarray(core_block.T, dtype=jnp.float64)
-        has_core = bool(core.size)
+        self.perm = jnp.asarray(perm_free)
+        self.inv_perm = jnp.asarray(np.argsort(perm_free))
+        self.sign = jnp.asarray(sign_free, dtype=jnp.float64)
+        self.core = jnp.asarray(core)
+        self.block = jnp.asarray(core_block, dtype=jnp.float64)
+        self.blockT = jnp.asarray(core_block.T, dtype=jnp.float64)
+        self.has_core = bool(core.size)
 
-        def reflect_free(y):
-            r = sign_j * y[perm_j]
-            return r.at[core_j].set(block_j @ y[core_j]) if has_core else r
+    perm: jnp.ndarray
+    inv_perm: jnp.ndarray
+    sign: jnp.ndarray
+    core: jnp.ndarray
+    block: jnp.ndarray
+    blockT: jnp.ndarray
+    has_core: bool = eqx.field(static=True)
 
-        def reflect_free_T(r):
-            y = (sign_j * r)[inv_perm_j]
-            return y.at[core_j].set(blockT_j @ r[core_j]) if has_core else y
+    def reflect_free(self, y):
+        """``R_free y``: the signed permutation of the bulk rows, the dense
+        block on the polar core rows."""
+        r = self.sign * y[self.perm]
+        return r.at[self.core].set(self.block @ y[self.core]) if self.has_core else r
 
-        @jax.jit
-        def post(y, s):
-            y64 = jnp.asarray(y, jnp.float64)
-            return (0.5 * (y64 + s * reflect_free(y64))).astype(jnp.asarray(y).dtype)
+    def reflect_free_T(self, r):
+        y = (self.sign * r)[self.inv_perm]
+        return y.at[self.core].set(self.blockT @ r[self.core]) if self.has_core else y
 
-        @jax.jit
-        def dual(r, s):
-            r64 = jnp.asarray(r, jnp.float64)
-            return (0.5 * (r64 + s * reflect_free_T(r64))).astype(jnp.asarray(r).dtype)
+    def post(self, y, s):
+        """The primal projector ``(I + s R_free) / 2`` on ``y``, in float64,
+        returned in ``y``'s dtype."""
+        y64 = jnp.asarray(y, jnp.float64)
+        return (0.5 * (y64 + s * self.reflect_free(y64))).astype(jnp.asarray(y).dtype)
 
-        @jax.jit
-        def parity(r):
-            # the sign of r . R r, +-|r|^2 for a vector of definite parity
-            # (a dual one too: the bulk rows decide)
-            r64 = jnp.asarray(r, jnp.float64)
-            return jnp.where(jnp.vdot(r64, reflect_free(r64)) >= 0.0, 1.0, -1.0)
+    def dual(self, r, s):
+        """The dual projector ``(I + s R_free^T) / 2`` on ``r``."""
+        r64 = jnp.asarray(r, jnp.float64)
+        return (0.5 * (r64 + s * self.reflect_free_T(r64))).astype(jnp.asarray(r).dtype)
 
-        @jax.jit
-        def pre(x):
-            s = parity(x)
-            return dual(x, s), s
+    def parity(self, r):
+        """The sign of ``r . R r``, ``+-|r|^2`` for a vector of definite
+        parity (a dual one too: the bulk rows decide)."""
+        r64 = jnp.asarray(r, jnp.float64)
+        return jnp.where(jnp.vdot(r64, self.reflect_free(r64)) >= 0.0, 1.0, -1.0)
 
-        self.pre, self.post, self.dual, self.parity = pre, post, dual, parity
+    def pre(self, x):
+        """``(dual projection of x onto its own parity, that parity)``."""
+        s = self.parity(x)
+        return self.dual(x, s), s
 
     def projectors(self, b):
         """``(project_primal, project_dual)`` of the parity of the dual
