@@ -684,13 +684,17 @@ def core_rows(seq, k, dirichlet):
 
 def _parity_split(seq, k, dirichlet):
     """On a half-period sequence, ``x -> (x_even, x_odd)`` in the extracted
-    k-form space (:meth:`DeRhamSequence.project_parity`): a unit vector is
-    of no parity, and the applies of a half-period sequence are exact only
-    on one, so a probe applies to the two parts and adds. ``None`` on a
-    full-period sequence."""
+    k-form space: a unit vector is of no parity, and the applies of a
+    half-period sequence are exact only on one, so a probe applies to the
+    two parts and adds. The device projector (:class:`mrx.symmetry.FreeProjector`,
+    one gather), not :meth:`DeRhamSequence.project_parity`: that one is the
+    host-side exact restriction at 40 ms a call, and the probes make ten
+    thousand of them -- 410 s of a 540 s build at (32,64,64), measured
+    2026-09-18. ``None`` on a full-period sequence."""
     if not seq.half_period:
         return None
-    return lambda x: (seq.project_parity(x, k, 1, dirichlet), seq.project_parity(x, k, -1, dirichlet))
+    projector = seq.free_projector(k, dirichlet)
+    return lambda x: (projector.post(x, 1.0), projector.post(x, -1.0))
 
 
 def _probe_rows(apply, size, rows, dtype=DTYPE, split=None):
