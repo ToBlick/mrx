@@ -115,3 +115,35 @@ the 3/5, 1/2, 3/7 surfaces (r = 0.797, 0.543, 0.268).
   (|R| < 0.02, the two guesses return fixed points of the same kind --
   presumably a doubled chain, fixed points every 1/(4m); guesses at
   1/(4m) would settle it), and the 3/5 chain as it opens (paper 0.7-0.8).
+
+## CORRECTION (2026-09-18, afternoon): the residue is not a width here
+
+Tobias: the three final sections of the seeded-reconnection runs show no
+visible difference in the 3/5 chain. `ray_widths.py` measured the
+separatrix directly: the O-point by Newton, 121 seeds on the radial ray
+through it (spacing 0.06 h_r), 300 periods, locked = iota within 2e-3.
+
+| field | paper (section) | ray scan, largest excursion | ray extent | residue width quoted above |
+|---|---|---|---|---|
+| (5,1) seed, initial | 2.3 | 2.38 | 2.29 | 3.2 |
+| unseeded, final | 3.4 | 3.41 | 3.23 | 5.4 |
+| (5,1) seed, final | 3.3 | 3.27 | 3.06 | 4.2 |
+| (6,1) seed, final | 3.4 | 3.39 | 3.18 | 5.6 |
+
+So the paper's section widths are RIGHT (160 lines seed the chain well
+enough; the "lower bound" of the (10,16,16) check was 48 lines), the three
+finals agree, and the residue-to-width conversion OVERESTIMATES by
+1.35-1.6 on these fields. It matched the seed's pendulum estimate in the
+check because both are the same constant-shear single-harmonic model;
+the seeded perturbation is a Gaussian of width 0.1, comparable to the
+island, and the late states have an iota profile that flattens and turns
+over outside the chain. Withdrawn from the section above: "the section
+measure is a lower bound by a steady factor", "the widths do not converge
+across the runs", "the mesh figure agrees to 6% not 2%" (unverified by a
+direct measurement), and every residue WIDTH of a wide or edge island.
+What stands: the residues themselves, the existence and position of the
+fixed points, and the phase flip of the (5,1)-seeded chain (O-point on
+theta = 0 initially, at 0.108 from event 3 on). Use the diagnostic for
+the O-point's position and rotation rate and to PLACE the seeds of a
+width measurement (the ray through the O-point); quote widths from the
+traced lines.

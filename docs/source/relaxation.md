@@ -286,10 +286,14 @@ that the figures quote. The shear is the unperturbed profile's: pass
 `iota_prime` from a section of the unseeded field, since the island
 flattens iota over its width and a fit to the seeded section follows the
 seed. On the seeded li383 (6,1) chain at (10,16,16) the width agrees with
-the seed's linear estimate to 8% at `eps = 3e-3` and 1% at `1e-2`, while
-the locked lines' `max(r) - min(r)` is a lower bound (half the width with
-48 seeds); the tangent map needs 96 steps per period, four times the
-trajectory's, for `det S = 1` to 1e-4 (`docs/research/island_diagnostic_2026-09-18.md`).
+the seed's linear estimate to 8% at `eps = 3e-3` and 1% at `1e-2` -- both
+are the constant-shear single-harmonic pendulum, and on the paper's
+fields they overestimate the traced separatrix by 1.35 to 1.6, so the
+width to quote stays the traced one. What the fixed points are for: the
+chain's existence and phase, the rotation rate about the O-point, and
+placing the seeds of a width measurement on the ray through the O-point.
+The tangent map needs 96 steps per period, four times the trajectory's,
+for `det S = 1` to 1e-4 (`docs/research/island_diagnostic_2026-09-18.md`).
 
 ## Figures
 
