@@ -458,11 +458,35 @@ descends the true energy (the line search tests that, not the model) and carries
 into the positive region. li383 is never indefinite along the way, which is why CG worked
 there.
 
-**Verdict:** MINRES with the fixed budget of 200 stays, and for a reason: the Newton system
-is indefinite along the way on W7-X. The forcing-term and CG options gave the same result
-at higher cost on li383 and fail on W7-X; they remain in the code for this record and should
-be deleted if not adopted (`--newton-inner-tol`, `--newton-solver`, `--newton-warm-start`,
-`pcg_steihaug`).
+**Trust-region Newton-CG** (N&W 7.2, `--newton-trust-region`, `pcg_steihaug_tr`, 8bc4cf6:
+Steihaug-Toint CG from zero in the P^-1 norm, the tau-step to the boundary at negative
+curvature, the rho-test with dt = 1 or a null step, Delta from ||b||_P then doubled /
+quartered; `batch10/`): it WORKS on W7-X where line-search CG locked (every step accepted, no
+fallbacks, through the indefinite region: N&W's point confirmed), but at 2x the cost (400
+iterations from zero every step, 15 / 11 s per step) and 2x behind in residual (li383 min
+3.2e-10 vs 1.5e-10, W7-X 3.6e-11 vs 2.4e-11), and the region goes inactive: rho settles at
+2.00 exactly, so Delta doubles whenever it binds and soon never binds. rho = 2 is a fact
+about the model, not a bug: for a CG/Galerkin iterate a^T A a = b^T a, so the model's
+decrease is exactly <F, u>/2, while the linear induction step gains <F, u> - ||dB||^2/2 ~
+<F, u> because dt* >> 1 (the line search wanted 8-100): the second variation's curvature
+part is as large as its Gauss-Newton part and the quadratic model in a predicts half the
+actual decrease. The same fact as September's "dt* ~ 2, cap at 1".
+
+**The f64 forcing term** (`--newton-passes`, c13f889: refine's passes, `newton_maxiter`
+iterations each until the FLOAT64 residual is below `newton_tol`, the code's convention; the
+f32 inner stop above was the wrong place): tol 0.1 with 100 per pass and <= 3 passes
+reproduces the fixed 200 to three digits on both geometries, spends 290 -> 100 iterations
+on li383 (6.5 vs 8.0 s/step, the f64 residual met from chunk 2 on) and 300 -> 200 on W7-X
+(7.4 vs 5.8, met only from chunk 7: its true residual at 200 is above 0.1); tol 0.05 costs
+more for nothing (`batch11/`). The principled adaptive stop; cost +-20-30 % either way.
+
+**Verdict:** MINRES, warm-started, with the float64 verdict, is the solver: line-search CG
+fails on W7-X's indefinite states, trust-region CG is safe there but dominated. Stopping:
+the fixed 200, or the forcing term `--newton-passes 3 --newton-maxiter 100 --newton-tol
+0.1` (equivalent results; cheaper on li383, dearer on W7-X; the textbook form). To delete
+if not adopted: `--newton-inner-tol` (the f32 stop), `--newton-solver cg` + `pcg_steihaug`
+(fails), `--newton-warm-start` (diagnostic); `--newton-trust-region` + `pcg_steihaug_tr`
+work but are dominated.
 
 ## 8. Summary
 
@@ -484,10 +508,11 @@ be deleted if not adopted (`--newton-inner-tol`, `--newton-solver`, `--newton-wa
   and (so far) the fallback are inert. The regular-line drift 5e-3 vs 9e-4 is the one open
   number.
 * **Recommended default** (Tobias to decide): `--method newton --newton-parallel-penalty
-  3*strain --harmonic-floor strain --harmonic-field B --newton-maxiter 200
-  --step-regularisation 0 --dt-floor 0`, cap 1, floor-tol as a stop criterion only
+  3*strain --harmonic-floor strain --harmonic-field B --newton-maxiter 100 --newton-passes 3
+  --newton-tol 0.1 --step-regularisation 0 --dt-floor 0`, cap 1, floor-tol as a stop
+  criterion only (`--newton-maxiter 200 --newton-passes 1` is the equivalent fixed budget)
   (`--newton-parallel-penalty 0.1` is equivalent on li383 and W7-X to 6 %; 3*strain carries
   the radial profile and the device scaling on its own). Then delete kappa
   (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
   again, the Newton fallback and its two smoothing parameters.
-* GPU spent on this session: ~40 h of the 50 (spectrum probes 3, arms 35, traces 3, calibration probes 2).
+* GPU spent on this session: ~46 h of the 50 (spectrum probes 3, arms 41, traces 3, calibration probes 2).
