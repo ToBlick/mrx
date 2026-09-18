@@ -83,10 +83,36 @@ the DoFs as they are.
    stalls. That was my test, not the code -- every load and apply produces
    dual-pure vectors -- and it cost an evening: the `M_k^-1` lines of the
    operator diagnostic have to use `M_full x` as the right-hand side.
+6. The round-off of the other parity. A residual assembled by cancellation
+   (`b - S x - M D w` in the pair loop, `r - alpha A p` in a CG) carries an
+   impure part at round-off; the half-period operators cannot reduce it,
+   and once the pure part has converged the impure one dominates -- the
+   inner CG of the k=1 Hodge split then ran to its 10000 cap and returned
+   garbage (the operator diagnostic: 10152 iterations against 357, the
+   solution 40% impure on the third pass). Two pieces fix it: the atoms
+   are `Pi P Pi^T` (the dual projector on the input, the primal one on the
+   output: symmetric, and the CG's `P`-norm cannot see the impure part),
+   and every solve projects its right-hand side, residuals and iterates
+   onto the parity of its right-hand side (`parity=` on
+   `solve_singular_cg`, `parity_upper/lower` on the saddle MINRES, the
+   pair loop's `project_dual`, the Newton `refine`), composed with the
+   harmonic-form deflation it already had. After that the k=1 Dirichlet
+   Laplacian solve matches the full one to 6e-14 in 314 iterations
+   against 357.
 
 ## 4. Measurements
 
-(to be filled: the operator diagnostic after the atom fix, the suite in
-both precisions, the li383 (16,32,32) float64 identity run half vs full
--- Newton 20 steps, L-BFGS 100 steps with a reconnection -- and the
-per-step wall time.)
+Operator diagnostic (`outputs/half_period/diag_ops.py`, li383 (8,12,12)
+p=2 float64, the half-period sequence against a full-period twin on the
+same map, vectors of definite parity): `M_k`, `P_kl`, `D_k`, `D_k^T`,
+`S_k`, `L_k` agree to 1e-14 in every degree and both boundary classes;
+the mass and Laplacian atoms differ by 1% and 2-6% (`Pi P Pi^T` against
+`P`); the mass solves agree to 1e-13 with identical iteration counts
+(k=0..3: 14, 57/62, 54/61, 7); the k=0 Laplacian solves to 1e-9 with
+44/73 against 44/72 iterations; the k=1 Dirichlet Laplacian solve to
+6e-14 in 314 against 357; the harmonic forms to 2e-15 (k=1 free), 7e-15
+(k=2 Dirichlet), 7e-15 (k=3); the initial field's even part 5e-16.
+
+(to be filled: the suite in both precisions, the li383 (16,32,32) float64
+identity run half vs full -- Newton 20 steps, L-BFGS 100 steps with a
+reconnection -- and the per-step wall time.)
