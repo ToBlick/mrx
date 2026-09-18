@@ -551,3 +551,36 @@ citation up to the three documented deviations. Paper: the Newton paragraph in r
   (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
   again, the Newton fallback and its two smoothing parameters.
 * GPU spent on this session: ~48 h of the 50 (spectrum probes 3, arms 43, traces 3, calibration probes 2).
+
+## 9. The configuration adopted (2026-09-18, Tobias: "as few hyperparameters as possible")
+
+The Newton configuration is now Newton-MR with the parallel-flow penalty and four numbers,
+all defaulted: `--newton-penalty KAPPA [3]` (kappa times the strain along the field, the
+only physics-facing one; users are not expected to touch it), `--newton-tol [0.1]`,
+`--newton-maxiter [100]`, `--newton-passes [3]` (the forcing term and its caps). The strain
+profile, the harmonic atom and the penalty are recomputed from the current B at every step
+(one quadrature evaluation, traced; the h-vs-B choice is gone, B always). The line search is
+capped at the Newton length dt = 1, no longer a parameter.
+
+Removed with their code paths (commit a99da0b): the regularised line search (C), the
+dt-floor stop (it ended a run when the mean accepted step fell below 0.1, a signal that only
+existed because the regularised search shrank the step at the floor), the dt cap as a flag,
+the atom's kappa floor and HARMONIC_FLOOR, `--harmonic-field`, the preconditioner choice
+(`--newton-precond`: the harmonic atom only), the Newton smoothing, the fallback to the
+smoothed force and `newton_fallback` in the trace (Newton-MR's nonpositive-curvature exit is
+the guarantee; the fallback never fired with the penalty), `--newton-inner-tol` (the f32
+stop), the CG-Steihaug and trust-region solvers (`pcg_steihaug`, `pcg_steihaug_tr`), the
+warm-start switch, and my first Cary-Hanson functions in `mrx/poincare.py` (superseded by
+the island session's `fixed_points` / `islands`; `island_width_check.py` and
+`island_width_w7x.py` under outputs/ no longer run). Tutorials 4-6 and `docs/source` updated.
+
+The arms of sections 6-7f ran with the flags of their day (`--newton-parallel-penalty`,
+`--harmonic-floor strain`, `--step-regularisation 0`, ...); their numbers stand, their command
+lines do not replay. The new defaults reproduce the recommended arm (alpha 0.1 in floor units
+~ 3*strain, strain floor, B atom, C 0, passes 3 of 100 at tol 0.1).
+
+Merged into `newton-second-variation` the same day: `worktree-newton-atom-smoothing` (the
+L-BFGS removal, the m = 0 descent block) and `worktree-pure-runner` (the chunk runner as a
+pure function of the sequence, the map symmetry option and half-period quadrature, the
+Poincare rewrite `poincare(seq, B, ...)`, the island diagnostic); the harmonic atom is their
+pytree `HarmonicAtom`, rebuilt from B each step.
