@@ -28,8 +28,9 @@ into the symmetric one
 consistent by construction (the right-hand side annihilates every ``a`` whose
 curl is in the kernel of ``H``; the gauge ``a + grad phi`` is in the kernel of
 both sides and the curl removes it from the answer), solved by MINRES with the
-harmonic atom as the preconditioner (:func:`harmonic_preconditioner`; the
-k=1 Laplacian atom is the alternative). The one divergence-free direction
+harmonic atom as the preconditioner (:func:`harmonic_preconditioner`) and the
+parallel-flow penalty in the operator (:func:`second_variation`): Newton-MR.
+The one divergence-free direction
 ``curl a`` cannot represent is the
 harmonic 2-form of the Dirichlet complex (the net toroidal flux, one DoF).
 """
@@ -39,20 +40,7 @@ import numpy as np
 
 from mrx.operators import _dual_norm
 from mrx.precision import RESIDUAL_DTYPE
-from mrx.solvers import minres, pcg_steihaug, pcg_steihaug_tr, refine
-
-#: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
-#: square (the operator is fourth order in ``a``), the k=1 mass atom, or the
-#: harmonic atom (:func:`harmonic_preconditioner`).
-PRECONDITIONERS = ("laplacian", "laplacian2", "mass", "harmonic")
-
-#: The floor of the harmonic atom's parallel symbol, in units of
-#: ``(2 pi)^2 (h_theta^2 + h_zeta^2)``: stands in for the ``u . grad h`` term
-#: the symbol drops, which is what the flat (resonant) modes are left with.
-#: ``None`` computes the floor from the strain of the field instead
-#: (:func:`harmonic_atom_profiles`).
-HARMONIC_FLOOR = 3.0
-
+from mrx.solvers import minres
 
 def _ddx(f, x, axis, periodic):
     """Central difference of ``f`` along ``axis`` on the non-uniform grid ``x``
@@ -88,90 +76,68 @@ def harmonic_atom_profiles(seq, field):
     return prof_t, prof_z, strain
 
 
-def parallel_penalty_profile(seq, field, alpha):
-    """The radial weight of the parallel-flow penalty (:func:`second_variation`)
-    on the radial quadrature points: ``alpha (2 pi)^2 (h_theta^2 + h_zeta^2)``
-    for a number ``alpha`` (the atom floor's units, ``alpha = kappa`` the floor
-    moved into the operator), or for the string ``"strain"`` / ``"c*strain"``
-    ``c`` times the strain seen along the field, ``(h_theta^2 s_theta +
-    h_zeta^2 s_zeta) / (h_theta^2 + h_zeta^2)`` with ``s`` the lumped strain of
-    :func:`harmonic_atom_profiles`: the size of the ``u . grad h`` coupling a
-    parallel mode really has, so that the operator lifts the null space to
-    ``c`` times what the strain-floored atom models for it. The strain grows
-    ~50x from the axis to the edge and its ratio to the floor scale differs
-    between devices, while a number ``alpha`` is flat in ``r``; ``c`` measures
-    how much the lumped strain undercounts the coupling (a property of the
-    lumping, ~2-3 on li383 and W7-X, 2026-09-17), not of the geometry."""
+def parallel_penalty_profile(seq, field, kappa):
+    """The radial weight of the parallel-flow penalty (:func:`second_variation`) on the
+    radial quadrature points: ``kappa`` times the strain seen along the field,
+    ``(h_theta^2 s_theta + h_zeta^2 s_zeta) / (h_theta^2 + h_zeta^2)`` with ``s``
+    the lumped strain of :func:`harmonic_atom_profiles`, the size of the
+    ``u . grad B`` coupling a field-aligned velocity really has. ``kappa`` is
+    the one number of the Newton configuration: it measures how much the
+    angle-averaged, direction-diagonal strain undercounts that coupling, a
+    property of the lumping, not of the device (3 on li383 and W7-X within
+    6 % of the best constant, 2026-09-18; 1 is 2x worse, 0.03 lets the null
+    space through)."""
     prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
-    hsq = prof_t ** 2 + prof_z ** 2
-    if isinstance(alpha, str):
-        scale = float(alpha.split("*")[0]) if "*" in alpha else 1.0
-        return scale * (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / hsq
-    return alpha * (2 * np.pi) ** 2 * hsq
+    return kappa * (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / (prof_t ** 2 + prof_z ** 2)
 
 
-def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
+def harmonic_preconditioner(seq, B, kappa):
     """``x -> W P_L W^T x``: the harmonic atom, an approximate inverse of the Newton
-    operator ``curl^T H curl`` built from the 2-form ``field`` (the harmonic
-    form ``h`` of the sequence, or the current ``B``).
+    operator ``curl^T H curl`` built from the profiles of the current field ``B``.
 
     The Hessian is, to a percent, the Gauss-Newton form ``||curl(u x B)||^2``,
-    and ``B`` is mostly harmonic (96% on li383), so ``||curl(u x c h)||^2``
-    with ``B = c h + curl A`` is the Hessian to a few percent on every mode
-    but the flattest (measured: within 3% above the seventh Ritz value, 0.08
-    at the lowest). With ``div u = 0``, ``curl(u x h) = h . grad u - u . grad h``;
-    the atom keeps the parallel derivative and lumps it: per component of the
-    1-form potential and per radial DoF layer, the symbol
+    and with ``div u = 0``, ``curl(u x B) = B . grad u - u . grad B``; the atom
+    keeps the parallel derivative and lumps it: per component of the 1-form
+    potential and per radial DoF layer, the symbol
 
-        lambda(r, m, n) = (2 pi)^2 (h_theta(r) m + h_zeta(r) n)^2 + floor(r),
+        lambda(r, m, n) = (2 pi)^2 (h_theta(r) m + h_zeta(r) n)^2 + strain_c(r) + penalty(r),
 
-    ``h_theta, h_zeta`` the angle-averaged logical contravariant components
-    of the field (:func:`harmonic_atom_profiles`), ``(m, n)`` the Fourier
-    frequencies of the DoF grid in the two angles, and ``floor(r)`` for the
-    dropped ``u . grad h``: ``floor * (2 pi)^2 (h_theta^2 + h_zeta^2)`` for a
-    number ``floor`` (:data:`HARMONIC_FLOOR`), or with ``floor=None`` the
-    lumped strain itself, per component the angle average of ``|d_c h|^2``
-    (the lumped parallel derivative ``i k I`` is anti-Hermitian and the
-    strain of a curl-free field symmetric, so the normal form of ``i k I - S``
-    is ``k^2 I + S^T S`` with no cross term: the floor is computed, not
-    tuned). The field carries the rotational transform, so the symbol
-    vanishes on the resonant modes ``h_theta m + h_zeta n = 0`` and the floor
-    is what they see. ``shift`` is added to the whole symbol as
-    :func:`parallel_penalty_profile` of ``shift`` (a number in the floor's
-    units, or ``"strain"`` / ``"c*strain"``): the
-    ``parallel_penalty`` of :func:`second_variation`, so that the atom and
-    the operator agree on what a parallel mode sees.
-    Traceable in ``field``: built from the current ``B`` inside the step at
-    the cost of one quadrature evaluation.
+    ``h_theta, h_zeta`` the angle-averaged logical contravariant components of
+    ``B`` and ``strain_c`` the lumped strain of the field along the component's
+    direction (:func:`harmonic_atom_profiles`; the lumped parallel derivative
+    ``i k I`` is anti-Hermitian and the strain symmetric, so the normal form of
+    ``i k I - S`` is ``k^2 I + S^T S`` with no cross term: the floor is
+    computed, not tuned), ``(m, n)`` the Fourier frequencies of the DoF grid in
+    the two angles, and ``penalty`` the parallel-flow penalty the operator
+    carries (:func:`parallel_penalty_profile`), so that the atom and the
+    operator agree on what a field-aligned mode sees. The field carries the
+    rotational transform, so the symbol vanishes on the resonant modes
+    ``h_theta m + h_zeta n = 0`` and the floor is what they see. Rebuilt from
+    ``B`` at every step: one quadrature evaluation, traceable.
 
     Inverted as a sandwich of the Laplacian atom ``P_L`` (which approximates
     the inverse of the curl-curl the potential form is quadratic in) with the
     symbol's inverse square root: ``W = E C E^T`` with ``C`` the 2-D Fourier
-    scaling by ``(lambda + floor)^{-1/2}`` on the tensor DoF grid of each
-    component and ``E`` the Dirichlet 1-form extraction, so that in the bulk
-    ``W P_L W^T`` is the Laplacian atom with ``lambda + floor`` multiplied
-    into its denominator (the potential-form operator is the curl-curl times
-    the parallel symbol) and on the polar rows the extraction lumps it.
-    Symmetric positive definite for any ``C``, which is all MINRES needs;
-    the quality is the measurement. Two FFTs per component per apply.
+    scaling by ``lambda^{-1/2}`` on the tensor DoF grid of each component and
+    ``E`` the Dirichlet 1-form extraction, so that in the bulk ``W P_L W^T``
+    is the Laplacian atom with the symbol multiplied into its denominator
+    and on the polar rows the extraction lumps it. Symmetric positive
+    definite for any ``C``, which is all MINRES needs. Two FFTs per component
+    per apply.
     """
-    prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
-    penalty = parallel_penalty_profile(seq, field, shift) if isinstance(shift, str) or shift else None
+    prof_t, prof_z, strain = harmonic_atom_profiles(seq, B)
+    penalty = parallel_penalty_profile(seq, B, kappa)
     r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
     scale = []
     for c, (s1, s2, s3) in enumerate(shapes):
         r = (jnp.arange(s1) + 0.5) / s1
         a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
-        shift_r = jnp.interp(r, r_q, penalty)[:, None, None] if penalty is not None else 0.0
+        floor = jnp.interp(r, r_q, strain[:, c] + penalty)[:, None, None]
         m = np.fft.fftfreq(s2, d=1.0 / s2)
         nn = np.fft.fftfreq(s3, d=1.0 / s3)
         lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
-        if floor is None:
-            flo = jnp.interp(r, r_q, strain[:, c])[:, None, None]
-        else:
-            flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
-        scale.append((1.0 / jnp.sqrt(lam + flo + shift_r)).astype(seq.dtype))
+        scale.append((1.0 / jnp.sqrt(lam + floor)).astype(seq.dtype))
     E = seq.E(1, True)
 
     def C(x):
@@ -191,8 +157,9 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     return apply
 
 
-def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
-    """``u -> H u``: the Hessian of the energy along the flow of ``u``, as a dual 2-form.
+def second_variation(seq, B, J, kappa, tol=None):
+    """``u -> H u + kappa M_par u``: the Hessian of the energy along the flow of ``u`` with the
+    parallel-flow penalty, as a dual 2-form.
 
     ``B`` the 2-form, ``J`` its weak curl (a Dirichlet 1-form, the ``J`` of
     :func:`mrx.relaxation.compute_force`). Three k=1 mass solves per apply,
@@ -202,39 +169,26 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
 
         H u = load(B x dJ) + [load(Q x J) + load(B x W)] / 2.
 
-    ``parallel_penalty = alpha`` adds ``alpha M_par u`` with ``<v, M_par u> =
-    int (v . B)(u . B) / |B|^2 J``: the Hessian is exactly null on the
-    field-aligned flows ``u = f B`` (``curl(f B x B) = 0``; divergence-free
-    wherever ``B . grad f = 0``, so on every flux surface and with a resonant
-    ``f`` on every rational surface), and on the mesh that null space is a
-    continuum of eigenvalues 1e-4..1e-1 (li383 (16,32,32), measured
-    2026-09-17, docs/research/hessian_spectrum_2026-09-17.md) that Newton
-    divides the force's round-off components by. The penalty is
-    Levenberg-Marquardt damping on the parallel component alone: it lifts
-    those modes, leaves the energy descent unchanged (``<F, f B> = 0``) and
-    the perpendicular step untouched. The weight is
-    :func:`parallel_penalty_profile` of ``alpha`` with the profiles of ``B``:
-    a number in the units of the atom's floor, ``(2 pi)^2 (h_theta^2 +
-    h_zeta^2)(r)`` (the Hessian's scale is the field's logical gradient
-    scale, 35x smaller on W7-X than on li383; ``alpha = kappa`` is exactly the
-    atom's floor moved into the operator; li383 optimum 0.075, measured
-    2026-09-17), or ``"strain"`` / ``"c*strain"`` for ``c`` times the strain
-    along the field, computed. One quadrature load per apply.
+    The penalty ``<v, M_par u> = int w(r) (v . B)(u . B) / |B|^2 J`` with the
+    weight ``w`` of :func:`parallel_penalty_profile`: the Hessian is exactly
+    null on the field-aligned flows ``u = f B`` (``curl(f B x B) = 0``;
+    divergence-free wherever ``B . grad f = 0``, so on every flux surface and
+    with a resonant ``f`` on every rational surface), and on the mesh that
+    null space is a continuum of eigenvalues 1e-4..1e-1 (li383 (16,32,32),
+    docs/research/hessian_spectrum_2026-09-17.md) that Newton divides the
+    force's round-off components by. The penalty is Levenberg-Marquardt
+    damping on the parallel component alone: it lifts those modes, leaves the
+    energy descent unchanged (``<F, f B> = 0``) and the perpendicular step
+    untouched. One quadrature load per apply.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
-    penalised = isinstance(parallel_penalty, str) or parallel_penalty != 0
-    if penalised:
-        Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
-        n_angles = int(seq.quad.shape[1]) * int(seq.quad.shape[2])
-        weight = jnp.repeat(parallel_penalty_profile(seq, B, parallel_penalty), n_angles)
+    Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
+    n_angles = int(seq.quad.shape[1]) * int(seq.quad.shape[2])
+    weight = jnp.repeat(parallel_penalty_profile(seq, B, kappa), n_angles)
 
     def m1_inv(rhs):
         return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True, tol=tol)
-
-    def parallel(u_jk):
-        s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
-        return seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True)
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)
@@ -248,35 +202,60 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
         W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
                                               transpose=True))
         W_jk = seq.evaluate_at_quadrature(W, 1, True)
-        Hu = (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
-              + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
-                       + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
-        return Hu + parallel(u_jk) if penalised else Hu
+        s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
+        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
+                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
+                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True))
+                + seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True))
 
     return apply
 
 
-def _preconditioner(seq, name):
-    if callable(name):
-        return name
-    if name == "harmonic":
-        return harmonic_preconditioner(seq, seq.nullspace(2, True)[0])
-    if name == "laplacian":
-        return lambda x: seq.apply_laplacian_preconditioner(x, 1, dirichlet=True)
-    if name == "laplacian2":
-        return lambda x: seq.apply_laplacian_preconditioner(
-            seq.apply_laplacian_preconditioner(x, 1, dirichlet=True), 1, dirichlet=True)
-    if name == "mass":
-        return lambda x: seq.apply_mass_matrix_preconditioner(x, 1, dirichlet=True)
-    raise ValueError(f"newton_precond {name!r} is not one of {PRECONDITIONERS}")
+def newton_direction(seq, B, J, MF, a_guess, kappa, tol=0.1, maxiter=100, passes=3):
+    """The Newton direction ``u = curl a`` at the field ``B``: Newton-MR.
+
+    ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
+    Leray-projected force (``curl^T M_2 F`` is ``curl^T load(J x B)``
+    exactly: the gradient part is a ``D_2^T``, and ``D_2 D_1 = 0``),
+    ``a_guess`` the previous direction's potential (the warm start),
+    ``kappa`` the parallel-flow penalty of :func:`second_variation` and of
+    the atom, ``tol`` the forcing term, ``maxiter`` the MINRES iterations
+    per pass, ``passes`` the passes; the Hessian's mass solves run at the
+    sequence's tolerance.
+
+    The system ``curl^T H curl a = curl^T M_2 F`` is solved by :func:`newton_mr`
+    with the harmonic atom of the current field as the preconditioner
+    (:func:`harmonic_preconditioner`, rebuilt every step): MINRES from the
+    warm start in passes of ``maxiter`` iterations until the residual,
+    measured in the residual precision and the mass-atom norm of the dual
+    1-forms like every solve in the code, is below ``tol`` of the right-hand
+    side (the forcing term of Dembo, Eisenstat & Steihaug; ``0.1`` with
+    ``100`` per pass and ``3`` passes is met after 100-300 iterations and
+    gives the same relaxation as any tighter solve, measured 2026-09-18),
+    with the nonpositive-curvature exit of Newton-MR (Liu & Roosta 2022):
+    MINRES's iterate is a descent direction as long as no direction of
+    nonpositive curvature has appeared in its Krylov space, and when one
+    appears the preconditioned residual of a solve from zero is one and is
+    taken instead. The second variation is indefinite away from equilibrium
+    (W7-X, 2026-09-18), which is why the inner solver is MINRES and not
+    conjugate gradients: a CG solve stops at the first direction of negative
+    curvature and makes no further progress there. Returns ``(u, a, info)``
+    with ``info`` the iteration count, negative when the residual met ``tol``.
+    """
+    ops = seq._require_operators(None)
+    on = seq if seq.residual is None else seq.residual
+    curl, curl_t, A = _newton_system(seq, B, J, kappa)
+    A_res = _newton_system(on, B, J, kappa)[2]
+    P = harmonic_preconditioner(seq, B, kappa)
+    a, info, _ = newton_mr(A_res, A, P, curl_t(MF), a_guess, tol, maxiter, passes,
+                           _dual_norm(ops, 1, True), inner_dtype=seq.dtype)
+    a = a.astype(seq.dtype)
+    return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-NEWTON_SOLVERS = ("minres", "cg")
-
-
-def _newton_system(seq, B, J, parallel_penalty):
+def _newton_system(seq, B, J, kappa):
     """``(curl, curl_t, A)`` of the Newton system ``curl^T H curl a = curl^T M_2 F`` on ``seq``."""
-    Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), parallel_penalty=parallel_penalty)
+    Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), kappa)
 
     def curl(a):
         return seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True)
@@ -289,107 +268,7 @@ def _newton_system(seq, B, J, parallel_penalty):
     return curl, curl_t, A
 
 
-def newton_direction_tr(seq, B, J, MF, delta, tol=0.03, maxiter=300, precond="harmonic",
-                        parallel_penalty=0.0):
-    """The trust-region Newton direction (Nocedal & Wright 7.2): the minimiser of the quadratic
-    model ``m(a) = -b^T a + a^T A a / 2``, ``b = curl^T M_2 F``, over ``||a||_{P^-1} <= delta`` by
-    :func:`mrx.solvers.pcg_steihaug_tr` from a zero guess. Returns ``(u, a, info, hit,
-    predicted, delta)`` with ``predicted = -m(a) = b^T a - a^T A a / 2`` the model's energy
-    decrease for the step ``dt = 1`` along ``u = curl a``, ``hit`` True when the step is on the
-    boundary, and ``delta`` the radius used (``delta = 0`` on entry means the natural unit,
-    ``||b||_P``); the caller takes the step, measures the actual decrease, and moves ``delta``.
-    """
-    curl, curl_t, A = _newton_system(seq, B, J, parallel_penalty)
-    P = _preconditioner(seq, precond)
-    b = curl_t(MF)
-    # a radius of 0 asks for the natural unit: ||b||_P = ||P b||_{P^-1}, the preconditioned
-    # gradient's length in the region's norm (the Newton step's when P ~ A^-1); the ball must be
-    # finite from the first solve (an infinite one sends a negative-curvature step to infinity)
-    delta = jnp.where(delta > 0, delta, jnp.sqrt(b @ P(b)))
-    a, info, hit = pcg_steihaug_tr(A, b, delta, M=P, tol=tol, maxiter=maxiter)
-    predicted = b @ a - 0.5 * (a @ A(a))
-    return curl(a), a, jnp.asarray(info, dtype=jnp.int32), hit, predicted, delta
-
-
-def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",
-                     parallel_penalty=0.0, inner_tol=0.0, solver="minres", passes=1):
-    """The Newton direction ``u = curl a`` at the field ``B``.
-
-    ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
-    Leray-projected force (``curl^T M_2 F`` is ``curl^T load(J x B)``
-    exactly: the gradient part is a ``D_2^T``, and ``D_2 D_1 = 0``),
-    ``a_guess`` the previous direction's potential (the warm start of the
-    MINRES solve), ``tol`` the relative residual of the solve in the
-    preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
-    of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
-    callable), ``parallel_penalty`` the ``alpha`` of :func:`second_variation`,
-    ``inner_tol`` the inner solve's own stopping tolerance (below), ``solver``
-    one of :data:`NEWTON_SOLVERS`: MINRES (symmetric, indefinite allowed) or
-    CG with the Steihaug-Toint negative-curvature exit
-    (:func:`mrx.solvers.pcg_steihaug`, the truncated-Newton solve of Nocedal &
-    Wright 7.2: minimises the energy of the direction rather than the
-    residual, and returns a descent direction when it meets negative
-    curvature); the Hessian's mass solves run at the sequence's tolerance.
-
-    The inner solve: from ``a_guess`` up to ``maxiter`` iterations,
-    stopping early when its residual estimate is below ``inner_tol`` times
-    the right-hand side in the PRECONDITIONER's norm (the forcing term of an
-    inexact Newton method, Dembo-Eisenstat-Steihaug); ``inner_tol = 0`` runs
-    the whole budget. That norm is not the true residual's: the harmonic
-    atom met sqrt(0.1) in it after 62 of 1000 iterations while the true
-    residual was far above (2026-09-07), so ``inner_tol`` is calibrated, not
-    chosen (2026-09-18, li383 with the parallel penalty: see
-    docs/research/hessian_spectrum_2026-09-17.md 7e). Then ONE pass of
-    :func:`mrx.solvers.refine` measures the true residual like every solve
-    in the code, in the mass-atom norm of the dual 1-forms on the residual
-    view, ``tol`` relative to the right-hand side, and reports it. With
-    ``passes > 1`` that measurement is the forcing term of the inexact Newton
-    method in the code's own convention (the float64 residual, not the
-    solver's float32 recurrence): another ``maxiter`` iterations on the
-    residual until it is below ``tol`` or the passes are spent, one float64
-    operator apply per pass. One pass was the released choice because with the
-    parallel penalty the direction stops changing once that residual is ~0.1
-    (200 iterations on li383; 400 and 800 give the same relaxation to three
-    digits), and without it more iterations put more of the null space into
-    the step. Returns ``(u, a, info)`` with ``info`` the iteration count,
-    negative when the true residual met ``tol``.
-    """
-    ops = seq._require_operators(None)
-    on = seq if seq.residual is None else seq.residual
-
-    def chain(s):
-        Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype),
-                              parallel_penalty=parallel_penalty)
-
-        def curl(a):
-            return s.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True)
-
-        def curl_t(y):
-            return s.apply_incidence_matrix(y, 1, dirichlet_in=True, dirichlet_out=True,
-                                            transpose=True)
-
-        def A(a):
-            u = curl(a)
-            return curl_t(Hs(u))
-        return curl, curl_t, A
-
-    curl, curl_t, A = chain(seq)
-    A_res = chain(on)[2]
-    P = _preconditioner(seq, precond)
-    if solver not in NEWTON_SOLVERS:
-        raise ValueError(f"newton_solver {solver!r} is not one of {NEWTON_SOLVERS}")
-    if solver == "cg":
-        a, info = refine(A_res, lambda r: pcg_steihaug(A, r, M=P, tol=inner_tol, maxiter=maxiter),
-                         curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
-                         max_passes=passes, inner_dtype=seq.dtype)
-        return curl(a.astype(seq.dtype)), a.astype(seq.dtype), jnp.asarray(info, dtype=jnp.int32)
-    a, info, npc = newton_mr(A_res, A, P, curl_t(MF), a_guess, tol, maxiter, passes,
-                             _dual_norm(ops, 1, True), inner_dtype=seq.dtype, inner_tol=inner_tol)
-    a = a.astype(seq.dtype)
-    return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
-
-
-def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner_tol=0.0):
+def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype):
     """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): MINRES on the float64 residual
     in passes of ``maxiter`` iterations from the warm start ``x0``, until ``norm(b - A x) <=
     tol norm(b)`` (the forcing term, in the residual's norm and precision) or ``passes`` are
@@ -416,12 +295,12 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner
         x, r, k, its, _ = carry
         rnorm = norm(r)
         rnorm_safe = jnp.where(rnorm > 0, rnorm, 1.0)
-        d, info, npc = minres(A, (r / rnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
+        d, info, npc = minres(A, (r / rnorm_safe).astype(inner_dtype), M=P, tol=0.0,
                               maxiter=maxiter, npc_exit=True)
         d = d.astype(RESIDUAL_DTYPE) * rnorm_safe
 
         def from_zero(_):
-            d0, info0, _ = minres(A, (b / bnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
+            d0, info0, _ = minres(A, (b / bnorm_safe).astype(inner_dtype), M=P, tol=0.0,
                                   maxiter=maxiter, npc_exit=True)
             return (d0.astype(RESIDUAL_DTYPE) * bnorm_safe).astype(RESIDUAL_DTYPE), jnp.abs(info0).astype(jnp.int32)
 

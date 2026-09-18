@@ -160,9 +160,7 @@ if cli.descent_steps:
           f"dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}")
     B = res_d.state.B_n
 if cli.newton_steps:
-    ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
-                            newton=True, newton_tol=0.1, newton_maxiter=100,
-                            newton_precond="harmonic", newton_dt_cap=1.0)
+    ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True)
     res_n = relax(initial_state(B, ts_newton), ts_newton, steps=cli.newton_steps, chunk=5,
                   floor_tol=0.0)
     F = np.asarray(res_n.trace["F"], dtype=float)
@@ -170,8 +168,7 @@ if cli.newton_steps:
     it_n = np.asarray(res_n.trace["newton_it"])
     print(f"[newton] {res_n.steps} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
           f"(lowest {F.min():.3e} at step {F.argmin() + 1}), dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}; "
-          f"MINRES iterations mean {np.abs(it_n).mean():.0f}, fallbacks "
-          f"{int(np.asarray(res_n.trace['newton_fallback']).sum())}")
+          f"MINRES iterations mean {np.abs(it_n).mean():.0f}")
     B = res_n.state.B_n
 
 # %%

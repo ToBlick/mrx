@@ -61,19 +61,6 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
-      --step-regularisation C [0.1 Newton without a reconnection series, else 0]
-                                   the line search minimises the
-                                   regularised energy E + eps ||J||^2 / 2
-                                   along the step, eps = C / n_r^2, the
-                                   direction and the force unchanged
-                                   (TimeStepper.step_regularisation): a
-                                   step whose induction is rough is
-                                   shortened; at the resolved floor the
-                                   Newton step shrinks to a few per cent
-                                   and --dt-floor ends the run. On the
-                                   gradient descent it changes the
-                                   trajectory (dt* is the binding step
-                                   there) and is off by default
       --helicity-correction {false,true} [false]
                                    remove from the induction field E the one
                                    component (a multiple of the Dirichlet
@@ -99,60 +86,23 @@ Flags, defaults in brackets:
                                    smoothing on the potential; Newton and the
                                    auxiliary field have their own routes
     Newton (--method newton): the direction u = curl a with
-    curl^T H curl a = curl^T M F by MINRES (mrx.hessian); a non-descending
-    direction falls back to the smoothed force.
-      --newton-tol TOL [0.1]       relative residual of the MINRES solve
-      --newton-maxiter N [100]     its iteration budget per step: the
-                                   parameter of the truncated solve (more
-                                   = a more exact direction = past the
-                                   floor sooner; 100 holds the floor)
-      --newton-precond {harmonic,laplacian,laplacian2,mass} [harmonic]
-                                   the preconditioner: the k=1 Laplacian
-                                   atom, its square, the k=1 mass atom, or
-                                   the harmonic atom (the Laplacian atom with
-                                   the parallel symbol of the harmonic field
-                                   in its denominator, mrx.hessian)
-      --harmonic-field {h,B} [h]   the field the harmonic atom lumps: the
-                                   harmonic form once, or the current B
-                                   every step
-      --harmonic-floor X [3]       the atom's floor on the resonant modes:
-                                   a number (times (2 pi)^2 |h|^2) or
-                                   "strain" for the lumped strain of the
-                                   field, computed instead of tuned
-      --newton-smoothing {false,true} [false]
-                                   filter the Newton potential with the
-                                   velocity smoother before the curl
-      --newton-dt-cap C [1]        cap the line-search step along a Newton
-                                   direction (1 = the Newton step, inf
-                                   leaves the line search alone)
-      --newton-inner-tol T [0]     the inner solve's own stop (preconditioner
-                                   norm, calibrated, not the true residual);
-                                   the solve ends early once met,
-                                   --newton-maxiter is the cap; 0 runs the
-                                   whole budget; "sqrt" = min(1/2, sqrt(rho_k))
-                                   with rho_k the dimensionless force residual
-      --newton-passes N [1]        refinement passes of the Newton solve,
-                                   --newton-maxiter iterations each until the
-                                   float64 residual is below --newton-tol:
-                                   the forcing term in the code's convention
-      --newton-trust-region {false,true} [false]
-                                   the trust-region Newton-CG (Nocedal-Wright
-                                   7.2): dt = 1 along the model's minimiser in
-                                   the ball, accepted by the decrease ratio,
-                                   Delta moved by it; no line search, no cap;
-                                   --newton-inner-tol (a number) is the
-                                   solve's tolerance
-      --newton-solver {minres,cg} [minres]
-                                   MINRES, or CG with the Steihaug
-                                   negative-curvature exit (Nocedal-Wright 7.2)
-      --newton-parallel-penalty A [0]
-                                   alpha of the parallel-flow penalty
-                                   H + alpha M_par (Levenberg-Marquardt on
-                                   the field-aligned component only, the
-                                   Hessian's null space; mrx.hessian), in
-                                   the units of the atom's floor kappa, or
-                                   "strain" or "c*strain": c times the strain
-                                   along the field, computed like the strain floor
+    curl^T H curl a = curl^T M F solved by Newton-MR (mrx.hessian): MINRES
+    with the harmonic atom of the current field, the parallel-flow penalty
+    in the operator, the nonpositive-curvature exit; the line search along
+    the direction is capped at the Newton length dt = 1.
+      --newton-penalty KAPPA [3]   the parallel-flow penalty, kappa times the
+                                   strain along the field: the one number of
+                                   the Newton configuration (3 on every case
+                                   measured; 1 is 2x worse, 0.03 lets the
+                                   Hessian's null space through)
+      --newton-tol TOL [0.1]       the forcing term: the residual of the
+                                   Newton system (double precision, the
+                                   mass-atom norm) below TOL of the
+                                   right-hand side ends the solve
+      --newton-maxiter N [100]     MINRES iterations per pass
+      --newton-passes N [3]        passes at most: the solve is inexact by
+                                   design (0.1, 100, 3 give the same
+                                   relaxation as any tighter solve)
     Budgets and output:
       --steps N [100 Newton, 3000 gradient]
                                    maximum number of steps
@@ -172,12 +122,6 @@ Flags, defaults in brackets:
                                    ||F||^2_M / ||grad(B^2/2)||^2 is below
                                    this (the residual is not monotone; the
                                    window mean is the quantity)
-      --dt-floor DT [0.1 Newton, 0 gradient]
-                                   stop when the last chunk's mean accepted
-                                   step is below this (the regularised
-                                   line search's step shrinks at the
-                                   resolved floor; 0 = off; the descent's
-                                   steps are of order 1e-3 by nature)
       --out DIR [outputs/relax/<date>/<time>]
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision
@@ -223,7 +167,6 @@ import json
 import os
 import time
 
-import numpy as np
 
 
 #: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE)
@@ -253,9 +196,6 @@ def parse_args(argv=None):
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
-    ap.add_argument("--step-regularisation", type=float, default=None,
-                    help="eps of the regularised energy the line search minimises, in units of 1 / n_r^2 "
-                         "[0.1 Newton, 0 gradient]")
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--velocity-smoothing-order", type=int, default=1,
@@ -270,40 +210,16 @@ def parse_args(argv=None):
                          "[true for the gradient descent; Newton and the auxiliary field have their own routes]")
     ap.add_argument("--method", default="newton", choices=("newton", "gradient"),
                     help="the direction: Newton on the second variation, or gradient descent on the smoothed force")
+    ap.add_argument("--newton-penalty", type=float, default=3.0,
+                    help="kappa of the parallel-flow penalty, kappa times the strain along the field")
     ap.add_argument("--newton-tol", type=float, default=0.1,
-                    help="relative residual tolerance of the Newton MINRES solve")
-    ap.add_argument("--newton-maxiter", type=int, default=100,
-                    help="iteration budget of the Newton MINRES solve per step")
-    ap.add_argument("--newton-precond", default="harmonic", choices=("harmonic", "laplacian", "laplacian2", "mass"),
-                    help="preconditioner of the Newton solve")
-    ap.add_argument("--harmonic-field", default="h", choices=("h", "B"),
-                    help="the field the harmonic atom lumps: the harmonic form once, or the current B every step")
-    ap.add_argument("--harmonic-floor", default="3",
-                    help="the atom's floor: a number (times (2 pi)^2 |h|^2) or 'strain' (the lumped strain of the field)")
-    ap.add_argument("--newton-smoothing", default="false", choices=("false", "true"),
-                    help="filter the Newton potential with the velocity smoother before the curl")
-    ap.add_argument("--newton-dt-cap", type=float, default=1.0,
-                    help="cap on the line-search step along a Newton direction (1 = the Newton step)")
-    ap.add_argument("--newton-inner-tol", default="0",
-                    help="the inner solve's own stopping tolerance (preconditioner norm), or 'sqrt' for the Nocedal-Wright "
-                         "forcing sequence min(1/2, sqrt(rho_k)); 0 runs the whole --newton-maxiter budget")
-    ap.add_argument("--newton-warm-start", default="true", choices=("true", "false"),
-                    help="start the inner solve from the previous step's potential, or from zero (diagnostic)")
-    ap.add_argument("--newton-trust-region", default="false", choices=("false", "true"),
-                    help="the trust-region Newton-CG method (Nocedal-Wright 7.2) in place of the line search")
-    ap.add_argument("--newton-passes", type=int, default=1,
-                    help="refinement passes of the Newton solve, --newton-maxiter iterations each until the float64 "
-                         "residual is below --newton-tol (1: the fixed budget)")
-    ap.add_argument("--newton-solver", default="minres", choices=("minres", "cg"),
-                    help="the inner solver: MINRES or CG with the Steihaug negative-curvature exit")
-    ap.add_argument("--newton-parallel-penalty", default="0",
-                    help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve, or 'strain' / 'c*strain'")
+                    help="the forcing term of the Newton solve: the residual below TOL of the right-hand side")
+    ap.add_argument("--newton-maxiter", type=int, default=100, help="MINRES iterations per pass of the Newton solve")
+    ap.add_argument("--newton-passes", type=int, default=3, help="passes of the Newton solve at most")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
-    ap.add_argument("--dt-floor", type=float, default=None,
-                    help="stop when the last chunk's mean accepted step is below this [0.1 Newton, 0 gradient]")
     ap.add_argument("--floor-tol", type=float, default=1e-8,
                     help="stop when the last chunk's mean squared normalised force residual is below this")
     ap.add_argument("--reconnect-every", type=int, default=0,
@@ -324,23 +240,10 @@ def parse_args(argv=None):
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.helicity_correction = cli.helicity_correction == "true"
     cli.newton = cli.method == "newton"
-    cli.newton_smoothing = cli.newton_smoothing == "true"
-    cli.harmonic_floor = None if cli.harmonic_floor == "strain" else float(cli.harmonic_floor)
-    if "strain" not in cli.newton_parallel_penalty:
-        cli.newton_parallel_penalty = float(cli.newton_parallel_penalty)
-    if cli.newton_inner_tol != "sqrt":
-        cli.newton_inner_tol = float(cli.newton_inner_tol)
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
     if cli.chunk is None:
         cli.chunk = 20 if cli.newton else 500
-    if cli.step_regularisation is None:
-        # off with a reconnection series: the regularised energy E + eps ||J||^2 / 2 rises
-        # along the relaxation of a reconnected field (the resistive step diffused J, the
-        # relaxation regrows it), so the regularised search refuses every direction there
-        cli.step_regularisation = 0.1 if (cli.newton and not cli.reconnect_every) else 0.0
-    if cli.dt_floor is None:
-        cli.dt_floor = 0.1 if cli.newton else 0.0
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
     if cli.chunk < 1 or cli.steps % cli.chunk:
         ap.error("--steps must be a positive multiple of --chunk")
@@ -405,18 +308,11 @@ def main(cli):
                 "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
         cfl=cli.cfl,
         helicity_correction=cli.helicity_correction,
-        step_regularisation=cli.step_regularisation / ns[0] ** 2,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
-        newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
-        newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
-        newton_parallel_penalty=cli.newton_parallel_penalty, newton_inner_tol=cli.newton_inner_tol,
-        newton_solver=cli.newton_solver, newton_warm_start=cli.newton_warm_start == "true",
-        newton_passes=cli.newton_passes,
-        newton_trust_region=cli.newton_trust_region == "true",
-        newton_atom_field=cli.harmonic_field, newton_atom_floor=cli.harmonic_floor,
-        newton_smoothing=cli.newton_smoothing)
+        newton=cli.newton, newton_penalty=cli.newton_penalty, newton_tol=cli.newton_tol,
+        newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -424,26 +320,12 @@ def main(cli):
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
-    if cli.newton and cli.newton_precond == "harmonic":
-        # the atom's profiles on the field it lumps, against the kappa = 3 floor
-        from mrx.hessian import harmonic_atom_profiles
-        for name, f in (("h", seq.nullspace(2, True)[0]), ("B", state.B_n)):
-            pt, pz, st = (np.asarray(v) for v in harmonic_atom_profiles(seq, f))
-            r_q = np.asarray(seq.quad.x_x)
-            kap = 3.0 * (2 * np.pi) ** 2 * (pt ** 2 + pz ** 2)
-            picks = np.linspace(0, r_q.size - 1, 8).astype(int)
-            print(f"[atom] profiles of {name}: r, h^theta, h^zeta, kappa=3 floor, strain floor (rho, theta, zeta)")
-            for i in picks:
-                print(f"       {r_q[i]:.3f}  {pt[i]:+.3e} {pz[i]:+.3e}   {kap[i]:.3e}   "
-                      f"{st[i, 0]:.3e} {st[i, 1]:.3e} {st[i, 2]:.3e}", flush=True)
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
-    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}"
-          f"{'  step-regularisation=%.3e' % ts.step_regularisation if cli.step_regularisation else ''}  "
+    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (cli.newton_penalty, cli.newton_tol, cli.newton_maxiter, cli.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
-          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e}"
-          f"{' dt-floor=%.1e' % cli.dt_floor if cli.dt_floor else ''} "
+          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",
           flush=True)
@@ -466,7 +348,6 @@ def main(cli):
             json.dump(results, fh, indent=1)
 
     res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
-                dt_floor=cli.dt_floor,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),

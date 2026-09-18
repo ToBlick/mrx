@@ -1,7 +1,7 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
-from typing import Callable, NamedTuple, Optional, Union
+from typing import Callable, NamedTuple, Optional
 
 import time
 
@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.hessian import HARMONIC_FLOOR, harmonic_preconditioner, newton_direction, newton_direction_tr
+from mrx.hessian import newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -336,9 +336,6 @@ class State(eqx.Module):
     newton_it : int
         The signed MINRES iteration count of the Newton solve (negative when
         it converged to ``newton_tol``; 0 without ``newton``).
-    newton_fallback : int
-        1 when the Newton direction was not a descent direction and the
-        smoothed force was stepped along instead, else 0.
     helicity_lambda : float
         The multiple of the Dirichlet proxy ``H_D`` removed from ``E`` by
         ``TimeStepper.helicity_correction`` (0 without it).
@@ -371,9 +368,7 @@ class State(eqx.Module):
     picard_residual: float = 0.0
     a: Optional[jnp.ndarray] = None
     newton_it: int = 0
-    newton_fallback: int = 0
     helicity_lambda: float = 0.0
-    trust_radius: float = 0.0
     B_best: Optional[jnp.ndarray] = None
     resid_best: float = np.inf
     step_best: int = 0
@@ -438,9 +433,6 @@ class Increment(NamedTuple):
     cfl_max: jnp.ndarray
     a: jnp.ndarray
     newton_it: jnp.ndarray
-    newton_fallback: jnp.ndarray
-    predicted: jnp.ndarray = None
-    hit: jnp.ndarray = None
 
 
 #: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
@@ -514,100 +506,29 @@ class TimeStepper(eqx.Module):
             sampler's. Excludes ``newton`` and the auxiliary field.
         newton: Replace the smoothed-force direction by the Newton direction
             of the second variation, ``u = curl a`` with ``curl^T H curl a =
-            curl^T M_2 F`` solved by MINRES (:mod:`mrx.hessian`). The Hessian
-            reads the 2-form ``B``; the force and the induction follow
-            ``auxiliary_B_field`` and ``scheme`` as usual, so the midpoint
-            scheme with the auxiliary field conserves the helicity exactly
-            along Newton directions too (the explicit step's drift grows with
-            the displacement per step, thirty times the descent's). The line
-            search's sign decides: a direction with ``(u, F)_M <= 0`` is
-            replaced by the smoothed force of ``velocity_smoothing_order``,
-            and ``State.newton_fallback`` says so.
-        newton_tol: Relative residual tolerance of the MINRES solve.
-        newton_maxiter: Its iteration budget per step: THE parameter of the
-            truncated solve (the tolerance is never met; the true residual
-            decays like N^-1/2 for every preconditioner). Swept 2026-09-11 on
-            li383 (16,32,32) with the harmonic atom: every budget >= 100
-            reaches the same floor in the same wall time, 100 holds it, 150+
-            drift back up (a more exact direction is closer to the ideal
-            descent, which past the resolved floor thins current sheets the
-            mesh cannot carry).
-        newton_precond: One of :data:`mrx.hessian.PRECONDITIONERS`; the
-            harmonic atom with its floor ``HARMONIC_FLOOR = 3`` (kappa
-            interpolates between the harmonic atom, small, and the Laplacian
-            atom, large; 3 reaches the Laplacian atom's floor in a fifth of
-            the steps and holds it).
-        newton_dt_cap: Cap on the line-search step along a Newton direction,
-            ``dt = min(dt_star, cfl / cfl_max, newton_dt_cap)``. A truncated
-            MINRES direction mixes resolved modes, whose energy minimum is at
-            ``dt = 1`` (the Newton step), with unresolved flat ones that want
-            a longer step; the exact line search settles near 2, where the
-            resolved modes' residual is reflected rather than removed
-            (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
-            default) takes the Newton step; ``inf`` leaves the line search
-            alone.
-        newton_inner_tol: the inner solve's own stopping tolerance in the
-            preconditioner's norm (:func:`mrx.hessian.newton_direction`):
-            the solve stops early once met, ``newton_maxiter`` is the cap.
-            0 (the default) runs the whole budget; ``"sqrt"`` is the
-            forcing sequence of Nocedal & Wright, ``eta_k = min(1/2,
-            sqrt(rho_k))`` with ``rho_k = ||F||_M / ||grad(B^2/2)||`` the
-            dimensionless force residual of the step (loose far from the
-            equilibrium, tight near it; one extra force-scale solve per step).
-        newton_solver: ``"minres"`` or ``"cg"`` (Steihaug-Toint), see
-            :func:`mrx.hessian.newton_direction`.
-        newton_passes: refinement passes of the Newton solve: ``newton_maxiter``
-            iterations each until the float64 residual is below ``newton_tol``
-            (the forcing term in the code's convention); 1 is the fixed budget.
-        newton_warm_start: start the inner solve from the previous step's
-            potential (the default) or from zero (a diagnostic: the warm
-            start's residual is near noise once the direction has settled).
-        newton_trust_region: the trust-region Newton-CG method (Nocedal &
-            Wright 7.2, :func:`mrx.hessian.newton_direction_tr`) in place of
-            the line search: the step is ``dt = 1`` along the model's
-            minimiser over ``||a||_{P^-1} <= Delta`` (Steihaug-Toint CG,
-            negative curvature followed to the boundary), accepted when the
-            actual energy decrease is more than ``newton_trust_eta`` times
-            the model's (else a null step, ``dt = 0``), and ``Delta`` moves:
-            a quarter of itself when the ratio is below 1/4, twice when it
-            is above 3/4 and the step was on the boundary. ``State.trust_radius``
-            carries ``Delta``; ``newton_trust_radius`` is its initial value
-            (0: the norm of the first step's unconstrained solution).
-            ``newton_inner_tol`` (a number) is the solve's tolerance,
-            ``newton_maxiter`` its cap; the fallback and the dt cap do not
-            apply on this path.
-        newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
-            ``H + alpha M_par`` in the Newton solve
-            (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
-            damping on the field-aligned component alone, the Hessian's null
-            space, in the units of the atom's floor ``kappa`` (li383 optimum
-            0.075, 2026-09-17), or ``"strain"`` / ``"c*strain"`` for ``c`` times
-            the strain along the field
-            (:func:`mrx.hessian.parallel_penalty_profile`). 0 (the default)
-            solves with the bare Hessian, where the truncated MINRES and the
-            atom's floor stand in for it. The
-            harmonic atom adds ``alpha`` to its floor (a parallel unit mode
-            sees ``lambda + alpha``).
-        newton_atom_field: The 2-form the harmonic atom lumps: ``"h"`` (the
-            harmonic form, built once) or ``"B"`` (the current field, rebuilt
-            in the step from its own profiles: one quadrature evaluation).
-        newton_atom_floor: The atom's floor: a number times ``(2 pi)^2
-            (h_theta^2 + h_zeta^2)`` (:data:`mrx.hessian.HARMONIC_FLOOR`) or
-            ``None`` for the lumped strain of the field
-            (:func:`mrx.hessian.harmonic_atom_profiles`).
-        newton_smoothing: Filter the Newton potential with the descent's
-            smoother ``(M_1 + mu L_1)^-1 M_1`` (``velocity_smoothing_order``
-            times) before the curl; the fixed point is unchanged, the
-            grid-scale content of the direction is damped.
-        step_regularisation: ``eps`` of the regularised energy ``E + eps
-            ||J||_M^2 / 2`` the LINE SEARCH minimises along the step (0 is
-            off): the direction and the force stay the physical ones, and
-            ``dt_star`` becomes ``(<F, u>_M - eps <J, curl~ dB>_M) / (||dB||_M^2
-            + eps ||curl~ dB||_M^2)``, the exact minimiser of the regularised
-            energy along the increment. A step whose induction is rough is
-            shortened by about ``1 + eps k^2``; a smooth one is untouched.
-            One weak curl of ``dB`` per step. Set from ``--step-regularisation
-            C`` as ``C / n_r^2``. A prototype (2026-09-11).
+            curl^T M_2 F`` solved by Newton-MR (:mod:`mrx.hessian`: MINRES
+            with the harmonic atom of the current field, the parallel-flow
+            penalty in the operator, the nonpositive-curvature exit). The
+            Hessian reads the 2-form ``B``; the force and the induction
+            follow ``auxiliary_B_field`` and ``scheme`` as usual, so the
+            midpoint scheme with the auxiliary field conserves the helicity
+            exactly along Newton directions too. The line search along the
+            direction is capped at the Newton length ``dt = 1``: a truncated
+            direction mixes resolved modes, whose energy minimum is at the
+            Newton step, with unresolved flat ones that want a longer step,
+            and the exact line search settles near 2, where the resolved
+            modes' residual is reflected rather than removed (measured 2026-09).
+        newton_penalty: ``kappa`` of the parallel-flow penalty, ``kappa``
+            times the strain along the field (:func:`mrx.hessian.parallel_penalty_profile`):
+            the one number of the Newton configuration, 3 on every case
+            measured (docs/research/hessian_spectrum_2026-09-17.md).
+        newton_tol: The forcing term of the Newton solve: the residual of the
+            Newton system, in the residual precision and the mass-atom norm,
+            below ``newton_tol`` of the right-hand side ends it.
+        newton_maxiter: MINRES iterations per pass of the Newton solve.
+        newton_passes: Passes of ``newton_maxiter`` iterations at most; the
+            solve is inexact by design (100 per pass, 3 passes and 0.1 give
+            the same relaxation as any tighter solve, 2026-09-18).
         helicity_correction: Remove from the induction field ``E`` the
             one component that changes the discrete helicity. Over one
             step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
@@ -643,41 +564,17 @@ class TimeStepper(eqx.Module):
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
     newton: bool = False
+    newton_penalty: float = 3.0
     newton_tol: float = 0.1
     newton_maxiter: int = 100
-    newton_precond: str = "harmonic"
-    newton_dt_cap: float = 1.0
-    newton_parallel_penalty: Union[float, str] = 0.0
-    newton_inner_tol: Union[float, str] = 0.0
-    newton_solver: str = "minres"
-    newton_passes: int = 1
-    newton_warm_start: bool = True
-    newton_trust_region: bool = False
-    newton_trust_eta: float = 0.1
-    newton_trust_radius: float = 0.0
-    newton_force_scale: Callable = None
-    newton_precond_apply: Callable = None
-    newton_atom_field: str = "h"
-    newton_atom_floor: Optional[float] = HARMONIC_FLOOR
-    newton_smoothing: bool = False
+    newton_passes: int = 3
     helicity_correction: bool = False
-    step_regularisation: float = 0.0
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
 
     def __post_init__(self):
-        if self.newton_atom_field not in ("h", "B"):
-            raise ValueError("newton_atom_field is 'h' (the harmonic form) or 'B' (the current field).")
-        if self.newton and self.newton_inner_tol == "sqrt":
-            self.newton_force_scale = force_scale(self.seq)
-        if self.newton and self.newton_precond == "harmonic" and self.newton_atom_field == "h":
-            # built once: the profiles of h and the Fourier symbols; from B
-            # the step rebuilds it (one quadrature evaluation per step)
-            self.newton_precond_apply = harmonic_preconditioner(
-                self.seq, self.seq.nullspace(2, True)[0], self.newton_atom_floor,
-                self.newton_parallel_penalty)
         if self.potential_velocity is None:
             self.potential_velocity = not (self.newton or self.auxiliary_B_field)
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
@@ -799,70 +696,16 @@ class TimeStepper(eqx.Module):
             # M F once: ||F||_M and the Newton right-hand side; the increment
             # applies M_2 twice in total (M F, M u).
             MF = seq.apply_mass_matrix(F, 2)
-            Fs = self.smooth_velocity(F)
+            Fs = F if self.newton else self.smooth_velocity(F)
             a = state.a
 
-        predicted, hit = None, None
-        if self.newton and self.newton_trust_region:
-            precond = self.newton_precond_apply or self.newton_precond
-            if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
-                precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
-                                                  self.newton_parallel_penalty)
-            u, a, newton_it, hit, predicted, delta = newton_direction_tr(
-                seq, B, J, MF, state.trust_radius, self.newton_inner_tol, self.newton_maxiter, precond,
-                self.newton_parallel_penalty)
-            newton_fallback = jnp.int32(0)
-            predicted = (predicted, delta)
-        elif self.newton:
-            precond = self.newton_precond_apply or self.newton_precond
-            if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
-                precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
-                                                  self.newton_parallel_penalty)
-            if self.newton_inner_tol == "sqrt":
-                rho = jnp.sqrt(F @ MF) / self.newton_force_scale(B)
-                inner_tol = jnp.minimum(0.5, jnp.sqrt(rho))
-            else:
-                inner_tol = self.newton_inner_tol
-            u_newton, a, newton_it = newton_direction(
-                seq, B, J, MF, state.a if self.newton_warm_start else jnp.zeros_like(state.a),
-                self.newton_tol, self.newton_maxiter, precond,
-                self.newton_parallel_penalty, inner_tol, self.newton_solver, self.newton_passes)
-            if self.newton_smoothing:
-                # the descent's filter on the Newton potential, as on the
-                # potential route: (M_1 + mu L_1)^-1 M_1 on a, then the
-                # curl, so the direction stays divergence-free exactly;
-                # the warm start keeps the unsmoothed solution
-                a_s = a
-                for _ in range(self.velocity_smoothing_order):
-                    a_s = seq.apply_inverse_mass_plus_eps_laplace_matrix(
-                        seq.apply_mass_matrix(a_s, 1, True), 1, self.velocity_smoothing_scale,
-                        dirichlet=True, guess=a_s)
-                u_newton = seq.apply_incidence_matrix(a_s, 1, dirichlet_in=True, dirichlet_out=True)
-            # The line search's sign: a Newton direction that does not
-            # descend (H indefinite there, or a direction the
-            # potential cannot represent) is replaced by the smoothed force.
-            # With the regularised search the sign is the regularised
-            # energy's slope along the direction's increment: after a
-            # reconnection the field is rough on purpose, the Newton
-            # direction's induction is rough with it, and the penalty's slope
-            # can outweigh the energy's (measured 2026-09-12 on the ladder:
-            # dt* < 0 on every step of the rungs after the first, MINRES
-            # converging in 8-18 iterations on the reconnected field). One
-            # induction solve and one weak curl more per step.
-            slope = u_newton @ MF
-            if self.step_regularisation:
-                dB_n = seq.apply_incidence_matrix(
-                    self._induction_field(seq.evaluate_at_quadrature(u_newton, 2, True), X, E_guess),
-                    1, dirichlet_in=True, dirichlet_out=True)
-                slope = slope - self.step_regularisation * (J @ seq.apply_derivative_matrix(
-                    dB_n, 1, dirichlet_in=True, dirichlet_out=True, transpose=True))
-            descent = slope > 0
-            u = jnp.where(descent, u_newton, Fs)
-            newton_fallback = (~descent).astype(jnp.int32)
+        if self.newton:
+            u, a, newton_it = newton_direction(seq, B, J, MF, state.a, self.newton_penalty,
+                                               self.newton_tol, self.newton_maxiter, self.newton_passes)
         else:
             # gradient descent on the smoothed force
             u = Fs
-            newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
+            newton_it = jnp.int32(0)
         # M u once: the linesearch numerator and ||u||_M.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -893,50 +736,24 @@ class TimeStepper(eqx.Module):
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
         return Increment(dB, u, Mu, F, MF, Fs, p, H, JxX, J, E, cfl_max,
-                         a, newton_it, newton_fallback, predicted, hit)
+                         a, newton_it)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
+        """``(dt, dt_star)``: the line-search step at ``inc``, its CFL cap and, under
+        Newton, the cap at the Newton length.
 
         ``dt_star = <F, u>_M / ||dB||_M^2`` minimises the quadratic energy
         along the increment exactly (``dE = -dt <F, u>_M + dt^2 ||dB||^2 / 2``).
         The cap: ``cfl = inf`` gives ``min(dt_star, inf) = dt_star`` exactly.
         """
         slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
-        if self.step_regularisation:
-            # the regularised energy along the increment: its slope gains
-            # -eps <J, curl~ dB>, its curvature eps ||curl~ dB||^2
-            seq, eps = self.seq, self.step_regularisation
-            dual = seq.apply_derivative_matrix(inc.dB, 1, dirichlet_in=True, dirichlet_out=True,
-                                               transpose=True)
-            slope = slope - eps * (inc.J @ dual)
-            curvature = curvature + eps * (seq.apply_inverse_mass_matrix(dual, 1, dirichlet=True) @ dual)
         dt_star = slope / curvature
-        # a non-positive dt* is no step: the (regularised) energy does not
-        # decrease along the increment; a negative step would climb it
+        # a non-positive dt* is no step: the energy does not decrease along
+        # the increment; a negative step would climb it
         dt = jnp.minimum(jnp.maximum(dt_star, 0.0), self.cfl / inc.cfl_max)
         if self.newton:
-            dt = jnp.minimum(dt, self.newton_dt_cap)
+            dt = jnp.minimum(dt, 1.0)              # the Newton length
         return dt, dt_star
-
-    def _trust_region_step(self, inc: Increment, trust_radius):
-        """``(dt, dt_star, Delta_new)`` of the trust-region acceptance test on the Newton
-        increment: the step is ``dt = 1`` when the actual energy decrease of the (linear)
-        induction step, ``<F, u>_M - ||dB||_M^2 / 2``, is more than ``newton_trust_eta``
-        times the model's ``predicted``, else ``dt = 0``; ``Delta`` moves by the ratio
-        (Nocedal & Wright Algorithm 4.1); ``inc.predicted`` carries the model's decrease
-        and the radius the solve used (the natural unit ``||b||_P`` on the first step)."""
-        slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
-        predicted, delta = inc.predicted
-        actual = slope - 0.5 * curvature
-        ratio = actual / jnp.where(predicted > 0, predicted, 1.0)
-        ratio = jnp.where(predicted > 0, ratio, -1.0)
-        accept = ratio > self.newton_trust_eta
-        dtype = trust_radius.dtype
-        dt = jnp.where(accept, 1.0, 0.0).astype(dtype)
-        delta = jnp.where(ratio < 0.25, 0.25 * delta,
-                          jnp.where((ratio > 0.75) & inc.hit, 2.0 * delta, delta))
-        return dt, ratio.astype(dtype), delta.astype(dtype)
 
     def _midpoint_solve(self, state: State):
         """Midpoint-implicit induction with the explicit descent velocity.
@@ -1074,11 +891,7 @@ class TimeStepper(eqx.Module):
         if self.scheme == IntegrationScheme.EXPLICIT:
             inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
                                         state.J, state.E)
-            if self.newton_trust_region:
-                dt, dt_star, trust_radius = self._trust_region_step(inc, state.trust_radius)
-            else:
-                dt, dt_star = self._step_size(inc)
-                trust_radius = state.trust_radius
+            dt, dt_star = self._step_size(inc)
             if self.helicity_correction:
                 PB, H_D = self._helicity_proxy(B_n, inc.H, state.H)
                 lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
@@ -1091,7 +904,6 @@ class TimeStepper(eqx.Module):
             # inc is the predictor's (u, F, dt* are the explicit step's);
             # only the induction is implicit.
             inc, dt, dt_star, B_nplus1, n_eval, restarts, resid, lam = self._midpoint_solve(state)
-            trust_radius = state.trust_radius
         else:
             raise ValueError(
                 f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
@@ -1105,13 +917,13 @@ class TimeStepper(eqx.Module):
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda, s.trust_radius),
+                       s.a, s.newton_it, s.helicity_lambda),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, inc.newton_fallback, lam, trust_radius))
+             inc.a, inc.newton_it, lam))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
@@ -1154,9 +966,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         picard_residual=jnp.zeros((), B_dof.dtype),
         a=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         newton_it=jnp.int32(0),
-        newton_fallback=jnp.int32(0),
         helicity_lambda=jnp.zeros((), dtype=DTYPE),
-        trust_radius=jnp.asarray(ts.newton_trust_radius, dtype=DTYPE),
         B_best=B_dof,
         resid_best=jnp.asarray(resid0, dtype=DTYPE),
         step_best=jnp.int32(step),
@@ -1182,8 +992,8 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     predicts ``dE = -dt Fu (1 - dt / 2 dt_star)``),
     ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
     evaluations and final defect; 1 and 0 for the explicit step),
-    ``newton_it`` and ``newton_fallback`` (the Newton solve's signed MINRES
-    count and whether its direction was replaced; 0 without ``newton``),
+    ``newton_it`` (the Newton solve's signed MINRES count; 0 without
+    ``newton``),
     ``hcorr`` (the helicity correction's ``lambda``; 0 without it),
     ``resid`` (the squared normalised force residual ``||F||_M^2 /
     ||grad(B^2/2)||^2``, :func:`force_scale`, the force being the step's
@@ -1217,7 +1027,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
-            newton_it=state.newton_it, newton_fallback=state.newton_fallback,
+            newton_it=state.newton_it,
             hcorr=state.helicity_lambda, resid=resid,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
@@ -1378,7 +1188,7 @@ def pressure_line(d: dict) -> str:
 
 
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
-          floor_tol: float = 0.0, dt_floor: float = 0.0,
+          floor_tol: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
@@ -1389,11 +1199,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     Stops on the step count, on ``floor_tol`` (the last chunk's mean of
     the squared normalised force residual ``||F||_M^2 / ||grad(B^2/2)||^2``
     below it; the residual is not monotone, the window mean is the
-    quantity) or on ``dt_floor`` (the last chunk's mean accepted step below
-    it: with ``TimeStepper.step_regularisation`` the line search shortens
-    the step by the roughness of its induction, so a step that has shrunk
-    to a fraction of the Newton length says the descent has reached what
-    the mesh resolves); a job's
+    quantity); a job's
     time limit is no stop, the checkpoint of every chunk restarts it.
     ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
@@ -1416,7 +1222,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "hcorr")}
     qoi: dict = {}
     events: list = []
 
@@ -1463,7 +1269,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "newton_fallback", "hcorr"):
+                  "newton_it", "hcorr"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
@@ -1479,13 +1285,11 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   f"picard max={int(ch['picard_it'].max())}  [{wall:.0f}s steps +{t_out:.0f}s other]\n"
                   + (f"           newton: MINRES it mean {np.abs(ch['newton_it']).mean():.0f} max "
                      f"{np.abs(ch['newton_it']).max()}, unconverged {int((ch['newton_it'] > 0).sum())}, "
-                     f"fallbacks {int(ch['newton_fallback'].sum())}, dt* mean {ch['dt_star'].mean():.3e}\n"
+                     f"dt* mean {ch['dt_star'].mean():.3e}\n"
                      if ts.newton else "")
                   + f"           {pressure_line(scalars)}", flush=True)
         if resid_now < floor_tol:
             stop = "floor"
-        elif dt_floor and ch["dt"].mean() < dt_floor:
-            stop = "dt"
         elif n_done == steps:
             stop = "steps"
         if on_chunk is not None:
@@ -1493,8 +1297,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         if stop != "running":
             if verbose and stop == "floor":
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
-            if verbose and stop == "dt":
-                print(f"  [dt] chunk mean of the accepted step {ch['dt'].mean():.3e} below {dt_floor:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
         if reconnect_every and n_done % reconnect_every == 0:
@@ -1559,7 +1361,6 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
         nit = np.abs(np.array(tr["newton_it"]))
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
               f"unconverged on {int((np.array(tr['newton_it']) > 0).sum())}/{n} steps;  "
-              f"fallbacks to the smoothed force on {int(np.sum(tr['newton_fallback']))}/{n} steps;  "
               f"dt* mean {dt_star.mean():.3e}", flush=True)
     if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
         pit, pres = np.array(tr["picard_it"]), np.array(tr["picard_resid"])

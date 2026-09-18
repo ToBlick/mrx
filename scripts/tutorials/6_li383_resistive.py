@@ -133,12 +133,10 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
 
 # %%
 # Now we relax ideally back to a clean floor with Newton (Tutorial 4's stepper:
-# the truncated MINRES solve of the second variation, the line search capped at
+# the Newton-MR solve of the second variation, the line search capped at
 # the Newton step). The ideal tail conserves helicity and just settles the
 # reconnected field.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
-                        newton=True, newton_tol=0.1, newton_maxiter=100,
-                        newton_precond="harmonic", newton_dt_cap=1.0)
+ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True)
 print(f"[relax] {cli.newton_steps} Newton steps to a clean floor")
 res = relax(initial_state(B_reconnected, ts_newton), ts_newton, steps=cli.newton_steps,
             chunk=5, floor_tol=0.0)
@@ -149,8 +147,7 @@ it_n = np.asarray(res.trace["newton_it"])
 print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
       f"(lowest {F.min():.3e} at step {F.argmin() + 1}), "
       f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (ideal tail conserves it), "
-      f"||div B|| {float(res.trace['div'][-1]):.1e}; MINRES iterations mean {np.abs(it_n).mean():.0f}, "
-      f"fallbacks {int(np.asarray(res.trace['newton_fallback']).sum())}")
+      f"||div B|| {float(res.trace['div'][-1]):.1e}; MINRES iterations mean {np.abs(it_n).mean():.0f}")
 B = res.state.B_n
 
 # %%

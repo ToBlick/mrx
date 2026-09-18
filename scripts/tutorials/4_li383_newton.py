@@ -13,17 +13,19 @@ the second variation (``2 delta W`` of ideal MHD at ``p = 0``; at an
 equilibrium, minus the linearised force operator). Newton's equation
 ``H u = J x B`` is solved in the **potential form**, ``u = curl a`` with
 ``curl^T H curl a = curl^T (J x B)`` -- divergence-free by construction, no
-Leray solve -- by MINRES with the harmonic atom as preconditioner (the
-Laplacian atom with the parallel symbol of the harmonic field divided in),
-**truncated**: 100 iterations, warm-started from the previous step's
-potential. The budget is the parameter: a more exact direction is closer to
-the ideal descent, which past the resolved floor thins current sheets the
-mesh cannot carry, so 100 holds the floor where 300 leaves it. The rest of the step is Tutorial 3's:
-the analytic line search along the direction (``dt* ~ 1`` for a Newton
-direction; the cap ``newton_dt_cap = 1`` is the Newton step), the CFL cap,
-and the update is a curl, so ``div B`` and the helicity stay exact. A
-direction that is not a descent direction is replaced by the smoothed force
-for that step (``newton_fallback`` in the trace).
+Leray solve -- by Newton-MR: MINRES with the harmonic atom of the current
+field as preconditioner (the Laplacian atom with the parallel symbol of the
+field divided in), warm-started from the previous step's potential, inexact
+by design (``newton_tol = 0.1`` on the residual, ``newton_maxiter = 100``
+iterations per pass, ``newton_passes = 3`` at most: a tighter solve gives
+the same relaxation), with the nonpositive-curvature exit for the states
+where the second variation is indefinite. The Hessian carries the
+parallel-flow penalty, ``newton_penalty = 3`` times the strain along the
+field: the Hessian is exactly null on the field-aligned flows ``u = f B``,
+and without the penalty Newton divides the force's round-off by that null
+space. The rest of the step is Tutorial 3's: the analytic line search along
+the direction, capped at the Newton length ``dt = 1``, the CFL cap, and the
+update is a curl, so ``div B`` and the helicity stay exact.
 
 Newton is the floor finder. From a state the descent has taken through its
 fast phase it reaches the mesh's residual floor in tens of steps where the
@@ -148,11 +150,10 @@ print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d
 
 # %%
 # Now we run Newton from the same state: the Newton direction replaces the
-# smoothed force, the truncated MINRES solve with the Laplacian atom, the line
-# search capped at the Newton step. The smoothing stays on for the fallback direction.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
-                        newton=True, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
-                        newton_precond="laplacian", newton_dt_cap=1.0)
+# smoothed force, the Newton-MR solve with the harmonic atom, the line search
+# capped at the Newton step.
+ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True, newton_tol=cli.newton_tol,
+                        newton_maxiter=cli.newton_maxiter)
 res_n = relax(initial_state(B_start, ts_newton), ts_newton, steps=cli.newton_steps,
               chunk=cli.newton_chunk, floor_tol=0.0)
 F_n = np.asarray(res_n.trace["F"], dtype=float)
@@ -163,8 +164,7 @@ print(f"[newton] {res_n.steps} steps in {res_n.wall:.0f} s ({res_n.wall / res_n.
       f"||F|| {F_n[0]:.3e} -> {F_n[-1]:.3e} (lowest {F_n.min():.3e} at step {F_n.argmin() + 1}), "
       f"dH/H_0 = {(H_n[-1] - H_n[0]) / H_n[0]:+.1e}")
 print(f"[newton] MINRES iterations mean {np.abs(it_n).mean():.0f}, at the budget on "
-      f"{int((it_n > 0).sum())}/{res_n.steps} steps; fallbacks to the smoothed force "
-      f"{int(np.asarray(res_n.trace['newton_fallback']).sum())}; dt* mean {dt_n.mean():.2f} "
+      f"{int((it_n > 0).sum())}/{res_n.steps} steps; dt* mean {dt_n.mean():.2f} "
       f"(1 is the Newton step)")
 print(f"[newton] one Newton step costs {res_n.wall / res_n.steps / (res_d.wall / res_d.steps):.0f} "
       f"descent steps; the descent's lowest ||F|| in {res_d.steps} steps against Newton's in "
@@ -201,7 +201,7 @@ write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
               knots=None, precision=str(mrx.DTYPE), steps=res_n.steps, scheme="explicit",
               auxiliary_B_field=False, ic="warmstart", newton=True, newton_tol=cli.newton_tol,
-              newton_maxiter=cli.newton_maxiter, newton_precond="harmonic", newton_dt_cap=1.0)
+              newton_maxiter=cli.newton_maxiter)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res_n.trace, qoi=res_n.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")

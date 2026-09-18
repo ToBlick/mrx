@@ -186,9 +186,7 @@ that is not a descent direction is replaced by the smoothed force for that
 step:
 
 ```python
-ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
-                 newton=True, newton_tol=0.1, newton_maxiter=100,
-                 newton_precond="harmonic", newton_dt_cap=1.0)
+ts = TimeStepper(seq=seq, cfl=0.5, newton=True)
 res = relax(initial_state(B_start, ts), ts, steps=10, chunk=5)
 ```
 
