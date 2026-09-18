@@ -252,8 +252,25 @@ depth of the descent.
 
 One number moved and is not understood: the regular-line drift is 4.8e-3 (alpha 1) and
 5.2e-3 (alpha 0.3) against 8.8e-4 for the September best; the sections do not show what
-it measures. Open, one sentence's worth. The (32,64,64) alpha 0.3 arm (peer, job
-18648615) is the stricter test, since that is the mesh where W7-X lost its surfaces.
+it measures. Open, one sentence's worth.
+
+**Peer's alpha sweep and (32,64,64)** (strain floor, C 0, jobs 18648612-15, their note
+`docs/research/harmonic_atom_floor_and_smoothing_2026-09-17.md`, 11b6155):
+
+* (16,32,32), 200 steps: alpha 0.3 -> 1.9e-10 at 200, still descending, E_rem 2.00 ->
+  2.05e-6 over steps 100-200, dH/H -9.4e-6; alpha 0.1 -> 4.6e-10 plateau, E_rem 2.07 ->
+  2.19e-6; alpha 0.03 -> 2.4e-9 floor, E_rem 2.63e-6 (+30 %), dH/H +3.1e-5 (the undamped
+  descent, mild). The cliff is between 0.03 and 0.1; 0.3 is the number. Its 200-step
+  final: 4 chaotic lines of 160 (r 0.11, 0.64, 0.67, 0.68), the h16-best picture, the
+  3/5 chain at r 0.78 a little more visible than at 100 steps, as in the September best.
+* Step cap: lifted to 4 or inf the search settles at dt 2.0 and the residual sits at
+  1.1e-7 (the September reflection); cap 1 stays.
+* (32,64,64) alpha 0.3, 100 steps (job 18648615, 16.6 s/step): chunk means 1.7e-5,
+  1.2e-8, 2.4e-9, 1.1e-9, 5.7e-10, min 4.5e-10 at step 98, E_rem 1.70e-6, dH/H -3.0e-6,
+  dt 1.00, no fallbacks. September kappa-3 h32: 3.1e-9 at 82, last20 3.7e-9, E_rem
+  1.67e-6, dH/H -2.5e-6, dt 0.65. 7x lower at equal steps, 1e-8 near step 40 instead of
+  53, same energy and helicity. Its sections (job 18648698) go into the peer's note; the
+  September h32 best has 0 chaotic lines, the comparison is the last check.
 
 ## 8. Summary
 
