@@ -607,8 +607,10 @@ class TimeStepper(eqx.Module):
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
             damping on the field-aligned component alone, the Hessian's null
             space, in the units of the atom's floor ``kappa`` (li383 optimum
-            0.075, 2026-09-17). 0 (the default) solves with the bare Hessian,
-            where the truncated MINRES and the atom's floor stand in for it. The
+            0.075, 2026-09-17), or ``None`` for the strain along the field
+            (:func:`mrx.hessian.parallel_penalty_profile`). 0 (the default)
+            solves with the bare Hessian, where the truncated MINRES and the
+            atom's floor stand in for it. The
             harmonic atom adds ``alpha`` to its floor (a parallel unit mode
             sees ``lambda + alpha``).
         newton_atom_field: The 2-form the harmonic atom lumps: ``"h"`` (the
@@ -671,7 +673,7 @@ class TimeStepper(eqx.Module):
     newton_maxiter: int = 100
     newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
-    newton_parallel_penalty: float = 0.0
+    newton_parallel_penalty: Optional[float] = 0.0
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
     newton_atom_floor: Optional[float] = HARMONIC_FLOOR

@@ -86,6 +86,23 @@ def harmonic_atom_profiles(seq, field):
     return prof_t, prof_z, strain
 
 
+def parallel_penalty_profile(seq, field, alpha):
+    """The radial weight of the parallel-flow penalty (:func:`second_variation`)
+    on the radial quadrature points: ``alpha (2 pi)^2 (h_theta^2 + h_zeta^2)``
+    for a number ``alpha`` (the atom floor's units, ``alpha = kappa`` the floor
+    moved into the operator), or with ``alpha = None`` the strain seen along
+    the field, ``(h_theta^2 s_theta + h_zeta^2 s_zeta) / (h_theta^2 +
+    h_zeta^2)`` with ``s`` the lumped strain of :func:`harmonic_atom_profiles`:
+    the size of the ``u . grad h`` coupling a parallel mode really has, so
+    that the operator lifts the null space to exactly what the strain-floored
+    atom models for it, computed, not tuned."""
+    prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
+    hsq = prof_t ** 2 + prof_z ** 2
+    if alpha is None:
+        return (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / hsq
+    return alpha * (2 * np.pi) ** 2 * hsq
+
+
 def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     """``x -> W P_L W^T x``: the harmonic atom, an approximate inverse of the Newton
     operator ``curl^T H curl`` built from the 2-form ``field`` (the harmonic
@@ -112,8 +129,9 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     is ``k^2 I + S^T S`` with no cross term: the floor is computed, not
     tuned). The field carries the rotational transform, so the symbol
     vanishes on the resonant modes ``h_theta m + h_zeta n = 0`` and the floor
-    is what they see. ``shift`` is added to the whole symbol in the floor's
-    units, ``shift * (2 pi)^2 (h_theta^2 + h_zeta^2)``: the
+    is what they see. ``shift`` is added to the whole symbol as
+    :func:`parallel_penalty_profile` of ``shift`` (a number in the floor's
+    units, or ``None`` for the strain along the field): the
     ``parallel_penalty`` of :func:`second_variation`, so that the atom and
     the operator agree on what a parallel mode sees.
     Traceable in ``field``: built from the current ``B`` inside the step at
@@ -131,12 +149,14 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     the quality is the measurement. Two FFTs per component per apply.
     """
     prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
+    penalty = parallel_penalty_profile(seq, field, shift) if shift is None or shift else None
     r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
     scale = []
     for c, (s1, s2, s3) in enumerate(shapes):
         r = (jnp.arange(s1) + 0.5) / s1
         a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
+        shift_r = jnp.interp(r, r_q, penalty)[:, None, None] if penalty is not None else 0.0
         m = np.fft.fftfreq(s2, d=1.0 / s2)
         nn = np.fft.fftfreq(s3, d=1.0 / s3)
         lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
@@ -144,7 +164,7 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
             flo = jnp.interp(r, r_q, strain[:, c])[:, None, None]
         else:
             flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
-        scale.append((1.0 / jnp.sqrt(lam + flo + shift * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None])).astype(seq.dtype))
+        scale.append((1.0 / jnp.sqrt(lam + flo + shift_r)).astype(seq.dtype))
     E = seq.E(1, True)
 
     def C(x):
@@ -185,22 +205,22 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
     divides the force's round-off components by. The penalty is
     Levenberg-Marquardt damping on the parallel component alone: it lifts
     those modes, leaves the energy descent unchanged (``<F, f B> = 0``) and
-    the perpendicular step untouched. ``alpha`` is in the units of the
-    harmonic atom's floor, ``(2 pi)^2 (h_theta^2 + h_zeta^2)(r)`` with the
-    profiles of ``B`` (:func:`harmonic_atom_profiles`): the Hessian's scale
-    is the field's logical gradient scale, 35x smaller on W7-X than on li383,
-    so a parallel unit mode sees ``lambda + alpha (2 pi)^2 (h_theta^2 +
-    h_zeta^2)`` and ``alpha = kappa`` is exactly the atom's floor moved into
-    the operator (li383 optimum 0.075, measured 2026-09-17). One quadrature
-    load per apply.
+    the perpendicular step untouched. The weight is
+    :func:`parallel_penalty_profile` of ``alpha`` with the profiles of ``B``:
+    a number in the units of the atom's floor, ``(2 pi)^2 (h_theta^2 +
+    h_zeta^2)(r)`` (the Hessian's scale is the field's logical gradient
+    scale, 35x smaller on W7-X than on li383; ``alpha = kappa`` is exactly the
+    atom's floor moved into the operator; li383 optimum 0.075, measured
+    2026-09-17), or ``None`` for the strain along the field, computed. One
+    quadrature load per apply.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
-    if parallel_penalty:
+    penalised = parallel_penalty is None or parallel_penalty != 0
+    if penalised:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
-        prof_t, prof_z, _ = harmonic_atom_profiles(seq, B)
-        n_r, n_angles = int(seq.quad.shape[0]), int(seq.quad.shape[1]) * int(seq.quad.shape[2])
-        weight = jnp.repeat(parallel_penalty * (2 * np.pi) ** 2 * (prof_t ** 2 + prof_z ** 2), n_angles)
+        n_angles = int(seq.quad.shape[1]) * int(seq.quad.shape[2])
+        weight = jnp.repeat(parallel_penalty_profile(seq, B, parallel_penalty), n_angles)
 
     def m1_inv(rhs):
         return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True, tol=tol)
@@ -224,7 +244,7 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
         Hu = (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
               + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
                        + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
-        return Hu + parallel(u_jk) if parallel_penalty else Hu
+        return Hu + parallel(u_jk) if penalised else Hu
 
     return apply
 
