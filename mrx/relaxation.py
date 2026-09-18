@@ -543,10 +543,16 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
-        newton_inner_tol: MINRES's own stopping tolerance in the
+        newton_inner_tol: the inner solve's own stopping tolerance in the
             preconditioner's norm (:func:`mrx.hessian.newton_direction`):
             the solve stops early once met, ``newton_maxiter`` is the cap.
-            0 (the default) runs the whole budget.
+            0 (the default) runs the whole budget; ``"sqrt"`` is the
+            forcing sequence of Nocedal & Wright, ``eta_k = min(1/2,
+            sqrt(rho_k))`` with ``rho_k = ||F||_M / ||grad(B^2/2)||`` the
+            dimensionless force residual of the step (loose far from the
+            equilibrium, tight near it; one extra force-scale solve per step).
+        newton_solver: ``"minres"`` or ``"cg"`` (Steihaug-Toint), see
+            :func:`mrx.hessian.newton_direction`.
         newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
             ``H + alpha M_par`` in the Newton solve
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
@@ -619,7 +625,9 @@ class TimeStepper(eqx.Module):
     newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
     newton_parallel_penalty: Union[float, str] = 0.0
-    newton_inner_tol: float = 0.0
+    newton_inner_tol: Union[float, str] = 0.0
+    newton_solver: str = "minres"
+    newton_force_scale: Callable = None
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
     newton_atom_floor: Optional[float] = HARMONIC_FLOOR
@@ -634,6 +642,8 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         if self.newton_atom_field not in ("h", "B"):
             raise ValueError("newton_atom_field is 'h' (the harmonic form) or 'B' (the current field).")
+        if self.newton and self.newton_inner_tol == "sqrt":
+            self.newton_force_scale = force_scale(self.seq)
         if self.newton and self.newton_precond == "harmonic" and self.newton_atom_field == "h":
             # built once: the profiles of h and the Fourier symbols; from B
             # the step rebuilds it (one quadrature evaluation per step)
@@ -769,9 +779,14 @@ class TimeStepper(eqx.Module):
             if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
                 precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
                                                   self.newton_parallel_penalty)
+            if self.newton_inner_tol == "sqrt":
+                rho = jnp.sqrt(F @ MF) / self.newton_force_scale(B)
+                inner_tol = jnp.minimum(0.5, jnp.sqrt(rho))
+            else:
+                inner_tol = self.newton_inner_tol
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter, precond,
-                self.newton_parallel_penalty, self.newton_inner_tol)
+                self.newton_parallel_penalty, inner_tol, self.newton_solver)
             if self.newton_smoothing:
                 # the descent's filter on the Newton potential, as on the
                 # potential route: (M_1 + mu L_1)^-1 M_1 on a, then the

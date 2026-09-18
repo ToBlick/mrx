@@ -132,6 +132,68 @@ def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
+def pcg_steihaug(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
+    """Preconditioned CG with the Steihaug-Toint negative-curvature exit: the inner solve of a
+    truncated Newton method (Nocedal & Wright, Algorithm 7.2 with the preconditioner).
+
+    Solves ``A x = b`` for a symmetric ``A`` that is positive definite on the
+    Krylov space it is asked about, and stops when ``sqrt(r^T M r) < tol
+    ||b||_M`` (the forcing term, in the preconditioner norm as
+    :func:`preconditioned_cg`), when ``maxiter`` is spent, or when a search
+    direction has ``p^T A p <= 0``: then the current iterate is returned (at
+    the first iteration, from a zero guess, the preconditioned gradient
+    ``M b``; from a warm start, the guess plus ``M r_0``), which is a
+    descent direction of the quadratic model whenever the iterates so far
+    are. ``M`` must be SPD, as in :func:`preconditioned_cg`. Returns
+    ``(x, info)`` with ``info = -k`` when the tolerance was met after ``k``
+    iterations and ``+k`` otherwise (the budget or negative curvature).
+    """
+    n = b.shape[0]
+    if tol is None:
+        tol = solve_tol()
+    if maxiter is None:
+        maxiter = n
+    if x0 is None:
+        x0 = jnp.zeros_like(b)
+    if M is None:
+        def M(x): return x
+
+    Mb = M(b)
+    bnorm_M = jnp.sqrt(jnp.dot(b, Mb))
+    bnorm_safe = jnp.where(bnorm_M > 0, bnorm_M, 1.0)
+    r0 = b - A_matvec(x0)
+    z0 = M(r0)
+    rz0 = jnp.dot(r0, z0)
+    # state: (x, r, z, p, rz, k, converged, stopped)
+    init_state = (x0, r0, z0, z0, rz0, 0, jnp.sqrt(rz0) < tol * bnorm_safe, False)
+
+    def cond_fn(state):
+        _, _, _, _, _, k, converged, stopped = state
+        return jnp.logical_and(k < maxiter, ~(converged | stopped))
+
+    def body_fn(state):
+        x, r, z, p, rz, k, _, _ = state
+        Ap = A_matvec(p)
+        pAp = jnp.dot(p, Ap)
+        negative = pAp <= 0.0
+        alpha = jnp.where(negative, 0.0, rz / jnp.where(negative, 1.0, pAp))
+        x_new = x + alpha * p
+        r_new = r - alpha * Ap
+        z_new = M(r_new)
+        rz_new = jnp.dot(r_new, z_new)
+        beta = rz_new / rz
+        p_new = z_new + beta * p
+        # negative curvature at the first iteration: the (preconditioned) gradient step
+        x_new = jnp.where(negative & (k == 0), x + z, x_new)
+        converged_new = jnp.sqrt(rz_new) < tol * bnorm_safe
+        return (x_new, r_new, z_new, p_new, rz_new, k + 1, converged_new & ~negative, negative)
+
+    final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
+    x_final, k_final, converged_final = final_state[0], final_state[5], final_state[6]
+    info = jnp.where(converged_final, -k_final, k_final)
+    return x_final, info
+
+
 def deflation_projectors(vs, mass_matvec):
     """``(project_primal, project_dual)`` against the ``(m, n)`` rows of ``vs``,
     ``M``-orthonormal kernel vectors: ``x - (vs M x) vs`` on a primal vector,

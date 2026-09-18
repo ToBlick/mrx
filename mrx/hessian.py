@@ -37,7 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import _dual_norm
-from mrx.solvers import minres, refine
+from mrx.solvers import minres, pcg_steihaug, refine
 
 #: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
 #: square (the operator is fourth order in ``a``), the k=1 mass atom, or the
@@ -269,8 +269,11 @@ def _preconditioner(seq, name):
     raise ValueError(f"newton_precond {name!r} is not one of {PRECONDITIONERS}")
 
 
+NEWTON_SOLVERS = ("minres", "cg")
+
+
 def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",
-                     parallel_penalty=0.0, inner_tol=0.0):
+                     parallel_penalty=0.0, inner_tol=0.0, solver="minres"):
     """The Newton direction ``u = curl a`` at the field ``B``.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -281,10 +284,15 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
     of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
     callable), ``parallel_penalty`` the ``alpha`` of :func:`second_variation`,
-    ``inner_tol`` MINRES's own stopping tolerance (below); the Hessian's mass
-    solves run at the sequence's tolerance.
+    ``inner_tol`` the inner solve's own stopping tolerance (below), ``solver``
+    one of :data:`NEWTON_SOLVERS`: MINRES (symmetric, indefinite allowed) or
+    CG with the Steihaug-Toint negative-curvature exit
+    (:func:`mrx.solvers.pcg_steihaug`, the truncated-Newton solve of Nocedal &
+    Wright 7.2: minimises the energy of the direction rather than the
+    residual, and returns a descent direction when it meets negative
+    curvature); the Hessian's mass solves run at the sequence's tolerance.
 
-    The inner solve: MINRES from ``a_guess`` up to ``maxiter`` iterations,
+    The inner solve: from ``a_guess`` up to ``maxiter`` iterations,
     stopping early when its residual estimate is below ``inner_tol`` times
     the right-hand side in the PRECONDITIONER's norm (the forcing term of an
     inexact Newton method, Dembo-Eisenstat-Steihaug); ``inner_tol = 0`` runs
@@ -324,7 +332,10 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     curl, curl_t, A = chain(seq)
     A_res = chain(on)[2]
     P = _preconditioner(seq, precond)
-    a, info = refine(A_res, lambda r: minres(A, r, M=P, tol=inner_tol, maxiter=maxiter),
+    if solver not in NEWTON_SOLVERS:
+        raise ValueError(f"newton_solver {solver!r} is not one of {NEWTON_SOLVERS}")
+    inner = minres if solver == "minres" else pcg_steihaug
+    a, info = refine(A_res, lambda r: inner(A, r, M=P, tol=inner_tol, maxiter=maxiter),
                      curl_t(MF), x0=a_guess, tol=tol, norm=_dual_norm(ops, 1, True),
                      max_passes=1, inner_dtype=seq.dtype)
     a = a.astype(seq.dtype)
