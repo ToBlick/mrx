@@ -237,11 +237,13 @@ B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 
 `mrx.poincare` traces field lines of a discrete 2-form with the toroidal
 angle as the independent variable, so every crossing of a section plane is
 an integration time and nothing is interpolated. The building blocks are
-`logical_field(seq, dof, 2, dirichlet=True)` for the field,
-`seed_from_axis` for the seeds, `trace` for the
-integration, and `rotational_transform` and `to_RZ` for the section.
-`step_convergence` justifies the fixed step count by refinement. The module
-docstring explains the three design choices. Two drivers split the work by
+`logical_field(seq, 2, dirichlet=True)` for the field -- a function of the
+logical point AND the coefficient vector, so the compiled tracer is shared by
+every field on the mesh -- `seed_from_axis` for the seeds, `trace` for the
+integration, `rotational_transform` and `to_RZ` for the section, and
+`field_lines` for a few lines kept at every step (`--dense-lines` below).
+`trace_and_classify` justifies the fixed step count by refinement (its
+`drift`). The module docstring explains the three design choices. Two drivers split the work by
 cost. `scripts/poincare_trace.py` (a GPU job) reads a run directory, traces
 the initial and the final checkpoint (`--fields ic,final,reconnect` adds the
 field before every reconnection) at the five standing planes, and archives

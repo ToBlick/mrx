@@ -45,6 +45,7 @@ vector and the right-hand side is bounded through the origin.
 from __future__ import annotations
 
 import time
+from functools import partial
 
 import diffrax as dfx
 import jax
@@ -65,8 +66,9 @@ R_MAX = 1.0 - 1e-6
 # The field
 # ---------------------------------------------------------------------------
 
-def logical_field(seq, dof, k, dirichlet):
-    r"""Contravariant logical components of the vector field behind a k-form.
+def logical_field(seq, k, dirichlet):
+    r"""``(x, dof) ->`` contravariant logical components of the vector field
+    behind the k-form with coefficients ``dof``.
 
     A 2-form pushes forward by Piola, :math:`B = DF\,\hat B/J`, so its
     coefficients *are* the contravariant components and the field-line
@@ -76,23 +78,34 @@ def logical_field(seq, dof, k, dirichlet):
 
     Only the direction matters below -- the third component divides out -- so
     no Jacobian factor is applied.
+
+    The coefficients are an ARGUMENT of the returned function, not a closure
+    constant, and every tracer below takes them as one: the compiled
+    integrator is keyed on the function object (one per sequence and degree)
+    and the shapes, so a movie of a relaxation run compiles the trace ONCE and
+    every further field is pure execution. Closing over the coefficients
+    instead baked a few-hundred-thousand-float constant into every trace and
+    recompiled the whole integrator per field (five compiles per field:
+    the two seed probes, the trace, the two drift traces).
     """
     if k not in (1, 2):
         raise ValueError(f"logical_field: k must be 1 or 2, got {k}")
     basis = seq.basis_2 if k == 2 else seq.basis_1
     extraction = seq.E(k, dirichlet)
-    # DiscreteFunction folds the extraction into the coefficients once and
-    # evaluates only the basis functions that are nonzero at x.
-    discrete = DiscreteFunction(jnp.asarray(dof), basis, extraction)
 
     if k == 2:
-        def field(x):
-            return discrete(x)
+        def field(x, dof):
+            return DiscreteFunction(dof, basis, extraction)(x)
     else:
-        def field(x):
+        def field(x, dof):
             df = jax.jacfwd(seq.map)(x)
-            return jnp.linalg.solve(df.T @ df, discrete(x))
+            return jnp.linalg.solve(df.T @ df, DiscreteFunction(dof, basis, extraction)(x))
     return field
+
+
+@partial(jax.jit, static_argnames=("field",))
+def _field_values(field, dof, x):
+    return jax.vmap(field, (0, None))(x, dof)
 
 
 class BzetaParameterisationError(RuntimeError):
@@ -116,7 +129,7 @@ class BzetaParameterisationError(RuntimeError):
 BZETA_MIN_FRACTION = 0.05
 
 
-def require_zeta_parameterisation(field, *, n=4096, tol=BZETA_MIN_FRACTION,
+def require_zeta_parameterisation(field, dof, *, n=4096, tol=BZETA_MIN_FRACTION,
                                   name="field", seed=23):
     r"""Refuse to trace unless ``B^zeta`` keeps one sign and stays off zero.
 
@@ -140,7 +153,7 @@ def require_zeta_parameterisation(field, *, n=4096, tol=BZETA_MIN_FRACTION,
     # r -> 0 is the polar axis. Neither is where a parameterisation failure
     # would be a property of the FIELD.
     x = x.at[:, 0].multiply(0.96).at[:, 0].add(0.02)
-    b = jax.vmap(field)(x)
+    b = _field_values(field, jnp.asarray(dof), x)
     bz = b[:, 2]
     frac = bz / jnp.linalg.norm(b, axis=1)
     lo, hi = float(jnp.min(frac)), float(jnp.max(frac))
@@ -189,10 +202,12 @@ def cross_section_rhs(field):
     there has left the domain the discrete field is defined on, and the only
     honest thing to do is stop it and count it (see :func:`_escaped_mask`).
     Freezing rather than erroring also keeps a lost lane from costing anything.
+
+    ``args`` is the coefficient vector of the field (``diffeqsolve(args=dof)``).
     """
-    def rhs(zeta, y, args):
+    def rhs(zeta, y, dof):
         x, r, theta = _uv_to_logical(y, zeta)
-        b = field(x)
+        b = field(x, dof)
         dr, dtheta = b[0] / b[2], b[1] / b[2]
         c, s = jnp.cos(TWO_PI * theta), jnp.sin(TWO_PI * theta)
         du = c * dr - TWO_PI * r * s * dtheta
@@ -205,12 +220,13 @@ def cross_section_rhs(field):
 # The trace
 # ---------------------------------------------------------------------------
 
-def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
+def trace(field, dof, seeds, n_periods, steps_per_period=32, saves_per_period=8,
           batch_size=None):
     """Integrate ``seeds`` for ``n_periods`` units of logical zeta.
 
     Args:
-        field: ``x -> (B^r, B^theta, B^zeta)``, from :func:`logical_field`.
+        field: ``(x, dof) -> (B^r, B^theta, B^zeta)``, from :func:`logical_field`.
+        dof: the field's coefficient vector.
         seeds: ``(n_seeds, 2)`` array of logical ``(r, theta)`` start points at
             ``zeta = 0``.
         n_periods: number of field periods to follow.  One unit of logical zeta
@@ -234,12 +250,18 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
             f"steps_per_period={steps_per_period} must be a multiple of "
             f"saves_per_period={saves_per_period}; otherwise the saved values "
             "come from dense interpolation rather than from steps")
+    return _trace(field, jnp.asarray(dof), jnp.asarray(seeds), int(n_periods),
+                  int(steps_per_period), int(saves_per_period), batch_size)
 
+
+@partial(jax.jit, static_argnames=("field", "n_periods", "steps_per_period",
+                                   "saves_per_period", "batch_size"))
+def _trace(field, dof, seeds, n_periods, steps_per_period, saves_per_period, batch_size):
+    # One compile per (field function, shapes, schedule); ``dof`` is an input.
     n_steps = n_periods * steps_per_period
     step_ts = jnp.arange(n_steps + 1) / steps_per_period
     save_ts = jnp.arange(n_periods * saves_per_period + 1) / saves_per_period
 
-    seeds = jnp.asarray(seeds)
     r, theta = seeds[:, 0], seeds[:, 1]
     y0s = jnp.stack([r * jnp.cos(TWO_PI * theta),
                      r * jnp.sin(TWO_PI * theta)], axis=1)
@@ -251,7 +273,7 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
     def one(y0):
         sol = dfx.diffeqsolve(
             terms=term, solver=dfx.Tsit5(),
-            t0=0.0, t1=float(n_periods), dt0=dt0, y0=y0,
+            t0=0.0, t1=float(n_periods), dt0=dt0, y0=y0, args=dof,
             saveat=dfx.SaveAt(ts=save_ts),
             stepsize_controller=controller,
             max_steps=max_steps, throw=False,
@@ -272,16 +294,18 @@ def _escaped_mask(ys):
     return jnp.any(r >= R_MAX, axis=-1) | jnp.any(~jnp.isfinite(r), axis=-1)
 
 
-def _step_convergence(field, seeds, n_periods, steps_per_period,
+def _step_convergence(field, dof, seeds, lo, n_periods, steps_per_period,
                      saves_per_period=8, batch_size=None):
     """Max cross-section displacement between ``steps_per_period`` and twice it.
 
     Fixed steps carry no error estimate, so the step count has to be earned.
-    Returned in units of the logical minor radius, over healthy seeds only.
+    ``lo`` is the trace of ``seeds`` at ``steps_per_period`` over ``n_periods``
+    -- the caller already has it (the first ``n_periods`` of the main trace
+    ARE that trace, the schedule being prescribed), so only the ``h/2`` trace
+    is integrated here. Returned in units of the logical minor radius, over
+    healthy seeds only.
     """
-    lo, _ = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
-                  batch_size=batch_size)
-    hi, _ = trace(field, seeds, n_periods, 2 * steps_per_period,
+    hi, _ = trace(field, dof, seeds, n_periods, 2 * steps_per_period,
                   saves_per_period, batch_size=batch_size)
     good = ~(_escaped_mask(lo) | _escaped_mask(hi))
     d = jnp.linalg.norm(lo - hi, axis=-1).max(axis=-1)
@@ -420,12 +444,23 @@ def _iota_window_scatter(ys, saves_per_period, nfp, n_windows=N_IOTA_WINDOWS,
     return jnp.std(iotas, axis=-1)
 
 
-def to_RZ(seq, ys, zeta):
-    """Map ``(u, v)`` cross-section points at fixed logical zeta to ``(R, Z)``."""
+@partial(jax.jit, static_argnames=("seq",))
+def _map_points(seq, x):
+    return jax.vmap(seq.map)(x.reshape(-1, 3)).reshape(x.shape)
+
+
+def to_xyz(seq, ys, zeta):
+    """Map ``(u, v)`` points at logical ``zeta`` (a scalar, or one per point) to
+    Cartesian ``(x, y, z)``."""
     r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
     theta = jnp.arctan2(ys[..., 1], ys[..., 0]) / TWO_PI % 1.0
-    x = jnp.stack([r, theta, jnp.full_like(r, zeta % 1.0)], axis=-1)
-    xyz = jax.vmap(seq.map)(x.reshape(-1, 3)).reshape(x.shape)
+    x = jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1)
+    return _map_points(seq, x)
+
+
+def to_RZ(seq, ys, zeta):
+    """Map ``(u, v)`` cross-section points at fixed logical zeta to ``(R, Z)``."""
+    xyz = to_xyz(seq, ys, zeta)
     R = jnp.sqrt(xyz[..., 0] ** 2 + xyz[..., 1] ** 2)
     return R, xyz[..., 2]
 
@@ -477,7 +512,7 @@ def midplane_crossings(R, Z, centre_R, centre_Z, max_gap=0.5):
     return jnp.stack([centre_R + r_out, centre_R - r_in], axis=-1)
 
 
-def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
+def seed_from_axis(field, dof, n_seeds, saves_per_period, *, r_axis=0.01,
                    r_edge=0.97, theta=0.0, n_rays=4, probe_periods=64,
                    steps_per_period=24, t_min=0.02):
     """Seeds spaced from the MAGNETIC axis to the edge, not from ``r = 0``.
@@ -528,7 +563,7 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     # (A probe whose orbit stays large after this pass is on a wide structure
     # -- an island at the core -- not on a shifted axis; measured 2026-08-26.)
     probe = jnp.array([[r_axis, theta], [r_edge, theta]])
-    ys, _ = trace(field, probe, probe_periods, steps_per_period,
+    ys, _ = trace(field, dof, probe, probe_periods, steps_per_period,
                   saves_per_period)
     centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
     offset = r_axis * jnp.array([jnp.cos(TWO_PI * theta), jnp.sin(TWO_PI * theta)])
@@ -536,7 +571,7 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
     probe2 = jnp.array([[jnp.sqrt(probe2_uv[0] ** 2 + probe2_uv[1] ** 2),
                          jnp.arctan2(probe2_uv[1], probe2_uv[0]) / TWO_PI % 1.0],
                         [r_edge, theta]])
-    ys, _ = trace(field, probe2, probe_periods, steps_per_period,
+    ys, _ = trace(field, dof, probe2, probe_periods, steps_per_period,
                   saves_per_period)
     centre = jnp.mean(ys[0, ::saves_per_period], axis=0)
     golden = 0.5 * (jnp.sqrt(5.0) - 1.0)
@@ -562,7 +597,7 @@ def seed_from_axis(field, n_seeds, saves_per_period, *, r_axis=0.01,
 # only in where the field comes from -- a nullspace solve, a relaxation state,
 # a file -- and nothing past that point should be written twice.
 
-def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
+def trace_and_classify(field, dof, seeds, nfp, *, n_periods, steps_per_period,
                        saves_per_period, batch_size=None, drift_periods=64,
                        drift_seeds=8):
     """Trace ``seeds``, measure iota, and say which lines have one.
@@ -594,7 +629,7 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     ``saves_per_period``.
     """
     t0 = time.perf_counter()
-    ys, ok = trace(field, seeds, n_periods, steps_per_period, saves_per_period,
+    ys, ok = trace(field, dof, seeds, n_periods, steps_per_period, saves_per_period,
                    batch_size=batch_size)
     ys = jnp.asarray(ys).block_until_ready()
     walltime = time.perf_counter() - t0
@@ -607,8 +642,11 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     chaotic = (_iota_convergence(ys, saves_per_period, nfp, center=centre)
                > CHAOS_TOL_PER_PERIOD / n_periods)
 
-    # The drift check re-traces at h and h/2, so it is priced per seed: a
-    # subsample says the same thing.
+    # The drift check re-traces at h/2, so it is priced per seed: a subsample
+    # says the same thing. Every short trace costs the same per step as the
+    # full batch (the steps are sequential kernel launches), so the seed
+    # probes and this check are a good part of a field's wall time; the
+    # h-trace it compares against is cut from the main trace, not repeated.
     #
     # It is measured over the REGULAR lines only, and that is not a cosmetic
     # choice. Two nearby chaotic trajectories separate exponentially, so on a
@@ -623,12 +661,16 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
     # ``drift`` is NaN when no line is regular. That is not a failed step
     # check; it is the statement that on this trace the step cannot be checked
     # this way at all, and a number would be a lie.
+    # Exactly ``drift_seeds`` lines (fewer only if fewer are regular), spread
+    # over the regular ones: a fixed count keeps the drift traces' shapes, and
+    # so their compiled programs, the same from one field to the next.
     regular = np.flatnonzero(~np.asarray(chaotic | escaped))
     regular = regular[regular > 0]
-    idx = regular[:: max(1, len(regular) // drift_seeds)]
-    drift = (_step_convergence(field, seeds[idx],
-                              min(n_periods, drift_periods),
-                              steps_per_period, saves_per_period,
+    idx = regular[np.unique(np.linspace(0, len(regular) - 1,
+                                        min(drift_seeds, len(regular))).round().astype(int))]
+    n_drift = min(n_periods, drift_periods)
+    drift = (_step_convergence(field, dof, seeds[idx], ys[idx, :n_drift * saves_per_period + 1],
+                              n_drift, steps_per_period, saves_per_period,
                               batch_size=batch_size)
              if idx.size else float("nan"))
 
@@ -639,6 +681,25 @@ def trace_and_classify(field, seeds, nfp, *, n_periods, steps_per_period,
             "seeds": np.asarray(seeds[1:]), "axis": np.asarray(ys[0]),
             "walltime": walltime, "drift": drift, "drift_lines": int(idx.size),
             "saves_per_period": saves_per_period}
+
+
+def field_lines(seq, field, dof, seeds, n_periods, steps_per_period=32):
+    """The field lines through ``seeds`` as Cartesian curves, every step
+    endpoint saved: ``(xyz (n_seeds, n_periods * steps_per_period + 1, 3),
+    logical r (n_seeds, n_periods * steps_per_period + 1))``.
+
+    The dense companion of a section trace: the same integrator and schedule
+    (``saves_per_period = steps_per_period``, so nothing is interpolated),
+    for a few lines over a few periods, for 3-D renderings of the lines
+    themselves.  Seeds and periods are the caller's: a section trace follows
+    every line for hundreds of periods and keeps a handful of crossings per
+    period; this follows a handful of lines for a few periods and keeps
+    every point.
+    """
+    ys, _ = trace(field, dof, seeds, n_periods, steps_per_period, steps_per_period)
+    zeta = jnp.arange(ys.shape[1]) / steps_per_period
+    xyz = to_xyz(seq, ys, zeta[None, :])
+    return xyz, jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
 
 
 def section_RZ(seq, ys, axis_uv, saves_per_period, plane):
@@ -693,11 +754,11 @@ def section_figure(seq, B, nfp, *, plane=0.0, n_seeds=24, n_periods=200,
     """
     from mrx.plotting import render_section  # noqa: PLC0415  (keep this module headless)
 
-    field = logical_field(seq, jnp.asarray(B), 2, True)
-    info = require_zeta_parameterisation(field, name="B")
-    seeds = seed_from_axis(field, n_seeds, saves_per_period, n_rays=n_rays,
+    field, dof = logical_field(seq, 2, True), jnp.asarray(B)
+    info = require_zeta_parameterisation(field, dof, name="B")
+    seeds = seed_from_axis(field, dof, n_seeds, saves_per_period, n_rays=n_rays,
                            steps_per_period=steps_per_period)
-    res = trace_and_classify(field, seeds, nfp, n_periods=n_periods,
+    res = trace_and_classify(field, dof, seeds, nfp, n_periods=n_periods,
                              steps_per_period=steps_per_period,
                              saves_per_period=saves_per_period, batch_size=batch_size)
     keep = ~(res["escaped"] | ~res["ok"])

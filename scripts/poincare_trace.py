@@ -35,7 +35,8 @@ Flags (defaults in brackets):
                            Leray multiplier ``p`` (a 3-form, ``p / det DF``,
                            defined up to a constant -- the plotter gauges it)
     --field-key K          array name in --field-npz [h_dof]
-    --geometry PATH        the mesh of --field-npz: VMEC wout .nc or GVEC .dat
+    --geometry PATH        the mesh of --field-npz: VMEC wout .nc or GVEC .dat;
+                           with --run, overrides the run's recorded path
     --ns N_R,N_T,N_Z       ... its resolution
     --p P                  ... its spline degree
     --seeds N              field lines per ray and field [40]
@@ -53,6 +54,12 @@ Flags (defaults in brackets):
                            half is stellarator-symmetric]
     --r-max R              outermost seed radius [0.97]
     --batch-size N         lines integrated per batch [all]
+    --dense-lines N        also keep N of the traced lines DENSELY: every
+                           integration step of --dense-periods periods as a
+                           Cartesian curve, for 3-D renderings of the lines
+                           themselves. The N are spread over the kept lines
+                           by seed radius (index 0 innermost). [0]
+    --dense-periods P      periods followed for the dense lines [50]
     --precision P          tracing precision float64|float32 [float64]
     --out PATH             the archive path [next to the source]
 
@@ -63,10 +70,18 @@ Archive (numpy .npz): ``fields`` (names, in order), ``planes``, ``ns``, ``p``,
 profile ribbon), ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``, ``<f>_shown``,
 ``<f>_drift``; per field and plane ``<f>_zeta<plane>_{R,Z,axisR,axisZ,logr,logth}``
 and, with a pressure, ``<f>_zeta<plane>_pressure``: the RAW value at every
-crossing (weak: the 0-form's value; strong: ``p / det DF``). Trace RESULTS
-only -- every rendering choice is the plotter's.
+crossing (weak: the 0-form's value; strong: ``p / det DF``). With
+--dense-lines: ``dense_steps`` (points per period), ``dense_periods``, and
+per field ``<f>_dense_xyz`` (N, periods * steps + 1, 3) float32,
+``<f>_dense_logr`` (N, periods * steps + 1) and ``<f>_dense_idx``, the index
+of each dense line among the field's lines (its iota, radius and flags are
+there). Trace RESULTS only -- every rendering choice is the plotter's.
+A movie archive is rewritten every 25 fields, so a time-out keeps the frames
+traced so far.
 Runtime: sequence build 1-3 min, then ~0.5-1 min per traced field at (16,32,32)
-on one H100 (the weak pressure adds two solves per field).
+on one H100 (the weak pressure adds two solves per field). The integrator is
+compiled once per mesh and schedule (the field's coefficients are an input),
+so a movie pays the compile on its first frame only.
 """
 import argparse
 import glob
@@ -94,6 +109,8 @@ def main():
     ap.add_argument("--planes", default="0,0.125,0.25,0.375,0.5")
     ap.add_argument("--r-max", type=float, default=0.97)
     ap.add_argument("--batch-size", type=int, default=None)
+    ap.add_argument("--dense-lines", type=int, default=0)
+    ap.add_argument("--dense-periods", type=int, default=50)
     ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
     ap.add_argument("--out", default=None, help="archive path [<source dir>/trace.npz]")
     cli = ap.parse_args()
@@ -105,12 +122,13 @@ def main():
 
     import h5py
     import json
+    import time
     import jax
     import jax.numpy as jnp
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import build_sequence, geometry_nfp, map_jacobian_at
-    from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
-                              section_RZ, trace_and_classify)
+    from mrx.poincare import (field_lines, logical_field, require_zeta_parameterisation,
+                              seed_from_axis, section_RZ, trace_and_classify)
 
     planes = [float(v) for v in cli.planes.split(",")]
     dofs, labels = {}, {}
@@ -153,7 +171,8 @@ def main():
             with h5py.File(ckpts[steps_of[name]], "r") as fh:
                 dofs["B_" + name] = np.asarray(fh["B_n"], dtype=np.float64)
                 dofs["p_" + name] = np.asarray(fh["p"], dtype=np.float64)
-        geometry = str(attrs["geometry_path"])
+        # --geometry overrides the recorded path (a run relaxed in a since-deleted worktree)
+        geometry = cli.geometry or str(attrs["geometry_path"])
         ns = tuple(int(v) for v in attrs["ns"])
         p = int(attrs["p"])
         nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
@@ -186,6 +205,16 @@ def main():
             _, _, J, X, _ = compute_force(jnp.asarray(dofs["B_" + name]), seq, aux)
             dofs["pw_" + name] = np.asarray(weak_pressure(J, X, seq, aux)[0], dtype=np.float64)
 
+    @jax.jit
+    def weak_at(pd, x):
+        return jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.E(0, True)))(x)[:, 0]
+
+    @jax.jit
+    def strong_at(pd, x):
+        e3 = seq.E(3, True) if pd.shape[0] == int(seq.n(3, True)) else seq.E(3)
+        val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
+        return val / jnp.linalg.det(map_jacobian_at(seq.map, x))
+
     def physical_pressure(name, lr, lth, zeta):
         """The selected pressure at logical ``(lr, lth, zeta)``.
 
@@ -195,28 +224,29 @@ def main():
         pd = jnp.asarray(dofs[key])
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
-        if pressure_kind == "weak":
-            val = jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.E(0, True)))(x)[:, 0]
-        else:
-            e3 = seq.E(3, True) if pd.shape[0] == int(seq.n(3, True)) else seq.E(3)
-            val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
-            val = val / jnp.linalg.det(map_jacobian_at(seq.map, x))
+        val = weak_at(pd, x) if pressure_kind == "weak" else strong_at(pd, x)
         return np.asarray(val).reshape(lr.shape)
 
     sections = {"fields": np.array(fields), "planes": np.array(planes), "ns": np.array(ns),
                 "p": p, "nfp": nfp, "source": np.array(source),
                 "pressure_kind": np.array(pressure_kind),
                 "trace_precision": np.array(cli.precision), "movie": movie}
-    for name in fields:
+    if cli.dense_lines:
+        sections["dense_steps"], sections["dense_periods"] = cli.steps, cli.dense_periods
+    # One field function per sequence: the compiled tracer is keyed on it, the
+    # coefficients are its input, so the fields below share every compile.
+    field = logical_field(seq, 2, True)
+    for i, name in enumerate(fields):
+        t_field = time.perf_counter()
         B = dofs["B_" + name]
         assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
-        field = logical_field(seq, jnp.asarray(B), 2, True)
-        info = require_zeta_parameterisation(field, name=name)
+        dof = jnp.asarray(B)
+        info = require_zeta_parameterisation(field, dof, name=name)
         print(f"[zeta] {name}: B^zeta/|B| in [{info['bz_over_b_min']:+.3e}, "
               f"{info['bz_over_b_max']:+.3e}]", flush=True)
-        seeds = seed_from_axis(field, cli.seeds, cli.saves, r_edge=cli.r_max, n_rays=cli.rays,
-                               steps_per_period=cli.steps)
-        res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+        seeds = seed_from_axis(field, dof, cli.seeds, cli.saves, r_edge=cli.r_max,
+                               n_rays=cli.rays, steps_per_period=cli.steps)
+        res = trace_and_classify(field, dof, seeds, nfp, n_periods=cli.periods,
                                  steps_per_period=cli.steps, saves_per_period=cli.saves,
                                  batch_size=cli.batch_size)
         keep = ~(res["escaped"] | ~res["ok"])
@@ -224,10 +254,16 @@ def main():
         span = (f"iota {float(res['iota'][shown].min()):.4f}.."
                 f"{float(res['iota'][shown].max()):.4f}" if shown.any()
                 else "no line converged")
-        print(f"[{name}] {res['walltime']:.1f}s, {int((~keep).sum())}/{keep.size} lost, "
-              f"{int((keep & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, {span}",
-              flush=True)
         sections[f"{name}_label"] = np.array(labels[name])
+        if cli.dense_lines:
+            kept = np.flatnonzero(keep)
+            idx = kept[np.unique(np.linspace(0, len(kept) - 1, min(cli.dense_lines, len(kept)))
+                                 .round().astype(int))]
+            xyz, logr = field_lines(seq, field, dof, jnp.asarray(res["seeds"][idx]),
+                                    cli.dense_periods, cli.steps)
+            sections[f"{name}_dense_xyz"] = np.asarray(xyz, dtype=np.float32)
+            sections[f"{name}_dense_logr"] = np.asarray(logr, dtype=np.float32)
+            sections[f"{name}_dense_idx"] = idx
         for plane in planes:
             R, Z, aR, aZ, _cR, _cZ, lr, lth = section_RZ(seq, res["ys"], res["axis"], cli.saves, plane)
             tag = f"{name}_zeta{plane:g}"
@@ -241,6 +277,13 @@ def main():
                          ("keep", keep), ("chaotic", res["chaotic"]), ("shown", shown),
                          ("drift", np.array(res["drift"]))):
             sections[f"{name}_{key}"] = np.asarray(arr)
+        print(f"[{name}] trace {res['walltime']:.1f}s, field {time.perf_counter() - t_field:.1f}s, "
+              f"{int((~keep).sum())}/{keep.size} lost, {int((keep & res['chaotic']).sum())} chaotic, "
+              f"drift {res['drift']:.2e}, {span}", flush=True)
+        if movie and (i + 1) % 25 == 0 and i + 1 < len(fields):
+            os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)
+            np.savez_compressed(archive, **dict(sections, fields=np.array(fields[:i + 1])))
+            print(f"  -> {archive} (partial, {i + 1} of {len(fields)} fields)", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)
     np.savez_compressed(archive, **sections)
     print(f"  -> {archive}", flush=True)

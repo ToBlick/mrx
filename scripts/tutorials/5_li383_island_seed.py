@@ -116,10 +116,10 @@ print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {compute_divergence_nor
 # island at the resonant chain shows in the seeded sections, not the unseeded.
 # Trace once per field, cut five planes over half a field period.
 def sections(B_dof, tag, title):
-    field = logical_field(seq, jnp.asarray(B_dof), 2, True)
-    require_zeta_parameterisation(field, name=tag)
-    seeds = seed_from_axis(field, cli.seeds, 8, n_rays=4, steps_per_period=32)
-    res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
+    field, dof = logical_field(seq, 2, True), jnp.asarray(B_dof)
+    require_zeta_parameterisation(field, dof, name=tag)
+    seeds = seed_from_axis(field, dof, cli.seeds, 8, n_rays=4, steps_per_period=32)
+    res = trace_and_classify(field, dof, seeds, nfp, n_periods=cli.periods,
                              steps_per_period=32, saves_per_period=8)
     render_keep = ~(res["escaped"] | ~res["ok"])
     for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
