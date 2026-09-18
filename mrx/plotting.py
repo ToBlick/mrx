@@ -387,6 +387,23 @@ P_COLOR = "#6a3d9a"
 PROFILE_RAY_THETAS = (0.5, 1.0 / 3.0, 0.2, 1.0 / 6.0, 0.25, 0.75)
 
 
+def _scale_note(axis, scale, color=None):
+    """Write a smaller ``x scale`` after ``axis``'s label.
+
+    An x label (under a colour bar, narrower than one row of both) gets it
+    as a second row below; a y label (rotated, reading upwards) gets it on
+    the same row, above. An axes text, so :func:`paper_fonts` sizes it as an
+    annotation, and inside the layout. Mathtext has no ``\\scriptstyle``,
+    hence the separate text.
+    """
+    below = isinstance(axis, mpl.axis.XAxis)
+    axis.axes.annotate(f"$\\times$ {scale:g}", xy=(0.5, 0.0) if below else (0.5, 1.0),
+                       xycoords=axis.label, xytext=(0, -1) if below else (0, 2),
+                       textcoords="offset points", ha="center",
+                       va="top" if below else "bottom", rotation=0 if below else 90,
+                       fontsize=FS.annot, color=color)
+
+
 def _profile_ray_thetas(n):
     """The first ``n`` profile-ray thetas (see :data:`PROFILE_RAY_THETAS`);
     golden-angle extras beyond the fixed list so a large ``n`` stays spread."""
@@ -594,10 +611,17 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         cbar.set_ticks(res_ticks)
         cbar.set_ticklabels(res_labels)
     if psc is not None:
-        pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02)
+        # A pinned range below the data caps the colour at its top (the
+        # scatter's vmax); the bar says so with an arrow.
+        capped = lim.p is not None and float(jnp.nanmax(pressure_scale * pressure[sel_p])) > lim.p[1]
+        pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02,
+                            extend="max" if capped else "neither")
         # Label BELOW the bar, matching iota: a side label is squeezed against
-        # the next panel and the wide tick labels leave no room for it.
-        pbar.ax.set_xlabel(p_label, fontsize=FS.title)
+        # the next panel and the wide tick labels leave no room for it. The
+        # scale goes on a second, smaller row: one row is wider than the bar
+        # and runs into the iota bar's label and the section's R ticks.
+        pbar.ax.set_xlabel(pressure_label, fontsize=FS.title)
+        _scale_note(pbar.ax.xaxis, pressure_scale)
         pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
 
@@ -704,7 +728,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
         bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
-            px.set_ylabel(p_label, color=P_COLOR)
+            px.set_ylabel(pressure_label, color=P_COLOR)
+            _scale_note(px.yaxis, pressure_scale, color=P_COLOR)
             px.tick_params(axis="y", labelcolor=P_COLOR)
             if lim.p is not None:
                 px.set_ylim(*lim.p)
@@ -741,10 +766,11 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             mo, so = p_mean[prof][order], p_std[prof][order]
             _, (bx, px) = plot_twin_axis(
                 io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
-                right_label=p_label, left_log=False, right_log=False,
+                right_label=pressure_label, left_log=False, right_log=False,
                 x_label=profile_xlabel, grid=False, ax=bx,
                 left_plot_kwargs=dict(left, lw=0.8),
                 right_plot_kwargs=dict(right, lw=0.8))
+            _scale_note(px.yaxis, pressure_scale, color=right["color"])
             px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
                             label=r"$p \pm 1$ std over the line")
             if lim.p is not None:

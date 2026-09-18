@@ -2,7 +2,8 @@ r"""Render the Poincare sections of a trace archive -- the cheap half, no GPU.
 
 Reads the ``trace.npz`` written by ``scripts/poincare_trace.py`` (next to its run
 or field file), renders every field and plane it holds -- or ``--fields``, a
-subset -- with ONE iota and ONE pressure scale, and writes the pages to
+subset -- with ONE iota and ONE pressure scale (per call, or per field with
+``--scales step``), and writes the pages to
 ``--out`` [``<archive dir>/poincare``]. Plain matplotlib: it runs on the login
 node in seconds per page, so the trace is never repeated for a change to the
 figure. Every rendering choice is made here, from the archived trace results:
@@ -53,12 +54,19 @@ Flags (defaults in brackets):
     --page-width W         (--paper) authored width in inches, 'one page wide' [6.5]
     --dpi N                (--paper) rasterised crossing-scatter resolution [600]
     --no-pgf               skip the .pgf beside each PNG (needs xelatex on PATH)
+    --planes LIST          comma-separated subset of the archive's planes [all]
+    --frame-offset N       number a movie's frames from N (an archive split into
+                           parts; pin the scales, the window and the rationals) [0]
     --fly                  a movie along zeta: one frame per plane of each field,
                            numbered in plane order (trace with --saves N
                            --planes k/N, k = 0..N-1)
     --window R0,R1,Z0,Z1   pin the section box to this window on every page;
                            give a time movie and the fly through its final
                            state the same one so the two cut together
+    --scales {run,step}    the iota and p scales: run = one range over every field
+                           of the call (a video along the relaxation); step = each
+                           field (time step) its own range. Either way one range
+                           across the planes of a field [run]
     --iota-lim LO,HI       fix the iota colour scale / profile axis across calls
     --p-lim LO,HI          fix the pressure scale / profile axis (units of the
                            colour bar, p x 100)
@@ -154,10 +162,18 @@ def main():
     ap.add_argument("--page-width", type=float, default=6.5)
     ap.add_argument("--dpi", type=int, default=600)
     ap.add_argument("--no-pgf", dest="pgf", action="store_false")
+    ap.add_argument("--planes", default=None,
+                    help="comma-separated subset of the archive's planes [all]")
+    ap.add_argument("--frame-offset", type=int, default=0,
+                    help="number a movie's frames from here (an archive split into parts: each part's call "
+                         "continues the count, with --iota-lim, --p-lim, --window and --rationals pinned)")
     ap.add_argument("--fly", action="store_true")
     ap.add_argument("--window", default=None,
                     help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page "
                          "(e.g. the same window for a time movie and the fly that follows it)")
+    ap.add_argument("--scales", choices=("run", "step"), default="run",
+                    help="iota and p scales: one range over every field of the call (run) or "
+                         "per field (step); constant across the planes either way [run]")
     ap.add_argument("--iota-lim", default=None,
                     help="LO,HI: fix the iota colour scale and profile axis instead of the "
                          "call's own range, so separate calls (time frames, then the fly) match")
@@ -187,6 +203,8 @@ def main():
     for n in which:
         assert n in all_fields, (n, all_fields)
     planes = [float(v) for v in sec["planes"]]
+    if cli.planes:
+        planes = [pl for pl in planes if any(abs(pl - float(v)) < 1e-9 for v in cli.planes.split(","))]
     ns, nfp = tuple(int(v) for v in sec["ns"]), int(sec["nfp"])
     source, movie = str(sec["source"]), bool(sec["movie"])
     kind = str(sec["pressure_kind"]) if cli.pressure else "none"
@@ -206,31 +224,38 @@ def main():
               f"{int((~drawn[n]).sum())} inner line(s) not drawn; "
               f"{int((~per[n]['keep']).sum())}/{per[n]['keep'].size} lost, "
               f"{int((per[n]['keep'] & per[n]['chaotic']).sum())} chaotic", flush=True)
-    # ONE iota scale and ONE p scale across every field and every plane: ic,
-    # final, a reconnection series and the planes are then comparable at a glance.
-    lo = min(float(per[n]["iota"][per[n]["shown"]].min()) for n in which if per[n]["shown"].any())
-    hi = max(float(per[n]["iota"][per[n]["shown"]].max()) for n in which if per[n]["shown"].any())
+    # ONE iota scale and ONE p scale per group of fields, across every plane:
+    # --scales run groups every field of the call (ic, final, a reconnection
+    # series or a movie's frames are then comparable at a glance), step gives
+    # each field its own group (each state resolved in its own range).
+    group = {n: which if cli.scales == "run" else [n] for n in which}
+    iota_lims = {n: (min(float(per[m]["iota"][per[m]["shown"]].min()) for m in group[n] if per[m]["shown"].any()),
+                     max(float(per[m]["iota"][per[m]["shown"]].max()) for m in group[n] if per[m]["shown"].any()))
+                 for n in which}
     if cli.iota_lim:
-        lo, hi = (float(v) for v in cli.iota_lim.split(","))
+        iota_lims = {n: tuple(float(v) for v in cli.iota_lim.split(",")) for n in which}
     cuts = {(n, pl): tuple(np.asarray(sec[f"{n}_zeta{pl:g}_{k}"])
                            for k in ("R", "Z", "axisR", "axisZ", "logr", "logth"))
             for n in which for pl in planes}
     # The archive holds the raw pressure at every crossing: gauge it here (min
     # over the drawn kept lines on every plane for the strong multiplier, 0 for
-    # the weak pressure) and pin one p range.
+    # the weak pressure) and pin the p range of each group.
     presses = {n: {pl: (np.asarray(sec[f"{n}_zeta{pl:g}_pressure"])[drawn[n]]
                         if kind != "none" else None) for pl in planes} for n in which}
     p_min = {n: pressure_gauge(kind, presses[n], per[n]["keep"]) for n in which}
-    ps = [100.0 * cli.pressure_factor * (presses[n][pl] - p_min[n])[per[n]["keep"]]
-          for n in which for pl in planes if presses[n][pl] is not None]
-    limits = {}
-    if ps:
+
+    def p_range(names):
+        ps = [100.0 * cli.pressure_factor * (presses[m][pl] - p_min[m])[per[m]["keep"]]
+              for m in names for pl in planes if presses[m][pl] is not None]
+        if not ps:
+            return None
         lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
-        limits = {pl: {"p": (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))}
-                  for pl in planes}
+        return (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))
+
+    p_lims = {n: p_range(group[n]) for n in which}
     if cli.p_lim:
-        p_lim = tuple(float(v) for v in cli.p_lim.split(","))
-        limits = {pl: {**limits.get(pl, {}), "p": p_lim} for pl in planes}
+        p_lims = {n: tuple(float(v) for v in cli.p_lim.split(",")) for n in which}
+    limits = {}
     # Pages stand alone: each section gets the box that fits it (equal aspect).
     # A MOVIE holds every axis fixed across its frames instead -- the section
     # window and the profile abscissa from the union over every field AND plane
@@ -286,11 +311,11 @@ def main():
                 profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
                 denom_max=cli.denom_max, min_sep=cli.min_sep,
                 rationals=cli.rationals.split(",") if cli.rationals else None,
-                limits=SectionLimits(iota=(lo, hi), **limits.get(pl, {})),
+                limits=SectionLimits(iota=iota_lims[n], p=p_lims[n], **limits.get(pl, {})),
                 iota_scatter=per[n]["iota_scatter"],
                 profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
             infix = "" if len(all_fields) == 1 else f"_{n}"
-            stem = os.path.join(out, f"frame_zeta{pl:g}_{frame:04d}" if movie      # along time
+            stem = os.path.join(out, f"frame_zeta{pl:g}_{frame + cli.frame_offset:04d}" if movie      # along time
                                 else f"fly{infix}_{k:04d}" if cli.fly              # along zeta
                                 else f"poincare{infix}_zeta{pl:g}")
             if cli.paper:
