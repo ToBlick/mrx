@@ -276,6 +276,8 @@ def parse_args(argv=None):
     ap.add_argument("--newton-inner-tol", default="0",
                     help="the inner solve's own stopping tolerance (preconditioner norm), or 'sqrt' for the Nocedal-Wright "
                          "forcing sequence min(1/2, sqrt(rho_k)); 0 runs the whole --newton-maxiter budget")
+    ap.add_argument("--newton-warm-start", default="true", choices=("true", "false"),
+                    help="start the inner solve from the previous step's potential, or from zero (diagnostic)")
     ap.add_argument("--newton-solver", default="minres", choices=("minres", "cg"),
                     help="the inner solver: MINRES or CG with the Steihaug negative-curvature exit")
     ap.add_argument("--newton-parallel-penalty", default="0",
@@ -394,7 +396,7 @@ def main(cli):
         newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
         newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
         newton_parallel_penalty=cli.newton_parallel_penalty, newton_inner_tol=cli.newton_inner_tol,
-        newton_solver=cli.newton_solver,
+        newton_solver=cli.newton_solver, newton_warm_start=cli.newton_warm_start == "true",
         newton_atom_field=cli.harmonic_field, newton_atom_floor=cli.harmonic_floor,
         newton_smoothing=cli.newton_smoothing)
     if cli.restart:

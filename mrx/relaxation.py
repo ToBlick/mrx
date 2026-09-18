@@ -553,6 +553,9 @@ class TimeStepper(eqx.Module):
             equilibrium, tight near it; one extra force-scale solve per step).
         newton_solver: ``"minres"`` or ``"cg"`` (Steihaug-Toint), see
             :func:`mrx.hessian.newton_direction`.
+        newton_warm_start: start the inner solve from the previous step's
+            potential (the default) or from zero (a diagnostic: the warm
+            start's residual is near noise once the direction has settled).
         newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
             ``H + alpha M_par`` in the Newton solve
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
@@ -627,6 +630,7 @@ class TimeStepper(eqx.Module):
     newton_parallel_penalty: Union[float, str] = 0.0
     newton_inner_tol: Union[float, str] = 0.0
     newton_solver: str = "minres"
+    newton_warm_start: bool = True
     newton_force_scale: Callable = None
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
@@ -785,7 +789,8 @@ class TimeStepper(eqx.Module):
             else:
                 inner_tol = self.newton_inner_tol
             u_newton, a, newton_it = newton_direction(
-                seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter, precond,
+                seq, B, J, MF, state.a if self.newton_warm_start else jnp.zeros_like(state.a),
+                self.newton_tol, self.newton_maxiter, precond,
                 self.newton_parallel_penalty, inner_tol, self.newton_solver)
             if self.newton_smoothing:
                 # the descent's filter on the Newton potential, as on the
