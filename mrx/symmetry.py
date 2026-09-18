@@ -202,3 +202,60 @@ def symmetrize_like(y, x, plan_out, plan_in):
     call: what a half-period mass or projection apply does to its output
     ``y`` given its input ``x``."""
     return symmetrize(y, plan_out, parity_of(x, plan_in))
+
+
+def _extraction_gram_core(seq, k, dirichlet):
+    """``(core, inverse)``: the rows of the extracted k-form space where
+    ``E E^T`` is not the identity (the polar rows, where the extraction fuses
+    raw DoFs) and the dense inverse of ``E E^T`` on them; ``E E^T`` is the
+    identity plus those blocks, which do not couple to the rest. Host-side,
+    cached on the sequence."""
+    from scipy import sparse  # noqa: PLC0415
+
+    cache = seq.__dict__.setdefault("_gram_core", {})
+    key = (int(k), bool(dirichlet))
+    if key in cache:
+        return cache[key]
+    e = seq.E(k, dirichlet)
+    n_free, n_raw = (int(v) for v in e.forward_shape)
+    E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64),
+                           (np.asarray(e.rows), np.asarray(e.cols))), shape=(n_free, n_raw))
+    gram = (E @ E.T).tocsr()
+    counts = np.bincount(np.asarray(e.rows), minlength=n_free)
+    core = np.flatnonzero(counts > 1)
+    inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray()) if core.size else np.zeros((0, 0))
+    cache[key] = (core, inverse)
+    return cache[key]
+
+
+def free_projector(seq, k, dirichlet):
+    """``(y, x) -> Pi y`` on the EXTRACTED k-form space of a half-period
+    sequence, ``Pi`` the projector onto the parity of ``x``: jitted and
+    device-only, for the preconditioners. ``R_free y = (E E^T)^-1 E R E^T y``
+    with the small dense inverse of :func:`_extraction_gram_core`; the
+    extraction is used in float64 so a float64 probe of the atoms stays
+    exact, the result is in ``y``'s dtype. ``None`` on a full-period
+    sequence.
+
+    The metric-lumping atoms are only approximately reflection-equivariant
+    (the polar rows), and a preconditioned CG whose preconditioner leaks
+    the other parity feeds the half-period applies vectors they are not
+    exact on: ``Pi P Pi`` is what they apply, SPD on the pure subspace."""
+    if not seq.half_period:
+        return None
+    e = seq.E(k, dirichlet)
+    e64 = jax.tree_util.tree_map(
+        lambda a: a.astype(jnp.float64) if jnp.issubdtype(a.dtype, jnp.floating) else a, e)
+    plan = seq.reflection_plan[k]
+    core, inverse = _extraction_gram_core(seq, k, dirichlet)
+    core_j, inv_j = jnp.asarray(core), jnp.asarray(inverse, dtype=jnp.float64)
+
+    @jax.jit
+    def project(y, x):
+        y64 = jnp.asarray(y, jnp.float64)
+        s = parity_of(e64.T @ jnp.asarray(x, jnp.float64), plan)
+        c = e64 @ reflect(e64.T @ y64, plan)
+        if core.size:
+            c = c.at[core_j].set(inv_j @ c[core_j])
+        return (0.5 * (y64 + s * c)).astype(jnp.asarray(y).dtype)
+    return project

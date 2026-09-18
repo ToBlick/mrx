@@ -1115,10 +1115,15 @@ class MetricLumpingLaplacian:
             identity_perm=identity,
         )
 
+    #: on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the
+    #: input (:func:`mrx.symmetry.free_projector`); set by the builder
+    parity_projector = None
+
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
-        return jitted(leaves, jnp.asarray(x))
+        y = jitted(leaves, jnp.asarray(x))
+        return y if self.parity_projector is None else self.parity_projector(y, x)
 
     def _pack_blocks(self, alpha_of):
         """The component blocks as :class:`_LumpBlock` leaves with ``alpha =
@@ -1307,10 +1312,15 @@ class MetricLumpingMass:
             identity_perm=identity,
         )
 
+    #: on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the
+    #: input (:func:`mrx.symmetry.free_projector`); set by the builder
+    parity_projector = None
+
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
         leaves, jitted = self._flat
-        return jitted(leaves, jnp.asarray(x))
+        y = jitted(leaves, jnp.asarray(x))
+        return y if self.parity_projector is None else self.parity_projector(y, x)
 
     def apply_in(self, dtype):
         """``apply`` with the payload in ``dtype``: the atom as part of an
@@ -1327,5 +1337,10 @@ class MetricLumpingMass:
             leaves, jitted = self._flat
             leaves = tuple(leaf.astype(dtype) if jnp.issubdtype(leaf.dtype, jnp.floating) else leaf
                            for leaf in leaves)
-            self._apply_in[dtype] = apply = lambda x: jitted(leaves, jnp.asarray(x, dtype))
+            project = self.parity_projector
+
+            def apply(x):
+                y = jitted(leaves, jnp.asarray(x, dtype))
+                return y if project is None else project(y, x)
+            self._apply_in[dtype] = apply
             return apply

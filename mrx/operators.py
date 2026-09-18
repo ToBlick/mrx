@@ -8,7 +8,7 @@ import jax.numpy as jnp
 
 from mrx.extraction_operators import MatrixFreeExtraction
 from mrx.mass import sumfact_apply
-from mrx.symmetry import symmetrize_like
+from mrx.symmetry import free_projector, symmetrize_like
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
@@ -941,8 +941,12 @@ def assemble_mass_metric_lumping_preconditioner(
             raise ValueError(
                 "metric_lumping mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
-            atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(
-                seq, operators, int(k), bool(dirichlet), **kwargs)
+            atom = MetricLumpingMass(seq, operators, int(k), bool(dirichlet), **kwargs)
+            # Half-period sequence: the atom returns the parity of its input
+            # (mrx.symmetry.free_projector); before any apply is memoised.
+            atom.parity_projector = free_projector(seq, int(k), bool(dirichlet))
+            atom._apply_in = {}
+            atoms[(int(k), bool(dirichlet))] = atom
     return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
@@ -979,8 +983,9 @@ def assemble_metric_lumping_laplacian_preconditioner(
     atoms = dict(operators.laplacian_lumping or {})
     for k in ks:
         for dbc in dirichlets:
-            atoms[(int(k), bool(dbc))] = MetricLumpingLaplacian(
-                seq, operators, int(k), bool(dbc), **kwargs)
+            atom = MetricLumpingLaplacian(seq, operators, int(k), bool(dbc), **kwargs)
+            atom.parity_projector = free_projector(seq, int(k), bool(dbc))
+            atoms[(int(k), bool(dbc))] = atom
     return eqx.tree_at(lambda ops: ops.laplacian_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
