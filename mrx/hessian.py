@@ -393,13 +393,16 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner
     """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): MINRES on the float64 residual
     in passes of ``maxiter`` iterations from the warm start ``x0``, until ``norm(b - A x) <=
     tol norm(b)`` (the forcing term, in the residual's norm and precision) or ``passes`` are
-    spent, with the nonpositive-curvature exit: a pass that meets an NPC direction returns
-    it ALONE as the answer (the preconditioned residual of that pass's frozen iterate, a
-    descent direction of the model; the warm start and the earlier corrections are
-    dropped, since a sum with them has no such guarantee). Each pass solves for the
-    correction from zero on the residual at unit norm, as :func:`mrx.solvers.refine` does.
-    Returns ``(x, info, npc)`` with ``info`` the inner iterations of all passes, negative
-    when the residual test was met."""
+    spent, with the nonpositive-curvature exit. Each pass solves for the correction from
+    zero on the residual at unit norm, as :func:`mrx.solvers.refine` does; Liu & Roosta's
+    descent guarantee for an NPC direction holds against the right-hand side that solve
+    started from, which is the pass's residual, not ``b`` (measured: with the warm start,
+    the NPC direction of the correction solve failed the energy's sign test on every W7-X
+    step). So a pass that meets NPC discards its answer and solves ``A x = b`` from zero
+    with the exit once more: what that returns -- the NPC direction, or the iterate when
+    the curvature was an artefact of the warm start's residual -- is descent-guaranteed
+    for ``b`` and is the answer, alone. Returns ``(x, info, npc)`` with ``info`` the inner
+    iterations of all passes, negative when the residual test was met."""
     b = b.astype(RESIDUAL_DTYPE)
     x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
     bnorm = norm(b)
@@ -416,9 +419,16 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, inner
         d, info, npc = minres(A, (r / rnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
                               maxiter=maxiter, npc_exit=True)
         d = d.astype(RESIDUAL_DTYPE) * rnorm_safe
-        x_new = jnp.where(npc, d, x + d)
+
+        def from_zero(_):
+            d0, info0, _ = minres(A, (b / bnorm_safe).astype(inner_dtype), M=P, tol=inner_tol,
+                                  maxiter=maxiter, npc_exit=True)
+            return d0.astype(RESIDUAL_DTYPE) * bnorm_safe, jnp.abs(info0)
+
+        x_npc, its_npc = jax.lax.cond(npc, from_zero, lambda _: (x + d, jnp.int32(0)), None)
+        x_new = jnp.where(npc, x_npc, x + d)
         r_new = b - A_res(x_new)
-        return x_new, r_new, k + 1, its + jnp.abs(info), npc
+        return x_new, r_new, k + 1, its + jnp.abs(info) + its_npc, npc
 
     r0 = b - A_res(x)
     x, r, k, its, npc = jax.lax.while_loop(cond, body, (x, r0, 0, jnp.int32(0), False))
