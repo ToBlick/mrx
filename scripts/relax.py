@@ -118,6 +118,11 @@ Flags, defaults in brackets:
       --newton-dt-cap C [1]        cap the line-search step along a Newton
                                    direction (1 = the Newton step, inf
                                    leaves the line search alone)
+      --newton-parallel-penalty A [0]
+                                   alpha of the parallel-flow penalty
+                                   H + alpha M_par (Levenberg-Marquardt on
+                                   the field-aligned component only, the
+                                   Hessian's null space; mrx.hessian)
     Budgets and output:
       --steps N [100 Newton, 3000 L-BFGS]
                                    maximum number of steps
@@ -243,6 +248,8 @@ def parse_args(argv=None):
                     help="preconditioner of the Newton solve")
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
+    ap.add_argument("--newton-parallel-penalty", type=float, default=0.0,
+                    help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 L-BFGS]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
@@ -351,7 +358,8 @@ def main(cli):
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
         newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
-        newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap)
+        newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
+        newton_parallel_penalty=cli.newton_parallel_penalty)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)

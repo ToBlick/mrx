@@ -118,7 +118,7 @@ def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
     return apply
 
 
-def second_variation(seq, B, J, tol=None):
+def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
     """``u -> H u``: the Hessian of the energy along the flow of ``u``, as a dual 2-form.
 
     ``B`` the 2-form, ``J`` its weak curl (a Dirichlet 1-form, the ``J`` of
@@ -128,12 +128,31 @@ def second_variation(seq, B, J, tol=None):
     curl^T load(J x u)``; then
 
         H u = load(B x dJ) + [load(Q x J) + load(B x W)] / 2.
+
+    ``parallel_penalty = alpha`` adds ``alpha M_par u`` with ``<v, M_par u> =
+    int (v . B)(u . B) / |B|^2 J``: the Hessian is exactly null on the
+    field-aligned flows ``u = f B`` (``curl(f B x B) = 0``; divergence-free
+    wherever ``B . grad f = 0``, so on every flux surface and with a resonant
+    ``f`` on every rational surface), and on the mesh that null space is a
+    continuum of eigenvalues 1e-4..1e-1 (li383 (16,32,32), measured
+    2026-09-17, docs/research/hessian_spectrum_2026-09-17.md) that Newton
+    divides the force's round-off components by. The penalty is
+    Levenberg-Marquardt damping on the parallel component alone: it lifts
+    those modes to ``alpha`` (in the units of ``H`` against ``M_2``), leaves
+    the energy descent unchanged (``<F, f B> = 0``) and the perpendicular
+    step untouched. One quadrature load per apply.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
+    if parallel_penalty:
+        Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
 
     def m1_inv(rhs):
         return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True, tol=tol)
+
+    def parallel(u_jk):
+        s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
+        return parallel_penalty * seq._vector_load_values(B_jk * s[:, None], 2, 2, True)
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)
@@ -147,9 +166,10 @@ def second_variation(seq, B, J, tol=None):
         W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
                                               transpose=True))
         W_jk = seq.evaluate_at_quadrature(W, 1, True)
-        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
-                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
-                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
+        Hu = (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
+              + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
+                       + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
+        return Hu + parallel(u_jk) if parallel_penalty else Hu
 
     return apply
 
@@ -169,7 +189,8 @@ def _preconditioner(seq, name):
     raise ValueError(f"newton_precond {name!r} is not one of {PRECONDITIONERS}")
 
 
-def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian"):
+def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",
+                     parallel_penalty=0.0):
     """The Newton direction ``u = curl a`` at the field ``B``.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -179,7 +200,8 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     MINRES solve), ``tol`` the relative residual of the solve in the
     preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
     of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
-    callable); the Hessian's mass solves run at the sequence's tolerance.
+    callable), ``parallel_penalty`` the ``alpha`` of :func:`second_variation`;
+    the Hessian's mass solves run at the sequence's tolerance.
 
     A truncated solve by design: MINRES runs the ``maxiter`` budget with no
     criterion of its own (its residual is in the preconditioner's norm, not
@@ -200,7 +222,8 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     on = seq if seq.residual is None else seq.residual
 
     def chain(s):
-        Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype))
+        Hs = second_variation(s, B.astype(s.dtype), J.astype(s.dtype),
+                              parallel_penalty=parallel_penalty)
 
         def curl(a):
             return s.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True)

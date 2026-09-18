@@ -602,6 +602,12 @@ class TimeStepper(eqx.Module):
             (measured: dt* 1.95-2.0 on li383 from step 5000). 1 (the
             default) takes the Newton step; ``inf`` leaves the line search
             alone.
+        newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
+            ``H + alpha M_par`` in the Newton solve
+            (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
+            damping on the field-aligned component alone, the Hessian's null
+            space. 0 (the default) solves with the bare Hessian, where the
+            truncated MINRES and the atom's floor stand in for it.
         step_regularisation: ``eps`` of the regularised energy ``E + eps
             ||J||_M^2 / 2`` the LINE SEARCH minimises along the step (0 is
             off): the direction and the force stay the physical ones, and
@@ -651,6 +657,7 @@ class TimeStepper(eqx.Module):
     newton_maxiter: int = 100
     newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
+    newton_parallel_penalty: float = 0.0
     newton_precond_apply: Callable = None
     helicity_correction: bool = False
     step_regularisation: float = 0.0
@@ -926,7 +933,7 @@ class TimeStepper(eqx.Module):
         if self.newton:
             u_newton, a, newton_it = newton_direction(
                 seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter,
-                self.newton_precond_apply or self.newton_precond)
+                self.newton_precond_apply or self.newton_precond, self.newton_parallel_penalty)
             # The line search's sign: a Newton direction that does not
             # descend (H indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.
