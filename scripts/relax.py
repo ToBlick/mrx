@@ -115,6 +115,16 @@ Flags, defaults in brackets:
                                    the harmonic atom (the Laplacian atom with
                                    the parallel symbol of the harmonic field
                                    in its denominator, mrx.hessian)
+      --harmonic-field {h,B} [h]   the field the harmonic atom lumps: the
+                                   harmonic form once, or the current B
+                                   every step
+      --harmonic-floor X [3]       the atom's floor on the resonant modes:
+                                   a number (times (2 pi)^2 |h|^2) or
+                                   "strain" for the lumped strain of the
+                                   field, computed instead of tuned
+      --newton-smoothing {false,true} [false]
+                                   filter the Newton potential with the
+                                   velocity smoother before the curl
       --newton-dt-cap C [1]        cap the line-search step along a Newton
                                    direction (1 = the Newton step, inf
                                    leaves the line search alone)
@@ -193,6 +203,8 @@ import json
 import os
 import time
 
+import numpy as np
+
 
 #: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE)
 PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32"),
@@ -246,6 +258,12 @@ def parse_args(argv=None):
                     help="iteration budget of the Newton MINRES solve per step")
     ap.add_argument("--newton-precond", default="harmonic", choices=("harmonic", "laplacian", "laplacian2", "mass"),
                     help="preconditioner of the Newton solve")
+    ap.add_argument("--harmonic-field", default="h", choices=("h", "B"),
+                    help="the field the harmonic atom lumps: the harmonic form once, or the current B every step")
+    ap.add_argument("--harmonic-floor", default="3",
+                    help="the atom's floor: a number (times (2 pi)^2 |h|^2) or 'strain' (the lumped strain of the field)")
+    ap.add_argument("--newton-smoothing", default="false", choices=("false", "true"),
+                    help="filter the Newton potential with the velocity smoother before the curl")
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--newton-parallel-penalty", type=float, default=0.0,
@@ -276,6 +294,8 @@ def parse_args(argv=None):
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.helicity_correction = cli.helicity_correction == "true"
     cli.newton = cli.method == "newton"
+    cli.newton_smoothing = cli.newton_smoothing == "true"
+    cli.harmonic_floor = None if cli.harmonic_floor == "strain" else float(cli.harmonic_floor)
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
     if cli.chunk is None:
@@ -359,7 +379,9 @@ def main(cli):
         potential_velocity=cli.potential_velocity,
         newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
         newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap,
-        newton_parallel_penalty=cli.newton_parallel_penalty)
+        newton_parallel_penalty=cli.newton_parallel_penalty,
+        newton_atom_field=cli.harmonic_field, newton_atom_floor=cli.harmonic_floor,
+        newton_smoothing=cli.newton_smoothing)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -367,6 +389,18 @@ def main(cli):
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     params["start_step"] = it0
+    if cli.newton and cli.newton_precond == "harmonic":
+        # the atom's profiles on the field it lumps, against the kappa = 3 floor
+        from mrx.hessian import harmonic_atom_profiles
+        for name, f in (("h", seq.nullspace(2, True)[0]), ("B", state.B_n)):
+            pt, pz, st = (np.asarray(v) for v in harmonic_atom_profiles(seq, f))
+            r_q = np.asarray(seq.quad.x_x)
+            kap = 3.0 * (2 * np.pi) ** 2 * (pt ** 2 + pz ** 2)
+            picks = np.linspace(0, r_q.size - 1, 8).astype(int)
+            print(f"[atom] profiles of {name}: r, h^theta, h^zeta, kappa=3 floor, strain floor (rho, theta, zeta)")
+            for i in picks:
+                print(f"       {r_q[i]:.3f}  {pt[i]:+.3e} {pz[i]:+.3e}   {kap[i]:.3e}   "
+                      f"{st[i, 0]:.3e} {st[i, 1]:.3e} {st[i, 2]:.3e}", flush=True)
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
     print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "

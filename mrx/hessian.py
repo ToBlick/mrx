@@ -47,12 +47,49 @@ PRECONDITIONERS = ("laplacian", "laplacian2", "mass", "harmonic")
 #: The floor of the harmonic atom's parallel symbol, in units of
 #: ``(2 pi)^2 (h_theta^2 + h_zeta^2)``: stands in for the ``u . grad h`` term
 #: the symbol drops, which is what the flat (resonant) modes are left with.
+#: ``None`` computes the floor from the strain of the field instead
+#: (:func:`harmonic_atom_profiles`).
 HARMONIC_FLOOR = 3.0
 
 
-def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
+def _ddx(f, x, axis, periodic):
+    """Central difference of ``f`` along ``axis`` on the non-uniform grid ``x``
+    (the quadrature points of that axis); a periodic axis wraps on ``[0, 1)``,
+    a bounded one is one-sided at its ends."""
+    f = jnp.moveaxis(f, axis, 0)
+    if periodic:
+        df = jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)
+        dx = (jnp.roll(x, -1) - jnp.roll(x, 1)) % 1.0
+    else:
+        df = jnp.concatenate([f[1:2] - f[0:1], f[2:] - f[:-2], f[-1:] - f[-2:-1]])
+        dx = jnp.concatenate([x[1:2] - x[0:1], x[2:] - x[:-2], x[-1:] - x[-2:-1]])
+    return jnp.moveaxis(df / dx.reshape((-1,) + (1,) * (f.ndim - 1)), 0, axis)
+
+
+def harmonic_atom_profiles(seq, field):
+    """The radial profiles the harmonic atom lumps a 2-form ``field`` to:
+    ``(prof_t, prof_z, strain)`` on the radial quadrature points, ``prof_t``
+    and ``prof_z`` the angle-averaged logical contravariant ``theta`` and
+    ``zeta`` components (reference components over the Jacobian) and
+    ``strain`` of shape ``(nq_r, 3)`` the angle average of ``sum_i (d_c
+    field^i)^2`` per logical direction ``c``: the diagonal of ``S^T S`` for
+    the strain ``S^i_c = d_c field^i`` (central differences on the
+    quadrature grid), the size of the dropped ``u . grad field`` on a
+    velocity along ``c``. Traceable in ``field``.
+    """
+    shape = tuple(int(v) for v in seq.quad.shape)
+    f_jk = (seq.evaluate_at_quadrature(field, 2, True) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+    prof_t = f_jk[..., 1].mean(axis=(1, 2))
+    prof_z = f_jk[..., 2].mean(axis=(1, 2))
+    grads = [_ddx(f_jk, x, ax, ax > 0) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
+    strain = jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
+    return prof_t, prof_z, strain
+
+
+def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     """``x -> W P_L W^T x``: the harmonic atom, an approximate inverse of the Newton
-    operator ``curl^T H curl`` built from the harmonic 2-form ``h`` of the sequence.
+    operator ``curl^T H curl`` built from the 2-form ``field`` (the harmonic
+    form ``h`` of the sequence, or the current ``B``).
 
     The Hessian is, to a percent, the Gauss-Newton form ``||curl(u x B)||^2``,
     and ``B`` is mostly harmonic (96% on li383), so ``||curl(u x c h)||^2``
@@ -65,12 +102,21 @@ def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
         lambda(r, m, n) = (2 pi)^2 (h_theta(r) m + h_zeta(r) n)^2 + floor(r),
 
     ``h_theta, h_zeta`` the angle-averaged logical contravariant components
-    of ``h`` (the reference components over the Jacobian), ``(m, n)`` the
-    Fourier frequencies of the DoF grid in the two angles, and ``floor(r) =
-    floor * (2 pi)^2 (h_theta^2 + h_zeta^2)`` for the dropped ``u . grad h``
-    (:data:`HARMONIC_FLOOR`). ``h`` carries the rotational transform of the
-    vacuum field inside the boundary, so the symbol vanishes on the resonant
-    modes ``h_theta m + h_zeta n = 0`` and the floor is what they see.
+    of the field (:func:`harmonic_atom_profiles`), ``(m, n)`` the Fourier
+    frequencies of the DoF grid in the two angles, and ``floor(r)`` for the
+    dropped ``u . grad h``: ``floor * (2 pi)^2 (h_theta^2 + h_zeta^2)`` for a
+    number ``floor`` (:data:`HARMONIC_FLOOR`), or with ``floor=None`` the
+    lumped strain itself, per component the angle average of ``|d_c h|^2``
+    (the lumped parallel derivative ``i k I`` is anti-Hermitian and the
+    strain of a curl-free field symmetric, so the normal form of ``i k I - S``
+    is ``k^2 I + S^T S`` with no cross term: the floor is computed, not
+    tuned). The field carries the rotational transform, so the symbol
+    vanishes on the resonant modes ``h_theta m + h_zeta n = 0`` and the floor
+    is what they see. ``shift`` is added to the whole symbol: the
+    ``parallel_penalty`` of :func:`second_variation`, so that the atom and
+    the operator agree on what a parallel mode sees (``lambda + alpha``).
+    Traceable in ``field``: built from the current ``B`` inside the step at
+    the cost of one quadrature evaluation.
 
     Inverted as a sandwich of the Laplacian atom ``P_L`` (which approximates
     the inverse of the curl-curl the potential form is quadratic in) with the
@@ -83,22 +129,21 @@ def harmonic_preconditioner(seq, floor=HARMONIC_FLOOR):
     Symmetric positive definite for any ``C``, which is all MINRES needs;
     the quality is the measurement. Two FFTs per component per apply.
     """
-    h = seq.nullspace(2, True)[0]
-    h_jk = np.asarray(seq.evaluate_at_quadrature(h, 2, True)) / np.asarray(seq.jacobian_j)[:, None]
-    shape = tuple(int(v) for v in seq.quad.shape)
-    prof_t = h_jk[:, 1].reshape(shape).mean(axis=(1, 2))
-    prof_z = h_jk[:, 2].reshape(shape).mean(axis=(1, 2))
-    r_q = np.asarray(seq.quad.x_x)
+    prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
+    r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
     scale = []
-    for s1, s2, s3 in shapes:
-        r = (np.arange(s1) + 0.5) / s1
-        a, b = np.interp(r, r_q, prof_t), np.interp(r, r_q, prof_z)
+    for c, (s1, s2, s3) in enumerate(shapes):
+        r = (jnp.arange(s1) + 0.5) / s1
+        a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
         m = np.fft.fftfreq(s2, d=1.0 / s2)
         nn = np.fft.fftfreq(s3, d=1.0 / s3)
         lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
-        flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
-        scale.append(jnp.asarray(1.0 / np.sqrt(lam + flo), dtype=seq.dtype))
+        if floor is None:
+            flo = jnp.interp(r, r_q, strain[:, c])[:, None, None]
+        else:
+            flo = floor * (2 * np.pi) ** 2 * (a ** 2 + b ** 2)[:, None, None]
+        scale.append((1.0 / jnp.sqrt(lam + flo + shift)).astype(seq.dtype))
     E = seq.E(1, True)
 
     def C(x):
@@ -178,7 +223,7 @@ def _preconditioner(seq, name):
     if callable(name):
         return name
     if name == "harmonic":
-        return harmonic_preconditioner(seq)
+        return harmonic_preconditioner(seq, seq.nullspace(2, True)[0])
     if name == "laplacian":
         return lambda x: seq.apply_laplacian_preconditioner(x, 1, dirichlet=True)
     if name == "laplacian2":
