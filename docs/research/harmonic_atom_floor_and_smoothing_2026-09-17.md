@@ -74,4 +74,53 @@ smoothing run with the regularised search OFF, the arm that was never run.
 | h_k3_c0_smooth | h | 3 | 0 | on |
 | B_strain_c0_smooth | B | strain | 0 | on |
 
-Results: section 4 (pending).
+## 4. Round one: without a penalty in the operator
+
+`F2` the squared normalised residual per step, `last20` the mean of steps 81-100, `E_rem` the
+energy removed, `dt` the mean accepted step, `fb` fallbacks to the smoothed force, MINRES 100
+iterations on every step unless noted.
+
+| arm | min F2 (step) | F2 at 30 / 60 / 90 | last20 | E_rem | dH/H | dt | fb |
+|---|---|---|---|---|---|---|---|
+| h, kappa 3, C 0 (baseline) | 4.9e-9 (33) | 5.7e-9 / 8.6e-9 / 7.6e-9 | 7.9e-9 | 2.20e-6 | +7e-7 | 0.90 | 0 |
+| h, kappa 3, C 0.1 (baseline) | 3.9e-9 (65) | 5.8e-9 / 3.9e-9 / 4.5e-9 | 4.5e-9 | 1.97e-6 | -1.1e-5 | 0.25 | 0 |
+| h, strain, C 0 | 2.1e-8 (15) | 2.8e-8 / 2.5e-8 / 5.7e-8 | 5.6e-8 | 3.02e-6 | +6.9e-5 | 0.95 | 0 |
+| B, strain, C 0 | 4.8e-8 (19) | 1.1e-7 / 6.9e-8 / 6.7e-8 | 6.9e-8 | 2.77e-6 | +3.6e-5 | 0.95 | 0 |
+| h, strain, C 0.1 | 6.8e-9 (54) | 1.1e-8 / 6.8e-9 / 7.8e-9 | 7.8e-9 | 1.98e-6 | -9.3e-6 | 0.11 | 6 |
+| B, strain, C 0.1 | 8.5e-9 (54) | 2.1e-8 / 8.8e-9 / 9.3e-9 | 9.3e-9 | 1.99e-6 | -6.8e-6 | 0.14 | 7 |
+| B, kappa 3, C 0.1 | 3.8e-9 (70) | 6.2e-9 / 3.8e-9 / 4.2e-9 | 4.3e-9 | 1.98e-6 | -1.1e-5 | 0.26 | 0 |
+| h, kappa 3, C 0, smoothed | 5.6e-6 (3) | 3.8e-5 / 1.7e-5 / 8.0e-6 | 8.0e-6 | 1.84e-6 | -9.0e-6 | 0.26 | 6 (MINRES 27) |
+| B, strain, C 0, smoothed | 2.5e-6 (99) | 1.4e-5 / 6.6e-6 / 2.8e-6 | 3.0e-6 | 1.84e-6 | -5.9e-6 | 0.11 | 46 (MINRES 57) |
+
+- **The physical strain floor without a penalty goes past the resolved floor.** Minimum at
+  step 15-19, then the residual climbs to 6e-8 while the energy removed grows 25-40% above
+  the baselines and the helicity drifts 50-100x more: the signature of the 2026-09-11 kappa
+  = 1 and 300-iteration arms, stronger. The peer session's spectrum note of the same day
+  (`hessian_spectrum_2026-09-17.md`) explains it: the Hessian's soft end is a field-aligned
+  near-null continuum (`u ~ f B`, eigenvalues 1e-4..1e-1) that the atom mis-models by 1e3,
+  and the force's round-off components along it, divided by those eigenvalues, are
+  parallel-flow directions 10-100x the physical step. **kappa = 3 was Levenberg-Marquardt
+  damping of that continuum inside the preconditioner**, by accident of the iteration count.
+  The physical strain (25-1000x smaller) removes the damping and Newton descends the
+  grid-scale energy.
+- The regularised search (C = 0.1) contains it only by cutting the step to a tenth, with
+  fallbacks; the floor it holds (7.8e-9) is the Laplacian atom's, not kappa 3's (4.5e-9).
+- **Profiles from B**: 5% below the h atom at the same settings. Neutral on li383, where
+  B is 96% harmonic; the mechanism (the field's own transform places the resonances) costs
+  nothing and stays available.
+- **Smoothing the Newton potential is a negative a second time**, now with the regularised
+  search off: the residual sits at 1e-5..1e-6, MINRES converges early (27-57 iterations) on
+  a direction that is then often not a descent direction (46 fallbacks of 100 on the B arm).
+  The rough content of the Newton direction is not separable from its descent: the
+  direction resolves the force's rough part, and filtering it leaves the smooth part
+  pointing wrong. Together with section 8 of the 2026-09-11 note (the 2-form smoother with
+  the search on): closed.
+
+## 5. Round two: the strain floor with the parallel penalty in the operator
+
+The peer session's remedy (64ffbd9, `--newton-parallel-penalty ALPHA`): `H + alpha M_par`,
+`<v, M_par u> = int (v.B)(u.B)/|B|^2 J`, in the units of `H` against `M_2`, lifts the
+continuum to `alpha` and leaves the energy descent unchanged (`<F, fB> = 0`). The atom's
+consistent floor is `strain + alpha` (`harmonic_preconditioner(..., shift=alpha)`, b8b218e).
+Arms (jobs 18648567-71): B strain alpha {0.3, 1, 3} C 0; h strain alpha 1 C 0; B strain
+alpha 1 C 0.1. Results: section 6 (pending).
