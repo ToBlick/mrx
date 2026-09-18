@@ -131,8 +131,8 @@ Flags, defaults in brackets:
                                    the field-aligned component only, the
                                    Hessian's null space; mrx.hessian), in
                                    the units of the atom's floor kappa, or
-                                   "strain": the strain along the field,
-                                   computed like the strain floor
+                                   "strain" or "c*strain": c times the strain
+                                   along the field, computed like the strain floor
     Budgets and output:
       --steps N [100 Newton, 3000 gradient]
                                    maximum number of steps
@@ -265,7 +265,7 @@ def parse_args(argv=None):
     ap.add_argument("--newton-dt-cap", type=float, default=1.0,
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--newton-parallel-penalty", default="0",
-                    help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve, or 'strain'")
+                    help="alpha of the parallel-flow penalty H + alpha M_par in the Newton solve, or 'strain' / 'c*strain'")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
@@ -294,8 +294,8 @@ def parse_args(argv=None):
     cli.newton = cli.method == "newton"
     cli.newton_smoothing = cli.newton_smoothing == "true"
     cli.harmonic_floor = None if cli.harmonic_floor == "strain" else float(cli.harmonic_floor)
-    cli.newton_parallel_penalty = (None if cli.newton_parallel_penalty == "strain"
-                                   else float(cli.newton_parallel_penalty))
+    if "strain" not in cli.newton_parallel_penalty:
+        cli.newton_parallel_penalty = float(cli.newton_parallel_penalty)
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
     if cli.chunk is None:

@@ -1,7 +1,7 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
 from enum import Enum
-from typing import Callable, NamedTuple, Optional
+from typing import Callable, NamedTuple, Optional, Union
 
 import time
 
@@ -548,7 +548,8 @@ class TimeStepper(eqx.Module):
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
             damping on the field-aligned component alone, the Hessian's null
             space, in the units of the atom's floor ``kappa`` (li383 optimum
-            0.075, 2026-09-17), or ``None`` for the strain along the field
+            0.075, 2026-09-17), or ``"strain"`` / ``"c*strain"`` for ``c`` times
+            the strain along the field
             (:func:`mrx.hessian.parallel_penalty_profile`). 0 (the default)
             solves with the bare Hessian, where the truncated MINRES and the
             atom's floor stand in for it. The
@@ -613,7 +614,7 @@ class TimeStepper(eqx.Module):
     newton_maxiter: int = 100
     newton_precond: str = "harmonic"
     newton_dt_cap: float = 1.0
-    newton_parallel_penalty: Optional[float] = 0.0
+    newton_parallel_penalty: Union[float, str] = 0.0
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
     newton_atom_floor: Optional[float] = HARMONIC_FLOOR

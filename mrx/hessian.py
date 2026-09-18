@@ -90,16 +90,21 @@ def parallel_penalty_profile(seq, field, alpha):
     """The radial weight of the parallel-flow penalty (:func:`second_variation`)
     on the radial quadrature points: ``alpha (2 pi)^2 (h_theta^2 + h_zeta^2)``
     for a number ``alpha`` (the atom floor's units, ``alpha = kappa`` the floor
-    moved into the operator), or with ``alpha = None`` the strain seen along
-    the field, ``(h_theta^2 s_theta + h_zeta^2 s_zeta) / (h_theta^2 +
-    h_zeta^2)`` with ``s`` the lumped strain of :func:`harmonic_atom_profiles`:
-    the size of the ``u . grad h`` coupling a parallel mode really has, so
-    that the operator lifts the null space to exactly what the strain-floored
-    atom models for it, computed, not tuned."""
+    moved into the operator), or for the string ``"strain"`` / ``"c*strain"``
+    ``c`` times the strain seen along the field, ``(h_theta^2 s_theta +
+    h_zeta^2 s_zeta) / (h_theta^2 + h_zeta^2)`` with ``s`` the lumped strain of
+    :func:`harmonic_atom_profiles`: the size of the ``u . grad h`` coupling a
+    parallel mode really has, so that the operator lifts the null space to
+    ``c`` times what the strain-floored atom models for it. The strain grows
+    ~50x from the axis to the edge and its ratio to the floor scale differs
+    between devices, while a number ``alpha`` is flat in ``r``; ``c`` measures
+    how much the lumped strain undercounts the coupling (a property of the
+    lumping, ~2-3 on li383 and W7-X, 2026-09-17), not of the geometry."""
     prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
     hsq = prof_t ** 2 + prof_z ** 2
-    if alpha is None:
-        return (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / hsq
+    if isinstance(alpha, str):
+        scale = float(alpha.split("*")[0]) if "*" in alpha else 1.0
+        return scale * (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / hsq
     return alpha * (2 * np.pi) ** 2 * hsq
 
 
@@ -131,7 +136,7 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     vanishes on the resonant modes ``h_theta m + h_zeta n = 0`` and the floor
     is what they see. ``shift`` is added to the whole symbol as
     :func:`parallel_penalty_profile` of ``shift`` (a number in the floor's
-    units, or ``None`` for the strain along the field): the
+    units, or ``"strain"`` / ``"c*strain"``): the
     ``parallel_penalty`` of :func:`second_variation`, so that the atom and
     the operator agree on what a parallel mode sees.
     Traceable in ``field``: built from the current ``B`` inside the step at
@@ -149,7 +154,7 @@ def harmonic_preconditioner(seq, field, floor=HARMONIC_FLOOR, shift=0.0):
     the quality is the measurement. Two FFTs per component per apply.
     """
     prof_t, prof_z, strain = harmonic_atom_profiles(seq, field)
-    penalty = parallel_penalty_profile(seq, field, shift) if shift is None or shift else None
+    penalty = parallel_penalty_profile(seq, field, shift) if isinstance(shift, str) or shift else None
     r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
     scale = []
@@ -211,12 +216,12 @@ def second_variation(seq, B, J, tol=None, parallel_penalty=0.0):
     h_zeta^2)(r)`` (the Hessian's scale is the field's logical gradient
     scale, 35x smaller on W7-X than on li383; ``alpha = kappa`` is exactly the
     atom's floor moved into the operator; li383 optimum 0.075, measured
-    2026-09-17), or ``None`` for the strain along the field, computed. One
-    quadrature load per apply.
+    2026-09-17), or ``"strain"`` / ``"c*strain"`` for ``c`` times the strain
+    along the field, computed. One quadrature load per apply.
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
-    penalised = parallel_penalty is None or parallel_penalty != 0
+    penalised = isinstance(parallel_penalty, str) or parallel_penalty != 0
     if penalised:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
         n_angles = int(seq.quad.shape[1]) * int(seq.quad.shape[2])
