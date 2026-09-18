@@ -928,12 +928,13 @@ class TimeStepper(eqx.Module):
         ratio = actual / jnp.where(inc.predicted > 0, inc.predicted, 1.0)
         ratio = jnp.where(inc.predicted > 0, ratio, -1.0)
         accept = ratio > self.newton_trust_eta
-        dt = jnp.where(accept, 1.0, 0.0)
+        dtype = trust_radius.dtype
+        dt = jnp.where(accept, 1.0, 0.0).astype(dtype)
         a_norm = jnp.sqrt(inc.a @ self.seq.apply_mass_matrix(inc.a, 1, True))
         delta = jnp.where(trust_radius > 0, trust_radius, a_norm)
         delta = jnp.where(ratio < 0.25, 0.25 * delta,
                           jnp.where((ratio > 0.75) & inc.hit, 2.0 * delta, delta))
-        return dt, ratio, delta
+        return dt, ratio.astype(dtype), delta.astype(dtype)
 
     def _midpoint_solve(self, state: State):
         """Midpoint-implicit induction with the explicit descent velocity.
