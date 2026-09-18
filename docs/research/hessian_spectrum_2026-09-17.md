@@ -302,8 +302,12 @@ floor sooner" was the null space. In wall time 50 leads for ~5 min, 200 from ~10
 **W7-X FMM002 (16,32,32)**, 200 steps, no floor stop, B-field atom: released (kappa 3, C 0.1)
 7.4e-11 at dt 0.34 and it does NOT degrade at this mesh; alpha 0.075 (floor units) 7.8e-11
 at dt 1.00; alpha 0.3 absolute (= kappa 2.6) 2.3e-10; strain 1.2e-10. The same relative
-number is right on both geometries. (32,64,64), the mesh of the September surface loss:
-running (batch2/w7x32_*).
+number is right on both geometries. **(32,64,64)**, 200 steps, no floor stop: released
+9.7e-11 at dt 0.2-0.5, alpha 0.075 6.6e-11 at dt 1.00 every step, same energy removed and
+helicity drift (13 s/step). FMM002 is THE W7-X reference (Tobias); the September surface
+loss was on the high-beta GVEC file, which is nonsense and deleted, so it is not a
+reference point: the surface-loss mechanism is the li383 control of section 7. Sections of
+both 32^3 finals: section 7c.
 
 **Reconnection series** (the paper's: 300 steps, 3 % every 60; alpha 0.075, strain floor,
 C 0; batch2/rc_unseeded, rc_seed61): residual before the reconnections 4.8e-10 / 3.9e-10 /
@@ -328,6 +332,15 @@ limit); 9e-3 in r at the VMEC IC, an eighth of a cell, where the lines see nothi
 
 Figures: `traces_li383.pdf`, `traces_w7x16.pdf`, `traces_reconnect.pdf` (raw per-step
 residual vs step and vs wall time at the steady rate; `plot_arms.sh`).
+
+## 7c. W7-X FMM002 (32,64,64) sections, 200 steps past the floor
+
+Both finals: 0 lost, 0 chaotic of 160 lines, iota 0.915..1.056 (the IC's range), drift
+7.9e-3 for both; the alpha 0.075 state (6.6e-11, dt 1.00 every step) is nested throughout
+with the small 5/5 chain at r ~ 0.55 as in the IC (`batch2/w7x32_a0075/poincare/`). The
+released configuration also holds its surfaces on FMM002 at this mesh (9.7e-11 at dt
+0.2-0.5). So on the W7-X reference the penalty buys full steps and a 1.5x lower residual
+with the same topology; the surface-loss mechanism itself is documented on li383 (section 7).
 
 ## 8. Summary
 
