@@ -488,6 +488,40 @@ if not adopted: `--newton-inner-tol` (the f32 stop), `--newton-solver cg` + `pcg
 (fails), `--newton-warm-start` (diagnostic); `--newton-trust-region` + `pcg_steihaug_tr`
 work but are dominated.
 
+## 7f. Newton-MR proper: the nonpositive-curvature exit (2026-09-18, Tobias: "we go with Newton-MR")
+
+What we ran was the original Newton-MR of Roosta, Liu, Xu & Mahoney (2022): MINRES to a
+residual tolerance plus a line search. Liu & Roosta's nonconvex variant (arXiv:2208.07095,
+Algorithm 1) adds two exits inside MINRES: the nonpositive-curvature (NPC) test
+<r_{t-1}, H r_{t-1}> <= 0, read off the Givens recurrences as c_{t-1} gamma_t >= 0 (in SOL's
+variables cs * gbar >= 0), returning the residual r_{t-1} as the direction, a descent
+direction of f where the later iterates need not be; and the inexactness test ||H r|| <=
+eta ||H s||, chosen for a right-hand side outside the range of H. Implemented (b9d26dc +
+two fixes): `minres(..., npc_exit=True)` returns `(x, info, npc)` with the preconditioned
+residual M r_{t-1} of the frozen iterate as x when it fires; `newton_mr` in hessian.py is
+the pass loop on the float64 residual. Deviations from the paper, all deliberate: (i) the
+ordinary passes start from the previous step's potential (worth 2.5x; their theory needs
+s_0 = 0 and says nothing about a warm start; the line search's sign test covers it), and a
+pass that meets NPC discards its answer and solves from zero on b once more, because the
+descent guarantee is against the solve's right-hand side - measured the hard way: with the
+correction's NPC direction, W7-X failed the sign test on every step; (ii) the residual
+forcing term instead of their eq. 6, legitimate because b = curl^T M F lies in the range of
+the operator exactly (the gauge kernel is orthogonal to it), so the residual is not bounded
+below; (iii) the exact line search on the quadratic energy of the ideal step, capped at
+dt = 1, instead of Armijo. Unit-checked on small systems (identical to plain MINRES on an
+SPD system; fires with <d, A d> < 0 and a model-descent direction on an indefinite one;
+returns M b at t = 1 when b is a negative direction).
+
+**Result** (`batch12/`, li383 and W7-X, alpha 0.1, strain floor, passes <= 3 of 100, tol
+0.1): identical to the same runs without the exit to three digits (li383 1.55e-10 vs
+1.53e-10, W7-X 2.57e-11 vs 2.58e-11), identical iteration profiles, no restarts: the exit
+never fired. Along the MINRES trajectory the states never enter the region of negative
+curvature; the indefinite states of section 7e were CG's own, reached because CG stalled
+there. The exit is a zero-cost safeguard that makes the guarantee hold if a run ever gets
+there (a rough initial condition, a reconnection), and the algorithm now matches the
+citation up to the three documented deviations. Paper: the Newton paragraph in red
+(`outputs/paper/mrx_jcp.tex`, 2026-09-18) states this; references added to the bib.
+
 ## 8. Summary
 
 * The Hessian's soft end is a continuum of field-aligned flows u = f B, the discrete
@@ -510,9 +544,10 @@ work but are dominated.
 * **Recommended default** (Tobias to decide): `--method newton --newton-parallel-penalty
   3*strain --harmonic-floor strain --harmonic-field B --newton-maxiter 100 --newton-passes 3
   --newton-tol 0.1 --step-regularisation 0 --dt-floor 0`, cap 1, floor-tol as a stop
-  criterion only (`--newton-maxiter 200 --newton-passes 1` is the equivalent fixed budget)
+  criterion only (`--newton-maxiter 200 --newton-passes 1` is the equivalent fixed budget);
+  the solver is Newton-MR with the NPC exit (7f), on by default in `newton_direction`
   (`--newton-parallel-penalty 0.1` is equivalent on li383 and W7-X to 6 %; 3*strain carries
   the radial profile and the device scaling on its own). Then delete kappa
   (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
   again, the Newton fallback and its two smoothing parameters.
-* GPU spent on this session: ~46 h of the 50 (spectrum probes 3, arms 41, traces 3, calibration probes 2).
+* GPU spent on this session: ~48 h of the 50 (spectrum probes 3, arms 43, traces 3, calibration probes 2).
