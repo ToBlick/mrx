@@ -167,7 +167,7 @@ class HarmonicAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
-def second_variation(seq, B, J, kappa, tol=None):
+def second_variation(seq, B, J, kappa=0.0, tol=None):
     """``u -> H u + kappa M_par u``: the Hessian of the energy along the flow of ``u`` with the
     parallel-flow penalty, as a dual 2-form.
 
@@ -189,7 +189,9 @@ def second_variation(seq, B, J, kappa, tol=None):
     force's round-off components by. The penalty is Levenberg-Marquardt
     damping on the parallel component alone: it lifts those modes, leaves the
     energy descent unchanged (``<F, f B> = 0``) and the perpendicular step
-    untouched. One quadrature load per apply.
+    untouched. One quadrature load per apply; ``kappa = 0`` is the bare Hessian.
+    On a half-period sequence every load carries its parity (``u x B`` and
+    ``J x u`` odd, the Hessian's image even; :mod:`mrx.symmetry`).
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
@@ -202,26 +204,26 @@ def second_variation(seq, B, J, kappa, tol=None):
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)
-        E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True))
+        E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True, parity=-1))
         Q = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         Q_jk = seq.evaluate_at_quadrature(Q, 2, True)
         dJ = m1_inv(seq.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
                                                 transpose=True))
         dJ_jk = seq.evaluate_at_quadrature(dJ, 1, True)
-        JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True)
+        JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True, parity=-1)
         W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
                                               transpose=True))
         W_jk = seq.evaluate_at_quadrature(W, 1, True)
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
-        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
-                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
-                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True))
-                + seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True))
+        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True, parity=1)
+                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True, parity=1)
+                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True, parity=1))
+                + seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True, parity=1))
 
     return apply
 
 
-def newton_direction(seq, B, J, MF, a_guess, kappa, tol=0.1, maxiter=100, passes=3):
+def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=100, passes=3):
     """The Newton direction ``u = curl a`` at the field ``B``: Newton-MR.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -257,8 +259,12 @@ def newton_direction(seq, B, J, MF, a_guess, kappa, tol=0.1, maxiter=100, passes
     curl, curl_t, A = _newton_system(seq, B, J, kappa)
     A_res = _newton_system(on, B, J, kappa)[2]
     atom = harmonic_preconditioner(seq, B, kappa)
-    a, info, _ = newton_mr(A_res, A, lambda x: atom(seq, x), curl_t(MF), a_guess, tol, maxiter, passes,
-                           _dual_norm(ops, 1, True), inner_dtype=seq.dtype)
+    rhs = curl_t(MF)
+    # a half-period sequence: the residual loses the round-off of the other parity
+    pj = seq.free_projector(1, True)
+    project_dual = None if pj is None else pj.projectors(rhs)[1]
+    a, info, _ = newton_mr(A_res, A, lambda x: atom(seq, x), rhs, a_guess, tol, maxiter, passes,
+                           _dual_norm(ops, 1, True), inner_dtype=seq.dtype, project_dual=project_dual)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
@@ -278,7 +284,7 @@ def _newton_system(seq, B, J, kappa):
     return curl, curl_t, A
 
 
-def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype):
+def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, project_dual=None):
     """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): MINRES on the float64 residual
     in passes of ``maxiter`` iterations from the warm start ``x0``, until ``norm(b - A x) <=
     tol norm(b)`` (the forcing term, in the residual's norm and precision) or ``passes`` are
@@ -290,8 +296,12 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype):
     step). So a pass that meets NPC discards its answer and solves ``A x = b`` from zero
     with the exit once more: what that returns -- the NPC direction, or the iterate when
     the curvature was an artefact of the warm start's residual -- is descent-guaranteed
-    for ``b`` and is the answer, alone. Returns ``(x, info, npc)`` with ``info`` the inner
-    iterations of all passes, negative when the residual test was met."""
+    for ``b`` and is the answer, alone. ``project_dual`` removes the other parity's
+    round-off from the residual on a half-period sequence (:mod:`mrx.symmetry`). Returns
+    ``(x, info, npc)`` with ``info`` the inner iterations of all passes, negative when the
+    residual test was met."""
+    if project_dual is None:
+        def project_dual(r): return r
     b = b.astype(RESIDUAL_DTYPE)
     x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
     bnorm = norm(b)
@@ -316,10 +326,10 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype):
 
         x_npc, its_npc = jax.lax.cond(npc, from_zero, lambda _: ((x + d).astype(RESIDUAL_DTYPE), jnp.zeros((), jnp.int32)), None)
         x_new = jnp.where(npc, x_npc, x + d)
-        r_new = b - A_res(x_new)
+        r_new = project_dual(b - A_res(x_new))
         return x_new, r_new, k + 1, (its + jnp.abs(info) + its_npc).astype(jnp.int32), npc
 
-    r0 = b - A_res(x)
+    r0 = project_dual(b - A_res(x))
     x, r, k, its, npc = jax.lax.while_loop(cond, body, (x, r0, 0, jnp.int32(0), False))
     converged = norm(r) <= tol * bnorm_safe
     return x, jnp.where(converged, -its, its), npc
