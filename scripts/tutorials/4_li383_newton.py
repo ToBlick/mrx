@@ -16,9 +16,8 @@ equilibrium, minus the linearised force operator). Newton's equation
 Leray solve -- by Newton-MR: MINRES with the harmonic atom of the current
 field as preconditioner (the Laplacian atom with the parallel symbol of the
 field divided in), warm-started from the previous step's potential, inexact
-by design (``newton_tol = 0.1`` on the residual, ``newton_maxiter = 100``
-iterations per pass, ``newton_passes = 3`` at most: a tighter solve gives
-the same relaxation), with the nonpositive-curvature exit for the states
+by design (one pass of ``newton_maxiter = 200`` iterations: a tighter solve
+gives the same relaxation), with the nonpositive-curvature exit for the states
 where the second variation is indefinite. The Hessian carries the
 parallel-flow penalty, ``newton_penalty = 3`` times the strain along the
 field: the Hessian is exactly null on the field-aligned flows ``u = f B``,
@@ -78,7 +77,7 @@ ap.add_argument("--newton-steps", type=int, default=10, help="Newton steps from 
 ap.add_argument("--newton-chunk", type=int, default=5, help="compiled Newton steps per chunk")
 ap.add_argument("--newton-tol", type=float, default=0.1,
                 help="relative residual the truncated MINRES solve aims at")
-ap.add_argument("--newton-maxiter", type=int, default=100, help="its iteration budget per step")
+ap.add_argument("--newton-maxiter", type=int, default=200, help="its iteration budget per step")
 ap.add_argument("--out", default="outputs/tutorials/li383_newton")
 cli = ap.parse_args([] if _INTERACTIVE else None)
 ns = tuple(int(v) for v in cli.ns.split(","))

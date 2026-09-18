@@ -223,7 +223,7 @@ def second_variation(seq, B, J, kappa=0.0, tol=None):
     return apply
 
 
-def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=100, passes=3):
+def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=200, passes=1):
     """The Newton direction ``u = curl a`` at the field ``B``: Newton-MR.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -241,9 +241,10 @@ def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=100, pa
     warm start in passes of ``maxiter`` iterations until the residual,
     measured in the residual precision and the mass-atom norm of the dual
     1-forms like every solve in the code, is below ``tol`` of the right-hand
-    side (the forcing term of Dembo, Eisenstat & Steihaug; ``0.1`` with
-    ``100`` per pass and ``3`` passes is met after 100-300 iterations and
-    gives the same relaxation as any tighter solve, measured 2026-09-18),
+    side (the forcing term of Dembo, Eisenstat & Steihaug). The defaults, one
+    pass of ``200`` iterations, give the same relaxation as any tighter solve
+    (measured 2026-09-18); with the strain penalty the 0.1 forcing term is met
+    only after ~275 iterations on li383, so extra passes cost without gain,
     with the nonpositive-curvature exit of Newton-MR (Liu & Roosta 2022):
     MINRES's iterate is a descent direction as long as no direction of
     nonpositive curvature has appeared in its Krylov space, and when one

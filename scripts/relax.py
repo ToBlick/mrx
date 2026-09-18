@@ -107,10 +107,12 @@ Flags, defaults in brackets:
                                    Newton system (double precision, the
                                    mass-atom norm) below TOL of the
                                    right-hand side ends the solve
-      --newton-maxiter N [100]     MINRES iterations per pass
-      --newton-passes N [3]        passes at most: the solve is inexact by
-                                   design (0.1, 100, 3 give the same
-                                   relaxation as any tighter solve)
+      --newton-maxiter N [200]     MINRES iterations per pass
+      --newton-passes N [1]        passes at most: the solve is inexact by
+                                   design (200 iterations give the same
+                                   relaxation as any tighter solve; with
+                                   the strain penalty the 0.1 forcing term
+                                   is met late, so more passes only cost)
     Budgets and output:
       --steps N [100 Newton, 3000 gradient]
                                    maximum number of steps
@@ -224,8 +226,8 @@ def parse_args(argv=None):
                     help="kappa of the parallel-flow penalty, kappa times the strain along the field")
     ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="the forcing term of the Newton solve: the residual below TOL of the right-hand side")
-    ap.add_argument("--newton-maxiter", type=int, default=100, help="MINRES iterations per pass of the Newton solve")
-    ap.add_argument("--newton-passes", type=int, default=3, help="passes of the Newton solve at most")
+    ap.add_argument("--newton-maxiter", type=int, default=200, help="MINRES iterations per pass of the Newton solve")
+    ap.add_argument("--newton-passes", type=int, default=1, help="passes of the Newton solve at most")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "

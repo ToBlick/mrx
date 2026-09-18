@@ -527,8 +527,8 @@ class TimeStepper(eqx.Module):
             below ``newton_tol`` of the right-hand side ends it.
         newton_maxiter: MINRES iterations per pass of the Newton solve.
         newton_passes: Passes of ``newton_maxiter`` iterations at most; the
-            solve is inexact by design (100 per pass, 3 passes and 0.1 give
-            the same relaxation as any tighter solve, 2026-09-18).
+            solve is inexact by design (one pass of 200 gives the same
+            relaxation as any tighter solve, 2026-09-18).
         helicity_correction: Remove from the induction field ``E`` the
             one component that changes the discrete helicity. Over one
             step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
@@ -566,8 +566,8 @@ class TimeStepper(eqx.Module):
     newton: bool = False
     newton_penalty: float = 3.0
     newton_tol: float = 0.1
-    newton_maxiter: int = 100
-    newton_passes: int = 3
+    newton_maxiter: int = 200
+    newton_passes: int = 1
     helicity_correction: bool = False
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
