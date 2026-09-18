@@ -31,23 +31,17 @@ and `sigma` as the previous `JxX - F` (a warm start on `p` alone leaves
 ## 2. The step
 
 `TimeStepper(seq, auxiliary_B_field, velocity_smoothing_order,
-velocity_smoothing_scale, history_size, cfl, scheme)` is an `eqx.Module`;
+velocity_smoothing_scale, cfl, scheme)` is an `eqx.Module`;
 `relaxation_step(state)` does one step, explicit Euler on the descent
 velocity, `B_{n+1} = B_n + dt · curl(u × X)`, or the midpoint rule below.
 The step is ideal: reconnection is a separate resistive solve between
 chunks (section 2a).
 
-1. `compute_force` at `B_n`; `MF = M_2 F` once. It serves `||F||_M` and the
-   L-BFGS secant.
-2. Direction `u` by `history_size`:
-   - `0`: steepest descent, `u = F`.
-   - `1` (default): `_lbfgs_direction(F, s, y, Ms, My)`,
-     the two-loop recursion in the `M_2` inner product. With one pair and the
-     exact line search this is Polak-Ribière CG (the classical memoryless-BFGS
-     identity; measured identical on W7-X), and a pair with `<s, y>_M <= 0` is
-     skipped -- the PR+ restart. Longer histories add nothing measurable. The state stores `M s` and `M y` next to `s`
-     and `y`, so the recursion applies `M` zero times. The descent variable
-     is the velocity: `s = dt · u`, `y = F_prev - F`.
+1. `compute_force` at `B_n`; `MF = M_2 F` once. It serves `||F||_M` and
+   the Newton right-hand side.
+2. Direction `u`: the smoothed force (gradient descent; the L-BFGS memory
+   was removed 2026-09-17, its arms were too finicky for the paper), or
+   Newton's direction with `newton=True`.
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
    `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
    smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0. The
@@ -56,8 +50,7 @@ chunks (section 2a).
    (16,32,32) p=2 (flat optimum 0.02-0.064 per step, 0.02 cheapest per
    second, the helicity drift independent of the scale).
    The flow is incompressible without a projection of its own: the
-   force is Leray-projected, the L-BFGS direction combines projected
-   forces and their steps, and the smoothing commutes with the
+   force is Leray-projected and the smoothing commutes with the
    divergence. A second Leray projection of the velocity was measured to
    change nothing in float64 and in mixed precision and to cost 1.5-4x
    the step (`docs/research/velocity_leray_ab_2026-09-04.md`); until
@@ -81,8 +74,7 @@ chunks (section 2a).
    collapses. `state.dt_star` and `state.cfl_max` record the cap's activity.
 7. `B_{n+1} = B_n + dt · dB`.
 
-`M_2` is applied three times per step (`M F`, `M u`, `M dB`) whatever the
-history. With the line search `dE/dt <= 0` is a guarantee: the step is the
+`M_2` is applied three times per step (`M F`, `M u`, `M dB`). With the line search `dE/dt <= 0` is a guarantee: the step is the
 line minimiser. The force residual is not monotone, which is why the
 stopping criterion (section 6) averages it over a window. Explicit Euler
 keeps the frozen-in flux to `O(dt²)`, so a large line-search step can
@@ -139,7 +131,7 @@ like `E` (so that `D_1 E` keeps `B · n = 0`): with a natural `H` (the
 proxy of a wall-tangent `B` has a tangential trace) the load `load(u × H)`
 loses its tangential wall DoFs on the way to `E` and both schemes leak
 helicity through that wall layer at the same rate (li383 (8,16,16) p=2,
-float64, 1000 L-BFGS steps: -5.5e-7 explicit, -6.6e-7 midpoint); with the
+float64, 1000 descent steps: -5.5e-7 explicit, -6.6e-7 midpoint); with the
 Dirichlet `H` the midpoint scheme is exact to the solves (+2.2e-7
 explicit, +5e-12 midpoint), at the price of `H_t = 0` at the wall. Without
 the auxiliary field (`X = B`) the midpoint scheme has no time error either;
@@ -194,17 +186,17 @@ halved and the solve restarts from the predictor, at most
 with `state.picard_residual` above the tolerance; no run has ever halved.
 The state records `picard_iterations` (1 for the explicit
 step, the predictor plus the sweeps otherwise), `picard_restarts` and
-`picard_residual`; `F`, `u` and the L-BFGS pair are the predictor's, as in
+`picard_residual`; `F` and `u` are the predictor's, as in
 the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
 Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `E`, without the auxiliary field).
 
 `State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
-`H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`, the four history arrays,
-`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`, `lbfgs_sy`,
+`H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`,
+`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`,
 `picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
-runs one `compute_force` so the first secant and CG coefficient see a true
-previous gradient. `relax(state, ts, steps, chunk, ...)` runs the steps in
+runs one `compute_force` so the first step's solves start from the true
+previous force. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
 once per chunk (`make_sampler`: the energy of the stored field in the
 residual precision, helicity, the two pressures, beta), applies
@@ -356,16 +348,15 @@ method per run. Flags, defaults in brackets:
 | `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
 | `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |
 | `--helicity-correction {false,true} [false]` | one scalar correction of `E` per step (a multiple of the Dirichlet proxy `H_D = M_1^{-1} P B`) that zeroes the step's discrete helicity change exactly, with `H` natural, under either scheme (section 2); the trace records the multiple as `hcorr` |
-| `--method {newton,lbfgs} [newton]` | the direction: Newton on the second variation, or the L-BFGS descent |
-| `--history M [1]` | L-BFGS secant pairs; 0 is steepest descent, 1 memoryless BFGS (= CG) |
+| `--method {newton,gradient} [newton]` | the direction: Newton on the second variation, or gradient descent on the smoothed force |
 | `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | `v = (I - MU L)^{-G} F` |
-| `--potential-velocity {false,true} [true for the L-BFGS descent]` | the projected force as `curl a + c h` (k=1 Hodge solve) instead of the Leray saddle solve; Newton and the auxiliary field have their own routes |
+| `--potential-velocity {false,true} [true for the gradient descent]` | the projected force as `curl a + c h` (k=1 Hodge solve) instead of the Leray saddle solve; Newton and the auxiliary field have their own routes |
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
-| `--chunk N [20 Newton, 500 L-BFGS]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_trace.py --fields snapshots`, which traces every stored step at the chosen plane; `scripts/poincare_plot.py` then writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
-| `--steps N [100 Newton, 3000 L-BFGS]` | the step budget; the checkpoint of every chunk restarts a job its time limit ended |
+| `--chunk N [20 Newton, 500 gradient]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_trace.py --fields snapshots`, which traces every stored step at the chosen plane; `scripts/poincare_plot.py` then writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
+| `--steps N [100 Newton, 3000 gradient]` | the step budget; the checkpoint of every chunk restarts a job its time limit ended |
 | `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it; below `tol` the force's gradient-part remnant is more than a tenth of the descent (0.1 tol / resid, `precision.md`); `relax` prints that value at the start |
-| `--step-regularisation C [0.1 Newton, 0 L-BFGS]` | the line search minimises $E + \varepsilon \|J\|^2 / 2$ along the increment ($\varepsilon = C / n_r^2$; `TimeStepper.step_regularisation`): `dt* = (<F, u> - ε <J, curl~ dB>) / (‖dB‖² + ε ‖curl~ dB‖²)`, one weak curl of `dB` per step, direction and force unchanged. Measured 2026-09-11 on the harmonic-atom Newton arm at (16,32,32): identical to the plain search until the floor (the CFL cap binds there), then the step shrinks to 0.03 of the Newton length at $C = 0.1$ and the run holds a floor 1.7x lower. On the L-BFGS descent it is not inert (dt* is the binding step there, 2.2 at the anchor): the trajectory changes and the cost rises 9%, so it is off for L-BFGS until measured at length |
-| `--dt-floor DT [0.1 Newton, 0 L-BFGS]` | stopping criterion: the last chunk's mean accepted step below it, the regularised line search's own signal that the descent has reached what the mesh resolves |
+| `--step-regularisation C [0.1 Newton, 0 gradient]` | the line search minimises $E + \varepsilon \|J\|^2 / 2$ along the increment ($\varepsilon = C / n_r^2$; `TimeStepper.step_regularisation`): `dt* = (<F, u> - ε <J, curl~ dB>) / (‖dB‖² + ε ‖curl~ dB‖²)`, one weak curl of `dB` per step, direction and force unchanged. Measured 2026-09-11 on the harmonic-atom Newton arm at (16,32,32): identical to the plain search until the floor (the CFL cap binds there), then the step shrinks to 0.03 of the Newton length at $C = 0.1$ and the run holds a floor 1.7x lower. On the gradient descent it is not inert (dt* is the binding step there, 2.2 at the anchor): the trajectory changes and the cost rises 9%, so it is off for the gradient descent until measured at length |
+| `--dt-floor DT [0.1 Newton, 0 gradient]` | stopping criterion: the last chunk's mean accepted step below it, the regularised line search's own signal that the descent has reached what the mesh resolves |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |

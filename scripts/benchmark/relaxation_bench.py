@@ -506,7 +506,7 @@ def bench_relaxation(bench, seq, args, dtype):
     # The scale is the stepper's own default, SMOOTHING_C / n_r^2, so a
     # benchmark cannot drift from what production runs; it is recorded below
     # because the cost per step grows with it.
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
+    ts = TimeStepper(seq=seq, cfl=0.5,
                      velocity_smoothing_order=1,
                      velocity_smoothing_scale=None)
     state0 = initial_state(B0, ts, 1.0)

@@ -111,7 +111,7 @@ compute_nullspaces(seq)
 # directory whose checkpoint is on disk and matches this mesh (the user's run,
 # then the shipped state), otherwise the equilibrium initial condition taken
 # through the descent's fast phase here (Tutorial 3's run, 500 steps).
-ts_descent = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+ts_descent = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
 B_start = None
 for run in cli.warm_start.split(","):
     ws_json = os.path.join(run, "relax.json")
@@ -147,10 +147,10 @@ print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d
       f"dH/H_0 = {(H_d[-1] - H_d[0]) / H_d[0]:+.1e}")
 
 # %%
-# Now we run Newton from the same state: history 0 (the direction replaces
-# L-BFGS), the truncated MINRES solve with the Laplacian atom, the line search
-# capped at the Newton step. The smoothing stays on for the fallback direction.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
+# Now we run Newton from the same state: the Newton direction replaces the
+# smoothed force, the truncated MINRES solve with the Laplacian atom, the line
+# search capped at the Newton step. The smoothing stays on for the fallback direction.
+ts_newton = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
                         newton=True, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
                         newton_precond="laplacian", newton_dt_cap=1.0)
 res_n = relax(initial_state(B_start, ts_newton), ts_newton, steps=cli.newton_steps,
@@ -177,7 +177,7 @@ fig, axes = plt.subplots(1, 2, figsize=(9, 3.4), constrained_layout=True)
 for ax, x_d, x_n, xlabel in ((axes[0], np.arange(1, res_d.steps + 1), np.arange(1, res_n.steps + 1), "step"),
                              (axes[1], np.arange(1, res_d.steps + 1) * res_d.wall / res_d.steps,
                               np.arange(1, res_n.steps + 1) * res_n.wall / res_n.steps, "wall time [s]")):
-    ax.semilogy(x_d, F_d, color="0.5", label=f"L-BFGS(1), smoothed ({res_d.steps} steps)")
+    ax.semilogy(x_d, F_d, color="0.5", label=f"gradient descent, smoothed ({res_d.steps} steps)")
     ax.semilogy(x_n, F_n, color="black", label=f"Newton ({res_n.steps} steps)")
     ax.set_xlabel(xlabel)
     ax.grid(alpha=0.3)

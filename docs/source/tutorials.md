@@ -127,16 +127,16 @@ cb = load_clebsch(seq.equilibrium)   # the file build_sequence parsed
 B0, norm, wall = potential_two_form(seq, clebsch_potential_form(cb))
 ```
 
-The descent is `mrx.relaxation` with `scripts/relax.py --method lbfgs`'s
-defaults -- L-BFGS with history 1 (equivalent to conjugate gradient) on the
-projected force by the potential route, analytic line search under a CFL cap
+The descent is `mrx.relaxation` with `scripts/relax.py --method gradient`'s
+defaults -- gradient descent on the smoothed projected force by the potential
+route, analytic line search under a CFL cap
 of 0.5, no resistivity -- plus **velocity smoothing of order 1**
 (gamma = 1), the descent direction $(I - \text{scale}\,L)^{-1} F$ with
 $\text{scale} = 0.02 / n_r^2$ (`mrx.relaxation.SMOOTHING_C`, the stepper's
 default), run through `relax`:
 
 ```python
-ts = TimeStepper(seq=seq, history_size=1, cfl=0.5, velocity_smoothing_order=1)
+ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
 res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=1e-6)
 ```
 
@@ -186,7 +186,7 @@ that is not a descent direction is replaced by the smoothed force for that
 step:
 
 ```python
-ts = TimeStepper(seq=seq, history_size=0, cfl=0.5, velocity_smoothing_order=1,
+ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1,
                  newton=True, newton_tol=0.1, newton_maxiter=100,
                  newton_precond="harmonic", newton_dt_cap=1.0)
 res = relax(initial_state(B_start, ts), ts, steps=10, chunk=5)

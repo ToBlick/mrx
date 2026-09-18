@@ -1,5 +1,9 @@
 # The harmonic atom's floor computed, its profiles from B, and the smoothed Newton direction (2026-09-17)
 
+**Status:** measured 2026-09-17; the candidate Newton default (parallel penalty + strain floor) waits for Tobias's word.
+**Read for:** why kappa was LM damping, the alpha sweep, the surface checks, what is inert or negative.
+**Do not read for:** how to run Newton today (`docs/source/concepts/relaxation.md`); alpha here is absolute, /4 on li383 since 4271bc0.
+
 > **Units, 4271bc0 (same day, later):** the alpha values in this note are ABSOLUTE. Since 4271bc0 `--newton-parallel-penalty` is in the atom floor's units, (2 pi)^2 (h_theta^2 + h_zeta^2)(r); on li383 divide by ~4 (0.3 -> 0.075, the sweep's optimum 0.1 in the new units), and the same relative value is right on W7-X, where an absolute 0.3 was kappa 2.6. See `hessian_spectrum_2026-09-17.md` 7b.
 
 Branch `worktree-newton-atom-smoothing` off `newton-second-variation` (1b9bfd3). Three changes
@@ -238,6 +242,15 @@ the alpha 0.3 final at F2 4.5e-10 has **0 chaotic lines of 160**, drift 2.2e-3, 
 every li383 state, a smooth iota profile without scatter. Surfaces intact at the resolution
 where W7-X lost them (2026-09-12), 7x past the September residual.
 
+**Units (4271bc0, after this study):** every alpha in this note is ABSOLUTE (H against
+M_2). Since 4271bc0 `--newton-parallel-penalty` is relative to the atom floor's scale, weight
+`(2 pi)^2 (h_theta^2 + h_zeta^2)(r)` from the B profiles, so `alpha = kappa` is literally the
+floor moved into the operator and the number transfers between geometries (W7-X's floor scale
+is 35x below li383's). On li383 the floor is flat in r to ~10 %, and relative = absolute / 4:
+the optimum 0.3 is 0.075 relative, the cliff 0.03 is 0.0075, the arms at 1 and 3 are 0.25
+and 0.75. Nothing here needs rerunning; the candidate default reads `--newton-parallel-penalty
+0.075` in the new units.
+
 ## 9. Verdict
 
 1. **kappa is gone.** The harmonic atom's floor is the lumped strain of the field, computed
@@ -254,7 +267,8 @@ where W7-X lost them (2026-09-12), 7x past the September residual.
    (32,64,64), 7-20x below the September floor, at the Newton step on every step, no
    fallbacks, the same energy and helicity as before, surfaces intact. September's
    "resolved floor" was the method's.
-5. **Candidate default** (pending Tobias): `--newton-parallel-penalty 0.3 --harmonic-floor
+5. **Candidate default** (pending Tobias): `--newton-parallel-penalty 0.075` (relative units of
+   4271bc0; 0.3 absolute in this note's runs) `--harmonic-floor
    strain --harmonic-field B --step-regularisation 0`, dt floor off, cap 1. On his word the
    code loses: the kappa floor path and `HARMONIC_FLOOR`, `newton_smoothing`, the Newton
    default of the regularised search and the dt floor (the search stays only if the

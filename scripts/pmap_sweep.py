@@ -77,7 +77,7 @@ def main() -> None:
     B0, _ = initial_field(seq)
     print(f"[setup] ns={ns} p={cli.p}  {time.perf_counter() - t0:.1f}s")
 
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
+    ts = TimeStepper(seq=seq, cfl=0.5,
                      velocity_smoothing_order=1, velocity_smoothing_scale=None)
 
     # A sweep of n_dev nearby initial fields: same geometry, perturbed IC. Any

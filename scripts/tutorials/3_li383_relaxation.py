@@ -6,9 +6,8 @@ li383 is the project's fruit-fly stellarator: a three-field-period
 state's own equilibrium field, ``B = dA'`` from the histopolated Clebsch
 potential (exactly divergence-free, tangential to the wall, nested
 surfaces). The relaxation is the energy descent of ``mrx.relaxation`` with
-``scripts/relax.py --method lbfgs``'s defaults: L-BFGS direction with history 1
-(equivalent to conjugate gradient) on the projected force by the potential
-route, analytic line search under a CFL cap of 0.5, no resistivity. It conserves helicity and lowers the magnetic energy
+``scripts/relax.py --method gradient``'s defaults: gradient descent on the
+smoothed projected force by the potential route, analytic line search under a CFL cap of 0.5, no resistivity. It conserves helicity and lowers the magnetic energy
 until ``J x B = grad p`` in the weak sense; ``p`` is not prescribed, it is
 the Lagrange multiplier the descent finds.
 
@@ -96,7 +95,7 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 # defaults plus velocity smoothing, run toward a nested floor (~500 steps).
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, the stepper's default
 # scale 0.02 / n_r^2 (mrx.relaxation.SMOOTHING_C).
-ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
+ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
 print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
 res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
             floor_tol=cli.floor_tol)

@@ -311,32 +311,14 @@ class State(eqx.Module):
         The largest logical CFL number of the velocity, ``max_i max_q
         |u_ref^i| / (J h_i)`` (see ``logical_cfl_weights``).
     F_prev : jnp.ndarray (optional)
-        The force from the previous time step (for L-BFGS y computation).
+        The force from the previous time step (the warm start of the force
+        solve, the ``Fu`` pairing of the trace).
     MF_prev : jnp.ndarray (optional)
-        ``M_2 F_prev``.  Carried so that the secant ``M y = M F_prev - M F``
-        and the CG beta cost no mass apply of their own.
-    s_history : jnp.ndarray (optional)
-        History of steps in the descent variable, s_k = dt_k u_k (for L-BFGS).
-    y_history : jnp.ndarray (optional)
-        History of L^2-gradient differences y_k = grad_M E_{k+1} - grad_M E_k
-        = F_k - F_{k+1} (for L-BFGS).  Here grad_M E = -F is the Riesz
-        representative of dE w.r.t. the M2 inner product.
-    Ms_history, My_history : jnp.ndarray (optional)
-        ``M_2 s_k`` and ``M_2 y_k``, row-aligned with the histories above.
-        Every M-inner product the two-loop recursion takes is against a
-        stored vector, so with these in hand it applies M zero times.
+        ``M_2 F_prev``.
     F_norm : float
         The norm of the force.
     v_norm : float
         The norm of the velocity.
-    lbfgs_sy : float
-        The curvature <s_k, y_k>_M of the NEWEST L-BFGS pair, as it was
-        actually used by the two-loop recursion.  Reported, never clamped: a
-        negative value means the stored pair is not a descent pair and the
-        approximate inverse Hessian it builds is indefinite.
-    lbfgs_restart : int
-        1 when the step dropped the L-BFGS memory (Powell's restart,
-        ``POWELL_RESTART``) and took the smoothed-force direction, else 0.
     picard_iterations : int
         1 under ``EXPLICIT``; the predictor plus every Picard sweep (two
         k=1 mass solves and a curl each) under ``IMPLICIT_MIDPOINT``.
@@ -346,11 +328,6 @@ class State(eqx.Module):
         Fixed-point defect of the last midpoint sweep, ``||g(x) - x||_M``
         relative to the predictor's increment ``||dt dB(B_n)||_M`` (0
         explicit). Above ``picard_tol`` means the step went out unconverged.
-    Fs_prev, MFs_prev : jnp.ndarray (optional)
-        The smoothed force of the previous step and ``M_2`` times it, the
-        gradient the L-BFGS secant pairs on the potential route
-        (``TimeStepper.potential_velocity``); equal to ``F_prev``,
-        ``MF_prev`` on the Leray route.
     a : jnp.ndarray (optional)
         A Dirichlet 1-form potential: of the Newton direction, ``u = curl
         a`` (:func:`mrx.hessian.newton_direction`), or of the force on the
@@ -383,20 +360,12 @@ class State(eqx.Module):
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
     MF_prev: Optional[jnp.ndarray] = None
-    Fs_prev: Optional[jnp.ndarray] = None
-    MFs_prev: Optional[jnp.ndarray] = None
-    s_history: Optional[jnp.ndarray] = None
-    y_history: Optional[jnp.ndarray] = None
-    Ms_history: Optional[jnp.ndarray] = None
-    My_history: Optional[jnp.ndarray] = None
     A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
     dt_star: float = 1e-2
     cfl_max: float = 0.0
     F_norm: float = 0.0
     v_norm: float = 0.0
-    lbfgs_sy: float = 0.0
-    lbfgs_restart: int = 0
     picard_iterations: int = 0
     picard_restarts: int = 0
     picard_residual: float = 0.0
@@ -414,19 +383,6 @@ class State(eqx.Module):
 
 # %%
 
-
-#: Powell's restart of the L-BFGS memory: when consecutive (smoothed)
-#: forces are far from orthogonal, ``|<F_k, F_{k-1}>_M| > POWELL_RESTART
-#: ||F_k||_M^2``, the memory is dropped and the step is the smoothed force.
-#: The criterion of Powell (1977) for restarting conjugate gradients, which
-#: L-BFGS with one pair is. Why: with one pair a tiny step collapses the
-#: pair's scale and reproduces itself; measured 2026-09-11 on li383
-#: (16,32,32), potential route, smooth-first: the accepted step fell from 2.2
-#: to 0.017 with cos(u, F) = 0 for ~1000 steps around step 2000 (the
-#: anchor rerun, tol 1e-6, the seeded arms; 11 episodes at m = 5), a x4
-#: bump of the residual on recovery. Inert on a healthy run, where
-#: consecutive forces are nearly orthogonal.
-POWELL_RESTART = 0.2
 
 #: A midpoint sweep whose defect exceeds this many times the predictor's
 #: increment is not contracting: halve ``dt`` and start again.
@@ -473,17 +429,12 @@ class Increment(NamedTuple):
     F: jnp.ndarray
     MF: jnp.ndarray
     Fs: jnp.ndarray
-    MFs: jnp.ndarray
     p: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
     J: jnp.ndarray
     E: jnp.ndarray
     cfl_max: jnp.ndarray
-    sy: jnp.ndarray
-    lbfgs_restart: jnp.ndarray
-    y_history: jnp.ndarray
-    My_history: jnp.ndarray
     a: jnp.ndarray
     newton_it: jnp.ndarray
     newton_fallback: jnp.ndarray
@@ -512,7 +463,7 @@ def smoothing_scale(seq) -> float:
 class TimeStepper(eqx.Module):
     """One step of the energy descent, ``B_{n+1} = B_n + dt curl(u x X)``.
 
-    Force and descent direction (L-BFGS on the velocity), velocity
+    Force and descent direction (the smoothed force, or Newton's), velocity
     smoothing, the analytic line search with its CFL cap, and the
     induction, forward Euler or midpoint-implicit
     (:class:`IntegrationScheme`). The step is ideal; reconnection is a
@@ -539,12 +490,6 @@ class TimeStepper(eqx.Module):
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
             is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
-        history_size: Stored secant pairs of the L-BFGS direction. 0 is
-            steepest descent, ``u = F``; 1 (the default) is memoryless
-            BFGS, which under the exact line search IS Polak-Ribiere CG
-            (same direction; docs/research/descent_method_2026-08-26.md,
-            the separate CG arm was removed 2026-08-28). Larger values were
-            measured to add nothing (li383 note, section 5j).
         cfl: Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
             ``cfl_max`` the largest logical CFL number of the velocity. The
             linesearch minimiser cannot raise the energy, but a large step
@@ -562,15 +507,11 @@ class TimeStepper(eqx.Module):
             ``auxiliary_B_field`` is set, which have their own routes;
             ``True`` with either raises. The velocity smoothing acts on the potential through
             the k=1 shifted solve, ``curl (M_1 + mu L_1)^-1 M_1 a =
-            (M_2 + mu L_2)^-1 M_2 curl a`` exactly, and the L-BFGS
-            direction combines the SMOOTHED forces (the preconditioned-CG
-            order; the Leray route combines the forces and smooths the
-            result). No pressure comes out of it; ``State.p`` keeps the
+            (M_2 + mu L_2)^-1 M_2 curl a`` exactly. No pressure comes out of it; ``State.p`` keeps the
             sampler's. Excludes ``newton`` and the auxiliary field.
-        newton: Replace the L-BFGS direction by the Newton direction of the
-            second variation, ``u = curl a`` with ``curl^T H curl a = curl^T
-            M_2 F`` solved by MINRES
-            (:mod:`mrx.hessian`). Needs ``history_size = 0``. The Hessian
+        newton: Replace the smoothed-force direction by the Newton direction
+            of the second variation, ``u = curl a`` with ``curl^T H curl a =
+            curl^T M_2 F`` solved by MINRES (:mod:`mrx.hessian`). The Hessian
             reads the 2-form ``B``; the force and the induction follow
             ``auxiliary_B_field`` and ``scheme`` as usual, so the midpoint
             scheme with the auxiliary field conserves the helicity exactly
@@ -664,7 +605,6 @@ class TimeStepper(eqx.Module):
     auxiliary_B_field: bool = False
     velocity_smoothing_order: int = 1
     velocity_smoothing_scale: float = None
-    history_size: int = 1
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
@@ -686,10 +626,6 @@ class TimeStepper(eqx.Module):
     harmonic_norm_sq: jnp.ndarray = None
 
     def __post_init__(self):
-        if self.history_size < 0:
-            raise ValueError("history_size must be non-negative (0 is steepest descent).")
-        if self.newton and self.history_size:
-            raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
         if self.newton_atom_field not in ("h", "B"):
             raise ValueError("newton_atom_field is 'h' (the harmonic form) or 'B' (the current field).")
         if self.newton and self.newton_precond == "harmonic" and self.newton_atom_field == "h":
@@ -711,102 +647,6 @@ class TimeStepper(eqx.Module):
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
         self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
         self.cfl_weights = logical_cfl_weights(self.seq)
-
-    def _lbfgs_direction(self, F: jnp.ndarray, s: jnp.ndarray, y: jnp.ndarray,
-                         Ms: jnp.ndarray, My: jnp.ndarray
-                         ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """
-        Compute the L-BFGS descent direction v = H_k F using the two-loop recursion.
-
-        The L^2 (M2) inner product is used both to identify the gradient via
-        the Riesz map (dℰ[v] = -(F, v)_{L^2} = <-F, v>_M  =>  grad_M E = -F)
-        and inside the two-loop recursion (<a, b>_M = a^T M b).
-
-        NOTE that ``grad_M E = -F`` is a derivative with respect to the
-        VELOCITY u, not with respect to B: the admissible variation is
-        ``dB = curl(u x H)``, and ``dE[dB] = -(F, u)_M``.  So both members of
-        an L-BFGS pair have to live in velocity space; see
-        ``relaxation_step`` for how that is arranged and what happens when
-        it is not.
-
-        Parameters
-        ----------
-        F : the force / negative gradient at the current iterate.
-        s : (m, n) newest-first step history in the descent variable.
-        y : (m, n) newest-first gradient-difference history, ALIGNED with s.
-        Ms, My : (m, n) ``M s`` and ``M y``, row by row.  Every inner product
-            the recursion takes is against a STORED vector, and M is
-            symmetric, so ``<s_i, q>_M = (M s_i)^T q`` and
-            ``<y_i, r>_M = (M y_i)^T r``: this function applies M zero times.
-            (It used to apply it 4m + 2 times per step, re-forming ``M y_i``
-            in both loops and ``M q``, ``M r`` once per pair.)
-
-        Returns
-        -------
-        r : the direction ``H_k F``.
-        sy0 : ``<s_0, y_0>_M``, the curvature of the newest pair -- returned
-            so the caller can record it.  It is NOT used to reject the pair.
-
-        ``history_size = 0`` is steepest descent, ``r = F``, and so is any
-        history whose entries are all zero.
-        """
-        m = self.history_size
-        if m == 0:
-            return F, jnp.zeros((), F.dtype)
-
-        # <s_i, y_i>_M for every stored pair.  An EMPTY slot -- s_i identically
-        # zero, as the history is before it fills -- has sy_i = 0 exactly and
-        # contributes nothing to either loop; rho_i = 0 states that.  (The
-        # old ``1 / (sy + 1e-30)`` gave the same result only because
-        # 1e30 * 0 happens to be 0.)  A NEGATIVE sy_i is a non-descent pair:
-        # it is SKIPPED (rho_i = 0, so it contributes nothing and the
-        # direction falls back towards F) and reported through ``sy`` below.
-        # This is the curvature guard of BFGS and, at m = 1, exactly the
-        # Polak-Ribiere+ restart ``beta = max(beta, 0)`` the CG arm had.
-        sy_all = jnp.einsum('in,in->i', s, My)
-        usable = sy_all > 0
-        rho = jnp.where(usable, 1.0 / jnp.where(usable, sy_all, 1.0), 0.0)
-
-        # --- two-loop recursion ---
-        # first loop: newest (i=0) to oldest (i=m-1)
-        q = F
-        alpha = []
-        for i in range(m):
-            alpha_i = rho[i] * (Ms[i] @ q)
-            alpha.append(alpha_i)
-            q = q - alpha_i * y[i]
-
-        # Initial Hessian scaling: gamma = (s_0^T M y_0) / (y_0^T M y_0).
-        #
-        # The branch is on `sy > 0`, i.e. on whether a USABLE curvature pair
-        # exists at all, and NOT on `yy > 1e-30`.  On the first step the
-        # history is zero, so sy = 0 exactly and the recursion must fall back
-        # to steepest descent (gamma = 1, r = q = F).  Keying on yy instead
-        # gets that wrong: y_0 = F_prev - F is not exactly zero even on the
-        # first step, because F_prev comes from a separate compute_force call
-        # whose warm-started solves land at tolerance rather than bit-identity
-        # (yy ~ 1e-24).  The yy branch is then not taken, gamma = 0/yy = 0,
-        # the direction is exactly zero, dB is exactly zero, and the
-        # linesearch dt = (F,u)/||dB||^2 is 0/0 = NaN on step one.  Measured.
-        #
-        # There is deliberately NO `maximum(gamma, 1e-30)` floor.  Flooring
-        # does not repair negative curvature: it silently annihilates q, i.e.
-        # the gradient's entire contribution to the direction, leaving only
-        # the stored-s combination from the second loop.  That is how this
-        # failed for months -- the returned "descent direction" came out
-        # orthogonal to F, ||dB|| collapsed to solver noise, and dt exploded
-        # to compensate.  sy is returned so the caller records it instead.
-        sy = sy_all[0]
-        yy = y[0] @ My[0]
-        gamma = jnp.where(sy > 0, sy / jnp.where(yy > 0, yy, 1.0), 1.0)
-        r = gamma * q
-
-        # second loop: oldest (i=m-1) to newest (i=0)
-        for i in range(m - 1, -1, -1):
-            beta_i = rho[i] * (My[i] @ r)
-            r = r + (alpha[i] - beta_i) * s[i]
-
-        return r, sy
 
     def smooth_velocity(self, u: jnp.ndarray) -> jnp.ndarray:
         """Apply ``(M_2 + scale L_2)^-1 M_2`` to ``u`` ``velocity_smoothing_order`` times."""
@@ -863,8 +703,7 @@ class TimeStepper(eqx.Module):
         to gradients, so ``a`` is in the Coulomb gauge and ``curl a`` is the
         exact part of the Leray projection of ``J x B``; ``c h`` is its
         harmonic part. The smoothing solves ``(M_1 + mu L_1) a_s = M_1 a``
-        ``velocity_smoothing_order`` times. Returns ``(F, M F, F_s, M F_s,
-        J, a)``.
+        ``velocity_smoothing_order`` times. Returns ``(F, M F, F_s, J, a)``.
         """
         seq = self.seq
         J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
@@ -880,7 +719,7 @@ class TimeStepper(eqx.Module):
                 seq.apply_mass_matrix(a_s, 1, True), 1, self.velocity_smoothing_scale,
                 dirichlet=True, guess=a_s)
         Fs = seq.apply_incidence_matrix(a_s, 1, dirichlet_in=True, dirichlet_out=True) + ch
-        return F, seq.apply_mass_matrix(F, 2), Fs, seq.apply_mass_matrix(Fs, 2), J, a
+        return F, seq.apply_mass_matrix(F, 2), Fs, J, a
 
     def _ideal_increment(self, B: jnp.ndarray, state: State,
                          p_guess: jnp.ndarray,
@@ -888,12 +727,10 @@ class TimeStepper(eqx.Module):
                          J_guess: jnp.ndarray, E_guess: jnp.ndarray) -> Increment:
         """The ideal increment ``dB = curl(u x X)`` evaluated at the field ``B``.
 
-        Force, descent direction (the L-BFGS secant ``y = F_prev - F`` is
-        pushed against ``state``'s history here, see part 1 below), velocity
+        Force, descent direction (the smoothed force, or Newton's), velocity
         smoothing, the cross product and the topological curl. The velocity
         is divergence-free without a projection of its own: the force is
-        Leray-projected, the L-BFGS direction combines projected forces and
-        their steps, and the smoothing ``(M + mu L)^-1 M`` commutes with
+        Leray-projected and the smoothing ``(M + mu L)^-1 M`` commutes with
         the divergence; a second Leray projection of the velocity was
         measured to change nothing in float64 and in mixed precision and
         to cost 1.5-4x the step (``docs/research/velocity_leray_ab_2026-09-04.md``;
@@ -908,52 +745,19 @@ class TimeStepper(eqx.Module):
         """
         seq = self.seq
         if self.potential_velocity:
-            F, MF, Fs, MFs, J, a = self._potential_force(B, state.a, J_guess)
+            F, MF, Fs, J, a = self._potential_force(B, state.a, J_guess)
             p, X, JxX = p_guess, B, JxH_guess     # not computed on this route
         else:
             F, p, J, X, JxX = compute_force(
                 B, seq, self.auxiliary_B_field,
                 p_guess=p_guess, H_guess=H_guess, JxH_guess=JxH_guess,
                 J_guess=J_guess, F_guess=state.F_prev)
-            # M F ONCE.  It serves ||F||_M and the L-BFGS secant
-            # M y = M F_prev - M F; the increment applies M_2 three times in total
-            # (M F, M u, M dB) whichever method is running -- L-BFGS used to
-            # apply it 4m + 6 times.
+            # M F once: ||F||_M and the Newton right-hand side; the increment
+            # applies M_2 twice in total (M F, M u).
             MF = seq.apply_mass_matrix(F, 2)
-            # The force is smoothed BEFORE the L-BFGS combination (the
-            # preconditioned-CG order, the potential route's order): the
-            # combination of raw forces smoothed afterwards smooths the
-            # already smooth previous step a second time and floors 2.7x
-            # higher (li383 (16,32,32) p=2, tab:velocity_choices).
             Fs = self.smooth_velocity(F)
-            MFs = seq.apply_mass_matrix(Fs, 2)
             a = state.a
 
-        # The secant history exists only for history_size > 0 (a static
-        # branch: steepest descent carries (0, n) arrays and never touches
-        # them).
-        y_hist, My_hist = state.y_history, state.My_history
-        if self.history_size > 0:
-            # --- history bookkeeping, part 1: push y BEFORE the direction ---
-            # y_{k-1} = grad_M E_k - grad_M E_{k-1} = F_prev - F is a
-            # difference over the step that ALREADY happened, so it pairs with
-            # s_{k-1}, which the end of the previous step put in s_history[0].
-            # Pushing it HERE, rather than next to the brand-new s_k at the end
-            # of this step, is what keeps (s_i, y_i) aligned.  Pushing it at
-            # the end instead leaves y lagging its paired s by exactly one step.
-            # Under the midpoint rule every sweep re-pushes it against the
-            # SAME state history, so the pair is (s_{k-1}, F_prev - F(B_mid))
-            # of the converged sweep and never an inner iterate's.
-            y_hist = jnp.roll(y_hist, 1, axis=0).at[0].set(state.Fs_prev - Fs)
-            My_hist = jnp.roll(My_hist, 1, axis=0).at[0].set(state.MFs_prev - MFs)
-            # Powell's restart: consecutive forces far from orthogonal drop the
-            # memory (this step's direction is the smoothed force, the pairs
-            # pushed at the end of the step start it afresh).
-            restart = jnp.abs(state.Fs_prev @ MFs) > POWELL_RESTART * (Fs @ MFs)
-            y_hist = jnp.where(restart, 0.0, y_hist)
-            My_hist = jnp.where(restart, 0.0, My_hist)
-        else:
-            restart = jnp.zeros((), bool)
         if self.newton:
             precond = self.newton_precond_apply or self.newton_precond
             if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
@@ -992,13 +796,13 @@ class TimeStepper(eqx.Module):
                 slope = slope - self.step_regularisation * (J @ seq.apply_derivative_matrix(
                     dB_n, 1, dirichlet_in=True, dirichlet_out=True, transpose=True))
             descent = slope > 0
-            u = jax.lax.cond(descent, lambda: u_newton, lambda: self.smooth_velocity(F))
-            sy, newton_fallback = jnp.zeros((), F.dtype), (~descent).astype(jnp.int32)
+            u = jnp.where(descent, u_newton, Fs)
+            newton_fallback = (~descent).astype(jnp.int32)
         else:
-            u, sy = self._lbfgs_direction(Fs, jnp.where(restart, 0.0, state.s_history), y_hist,
-                                          jnp.where(restart, 0.0, state.Ms_history), My_hist)
+            # gradient descent on the smoothed force
+            u = Fs
             newton_it, newton_fallback = jnp.int32(0), jnp.int32(0)
-        # M u once: the linesearch numerator, ||u||_M and the stored M s.
+        # M u once: the linesearch numerator and ||u||_M.
         Mu = seq.apply_mass_matrix(u, 2)
 
         # u at the quadrature points once: the cross product and the CFL
@@ -1027,8 +831,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, Fs, MFs, p, H, JxX, J, E, cfl_max, sy,
-                         restart.astype(jnp.int32), y_hist, My_hist,
+        return Increment(dB, u, Mu, F, MF, Fs, p, H, JxX, J, E, cfl_max,
                          a, newton_it, newton_fallback)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -1208,35 +1011,22 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
 
-        # --- history bookkeeping, part 2: push the step just taken ----------
         # The descent variable is the VELOCITY u, not B: grad_M E = -F is the
-        # derivative of E with respect to u (dE = -(F, u)_M), and the direction
-        # the recursion returns is consumed as a velocity.  So the step in the
-        # descent variable is dt*u.  B moves by dt*curl(u x H) instead, which
-        # is a different vector in a different space; storing THAT as s pairs
-        # it with a y that is a secant of a different map entirely, and the
-        # curvature <s, y>_M goes negative on a third to a half of all steps.
-        # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
-        s_hist, Ms_hist = state.s_history, state.Ms_history
-        if self.history_size > 0:
-            # after a restart the old pairs are gone: the roll starts from zeros
-            s_hist = jnp.roll(jnp.where(inc.lbfgs_restart > 0, 0.0, s_hist), 1, axis=0).at[0].set(dt * inc.u)
-            Ms_hist = jnp.roll(jnp.where(inc.lbfgs_restart > 0, 0.0, Ms_hist), 1, axis=0).at[0].set(dt * inc.Mu)
-
+        # derivative of E with respect to u (dE = -(F, u)_M) and the line
+        # search minimises along dt*u; B moves by dt*curl(u x H), a different
+        # vector in a different space.
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
-                       s.F_prev, s.MF_prev, s.Fs_prev, s.MFs_prev, s.F_norm, s.v_norm, s.lbfgs_sy,
+                       s.F_prev, s.MF_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
-                       s.s_history, s.y_history, s.Ms_history, s.My_history,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda, s.lbfgs_restart),
+                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
-             inc.F, inc.MF, inc.Fs, inc.MFs, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu), inc.sy,
+             inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
-             s_hist, inc.y_history, Ms_hist, inc.My_history,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, inc.newton_fallback, lam, inc.lbfgs_restart))
+             inc.a, inc.newton_it, inc.newton_fallback, lam))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
@@ -1244,7 +1034,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
 
     ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
     ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
-    first step's secant ``y = F_prev - F`` sees the true previous gradient.
+    first step's solves start from the true previous force.
     Every leaf is an array of the working dtype, the scalars included: the
     state is the carry of :func:`chunk_runner`'s scan, and a Python-float
     leaf here against a float32 array out of the scan gave the scan two
@@ -1255,7 +1045,6 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
     """
     seq = ts.seq
     n = seq.n(2, True)
-    m = ts.history_size
     F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
     MF0 = seq.apply_mass_matrix(F0, 2)
     resid0 = (jnp.sqrt(F0 @ MF0) / force_scale(seq)(B_dof)) ** 2
@@ -1265,8 +1054,6 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         dt_star=jnp.asarray(dt, dtype=DTYPE),
         cfl_max=jnp.zeros((), dtype=DTYPE),
         v_norm=jnp.zeros((), dtype=DTYPE),
-        lbfgs_sy=jnp.zeros((), dtype=DTYPE),
-        lbfgs_restart=jnp.int32(0),
         v=jnp.zeros(n, dtype=DTYPE),
         p=p0,
         H=X0 if ts.auxiliary_B_field else jnp.zeros(seq.n(1, True), dtype=DTYPE),
@@ -1276,13 +1063,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
         MF_prev=MF0,
-        Fs_prev=F0,
-        MFs_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),
-        s_history=jnp.zeros((m, n), dtype=DTYPE),
-        y_history=jnp.zeros((m, n), dtype=DTYPE),
-        Ms_history=jnp.zeros((m, n), dtype=DTYPE),
-        My_history=jnp.zeros((m, n), dtype=DTYPE),
         picard_iterations=jnp.int32(0),
         picard_restarts=jnp.int32(0),
         picard_residual=jnp.zeros((), B_dof.dtype),
@@ -1302,7 +1083,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     """``run(state, it0) -> (state, trace)``, jit-compiled: ``n_chunk``
     relaxation steps as one ``lax.scan``.
 
-    The state (B, the L-BFGS pair, the warm-start guesses) is the carry and
+    The state (B, the force, the warm-start guesses) is the carry and
     comes out once; the per-step scalars are the scan's stacked output,
     ``trace[name]`` an array of length ``n_chunk`` over the steps
     ``it0 + 1 .. it0 + n_chunk``: ``dE`` (the step's change of the energy
@@ -1351,7 +1132,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, newton_fallback=state.newton_fallback,
-            hcorr=state.helicity_lambda, resid=resid, lbfgs_restart=state.lbfgs_restart,
+            hcorr=state.helicity_lambda, resid=resid,
             **{k: f(state) for k, f in extra.items()})
         return state, trace
 
@@ -1432,7 +1213,7 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
 
 def write_checkpoint(path: str, state: State, step: int) -> None:
     """The state at a step as one HDF5 file: every leaf of the pytree as a
-    dataset named by its field (``B_n``, ``p``, ``s_history``, ...), the step
+    dataset named by its field (``B_n``, ``p``, ``F_prev``, ...), the step
     as an attribute. Nothing else: the run's parameters are the driver's
     ``relax.json``, and the weak pressure is a diagnostic
     (:func:`make_sampler`), not state."""
@@ -1549,8 +1330,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     reconnect_fn = jax.jit(lambda B, eps: resistive_step(B, seq, eps))
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr",
-                             "lbfgs_restart")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "newton_fallback", "hcorr")}
     qoi: dict = {}
     events: list = []
 
@@ -1597,7 +1377,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "newton_fallback", "hcorr", "lbfgs_restart"):
+                  "newton_it", "newton_fallback", "hcorr"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
@@ -1689,8 +1469,6 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    CFL cap (C={ts.cfl}) bound on {int((dts < dt_star).sum())}/{n} steps;  "
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f};  "
           f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
-    if ts.history_size > 0:
-        print(f"    L-BFGS restarts (Powell): {int(np.sum(tr['lbfgs_restart']))}/{n} steps")
     if ts.newton:
         nit = np.abs(np.array(tr["newton_it"]))
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "

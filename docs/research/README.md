@@ -1,7 +1,7 @@
 # Research record
 
 Campaign handoffs, plans, measurements and refuted approaches. Nothing here
-describes what runs today; that is `docs/source/concepts/PRODUCTION.md`. Every file starts
+describes what runs today; that is `docs/source/concepts/relaxation.md` and the rest of `docs/source/`. Every file starts
 with a three-line block: its status, what to read it for, and what not to
 read it for. Read the block before the file.
 
@@ -33,7 +33,7 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 
 ## Relaxation and initial conditions
 
-- `descent_method_2026-08-26.md` — CG vs L-BFGS m=1..10 on the Clebsch IC: one trajectory to within noise; CG stays the default.
+- `descent_method_2026-08-26.md` — CG vs L-BFGS m=1..10 on the Clebsch IC: one trajectory to within noise (historical: the CG arm was deleted 2026-08-28, the L-BFGS memory 2026-09-17; the descent is gradient descent on the smoothed force, Newton the method).
 - `relaxation_ic_2026-08-25.md` — canonical: ICs from logical profiles or GVEC scalars, closed-form helicity, the two silent traps.
 - `handoff_2026-08-25_relaxation_prelim.md` — campaign narrative (2757 lines); section 34 is the sweep shelf.
 - `relaxation_results_table.md` — generated on greville-prod (53a71ed) from the `out/relax_prelim` archive; static.
@@ -57,3 +57,13 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 - `poisson_convergence_submitit_bug.md` — superseded; its hypothesis was refuted by finding 8 of the previous file.
 - `handoff_2026-08-24_harmonic_k1_free.md` — the k=1 free harmonic form and the saddle-outer diagnosis; fix unmerged (`OPEN.md` 2.1).
 - `handoff_2026-08-25_histopolation.md` — resolved; leftovers in `OPEN.md` 3.5.
+
+## September 2026 (Newton, the paper's reruns)
+
+- `newton_second_variation_2026-09-06.md` — Newton on the second variation: the operator, the potential form, the harmonic atom.
+- `harmonic_atom_and_helicity_correction_2026-09-11.md` — the harmonic atom from the VMEC field, kappa/budget sweeps, the regularised line search, Powell's restart, the helicity correction.
+- `hessian_spectrum_2026-09-17.md` — the Hessian's soft end is a field-aligned near-null continuum (u ~ fB), not resonant outliers; the parallel-flow penalty H + alpha M_par (`--newton-parallel-penalty`).
+- `harmonic_atom_floor_and_smoothing_2026-09-17.md` — kappa = 3 was LM damping of that continuum; the computed strain floor + alpha reaches 7-20x below the September floor with intact surfaces; the regularised search, dt floor, step cap > 1 and Newton-direction smoothing are inert or negative; candidate default pending Tobias.
+- `descent_block_m0_2026-09-17.md` — the paper's descent block rerun as gradient descent (m = 0); the L-BFGS memory removed from the code and the paper; what changed in the tables and figures.
+- `paper_experiments_audit_2026-09-11.md`, `paper_rerun_plan_2026-09-11.md`, `paper_rerun_results_2026-09-11.md` — the paper's runs audited, replanned and rerun on the released code.
+- `handoff_2026-09-03_chunked_relaxation_loop.md`, `handoff_2026-09-04_relax_cli_prune.md`, `handoff_2026-09-09.md` — the September handoffs (the last one carries the running status log).

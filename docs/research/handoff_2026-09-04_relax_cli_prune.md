@@ -1,5 +1,9 @@
 # Handoff 2026-09-04 — pruning the `scripts/relax.py` hyperparameters
 
+**Status:** historical (2026-09-04); the CLI it discusses changed since: `--method {newton,gradient}`, no `--history` (L-BFGS removed 2026-09-17).
+**Read for:** why each option was kept or cut at the time.
+**Do not read for:** the current flags (`docs/source/relaxation.md`).
+
 Purpose: decide which relaxation-driver CLI options are stale and cut them, and
 name the survivors better. Companion to `docs/research/simplify_findings_2026-09-04.md`
 (item 6) and `docs/research/implicit_midpoint_2026-09-04.md`. No code changed yet.
