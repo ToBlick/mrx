@@ -203,11 +203,12 @@ the archives on disk:
 |---|---|---|---|---|---|
 | VMEC IC | 2.5e-4 | 0 / 160 | - | 2.2e-4 | 0.3947..0.6603 |
 | alpha 0.3, strain, 100 steps (this study) | 2.5e-10 | 3 / 160 | 0.54, 0.67, 0.80 | 5.2e-3 | 0.3935..0.6603 |
+| alpha 0.3, strain, 200 steps (this study, job 18648652) | 1.9e-10 | 4 / 160 | 0.11, 0.64, 0.67, 0.68 | 3.2e-3 | 0.3935..0.6603 |
 | September h16 best (kappa 3, 200 steps) | 4e-9 | 4 / 160 | 0.55, 0.72, 0.80, 0.86 | 8.8e-4 | 0.3939..0.6599 |
 | peer: kappa 3 + alpha 1, 200 steps | 2.2e-10 | 3 / 160 | 0.55, 0.68, 0.74 | 4.8e-3 | 0.3932..0.6602 |
 | peer: kappa 3, alpha 0, 200 steps (control) | 1.3e-8 climbing | 51 / 160 | 0.10..0.89 | 1.3e-3 | 0.3952..0.6600 |
 
-The zeta = 0 sections of the first three are the same picture: nested surfaces, the same
+The zeta = 0 sections of the first four are the same picture (at 200 steps the 3/5 chain at r ~ 0.78 is a little more visible than at 100, as in the September best): nested surfaces, the same
 small chains at 1/2 (r ~ 0.55) and 3/7 (r ~ 0.28), the same wavy edge outside r ~ 0.75,
 the September best's islands in the 0.45-0.7 band if anything slightly larger, the iota
 profiles identical in range and shape. A residual 17x lower did not cost surface quality at
