@@ -442,11 +442,27 @@ step (p^T A p <= 0 at j = 0), the returned direction does not descend, the fallb
 over (197 of 200 steps), dt collapses to 0.02. li383 never sees negative curvature. Candidate
 causes: the warm start (r_0 is the residual of the previous direction, near noise once
 settled; its float32 curvature can come out <= 0) or an indefinite Hessian on W7-X.
-Diagnostics running (`batch9/`: zero guess in mixed precision, warm start in float64).
+Diagnostics (`batch9/`): a zero guess in mixed precision exits at negative curvature after
+20-60 iterations on every step (no fallbacks, dt 0.02, stuck at 1.7e-5); the warm start in
+float64 the same with 86 fallbacks. Not precision, not the warm start. LOBPCG on the states
+(`w7x_*_lobpcg.npz`, `job_lobpcg_w7x*.sh`): at the CONVERGED W7-X state (MINRES arm, step
+200, F2 8e-11) the penalised Hessian has lambda_min = +7.4e-4 and the bare one the null
+continuum at ~0, a minimum; at the state CG got stuck at (its step 100, F2 1.7e-5) the
+penalised Hessian has lambda_min = -1.8e-3 (one negative mode, converged) and the bare one
+four (-3.3e-3, -1.6e-3, -1.4e-3, -5.5e-4). **The second variation is genuinely indefinite
+away from equilibrium on W7-X** (its curvature part; at an equilibrium it is the force
+operator, and the relaxed state is a minimum). CG-Steihaug truncates at the negative
+direction, returns a short poor step, the state never leaves the indefinite region: a
+self-locking failure. MINRES solves the indefinite system regardless; its direction still
+descends the true energy (the line search tests that, not the model) and carries the state
+into the positive region. li383 is never indefinite along the way, which is why CG worked
+there.
 
-**Verdict so far:** MINRES with the fixed budget of 200 stays. The options remain in the code
-for the record of this section; if Tobias does not adopt any of them they should be deleted
-(`--newton-inner-tol`, `--newton-solver`, `--newton-warm-start`, `pcg_steihaug`).
+**Verdict:** MINRES with the fixed budget of 200 stays, and for a reason: the Newton system
+is indefinite along the way on W7-X. The forcing-term and CG options gave the same result
+at higher cost on li383 and fail on W7-X; they remain in the code for this record and should
+be deleted if not adopted (`--newton-inner-tol`, `--newton-solver`, `--newton-warm-start`,
+`pcg_steihaug`).
 
 ## 8. Summary
 
@@ -474,4 +490,4 @@ for the record of this section; if Tobias does not adopt any of them they should
   the radial profile and the device scaling on its own). Then delete kappa
   (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
   again, the Newton fallback and its two smoothing parameters.
-* GPU spent on this session: ~33 h of the 50 (spectrum probes 2, arms 27, traces 3, probes 1).
+* GPU spent on this session: ~40 h of the 50 (spectrum probes 3, arms 35, traces 3, calibration probes 2).
