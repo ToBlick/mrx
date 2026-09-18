@@ -1,5 +1,7 @@
 # Newton's method on the second variation (the SIESTA idea), 2026-09-06
 
+> **2026-09-17:** the Lanczos spectrum of section 9 (150 steps, 'the seven lowest modes') is superseded: 200-step Krylov probes pin only the extremes and their low Ritz vectors are unconverged mixtures. Block LOBPCG shows the soft end is a continuum of field-aligned null flows u = f B; see `hessian_spectrum_2026-09-17.md`.
+
 Branch `newton-second-variation` (worktree `.claude/worktrees/newton`, based on
 li383-followups 5d2189f). Budget: 10 GPU h. This note explains the idea from the
 energy to the code, then records the experiment. Sections 9 and 10 are filled in

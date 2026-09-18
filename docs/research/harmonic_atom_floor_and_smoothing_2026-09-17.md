@@ -1,5 +1,7 @@
 # The harmonic atom's floor computed, its profiles from B, and the smoothed Newton direction (2026-09-17)
 
+> **Units, 4271bc0 (same day, later):** the alpha values in this note are ABSOLUTE. Since 4271bc0 `--newton-parallel-penalty` is in the atom floor's units, (2 pi)^2 (h_theta^2 + h_zeta^2)(r); on li383 divide by ~4 (0.3 -> 0.075, the sweep's optimum 0.1 in the new units), and the same relative value is right on W7-X, where an absolute 0.3 was kappa 2.6. See `hessian_spectrum_2026-09-17.md` 7b.
+
 Branch `worktree-newton-atom-smoothing` off `newton-second-variation` (1b9bfd3). Three changes
 to the Newton preconditioner and direction, each a switch, and one seven-arm study on li383
 (16,32,32) p=2 mixed, Newton from the VMEC field, 100 steps, chunk 20, `--floor-tol 0

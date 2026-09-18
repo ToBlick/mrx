@@ -1,7 +1,9 @@
 # The spectrum of the Newton Hessian: where the soft modes are, 2026-09-17
 
 Branch `newton-second-variation`. Scripts, archives and figures in
-`outputs/newton_second_variation/spectrum/`. Budget 20 GPU h (Tobias), spent ~2.5.
+`outputs/newton_second_variation/spectrum/` (copy in the main checkout:
+`outputs/newton_second_variation/spectrum_2026-09-17/`). Budget 20 then 50 GPU h (Tobias), spent ~25.
+Sections 1-7 are the morning's spectrum study, 7b-7c the evening's tests of the remedy, 8 the summary.
 
 Question (Tobias): what do we know about the spectrum of the Hessian, and are the
 outlier modes at the rational surfaces? The 2026-09-06 note had 150 Lanczos steps at
@@ -291,10 +293,14 @@ energy removed: the undamped signature begins); 0.05 -> 2.0e-10; 0.075 -> 1.9e-1
 0.1 -> 1.6e-10, still descending; 0.2 -> 2.1e-10; strain -> 4.0e-10 (min at 161; the
 strain is ~3x too weak on li383). Optimum broad, 0.05-0.2 within 30 %, centred on 0.1.
 
-**MINRES budget with alpha 0.075, li383**: 50 -> 4.7e-10 (2.8 s/step), 100 -> 2.2e-10 (4.6),
-200 -> 1.6e-10 (8.1). Monotone, no degradation: September's "more iterations = past the
-floor sooner" was the null space. In wall time 50 leads for ~5 min, 200 from ~10 min on.
-400 and 800 (li383) and 200, 400 (W7-X) running (batch4_minres.sh).
+**MINRES budget with alpha 0.075** (batch4_minres.sh), residual at step 200 (s/step):
+li383 50 -> 4.7e-10 (2.8), 100 -> 2.2e-10 (4.6), 200 -> 1.6e-10 (8.1), 400 -> tracking 200
+(1.8e-10 at step 100, 15 s/step), 800 -> no better (2.1e-10 at step 80, 30 s/step): saturated
+at 200. W7-X (16,32,32): 100 -> 7.8e-11 (3.4), 200 -> 2.5e-11 (5.8), 400 -> 2.3e-11 (10.9):
+200 buys 3x, 400 nothing more. Monotone everywhere, no degradation: September's "more
+iterations = past the floor sooner" was the null space. In wall time 50 leads for ~5 min on
+li383, 200 from ~10 min on; 200 is the budget to use. The strain penalty gains as much:
+li383 strain 100 -> 4.0e-10, 200 -> 2.3e-10, 400 -> 2.5e-10 at step 98 (running).
 
 **p = 3, alpha 0.075**: 1.4e-10 at 200 (released p = 3 floored at 3.1e-9 at step 60).
 **Seeded (6,1), alpha 0.075**: 3.8e-10 (released 5.2e-9 at 40).
@@ -323,12 +329,24 @@ reconnections). It fired only when the null space made the direction bad (peer's
 strain-floor-without-penalty and smoothed-potential arms). Candidate for deletion under
 Newton once the default flips; kept for now.
 
-**Cary-Hanson island width** (d8b1539, `mrx.poincare.island_width`): from the residue of
+**Cary-Hanson island width** (d8b1539 + the bounded iteration; handed to another session
+by Tobias 2026-09-17 late, so what follows is the state at handover; `mrx.poincare.island_width`): from the residue of
 the O-point of the m-turn return map, w = 4 omega / (m |iota'|), omega = arccos(1 - 2R) /
 (2 pi m). On the reconnected run's 3/5 chain: 0.0496 vs 0.0503 from the lines at the first
 reconnection (residue 0.2); 1.7x over for the wide chains (residue 0.9-0.96, the pendulum's
 limit); 9e-3 in r at the VMEC IC, an eighth of a cell, where the lines see nothing.
-`island_width_check.py`.
+`island_width_check.py`. On W7-X FMM002 (`island_width_w7x.py`, the 5/5 chain at r ~ 0.83,
+where iota = 1 in the relaxed states) the numbers are NOT settled: the unbounded iteration
+found O-points with residue 0.27 (16^3 alpha), 0.115 (32^3 released), 0.14 (32^3 alpha) ->
+widths 0.085 / 0.055 / 0.061 in r (1.2-1.8 cells), and jumped out of the domain for 16^3
+released; the bounded iteration (max_step 0.02) found residue 0.0035 (16^3 released, width
+1e-2) and, for 32^3 alpha, a DIFFERENT fixed point at the same radius with residue 0.0012
+(width 5e-3). Two fixed points 0.087 apart in theta at one radius cannot both be O-points
+of one 5-chain (they alternate every 0.1 with the X-points): one of them belongs to another
+periodic orbit of the 5-turn map, or the difference quotient is unreliable where the map is
+close to the identity. Open for the session that owns it: verify the closure of the found
+orbit with a full trace, scan theta on the ring, and compare the residue with the tangent
+map from `jax.jacfwd` through diffrax.
 
 Figures: `traces_li383.pdf`, `traces_w7x16.pdf`, `traces_reconnect.pdf` (raw per-step
 residual vs step and vs wall time at the steady rate; `plot_arms.sh`).
@@ -354,7 +372,16 @@ with the same topology; the surface-loss mechanism itself is documented on li383
   is the same size as the eigenvalues and does little.
 * alpha M_par in the operator (Levenberg-Marquardt on the parallel component alone)
   lifts the null space, leaves the descent unchanged, and lets Newton go 20x past the
-  September floor at dt = 1 with the surfaces intact; with the atom's floor at the
-  physical strain, alpha 0.3 is the best measured (peer). Candidate default:
-  `--newton-parallel-penalty 0.3 --harmonic-floor strain --step-regularisation 0`, dt
-  floor off; pending the (32,64,64) sections and Tobias.
+  September floor at dt = 1 with the surfaces intact, on li383 (16,32,32) and (32,64,64),
+  p = 2 and 3, seeded, through eight reconnections, and on W7-X FMM002 at both meshes.
+* alpha is a number in the atom floor's units (kappa's units); 0.1 on li383 (broad optimum
+  0.05-0.2), the same value right on W7-X; `strain` is the parameter-free reference point,
+  ~2x worse. The MINRES budget is a pure cost knob now, saturating at 200. C, the dt floor
+  and (so far) the fallback are inert. The regular-line drift 5e-3 vs 9e-4 is the one open
+  number.
+* **Recommended default** (Tobias to decide): `--method newton --newton-parallel-penalty 0.1
+  --harmonic-floor strain --harmonic-field B --newton-maxiter 200 --step-regularisation 0
+  --dt-floor 0`, cap 1, floor-tol as a stop criterion only. Then delete kappa
+  (`HARMONIC_FLOOR`), the regularised search and, if the reconnection series confirms it
+  again, the Newton fallback and its two smoothing parameters.
+* GPU spent on this session: ~25 h of the 50 (spectrum probes 2, arms 20, traces 3).

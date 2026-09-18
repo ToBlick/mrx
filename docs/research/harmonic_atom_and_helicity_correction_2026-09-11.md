@@ -1,5 +1,14 @@
 # The harmonic atom from the VMEC field, and the helicity correction (2026-09-11)
 
+> **2026-09-17:** sections 5, 6 and 10 are superseded by
+> `hessian_spectrum_2026-09-17.md`. The Hessian's soft modes are field-aligned null flows
+> (u = f B), not resonant outliers; kappa = 3 and the 100-iteration truncation were
+> Levenberg-Marquardt damping of that null space in disguise, the regularised search
+> (C) does little, and the parallel-flow penalty `--newton-parallel-penalty` replaces all
+> three (20x past the floor at dt = 1, surfaces intact, MINRES saturating at 200 with no
+> degradation). Section 10's high-beta file is nonsense and deleted (Tobias): FMM002 is
+> the W7-X reference. Sections 1-4, 7-9 stand.
+
 Session "newton preconditioner", li383, worktree `.claude/worktrees/newton`,
 branch `newton-second-variation` (04f5cfe helicity correction, 2653107
 read_checkpoint). Runs under `outputs/chunk_speed/`, `outputs/harmonic_from0/`,
@@ -159,6 +168,8 @@ midpoint or auxiliary arms anywhere in its plan.
 
 ## 5. The budget and kappa sweeps (evening): kappa = 3 at 100 MINRES iterations
 
+*Superseded 2026-09-17: kappa was the damping of the parallel null space; with the penalty the budget is a pure cost knob (200 saturates) and the floor is the physical strain.*
+
 All li383 (16,32,32) p=2 mixed, Newton from the VMEC field, 100 steps, `--floor-tol 0`,
 per-step squared residual (`outputs/maxiter_sweep/`, `outputs/kappa_sweep/`, code e680ab4+).
 
@@ -293,6 +304,8 @@ factor above the unseeded floor as in the descent table). The best-state file is
 mistook for a step).
 
 ## 10. The W7-X high-beta demonstration: Newton past the floor destroys the surfaces (2026-09-12)
+
+*Superseded 2026-09-17: the file `w7x_highbeta.dat` is nonsense and deleted, never run on it. The mechanism (the parallel null space amplifying round-off) is reproduced on li383 by the alpha 0, C 0 control and removed by the penalty; on FMM002 (16,32,32)/(32,64,64) 200 steps past the floor keep the surfaces with either configuration.*
 
 `outputs/w7x_highbeta/h32` (GVEC `w7x_highbeta.dat`, (32,64,64) p=2, mixed, the released Newton
 configuration, 200 steps, 37.7 s/step, 2.1 h) and `h16` ((16,32,32), same). h32: resid 1.28e-3
