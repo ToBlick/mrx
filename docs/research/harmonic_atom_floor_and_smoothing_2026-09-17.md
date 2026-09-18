@@ -170,7 +170,28 @@ capped runs are a few soft-mode steps, not a systematically short direction.
 **The cliff is between alpha 0.03 and 0.1** (200-step arms at step 100): alpha 0.3 2.7e-10,
 0.1 8.3e-10, 0.03 4.0e-9 with the energy removed growing (2.25e-6 against 2.00e-6) and
 the helicity drift turning positive, the first signs of the undamped descent of section 4.
-The optimum is at 0.3 or above it, not below. Full 200-step and (32,64,64) tables below.
+The optimum is at 0.3 or above it, not below.
+
+**200 steps** (`B_strain_a{0.03,0.1,0.3}_c0_200`, jobs 18648612-14, 4.05 s/step):
+
+| alpha | min F2 (step) | F2 at 30 / 60 / 90 / 100 / 200 | E_rem at 100 / 200 | dH/H | dt | fb |
+|---|---|---|---|---|---|---|
+| 0.03 | 2.1e-9 (135) | 1.7e-8 / 6.2e-9 / 4.4e-9 / 4.0e-9 / 2.4e-9 | 2.25e-6 / 2.63e-6 | +3.1e-5 | 1.00 | 0 |
+| 0.1 | 4.2e-10 (178) | 3.2e-9 / 1.7e-9 / 8.5e-10 / 8.3e-10 / 4.6e-10 | 2.07e-6 / 2.19e-6 | -5.6e-7 | 1.00 | 0 |
+| 0.3 | 1.9e-10 (189) | 1.2e-9 / 5.1e-10 / 2.7e-10 / 2.7e-10 / 1.9e-10 | 2.00e-6 / 2.05e-6 | -9.4e-6 | 1.00 | 0 |
+
+- alpha 0.3 keeps descending through step 200 (chunk means 2.35e-10 -> 1.89e-10 over
+  120-200) with the energy nearly flat (+2.5% over the second hundred steps) and the
+  helicity flat: the equilibrium of the baselines, resolved further. 20x below the
+  September floor at step 200, matching the peer's kappa 3 + alpha 1 arm (2.2e-10 at 200).
+- alpha 0.1 plateaus at 4.6e-10 with the energy still moving (+5% over 100-200); alpha
+  0.03 floors at 2.4e-9 with the energy removed 30% above the baselines and the helicity
+  rising: the undamped descent, mild. The soft continuum must be lifted to about 0.3 in
+  the units of H against M_2, i.e. to the middle of the perpendicular spectrum's soft end
+  (the peer's LOBPCG: the softest perpendicular modes at 0.07-0.16 with alpha 1).
+- **Candidate default: `--newton-parallel-penalty 0.3 --harmonic-floor strain`, C 0, dt
+  floor off, cap 1.** Field h or B (identical on li383; B costs nothing and follows the
+  transform). Pending the (32,64,64) sections and Tobias's word.
 
 ## 8. Surfaces: the alpha 0.3 (16,32,32) final against the September best
 
