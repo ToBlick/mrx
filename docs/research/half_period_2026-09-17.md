@@ -102,7 +102,7 @@ the DoFs as they are.
 
 ## 4. Measurements
 
-Operator diagnostic (`outputs/half_period/diag_ops.py`, li383 (8,12,12)
+Operator diagnostic (`half_period_2026-09-17/diag_ops.py`, li383 (8,12,12)
 p=2 float64, the half-period sequence against a full-period twin on the
 same map, vectors of definite parity): `M_k`, `P_kl`, `D_k`, `D_k^T`,
 `S_k`, `L_k` agree to 1e-14 in every degree and both boundary classes;
@@ -113,6 +113,44 @@ the mass and Laplacian atoms differ by 1% and 2-6% (`Pi P Pi^T` against
 6e-14 in 314 against 357; the harmonic forms to 2e-15 (k=1 free), 7e-15
 (k=2 Dirichlet), 7e-15 (k=3); the initial field's even part 5e-16.
 
-(to be filled: the suite in both precisions, the li383 (16,32,32) float64
-identity run half vs full -- Newton 20 steps, L-BFGS 100 steps with a
-reconnection -- and the per-step wall time.)
+The suite on the li383 (8,12,12) fixture as a half-period sequence: 60/60
+in float64 (13.5 min) and 60/60 in refined float32 (15.8 min), the normal
+suite speed. Two tests changed: the mass-apply oracle and the projection
+transposition draw their random vectors of one parity, the Hessian test
+projects its random velocity even (a half-period sequence is defined on
+fields of definite parity; a random vector is not one). `test_symmetry.py`
+adds the 1-D reflection identities, the projector algebra, the parity of
+the equilibrium field and harmonic forms, and the half-against-full mass
+apply at 1e3 eps.
+
+The gate, li383 (16,32,32) p=2 float64 (runs under the worktree's
+`outputs/half_period/`, compared with `half_period_2026-09-17/compare_runs.py`):
+
+* L-BFGS, 100 steps, one reconnection at step 50: the reconnection
+  identical to every printed digit (eps 5.936e-05, |F| 1.976e-03 ->
+  1.333e-03, H -0.95%, 608 against 620 solver iterations); energy and
+  helicity to 1e-12 over the run; per-step residual to 2.4e-4 and the
+  final B to 5e-5 at step 100 -- round-off-seeded divergence, as between
+  any two builds ([[relaxation-trajectory-roundoff-divergence]]). Wall
+  1.40 s/step against 1.30: 6% SLOWER.
+* Newton, 20 steps: same floor (7.8e-9 against 1.07e-8), but the paths
+  differ at the 1e-3 level from the first step: MINRES exhausts its 300
+  iterations on 19 of 20 steps, so the direction is a truncated solve, and
+  the projected preconditioner (2-6% different) truncates it differently.
+  Wall: 28.6 s/step against 21.7 with the projector through the extraction
+  operators (a Newton step makes ~45k preconditioner applies, each then
+  four COO applies in float64 -- the difference), 21.77 against 21.70 with
+  the projector as one gather (a signed permutation of the bulk rows plus
+  the dense polar core block, equal to the exact projector to 1e-16).
+
+So at (16,32,32) the half-period step costs the same as the full one: the
+step is launch-bound there, and halving the kernel work buys nothing. The
+production size, li383 (32,64,64) p=2 refined float32, 20 L-BFGS steps in
+one chunk (compile included): full 198.2 s (9.91 s/step), half 166.8 s
+(8.34 s/step) on the slow projector, 144.3 s (7.21 s/step) on the gather
+one: 27% faster, energies equal to 2e-7 and helicities to 3e-7 after 20
+float32 steps. The steady-state per-step gain is larger (the compile is a
+fixed part of both), and it grows with the mesh; a (48,96,96) pair would
+say where it saturates. Not the 2x of the kernel count: the Krylov
+overhead, the atoms, the incidence applies and the polar core are
+unchanged, and the scheme adds O(n) per apply.

@@ -57,3 +57,4 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 - `poisson_convergence_submitit_bug.md` — superseded; its hypothesis was refuted by finding 8 of the previous file.
 - `handoff_2026-08-24_harmonic_k1_free.md` — the k=1 free harmonic form and the saddle-outer diagnosis; fix unmerged (`OPEN.md` 2.1).
 - `handoff_2026-08-25_histopolation.md` — resolved; leftovers in `OPEN.md` 3.5.
+- `half_period_2026-09-17.md` — stellarator symmetry as half-period quadrature: the parity projector, what broke on the way, the identity gate and the timings (27% at (32,64,64), none at (16,32,32)).
