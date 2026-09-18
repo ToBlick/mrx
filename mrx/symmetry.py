@@ -151,51 +151,6 @@ def mirror_component(seq, X, derivative_axes):
     return 0.5 * (X + X[:, perms[0], :][:, :, perms[1]])
 
 
-def free_reflection(seq, k, dirichlet):
-    """The reflection on the EXTRACTED k-form space as a sparse matrix,
-    ``R_free = (E E^T)^-1 E R E^T``: ``E^T`` lifts to the raw grid, ``R`` is
-    the signed permutation of :func:`reflection_plan`, and the conforming
-    restriction ``(E E^T)^-1 E`` brings the (still conforming: the polar
-    constraint set is reflection invariant) result back. ``E E^T`` is the
-    identity but for the small dense polar blocks, so this is a sparse
-    matrix, built once per ``(k, dirichlet)`` (NumPy/SciPy, cached on the
-    sequence). What :meth:`DeRhamSequence.project_parity` applies."""
-    from scipy import sparse  # noqa: PLC0415
-    from scipy.sparse import csgraph  # noqa: PLC0415
-
-    cache = seq.__dict__.setdefault("_free_reflection", {})
-    key = (int(k), bool(dirichlet))
-    if key in cache:
-        return cache[key]
-    e = seq.E(k, dirichlet)
-    n_free, n_raw = (int(v) for v in e.forward_shape)
-    E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64),
-                           (np.asarray(e.rows), np.asarray(e.cols))), shape=(n_free, n_raw))
-    perm, sign, off = np.empty(n_raw, dtype=np.int64), np.empty(n_raw), 0
-    for perm_t, perm_z, s, shape in seq.reflection_plan[k]:
-        n_c = int(np.prod(shape))
-        idx = np.arange(n_c).reshape(shape)
-        perm[off:off + n_c] = off + idx[:, list(perm_t), :][:, :, list(perm_z)].ravel()
-        sign[off:off + n_c] = s
-        off += n_c
-    R = sparse.csr_matrix((sign, (np.arange(n_raw), perm)), shape=(n_raw, n_raw))
-    gram = (E @ E.T).tocsr()
-    _, labels = csgraph.connected_components(gram, directed=False)
-    counts = np.bincount(labels)
-    diag = gram.diagonal()
-    inv = sparse.lil_matrix((n_free, n_free))
-    order = np.argsort(labels, kind="stable")
-    bounds = np.searchsorted(labels[order], np.arange(labels.max() + 2))
-    for lab in range(labels.max() + 1):
-        idx = order[bounds[lab]:bounds[lab + 1]]
-        if counts[lab] == 1:
-            inv[idx[0], idx[0]] = 1.0 / diag[idx[0]]
-        else:
-            inv[np.ix_(idx, idx)] = np.linalg.inv(gram[np.ix_(idx, idx)].toarray())
-    cache[key] = (inv.tocsr() @ E @ R @ E.T).tocsr()
-    return cache[key]
-
-
 @functools.partial(jax.jit, static_argnames=("plan_out", "plan_in"))
 def symmetrize_like(y, x, plan_out, plan_in):
     """``symmetrize(y, plan_out, parity_of(x, plan_in))`` in one compiled

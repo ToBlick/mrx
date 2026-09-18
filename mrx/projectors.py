@@ -225,7 +225,7 @@ def _conforming_restriction(e, c_full):
     for lab in np.unique(labels[core]):
         idx = order[bounds[lab]:bounds[lab + 1]]
         out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
-    return jnp.asarray(out, dtype=DTYPE)
+    return jnp.asarray(out, dtype=jnp.asarray(c_full).dtype)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:

@@ -50,7 +50,7 @@ from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.spline_bases import basis_derivative_table, basis_table
-from mrx.symmetry import free_reflection, parity_of, reflection_plan, symmetrize
+from mrx.symmetry import parity_of, reflection_plan, symmetrize
 from mrx.geometry import SequenceGeometry
 
 
@@ -627,9 +627,11 @@ class DeRhamSequence():
         definite parity. A full-period sequence returns ``v``."""
         if not self.half_period:
             return v
+        from mrx.projectors import _conforming_restriction  # noqa: PLC0415  (imports this module)
+        e = self.E(k, dirichlet)
         v = jnp.asarray(v)
-        reflected = free_reflection(self, k, dirichlet) @ np.asarray(v, dtype=np.float64)
-        return jnp.asarray(0.5 * (np.asarray(v, dtype=np.float64) + parity * reflected), dtype=v.dtype)
+        raw = symmetrize(e.T @ v.astype(jnp.float64), self.reflection_plan[k], parity)
+        return _conforming_restriction(e, raw).astype(v.dtype)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
         """Return the squared L² norm of a k-form DOF vector ``v``."""
