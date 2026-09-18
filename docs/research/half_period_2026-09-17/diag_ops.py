@@ -56,7 +56,7 @@ for k in range(4):
             print(f"L_{k} d={d} parity={parity:+d}: {rel(half.apply_laplacian(x, k, d), full.apply_laplacian(x, k, d)):.2e}  "
                   f"precond: {rel(half.apply_laplacian_preconditioner(x, k, d), full.apply_laplacian_preconditioner(x, k, d)):.2e}  "
                   f"mass precond: {rel(half.apply_mass_matrix_preconditioner(x, k, d), full.apply_mass_matrix_preconditioner(x, k, d)):.2e}", flush=True)
-from mrx.symmetry import reflect as _reflect
+from mrx.symmetry import reflect as _reflect  # noqa: E402
 for k in range(4):
     for d in (True, False):
         # a DUAL right-hand side of definite parity: what a load or an apply produces
