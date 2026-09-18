@@ -149,7 +149,14 @@ production size, li383 (32,64,64) p=2 refined float32, 20 L-BFGS steps in
 one chunk (compile included): full 198.2 s (9.91 s/step), half 166.8 s
 (8.34 s/step) on the slow projector, 144.3 s (7.21 s/step) on the gather
 one: 27% faster, energies equal to 2e-7 and helicities to 3e-7 after 20
-float32 steps. The steady-state per-step gain is larger (the compile is a
+float32 steps. The third arm (Tobias): NO symmetry, the whole torus at
+the same resolution per period, `--symmetry none --nfp 1 --ns 32,64,192`
+(1.09M Dirichlet 2-form DoFs against 365k; `--nfp 1` needed the map's
+`nfp` routed into the series projection and `load_clebsch`, which it was
+not -- the override used to stretch one period over the torus): the same
+initial residual 2.4581e-04 and iota, 20 steps in 484.7 s (24.2 s/step).
+So per step: whole torus 24.2 s, one field period 9.9 s (2.45x less for
+3x fewer DoFs), half a period 7.2 s (1.37x less again). The steady-state per-step gain is larger (the compile is a
 fixed part of both), and it grows with the mesh; a (48,96,96) pair would
 say where it saturates. Not the 2x of the kernel count: the Krylov
 overhead, the atoms, the incidence applies and the polar core are
