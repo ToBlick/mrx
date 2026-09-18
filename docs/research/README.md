@@ -57,5 +57,6 @@ Superseded chain, oldest first (each replaced by the next; kept for the reasonin
 - `poisson_convergence_submitit_bug.md` — superseded; its hypothesis was refuted by finding 8 of the previous file.
 - `handoff_2026-08-24_harmonic_k1_free.md` — the k=1 free harmonic form and the saddle-outer diagnosis; fix unmerged (`OPEN.md` 2.1).
 - `handoff_2026-08-25_histopolation.md` — resolved; leftovers in `OPEN.md` 3.5.
+- `pure_runner_2026-09-18.md` — the chunk runner as a pure function of the sequence (pytrees + filter_jit): the captured constants (3.5-10.6 GB) gone, the torus n=48 in a 128 GB job, the chunk's compile 3x faster; the design rules.
 - `island_diagnostic_2026-09-18.md` — the Cary-Hanson diagnostic (`mrx.poincare.islands`): O/X points by Newton on the return map, Greene's residue, the pendulum width; verified on the seeded li383 (6,1) chain against the seed estimate (8%, 1%); the shear must be the unseeded profile's, the tangent map needs 96 steps per period.
 - `half_period_2026-09-17.md` — stellarator symmetry as half-period quadrature: the parity projector, what broke on the way, the identity gate and the timings (27% at (32,64,64), none at (16,32,32)).
