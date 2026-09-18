@@ -394,6 +394,60 @@ coupling: a property of the lumping, ~3, not of the geometry, and the profile ca
 radial and device scaling by itself. Recommended over the constant: `--newton-parallel-penalty
 3*strain`.
 
+## 7e. The inner solve: forcing terms, CG-Steihaug (2026-09-18)
+
+Question (Tobias): inexact Newton methods stop the inner solve on a forcing term,
+||r|| <= eta ||grad f|| (Dembo-Eisenstat-Steihaug; Nocedal-Wright's eta_k = min(1/2,
+sqrt(||grad f_k||))), and use CG with the Steihaug negative-curvature exit rather than a fixed
+MINRES budget. Implemented (81a2b4e, 02322c0, 5f1ee16): `--newton-inner-tol X | sqrt`
+(MINRES's / CG's own stop in the preconditioner norm, `--newton-maxiter` the cap; `sqrt` =
+min(1/2, sqrt(rho_k)) with rho_k = ||F||_M / ||grad(B^2/2)|| the dimensionless force residual,
+i.e. the N&W sequence with the scale normalised away), `--newton-solver {minres,cg}`
+(`mrx.solvers.pcg_steihaug`, N&W 7.1's line-search variant with the preconditioner: negative
+curvature returns the current iterate, at j = 0 the preconditioned gradient; the trust region
+of 7.2 is replaced by our exact line search with the cap dt = 1), `--newton-warm-start`.
+`--newton-tol` is the true-residual verdict only (one refine pass) and has never shortened a
+solve.
+
+**Calibration** (`minres_tol_probe.py`, li383 alpha 0.1 states at steps 20 and 200, float64,
+MINRES tol in the P-norm vs the true residual in the mass-atom norm, iterations): the map
+depends on the state (tol 0.1: true 0.26 at 127 it early, 0.10 at 153 it late) and the warm
+start is a trap at loose tolerances (at step 20 the previous potential has true residual 0.98
+yet tol 0.3 or 0.2 stops after ONE iteration at true 0.7); at tol 0.03: true 0.15 in 95 it
+early, 0.035 in 74 it late (warm). The fixed 200 gives 0.18 early, 0.08 late.
+
+**Arms** (alpha 0.1, strain floor, C 0, 200 steps, cap 400; `batch7/`, `batch8/`), residual
+at step 200, s/step, inner iterations per chunk:
+
+| arm | li383 | W7-X (16,32,32) |
+|---|---|---|
+| MINRES fixed 200 | 1.53e-10, 8.0 s, 200 | 2.47e-11, 5.8 s, 200 |
+| MINRES tol 0.03 | 1.53e-10, 12.0 s, 352 -> 219 | 2.43e-11, 7.6 s, 353 -> 164 |
+| MINRES tol 0.05 | 1.52e-10, 9.7 s, 302 -> 169 | 2.59e-11, 6.5 s, 343 -> 132 |
+| MINRES sqrt | 1.54e-10, 14.6 s, 400 (cap) | - |
+| CG tol 0.03 | 1.55e-10, 15.1 s, 400 (cap) | FAILED: 7.8e-6, 197 fallbacks |
+| CG sqrt | 1.54e-10, 14.9 s, 400 (cap) | - |
+
+Every li383 variant lands on the same 1.53-1.55e-10 (the direction is converged in all of
+them) and none is cheaper than the fixed 200: in the mixed-precision inner solve (float32
+Krylov) the P-norm estimate converges ~3x slower than the float64 calibration, the constant
+tolerances spend 350-400 iterations early and ~200 late, the sqrt sequence (0.018 by step
+20, 5e-3 at the floor) sits at the cap, and CG's r^T P r never reaches 0.03. The N&W
+sequences are built for the asymptotic quadratic regime; this problem never enters it (a
+power-law descent into a discretisation floor with the step capped at 1), so a tighter
+inner solve buys nothing, measured three ways now (400/800 budgets, tolerances, sequences).
+
+**CG on W7-X** fails from step ~40: the Steihaug exit fires at the FIRST direction of every
+step (p^T A p <= 0 at j = 0), the returned direction does not descend, the fallback takes
+over (197 of 200 steps), dt collapses to 0.02. li383 never sees negative curvature. Candidate
+causes: the warm start (r_0 is the residual of the previous direction, near noise once
+settled; its float32 curvature can come out <= 0) or an indefinite Hessian on W7-X.
+Diagnostics running (`batch9/`: zero guess in mixed precision, warm start in float64).
+
+**Verdict so far:** MINRES with the fixed budget of 200 stays. The options remain in the code
+for the record of this section; if Tobias does not adopt any of them they should be deleted
+(`--newton-inner-tol`, `--newton-solver`, `--newton-warm-start`, `pcg_steihaug`).
+
 ## 8. Summary
 
 * The Hessian's soft end is a continuum of field-aligned flows u = f B, the discrete
