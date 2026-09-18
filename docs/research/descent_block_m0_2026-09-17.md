@@ -59,3 +59,14 @@ mention of m; the memory is dropped from the paper and the code). The gamma = 0 
 lower ending at 1.7e-7 against 1.1e-7. The L-BFGS memory was then removed from the code on this
 branch (`history_size`, the two-loop recursion, Powell's restart, `--history`, `--method lbfgs`
 -> `--method gradient`).
+
+**The 2-cycle explained (2026-09-18).** Steepest descent with an exact line search converges to
+a period-2 orbit in the plane of the stiffest and softest active modes (Akaike 1959), and in that
+limit `1/dt_1 + 1/dt_2 = lambda_max + lambda_min`. gamma = 0: steps 3.00e-5 / 1.74e-4, sum
+3.905e4, the top eigenvalue of the Hessian that the spectrum session's Lanczos run found
+(3.9e4); residual branches a factor 5.80 apart, contraction per pair 0.99942, `dt = dt*` on every
+step, cos(u, F) = 1. gamma = 1: the same cycle (lag-1 correlation -1.000) with branches 5% apart,
+steps 9.4e-4 / 8.9e-4, sum 2.19e3: the smoother lowers the effective top eigenvalue 18-fold; rate
+per pair 0.9995, cos(u, F) 0.85. Written into `outputs/paper/mrx_jcp.tex` (caption of
+Fig. gamma_sweep and the two paragraphs after it, red, marked NEW TEXT) with the reference
+`akaike_successive_1959` added to the bibliography; the paper compiles (50 pages).
