@@ -158,7 +158,19 @@ alpha 1 C 0.1.
 
 ## 7. Round three (running): alpha {0.03, 0.1, 0.3} at 200 steps, (32,64,64) at alpha 0.3, the step cap {4, inf}
 
-Jobs 18648612-15, 18648617-18. Results pending.
+Jobs 18648612-15, 18648617-18.
+
+**The step cap stays at 1** (`B_strain_a0.3_c0_cap{4,inf}`, 100 steps): with the cap
+lifted the line search settles at dt = 2.0 from step 40 on (dt* mean 1.96-2.01, the
+September value) and the residual sits at 1.1e-7 (chunk means 1.7e-7, 1.1e-7, 1.1e-7,
+1.2e-7 at 40-100) against 2.7e-10 with the cap: the resolved modes' residual is reflected
+at dt* = 2, as the 2026-09-08 reasoning for the cap said. The dt* means of 9-117 in the
+capped runs are a few soft-mode steps, not a systematically short direction.
+
+**The cliff is between alpha 0.03 and 0.1** (200-step arms at step 100): alpha 0.3 2.7e-10,
+0.1 8.3e-10, 0.03 4.0e-9 with the energy removed growing (2.25e-6 against 2.00e-6) and
+the helicity drift turning positive, the first signs of the undamped descent of section 4.
+The optimum is at 0.3 or above it, not below. Full 200-step and (32,64,64) tables below.
 
 ## 8. Surfaces: the alpha 0.3 (16,32,32) final against the September best
 
