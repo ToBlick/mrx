@@ -123,4 +123,39 @@ The peer session's remedy (64ffbd9, `--newton-parallel-penalty ALPHA`): `H + alp
 continuum to `alpha` and leaves the energy descent unchanged (`<F, fB> = 0`). The atom's
 consistent floor is `strain + alpha` (`harmonic_preconditioner(..., shift=alpha)`, b8b218e).
 Arms (jobs 18648567-71): B strain alpha {0.3, 1, 3} C 0; h strain alpha 1 C 0; B strain
-alpha 1 C 0.1. Results: section 6 (pending).
+alpha 1 C 0.1.
+
+## 6. Round two: the strain floor with the penalty, 100 steps
+
+| arm | job | min F2 (step) | F2 at 30 / 60 / 90 | last20 | E_rem | dH/H | dt | fb |
+|---|---|---|---|---|---|---|---|---|
+| B, strain, alpha 0.3, C 0 | 18648568 | 2.5e-10 (100) | 1.2e-9 / 5.1e-10 / 2.7e-10 | 2.7e-10 | 2.00e-6 | -1.0e-5 | 1.00 | 0 |
+| B, strain, alpha 1, C 0 | 18648567 | 5.6e-10 (100) | 3.3e-9 / 1.3e-9 / 6.7e-10 | 6.7e-10 | 1.96e-6 | -9.8e-6 | 1.00 | 0 |
+| B, strain, alpha 3, C 0 | 18648569 | 2.7e-9 (100) | 8.4e-9 / 4.5e-9 / 3.0e-9 | 3.0e-9 | 1.88e-6 | -9.6e-6 | 1.00 | 0 |
+| h, strain, alpha 1, C 0 | 18648570 | 5.6e-10 (100) | 3.3e-9 / 1.3e-9 / 6.7e-10 | 6.7e-10 | 1.95e-6 | -9.7e-6 | 1.00 | 0 |
+| B, strain, alpha 1, C 0.1 | 18648571 | 5.6e-10 (100) | 3.3e-9 / 1.3e-9 / 6.7e-10 | 6.7e-10 | 1.96e-6 | -9.8e-6 | 1.00 | 0 |
+| control: B, strain, alpha 0, C 0 | 18648542 | 4.8e-8 (19) | climbs to 6.9e-8 | 6.9e-8 | 2.77e-6 | +3.6e-5 | 0.95 | 0 |
+| best baseline: h, kappa 3, C 0.1 | - | 3.9e-9 (65) | 5.8e-9 / 3.9e-9 / 4.5e-9 | 4.5e-9 | 1.97e-6 | -1.1e-5 | 0.25 | 0 |
+
+- **With the continuum lifted in the operator, the physical floor works**: the residual is
+  still falling at step 100 (alpha 0.3: 1.2e-9, 5.1e-10, 2.7e-10 at 30 / 60 / 90), 17x below
+  the best baseline, at the Newton step on every step, no fallbacks, with the SAME energy
+  removed and the same helicity drift as the baselines: the same equilibrium, more
+  accurately. What September called the resolved floor (4e-9) was the method's floor.
+- **Neither kappa nor the regularised search is needed.** C 0.1 equals C 0 to every digit
+  (the search never binds at dt = 1); h equals B to three digits (li383 is 96% harmonic).
+- Smaller alpha is better down to 0.3 (each factor 3 in alpha is a factor ~2 in the
+  residual); alpha 0 climbs, so there is an optimum or a cliff below 0.3: round three.
+- The atom and the operator now agree on both ends: the stiff end by the parallel symbol,
+  the soft end by `alpha`, the strain in between. One physical parameter, `alpha`, in the
+  units of the Hessian against the mass, replaces kappa (a tuned floor), the regularised
+  search (a tuned step cut) and the dt floor (a tuned stop).
+- The line search's own optimum along the penalised direction is far beyond the cap:
+  `dt*` mean 9 (steps 1-20) to 117 (steps 81-100) with the step held at 1 by
+  `newton_dt_cap`. The damped operator overestimates the curvature along the soft
+  perpendicular modes, so the direction is short there. Whether a longer step descends
+  faster or reintroduces the parallel flows is the cap test of round three.
+
+## 7. Round three (running): alpha {0.03, 0.1, 0.3} at 200 steps, (32,64,64) at alpha 0.3, the step cap {4, inf}
+
+Jobs 18648612-15, 18648617-18. Results pending.
