@@ -266,6 +266,108 @@ def trace(field, seeds, n_periods, steps_per_period=32, saves_per_period=8,
     return jax.lax.map(one, y0s, batch_size=batch_size)
 
 
+# ---------------------------------------------------------------------------
+# Island width from the residue (Cary & Hanson 1986)
+# ---------------------------------------------------------------------------
+
+def return_map(field, n_periods, steps_per_period=32):
+    """``(u, v) at zeta = 0  ->  (u, v) at zeta = n_periods``, vmapped over seeds.
+
+    The field-line map of :func:`trace` without the intermediate saves: the
+    Poincaré return map of the plane ``zeta = 0`` after ``n_periods`` field
+    periods, whose fixed points are the periodic orbits.
+    """
+    n_steps = n_periods * steps_per_period
+    term = dfx.ODETerm(cross_section_rhs(field))
+    controller = dfx.StepTo(ts=jnp.arange(n_steps + 1) / steps_per_period)
+
+    def one(y0):
+        sol = dfx.diffeqsolve(terms=term, solver=dfx.Tsit5(), t0=0.0, t1=float(n_periods), dt0=None,
+                              y0=y0, saveat=dfx.SaveAt(t1=True), stepsize_controller=controller,
+                              max_steps=n_steps + 1, throw=False)
+        return sol.ys[0]
+
+    return jax.jit(jax.vmap(one))
+
+
+def periodic_orbit(field, m, nfp, r0, theta0, *, steps_per_period=32, iters=20, tol=1e-10, delta=1e-5):
+    """A fixed point of the ``m``-toroidal-turn return map near ``(r0, theta0)``, and its tangent map.
+
+    The O- and X-points of an ``(m, n)`` island chain (``n`` in field periods,
+    ``iota = nfp n / m``) close on themselves after ``m`` toroidal turns, i.e.
+    ``m nfp`` field periods. Newton's method on ``P(y) - y`` in the ``(u, v)``
+    chart, with the ``2 x 2`` Jacobian of ``P`` by central differences (five
+    lines per iteration, one vmapped solve); a float64 map has the difference
+    quotient at ``delta = 1e-5`` good to ~1e-6 in the tangent map. Returns
+    ``(r, theta, M)`` with ``M`` the tangent map at the fixed point. Raises
+    ``ValueError`` when the iteration does not close to ``tol`` (the guess was
+    not near a periodic orbit of that period, or the line escaped).
+    """
+    P = return_map(field, m * nfp, steps_per_period)
+    y = np.array([r0 * np.cos(TWO_PI * theta0), r0 * np.sin(TWO_PI * theta0)])
+    stencil = np.array([[0.0, 0.0], [delta, 0.0], [-delta, 0.0], [0.0, delta], [0.0, -delta]])
+    for _ in range(iters):
+        out = np.asarray(P(jnp.asarray(y[None, :] + stencil)))
+        M = np.stack([(out[1] - out[2]) / (2 * delta), (out[3] - out[4]) / (2 * delta)], axis=1)
+        residual = out[0] - y
+        if np.linalg.norm(residual) < tol:
+            break
+        y = y - np.linalg.solve(M - np.eye(2), residual)
+    else:
+        raise ValueError(f"periodic_orbit: no fixed point of the {m}-turn map near (r, theta) = ({r0}, {theta0}); "
+                         f"the residual is {np.linalg.norm(residual):.2e} after {iters} Newton iterations")
+    r, theta = float(np.hypot(*y)), float(np.arctan2(y[1], y[0]) / (2 * np.pi) % 1.0)
+    return r, theta, M
+
+
+def iota_slope(r, iota, r0, exclude=0.0, window=0.15):
+    """``d iota / dr`` at ``r0`` from a traced profile: the least-squares slope of the
+    lines with ``exclude < |r - r0| < window``, the island band itself left out
+    (iota is flat inside a chain; the width formula wants the shear of the
+    surfaces the chain replaced)."""
+    r, iota = np.asarray(r), np.asarray(iota)
+    keep = (np.abs(r - r0) > exclude) & (np.abs(r - r0) < window)
+    if keep.sum() < 4:
+        raise ValueError(f"iota_slope: only {keep.sum()} lines within {window} of r = {r0} outside the band {exclude}")
+    return float(np.polyfit(r[keep], iota[keep], 1)[0])
+
+
+def island_width(field, m, nfp, r0, theta0, iota_prime, **kw):
+    r"""The width of the ``(m, n)`` island chain through ``(r0, theta0)`` from the residue of its O-point.
+
+    Cary & Hanson (1986): near the O-point the ``m``-turn return map is a
+    rotation, ``tr M = 2 cos 2 pi nu``, with the residue ``R = (2 - tr M) / 4``
+    in ``(0, 1)`` for an elliptic (O) point and negative for a hyperbolic (X)
+    point. In the pendulum model of the chain,
+    ``H = iota' delta psi^2 / 2 + A cos(m theta - n phi)``, the trapped orbits
+    at the O-point turn at ``omega = m sqrt(iota' A)`` per radian of toroidal
+    angle and the separatrix half-width is ``2 sqrt(A / iota')``, so with
+    ``omega = 2 pi nu / (2 pi m)`` (the rotation ``2 pi nu`` accrues over ``m``
+    turns of ``2 pi``) the full width is
+
+        w = 4 omega / (m |iota'|),   omega = arccos(1 - 2 R) / (2 pi m),
+
+    in the coordinate ``iota'`` is taken in (here ``r``, ``iota`` per toroidal
+    turn, ``iota' = d iota / dr`` from :func:`iota_slope` on a traced
+    profile). Linear in the perturbation: a measurement for chains too thin
+    to resolve with lines, and an order-of-magnitude check on a wide one,
+    where the pendulum is only the first term. ``theta0`` should point at the
+    O-point (the ray that hits it at ``zeta = 0`` is a property of the seed's
+    phase: ``theta = 0.5`` for the li383 ``(6, 1)`` chain); a guess on the
+    X-point converges there instead, and the negative residue says so.
+    Returns ``dict(r, theta, residue, nu, omega, width)``.
+    """
+    r, theta, M = periodic_orbit(field, m, nfp, r0, theta0, **kw)
+    residue = (2.0 - np.trace(M)) / 4.0
+    if not 0.0 < residue < 1.0:
+        raise ValueError(f"island_width: the fixed point at (r, theta) = ({r:.4f}, {theta:.4f}) has residue "
+                         f"{residue:.4f}, not an O-point (negative: an X-point; > 1: unstable elliptic)")
+    nu = np.arccos(1.0 - 2.0 * residue) / (2 * np.pi)
+    omega = nu / m
+    return dict(r=r, theta=theta, residue=float(residue), nu=float(nu), omega=float(omega),
+                width=float(4.0 * omega / (m * abs(iota_prime))))
+
+
 def _escaped_mask(ys):
     """``True`` for seeds whose line reached the domain boundary."""
     r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
