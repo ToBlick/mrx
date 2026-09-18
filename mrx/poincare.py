@@ -290,7 +290,8 @@ def return_map(field, n_periods, steps_per_period=32):
     return jax.jit(jax.vmap(one))
 
 
-def periodic_orbit(field, m, nfp, r0, theta0, *, steps_per_period=32, iters=20, tol=1e-10, delta=1e-5):
+def periodic_orbit(field, m, nfp, r0, theta0, *, steps_per_period=32, iters=30, tol=1e-10, delta=1e-5,
+                   max_step=0.02):
     """A fixed point of the ``m``-toroidal-turn return map near ``(r0, theta0)``, and its tangent map.
 
     The O- and X-points of an ``(m, n)`` island chain (``n`` in field periods,
@@ -298,7 +299,11 @@ def periodic_orbit(field, m, nfp, r0, theta0, *, steps_per_period=32, iters=20, 
     ``m nfp`` field periods. Newton's method on ``P(y) - y`` in the ``(u, v)``
     chart, with the ``2 x 2`` Jacobian of ``P`` by central differences (five
     lines per iteration, one vmapped solve); a float64 map has the difference
-    quotient at ``delta = 1e-5`` good to ~1e-6 in the tangent map. Returns
+    quotient at ``delta = 1e-5`` good to ~1e-6 in the tangent map. Near a
+    surface where the map is close to the identity ``M - I`` is nearly
+    singular and the Newton step can jump to another chain or out of the
+    domain, so the step is bounded by ``max_step`` in the chart and a line
+    that reaches the boundary is an error, not a fixed point. Returns
     ``(r, theta, M)`` with ``M`` the tangent map at the fixed point. Raises
     ``ValueError`` when the iteration does not close to ``tol`` (the guess was
     not near a periodic orbit of that period, or the line escaped).
@@ -310,9 +315,13 @@ def periodic_orbit(field, m, nfp, r0, theta0, *, steps_per_period=32, iters=20, 
         out = np.asarray(P(jnp.asarray(y[None, :] + stencil)))
         M = np.stack([(out[1] - out[2]) / (2 * delta), (out[3] - out[4]) / (2 * delta)], axis=1)
         residual = out[0] - y
+        if np.hypot(*y) >= R_MAX:
+            raise ValueError(f"periodic_orbit: the line from (r, theta) = ({r0}, {theta0}) reached the boundary")
         if np.linalg.norm(residual) < tol:
             break
-        y = y - np.linalg.solve(M - np.eye(2), residual)
+        step = -np.linalg.solve(M - np.eye(2), residual)
+        size = np.linalg.norm(step)
+        y = y + step * min(1.0, max_step / size)
     else:
         raise ValueError(f"periodic_orbit: no fixed point of the {m}-turn map near (r, theta) = ({r0}, {theta0}); "
                          f"the residual is {np.linalg.norm(residual):.2e} after {iters} Newton iterations")
