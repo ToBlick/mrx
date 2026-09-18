@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.hessian import harmonic_preconditioner, newton_direction
+from mrx.hessian import HARMONIC_FLOOR, harmonic_preconditioner, newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -607,7 +607,20 @@ class TimeStepper(eqx.Module):
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
             damping on the field-aligned component alone, the Hessian's null
             space. 0 (the default) solves with the bare Hessian, where the
-            truncated MINRES and the atom's floor stand in for it.
+            truncated MINRES and the atom's floor stand in for it. The
+            harmonic atom adds ``alpha`` to its floor (a parallel unit mode
+            sees ``lambda + alpha``).
+        newton_atom_field: The 2-form the harmonic atom lumps: ``"h"`` (the
+            harmonic form, built once) or ``"B"`` (the current field, rebuilt
+            in the step from its own profiles: one quadrature evaluation).
+        newton_atom_floor: The atom's floor: a number times ``(2 pi)^2
+            (h_theta^2 + h_zeta^2)`` (:data:`mrx.hessian.HARMONIC_FLOOR`) or
+            ``None`` for the lumped strain of the field
+            (:func:`mrx.hessian.harmonic_atom_profiles`).
+        newton_smoothing: Filter the Newton potential with the descent's
+            smoother ``(M_1 + mu L_1)^-1 M_1`` (``velocity_smoothing_order``
+            times) before the curl; the fixed point is unchanged, the
+            grid-scale content of the direction is damped.
         step_regularisation: ``eps`` of the regularised energy ``E + eps
             ||J||_M^2 / 2`` the LINE SEARCH minimises along the step (0 is
             off): the direction and the force stay the physical ones, and
@@ -659,6 +672,9 @@ class TimeStepper(eqx.Module):
     newton_dt_cap: float = 1.0
     newton_parallel_penalty: float = 0.0
     newton_precond_apply: Callable = None
+    newton_atom_field: str = "h"
+    newton_atom_floor: Optional[float] = HARMONIC_FLOOR
+    newton_smoothing: bool = False
     helicity_correction: bool = False
     step_regularisation: float = 0.0
     picard_tol: float = None
@@ -671,9 +687,14 @@ class TimeStepper(eqx.Module):
             raise ValueError("history_size must be non-negative (0 is steepest descent).")
         if self.newton and self.history_size:
             raise ValueError("newton replaces the L-BFGS direction: history_size must be 0.")
-        if self.newton and self.newton_precond == "harmonic":
-            # built once: the profiles of h and the Fourier symbols
-            self.newton_precond_apply = harmonic_preconditioner(self.seq)
+        if self.newton_atom_field not in ("h", "B"):
+            raise ValueError("newton_atom_field is 'h' (the harmonic form) or 'B' (the current field).")
+        if self.newton and self.newton_precond == "harmonic" and self.newton_atom_field == "h":
+            # built once: the profiles of h and the Fourier symbols; from B
+            # the step rebuilds it (one quadrature evaluation per step)
+            self.newton_precond_apply = harmonic_preconditioner(
+                self.seq, self.seq.nullspace(2, True)[0], self.newton_atom_floor,
+                self.newton_parallel_penalty)
         if self.potential_velocity is None:
             self.potential_velocity = not (self.newton or self.auxiliary_B_field)
         if self.potential_velocity and (self.newton or self.auxiliary_B_field):
@@ -931,9 +952,24 @@ class TimeStepper(eqx.Module):
         else:
             restart = jnp.zeros((), bool)
         if self.newton:
+            precond = self.newton_precond_apply or self.newton_precond
+            if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
+                precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
+                                                  self.newton_parallel_penalty)
             u_newton, a, newton_it = newton_direction(
-                seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter,
-                self.newton_precond_apply or self.newton_precond, self.newton_parallel_penalty)
+                seq, B, J, MF, state.a, self.newton_tol, self.newton_maxiter, precond,
+                self.newton_parallel_penalty)
+            if self.newton_smoothing:
+                # the descent's filter on the Newton potential, as on the
+                # potential route: (M_1 + mu L_1)^-1 M_1 on a, then the
+                # curl, so the direction stays divergence-free exactly;
+                # the warm start keeps the unsmoothed solution
+                a_s = a
+                for _ in range(self.velocity_smoothing_order):
+                    a_s = seq.apply_inverse_mass_plus_eps_laplace_matrix(
+                        seq.apply_mass_matrix(a_s, 1, True), 1, self.velocity_smoothing_scale,
+                        dirichlet=True, guess=a_s)
+                u_newton = seq.apply_incidence_matrix(a_s, 1, dirichlet_in=True, dirichlet_out=True)
             # The line search's sign: a Newton direction that does not
             # descend (H indefinite there, or a direction the
             # potential cannot represent) is replaced by the smoothed force.
