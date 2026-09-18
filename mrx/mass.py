@@ -49,13 +49,11 @@ __all__ = [
 
 
 def _elem_counts(seq):
-    """(ne_x, ne_y, ne_z, qx, qy, qz) derived from the primal (k=0) basis."""
-    nx, ny, nz = seq.quad.nx, seq.quad.ny, seq.quad.nz
-    b0 = seq.basis_0.Λ
-    ne_x = b0[0].n if b0[0].type == "periodic" else b0[0].n - b0[0].p
-    ne_y = b0[1].n if b0[1].type == "periodic" else b0[1].n - b0[1].p
-    ne_z = b0[2].n if b0[2].type == "periodic" else b0[2].n - b0[2].p
-    return ne_x, ne_y, ne_z, nx // ne_x, ny // ne_y, nz // ne_z
+    """(ne_x, ne_y, ne_z, qx, qy, qz): the knot spans the quadrature rule
+    covers per axis (all of them, or the first half of zeta on a half-period
+    rule) and the Gauss points per span."""
+    q = seq.quad
+    return q.ne_x, q.ne_y, q.ne_z, q.nx // q.ne_x, q.ny // q.ne_y, q.nz // q.ne_z
 
 
 def _split_field(field_flat, ne_x, ne_y, ne_z, qx, qy, qz):
@@ -442,7 +440,14 @@ def build_mass_diagonal(seq, k, geometry=None):
         d_local = jnp.einsum('zse,xyzabs->xyzabe', Bz * Bz, t2)
         plan = _shift_plan(comp[c][1], comp[c][3], comp[c][5], shapes[c])
         parts.append(_structured_accumulate(d_local, plan).reshape(-1))
-    return jnp.concatenate(parts)
+    d = jnp.concatenate(parts)
+    if seq.half_period:
+        # 2 * (half-period diagonal): every entry's mirror image holds the
+        # other half of its integral, so the full diagonal is their mean --
+        # the bare permutation, the squared basis carrying no sign.
+        from mrx.symmetry import symmetrize  # noqa: PLC0415
+        d = symmetrize(d, seq.reflection_plan[k], 1, signed=False)
+    return d
 
 
 class SumfactPlan(NamedTuple):

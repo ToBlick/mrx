@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from mrx.extraction_operators import MatrixFreeExtraction
 from mrx.mass import sumfact_apply
+from mrx.symmetry import symmetrize_like
 import numpy as np
 
 from mrx.preconditioners import _assemble_weighted_1d_mass, _symmetrize
@@ -170,7 +171,27 @@ def mass_core_apply(seq, k: int):
     if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.mass_plan[k], seq.geometry.mass_weights[k]
-    return lambda x: sumfact_apply(plan, weights, x)
+    return _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k, k)
+
+
+def _half_period_apply(seq, core, k_in, k_out):
+    """``core`` (a raw apply ``x -> 2 * (half-period moments)`` that
+    commutes with the reflection) made the full-period apply on a
+    half-period sequence: the output projected onto the parity read off
+    the input (:func:`mrx.symmetry.parity_of`). Exact for an input of
+    definite parity, which is every vector a half-period run produces (the
+    projector also removes the round-off symmetry breaking a long run
+    accumulates); a mixed input has to be split by the caller, as the
+    dense-core probes of the preconditioner build do
+    (:func:`mrx.metric_lumping_laplacian._probe_rows`). A full-period
+    sequence gets ``core`` itself."""
+    if not seq.half_period:
+        return core
+    plan_in, plan_out = seq.reflection_plan[k_in], seq.reflection_plan[k_out]
+
+    def apply(x):
+        return symmetrize_like(core(x), x, plan_out, plan_in)
+    return apply
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +665,7 @@ def projection_core_apply(seq, k_in: int, k_out: int):
     if seq.geometry is None:
         raise ValueError("no geometry installed: call seq.set_map first")
     plan, weights = seq.projection_plan[(k_out, k_in)], seq.geometry.reference_weights
-    return lambda x: sumfact_apply(plan, weights, x)
+    return _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k_in, k_out)
 
 
 def extraction(seq, k: int, dirichlet: bool):
@@ -747,6 +768,7 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
         A_res=lambda x: apply_mass_matrix(on, x, k, dirichlet=dirichlet),
         norm=_dual_norm(operators, k, dirichlet),
         inner_tol=inner, inner_dtype=seq.dtype,
+        parity=_parity(seq, k, dirichlet, rhs),
     )
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
@@ -785,8 +807,16 @@ def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, gu
     _, project_dual_k = deflation_projectors(jnp.asarray(vs, dtype=RESIDUAL_DTYPE),
                                              lambda v: M(on, v, k))
 
+    # and, on a half-period sequence, both blocks lose the round-off of the
+    # other parity (the parity of b, sigma's being the same)
+    par_k, par_l = _parity(seq, k, dirichlet, b), None
+    if par_k is not None:
+        par_l = _parity(seq, k - 1, dirichlet, None, sign=seq.free_projector(k, dirichlet).parity(b))
+    pd_k = (lambda r: r) if par_k is None else par_k[1]
+    pd_l = (lambda r: r) if par_l is None else par_l[1]
+
     def project_dual(r):
-        return jnp.concatenate([project_dual_k(r[:n_k]), r[n_k:]])
+        return jnp.concatenate([pd_k(project_dual_k(r[:n_k])), pd_l(r[n_k:])])
 
     def D(s, v):
         return apply_incidence_matrix(s, v, k - 1, dirichlet_in=dirichlet, dirichlet_out=dirichlet)
@@ -832,6 +862,17 @@ def _outer(seq, tol):
     is the whole solve and the loop only checks it)."""
     res = seq.residual
     return (res, inner_tol(tol)) if res is not None else (seq, tol)
+
+
+def _parity(seq, k: int, dirichlet: bool, b, sign=None):
+    """``(project_primal, project_dual)`` of a solve on the ``(k, dirichlet)``
+    space of a half-period sequence: the parity read off its right-hand
+    side ``b``, or the given ``sign`` (a composite solve's other block);
+    ``None`` on a full-period sequence (:mod:`mrx.symmetry`)."""
+    pj = seq.free_projector(k, dirichlet)
+    if pj is None:
+        return None
+    return pj.projectors(b) if sign is None else pj.with_sign(sign)
 
 
 def _dual_norm(operators, k: int, dirichlet: bool):
@@ -920,8 +961,12 @@ def assemble_mass_metric_lumping_preconditioner(
             raise ValueError(
                 "metric_lumping mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
-            atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(
-                seq, operators, int(k), bool(dirichlet), **kwargs)
+            atom = MetricLumpingMass(seq, operators, int(k), bool(dirichlet), **kwargs)
+            # Half-period sequence: the atom returns the parity of its input
+            # (mrx.symmetry.free_projector); before any apply is memoised.
+            atom.parity_projector = seq.free_projector(int(k), bool(dirichlet))
+            atom._apply_in = {}
+            atoms[(int(k), bool(dirichlet))] = atom
     return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
@@ -958,8 +1003,9 @@ def assemble_metric_lumping_laplacian_preconditioner(
     atoms = dict(operators.laplacian_lumping or {})
     for k in ks:
         for dbc in dirichlets:
-            atoms[(int(k), bool(dbc))] = MetricLumpingLaplacian(
-                seq, operators, int(k), bool(dbc), **kwargs)
+            atom = MetricLumpingLaplacian(seq, operators, int(k), bool(dbc), **kwargs)
+            atom.parity_projector = seq.free_projector(int(k), bool(dbc))
+            atoms[(int(k), bool(dbc))] = atom
     return eqx.tree_at(lambda ops: ops.laplacian_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
@@ -1051,6 +1097,7 @@ def _hat_solve(seq, operators, b, k: int, dirichlet: bool, *, tol, maxiter):
         vs=_nullspace_vectors(operators, k, dirichlet),
         tol=tol,
         maxiter=maxiter,
+        parity=_parity(seq, k, dirichlet, b),
     )
 
 
@@ -1157,6 +1204,7 @@ def _k0_solve(seq, operators, b, dirichlet, *, tol, maxiter, guess=None, on=None
         A_res=None if on is None else (lambda x: apply_stiffness(on, x, 0, dirichlet=dirichlet)),
         norm=_dual_norm(operators, 0, dirichlet),
         inner_tol=inner, inner_dtype=seq.dtype,
+        parity=_parity(seq, 0, dirichlet, b),
     )
 
 
@@ -1272,6 +1320,9 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
         norm_upper=_dual_norm(operators, k, dirichlet),
         norm_lower=_dual_norm(operators, k - 1, dirichlet),
         inner_tol=inner, inner_dtype=seq.dtype,
+        parity_upper=_parity(seq, k, dirichlet, rhs),
+        parity_lower=(None if seq.free_projector(k, dirichlet) is None else
+                      _parity(seq, k - 1, dirichlet, None, sign=seq.free_projector(k, dirichlet).parity(rhs))),
     )
 
 
@@ -1315,7 +1366,8 @@ def apply_inverse_shifted_laplacian(seq, operators: SequenceOperators, rhs, k: i
             precond_matvec=_laplacian_atom(operators, 0, dirichlet).apply,
             x0=guess, vs=vs, tol=tol, maxiter=maxiter,
             A_res=lambda x: A_on(res, x),
-            norm=_dual_norm(operators, 0, dirichlet), inner_tol=inner, inner_dtype=seq.dtype)
+            norm=_dual_norm(operators, 0, dirichlet), inner_tol=inner, inner_dtype=seq.dtype,
+            parity=_parity(seq, 0, dirichlet, rhs))
         u = _out(seq, u)
         return (u, info) if return_info else u
 
@@ -1388,6 +1440,7 @@ def apply_inverse_mass_plus_eps_laplace_matrix(seq, operators: SequenceOperators
             A_res=None if on is None else (lambda x: A_on(on, j, x)),
             norm=_dual_norm(operators, j, dirichlet),
             inner_tol=inner, inner_dtype=seq.dtype,
+            parity=_parity(seq, j, dirichlet, b),
         )
 
     if k == 0:

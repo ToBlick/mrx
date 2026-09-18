@@ -2,10 +2,12 @@
 from typing import Callable
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.numpy import cos, pi, sin
 
 from mrx.differential_forms import DifferentialForm
+from mrx.symmetry import is_uniform_periodic, reflection_permutation
 
 
 class SplineMap(eqx.Module):
@@ -96,3 +98,46 @@ def cylinder_map(a: float = 1.0, h: float = 1.0) -> Callable:
                           h * z])
 
     return F
+
+
+# ---------------------------------------------------------------------------
+# Stellarator symmetry (the projector of PR #23, akaptano)
+# ---------------------------------------------------------------------------
+#
+# Stellarator symmetry is ``(R, phi, Z) -> (R, -phi, -Z)``, in logical
+# coordinates ``(r, theta, zeta) -> (r, -theta, -zeta)`` with ``R`` even and
+# ``Z`` odd; on the Cartesian map ``(R cos 2 pi zeta, -R sin 2 pi zeta, Z)``
+# it is the reflection ``S = diag(1, -1, -1)``. A map built from a symmetric
+# series (a VMEC wout has only ``rmnc`` and ``zmns``) is symmetric to
+# roundoff already; the projector makes it so exactly, and measures it.
+
+#: ``S``: the Cartesian reflection stellarator symmetry induces.
+STELLARATOR_REFLECTION = jnp.array([1.0, -1.0, -1.0])
+
+
+def angular_reflection_allowed(basis_0: DifferentialForm) -> bool:
+    """Whether the two angular axes of ``basis_0`` are uniform periodic
+    bases, on which ``(theta, zeta) -> (-theta, -zeta)`` is an index
+    permutation of the coefficients."""
+    return all(is_uniform_periodic(basis_0.Λ[axis]) for axis in (1, 2))
+
+
+def stellarator_symmetric_scalar(raw: jnp.ndarray, basis_0: DifferentialForm, even: bool) -> jnp.ndarray:
+    """Project the ``(n_r, n_t, n_z)`` coefficients of a scalar spline onto
+    the part even (``R``) or odd (``Z``) under ``(theta, zeta) -> (-theta,
+    -zeta)``, by the index permutation of the two uniform periodic angular
+    axes (:func:`angular_reflection_allowed`)."""
+    perm_t = reflection_permutation(basis_0.Λ[1].n, basis_0.Λ[1].p)
+    perm_z = reflection_permutation(basis_0.Λ[2].n, basis_0.Λ[2].p)
+    reflected = raw[:, perm_t, :][:, :, perm_z]
+    return 0.5 * (raw + reflected) if even else 0.5 * (raw - reflected)
+
+
+def stellarator_symmetry_defect(F: Callable, x: jnp.ndarray) -> jnp.ndarray:
+    """``max |F(r, -t, -z) - S F(r, t, z)|`` over the logical points ``x``
+    (``(n, 3)``): zero if and only if ``F`` is stellarator symmetric there."""
+    def one(xi):
+        r, t, z = xi
+        return jnp.max(jnp.abs(F(jnp.array([r, -t, -z])) - STELLARATOR_REFLECTION * F(xi)))
+
+    return jnp.max(jax.vmap(one)(jnp.atleast_2d(jnp.asarray(x))))

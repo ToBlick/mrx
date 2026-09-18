@@ -52,7 +52,7 @@ ap.add_argument("--seed", default="",
 ap.add_argument("--seed-eps", type=float, default=0.0)
 ap.add_argument("--newton-steps", type=int, default=5,
                 help="Newton steps of the ideal tail after the resistive step (a multiple of 5)")
-ap.add_argument("--seeds", type=int, default=24, help="Poincare field lines")
+ap.add_argument("--lines", type=int, default=24, help="Poincare field lines")
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
 ap.add_argument("--cuts", type=int, default=6)
 ap.add_argument("--out", default="outputs/tutorials/li383_resistive")
@@ -75,12 +75,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
-from mrx.geometry import build_sequence, geometry_nfp
+from mrx.geometry import build_sequence
 from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
-from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
-                          trace_and_classify, section_RZ, surface_label)
+from mrx.poincare import poincare, surface_label
 from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, resistive_step,
                             weak_pressure, write_checkpoint)
 
@@ -89,8 +88,8 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # %%
 # Now we build the de Rham sequence on li383's geometry and its harmonic forms,
 # the operators every solve and the Poincare tracing lean on.
-nfp = geometry_nfp(cli.geometry)
 seq, ops = build_sequence(cli.geometry, ns, cli.p)
+nfp = seq.nfp
 compute_nullspaces(seq)
 
 # %%
@@ -168,21 +167,16 @@ print(f"  -> {path}")
 # islands show: the resistive step can open or heal a chain the ideal descent
 # would have frozen. Each field is traced once and cut at all five planes.
 def sections(B_dof, tag, title):
-    field = logical_field(seq, jnp.asarray(B_dof), 2, True)
-    require_zeta_parameterisation(field, name=tag)
-    seeds = seed_from_axis(field, cli.seeds, 8, n_rays=4, steps_per_period=32)
-    res = trace_and_classify(field, seeds, nfp, n_periods=cli.periods,
-                             steps_per_period=32, saves_per_period=8)
-    render_keep = ~(res["escaped"] | ~res["ok"])
-    for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
-        R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], 8, plane)
+    res = poincare(seq, B_dof, lines=cli.lines, periods=cli.periods, name=tag)
+    for plane, sec in res["sections"].items():
+        R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)
         fig, _ = render_section(
-            R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
+            R, Z, res["iota"], res["iota_err"], res["seed_r"], res["keep"],
             title=f"{title}  |  $\\zeta = {plane:g}$",
             subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}",
             axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-            logical=(lr, lth), iota_scatter=res["iota_scatter"])
+            logical=(sec["logr"], sec["logth"]), iota_scatter=res["iota_scatter"])
         path = os.path.join(cli.out, f"poincare_{tag}_zeta{plane:g}.png")
         fig.savefig(path, dpi=200)
         if _INTERACTIVE:

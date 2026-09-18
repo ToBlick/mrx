@@ -39,6 +39,7 @@ import numpy as np
 import copy
 
 import mrx
+from mrx.pytree import register_arrays
 from mrx.differential_forms import DifferentialForm
 from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, default_tol, solve_tol
 from mrx.extraction_operators import (PolarExtractionOperator,
@@ -50,6 +51,7 @@ from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.spline_bases import basis_derivative_table, basis_table
+from mrx.symmetry import free_projector, parity_of, reflection_plan, symmetrize
 from mrx.geometry import SequenceGeometry
 
 
@@ -129,11 +131,19 @@ class DeRhamSequence():
     def __init__(self, ns, ps, q, types, *, polar,
                  tol=None, maxiter=10_000,
                  r_scale=1.0, knots=None,
-                 n_inner=5, betti_numbers=(1, 1, 0, 0)):
+                 n_inner=5, betti_numbers=(1, 1, 0, 0), half_period=False):
         """Construct a de Rham sequence.
 
         Parameters
         ----------
+        half_period : bool, optional
+            Quadrature over half the zeta period only (:class:`QuadratureRule`
+            ``half_zeta``), for a stellarator-symmetric geometry and fields
+            of definite parity (:mod:`mrx.symmetry`): every mass and
+            projection apply detects the parity of its input and projects
+            its output, every load of a pointwise product takes the
+            product's ``parity``. Needs uniform angular knots with an even
+            number of zeta cells.
         ns : list of int
             Number of basis functions ``[n_r, n_θ, n_ζ]`` for each direction.
         ps : list of int
@@ -198,6 +208,11 @@ class DeRhamSequence():
         self.geometry = None
         #: the parsed geometry file of :func:`mrx.geometry.build_sequence`
         self.equilibrium = None
+        #: field periods spanned by logical zeta in [0, 1], and the map's
+        #: symmetry, one of :data:`mrx.geometry.SYMMETRIES`; both set by
+        #: :func:`mrx.geometry.build_sequence`
+        self.nfp = None
+        self.symmetry = None
         self.operators = None
         #: The dtype of the sequence's arrays and of its solves' results: the
         #: working dtype; the residual dtype on the float64 view.
@@ -223,7 +238,12 @@ class DeRhamSequence():
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
             DifferentialForm(i, ns, ps, types, Ts) for i in range(0, 4)
         ]
-        self.quad = QuadratureRule(self.basis_0, q)
+        self.quad = QuadratureRule(self.basis_0, q, half_zeta=half_period)
+        #: half-period quadrature: the reflection of every raw DoF grid
+        #: (:func:`mrx.symmetry.reflection_plan`), or ``None``
+        self.half_period = bool(half_period)
+        self.reflection_plan = ({k: reflection_plan(self, k) for k in range(4)}
+                                if half_period else None)
 
         bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
         self.xi = get_xi(ns[1])
@@ -275,7 +295,7 @@ class DeRhamSequence():
         self._residual = None
 
     def load(self, f, k: int, dirichlet: bool = False, bc: bool = False,
-             frame: str = 'phys'):
+             frame: str = 'phys', parity=None):
         """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
         Parameters
@@ -285,8 +305,9 @@ class DeRhamSequence():
         dirichlet : bool  Use Dirichlet-constrained DOFs.
         bc : bool  Use boundary-trace DOFs (takes precedence over dirichlet).
         frame : {'phys', 'ref'}  Passed to :func:`mrx.projectors.load`.
+        parity : the parity of ``f`` (:mod:`mrx.symmetry`), on a half-period sequence.
         """
-        return _load(self, f, k, dirichlet=dirichlet, bc=bc, frame=frame)
+        return _load(self, f, k, dirichlet=dirichlet, bc=bc, frame=frame, parity=parity)
 
     def interpolate(self, f, k: int, dirichlet: bool = False,
                     frame: str = 'phys'):
@@ -583,6 +604,47 @@ class DeRhamSequence():
                 )
             case _:
                 raise ValueError("k must be 0, 1, 2, or 3")
+
+    def symmetrize(self, y_raw, k, parity):
+        """On a half-period sequence, the parity projector on a RAW k-form
+        vector (:func:`mrx.symmetry.symmetrize`): what turns the doubled
+        half-period moments into the full-period ones. ``parity`` is ``+1``
+        (even: velocities, forces, pressures and their gradients) or ``-1``
+        (odd: ``B``, ``A``, ``J``, ``H``, the harmonic forms), a Python int
+        or a traced scalar. On a full-period sequence ``y_raw`` is returned
+        as is, ``parity`` ignored."""
+        if not self.half_period:
+            return y_raw
+        if parity is None:
+            raise ValueError("a reduction on a half-period sequence needs the field's parity: "
+                             "+1 (even: velocities, forces, pressures) or -1 (odd: B, A, J, H)")
+        return symmetrize(y_raw, self.reflection_plan[k], parity)
+
+    def free_projector(self, k, dirichlet=True):
+        """The :class:`mrx.symmetry.FreeProjector` of the extracted
+        ``(k, dirichlet)`` space (built once), ``None`` on a full-period
+        sequence: what the preconditioners and the solvers project with."""
+        if not self.half_period:
+            return None
+        cache = self.__dict__.setdefault("_free_projectors", {})
+        key = (int(k), bool(dirichlet))
+        if key not in cache:
+            cache[key] = free_projector(self, int(k), bool(dirichlet))
+        return cache[key]
+
+    def project_parity(self, v, k, parity, dirichlet=True):
+        """The part of the k-form DoF vector ``v`` of the given parity
+        (:mod:`mrx.symmetry`), on a half-period sequence: the raw projector
+        restricted back onto the extracted space (the conforming restriction
+        of :mod:`mrx.projectors`). Where a run is required to start of
+        definite parity. A full-period sequence returns ``v``."""
+        if not self.half_period:
+            return v
+        from mrx.projectors import _conforming_restriction  # noqa: PLC0415  (imports this module)
+        e = self.E(k, dirichlet)
+        v = jnp.asarray(v)
+        raw = symmetrize(e.T @ v.astype(jnp.float64), self.reflection_plan[k], parity)
+        return _conforming_restriction(e, raw, dtype=jnp.float64).astype(v.dtype)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
         """Return the squared L² norm of a k-form DOF vector ``v``."""
@@ -946,9 +1008,11 @@ class DeRhamSequence():
         """
         w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
         u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
-        return self.cross_product_load_values(w_jk, u_jk, n, m, k, dirichlet_n)
+        return self.cross_product_load_values(
+            w_jk, u_jk, n, m, k, dirichlet_n,
+            parity=self.parity(w, m, dirichlet_m) * self.parity(u, k, dirichlet_k))
 
-    def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
+    def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i · (w × u)`` from quadrature values of ``w`` and ``u``.
 
         The physical cross product is formed in the reference representation
@@ -976,6 +1040,8 @@ class DeRhamSequence():
             k: Form degree of ``u`` (1 or 2).
             dirichlet_n: Use the Dirichlet-constrained extraction for the
                 output.
+            parity: the product's parity, the product of the two factors'
+                (:mod:`mrx.symmetry`); needed on a half-period sequence.
 
         Returns:
             The n-form dual DOF vector.
@@ -1000,7 +1066,7 @@ class DeRhamSequence():
             c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
                  else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
             rep = 2
-        return self._vector_load_values(c, rep, n, dirichlet_n)
+        return self._vector_load_values(c, rep, n, dirichlet_n, parity)
 
     # --- the other quadratic operators ------------------------------------
     #
@@ -1026,23 +1092,25 @@ class DeRhamSequence():
     # nothing (the ``P_12`` pairing), a value against the 0-form basis
     # ``J``, against the 3-form basis nothing.
 
-    def _scalar_load_values(self, s_jk, n, dirichlet_n=True):
+    def _scalar_load_values(self, s_jk, n, dirichlet_n=True, parity=None):
         """Load a physical scalar (values at the quadrature points, shape
         ``(n_q,)``) onto the n-form space: ``int Λ⁰_i s J dx`` for n = 0,
-        ``int Λ³_i s dx`` for n = 3."""
+        ``int Λ³_i s dx`` for n = 3. ``parity`` is the scalar's, on a
+        half-period sequence (:meth:`symmetrize`)."""
         from mrx.quadrature import integrate_against
         if n not in (0, 3):
             raise ValueError("n must be 0 or 3")
         weight = self.quad.w * self.jacobian_j if n == 0 else self.quad.w
         comp_info, comp_shapes = self._form_comp_info(n)
-        return self.E(n, dirichlet_n) @ integrate_against(
-            (s_jk * weight)[:, None], comp_info, comp_shapes, self.quad.shape)
+        return self.E(n, dirichlet_n) @ self.symmetrize(integrate_against(
+            (s_jk * weight)[:, None], comp_info, comp_shapes, self.quad.shape), n, parity)
 
-    def _vector_load_values(self, c_jk, rep, n, dirichlet_n=True):
+    def _vector_load_values(self, c_jk, rep, n, dirichlet_n=True, parity=None):
         """Load a physical vector, given in covariant (``rep = 1``) or
         contravariant-density (``rep = 2``) reference components, onto the
         n-form space, n = 1 or 2; the pairing is metric-free when ``rep``
-        and ``n`` differ."""
+        and ``n`` differ. ``parity`` is the vector's, on a half-period
+        sequence (:meth:`symmetrize`)."""
         from mrx.quadrature import integrate_against
         if n not in (1, 2):
             raise ValueError("n must be 1 or 2")
@@ -1055,8 +1123,17 @@ class DeRhamSequence():
         else:
             f_jk = c_jk * self.quad.w[:, None]
         comp_info, comp_shapes = self._form_comp_info(n)
-        return self.E(n, dirichlet_n) @ integrate_against(
-            f_jk, comp_info, comp_shapes, self.quad.shape)
+        return self.E(n, dirichlet_n) @ self.symmetrize(integrate_against(
+            f_jk, comp_info, comp_shapes, self.quad.shape), n, parity)
+
+    def parity(self, dofs, k, dirichlet=True):
+        """The parity of a k-form DoF vector of definite parity on a
+        half-period sequence (:func:`mrx.symmetry.parity_of`, a traced
+        ``+-1``); ``1`` on a full-period sequence. What the loads of a
+        product of two DoF vectors multiply to get the product's parity."""
+        if not self.half_period:
+            return 1
+        return parity_of(self.E(k, dirichlet).T @ dofs, self.reflection_plan[k])
 
     def _physical_scalar(self, s_jk, k):
         """The value of a 0-form (``k = 0``) or a 3-form (``k = 3``) from its
@@ -1065,7 +1142,7 @@ class DeRhamSequence():
             raise ValueError("a scalar form has degree 0 or 3")
         return s_jk[:, 0] if k == 0 else s_jk[:, 0] / self.jacobian_j
 
-    def dot_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True):
+    def dot_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i (w . u)`` from quadrature values of the m-form
         ``w`` and the k-form ``u`` (m, k in {1, 2}) onto the 0-forms
         (``n = 0``, weight ``J``) or the 3-forms (``n = 3``). A 1-form
@@ -1079,7 +1156,7 @@ class DeRhamSequence():
             s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_jkl, u_jk) / self.jacobian_j ** 2
         else:
             s_jk = jnp.sum(w_jk * u_jk, axis=1) / self.jacobian_j
-        return self._scalar_load_values(s_jk, n, dirichlet_n)
+        return self._scalar_load_values(s_jk, n, dirichlet_n, parity)
 
     def dot_product_load(self, w, u, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
         """The n-form dual DOF vector of ``w . u`` (``n`` 0 or 3; ``w`` an
@@ -1087,23 +1164,27 @@ class DeRhamSequence():
         on both inputs followed by :meth:`dot_product_load_values`."""
         w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
         u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
-        return self.dot_product_load_values(w_jk, u_jk, n, m, k, dirichlet_n)
+        return self.dot_product_load_values(
+            w_jk, u_jk, n, m, k, dirichlet_n,
+            parity=self.parity(w, m, dirichlet_m) * self.parity(u, k, dirichlet_k))
 
-    def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True):
+    def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i f g`` from quadrature values of the scalar
         m-form ``f`` and k-form ``g`` (m, k, n in {0, 3}): the pointwise
         product of the two values, a 3-form counting as its value ``rho / J``."""
         s_jk = self._physical_scalar(f_jk, m) * self._physical_scalar(g_jk, k)
-        return self._scalar_load_values(s_jk, n, dirichlet_n)
+        return self._scalar_load_values(s_jk, n, dirichlet_n, parity)
 
     def scalar_product_load(self, f, g, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
         """The n-form dual DOF vector of the product of two scalar forms
         (``n``, ``m``, ``k`` in {0, 3}); see :meth:`scalar_product_load_values`."""
         f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
         g_jk = self.evaluate_at_quadrature(g, k, dirichlet_k)
-        return self.scalar_product_load_values(f_jk, g_jk, n, m, k, dirichlet_n)
+        return self.scalar_product_load_values(
+            f_jk, g_jk, n, m, k, dirichlet_n,
+            parity=self.parity(f, m, dirichlet_m) * self.parity(g, k, dirichlet_k))
 
-    def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True):
+    def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i . (f v)`` from quadrature values of the scalar
         m-form ``f`` (0 or 3) and the vector k-form ``v`` (1 or 2) onto the
         n-forms (1 or 2): ``f ^ v``, the pointwise product, metric-free up
@@ -1111,14 +1192,16 @@ class DeRhamSequence():
         if k not in (1, 2):
             raise ValueError("k must be 1 or 2")
         c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
-        return self._vector_load_values(c_jk, k, n, dirichlet_n)
+        return self._vector_load_values(c_jk, k, n, dirichlet_n, parity)
 
     def scalar_vector_load(self, f, v, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
         """The n-form dual DOF vector of a scalar m-form times a vector
         k-form; see :meth:`scalar_vector_load_values`."""
         f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
         v_jk = self.evaluate_at_quadrature(v, k, dirichlet_k)
-        return self.scalar_vector_load_values(f_jk, v_jk, n, m, k, dirichlet_n)
+        return self.scalar_vector_load_values(
+            f_jk, v_jk, n, m, k, dirichlet_n,
+            parity=self.parity(f, m, dirichlet_m) * self.parity(v, k, dirichlet_k))
 
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.
@@ -1128,7 +1211,7 @@ class DeRhamSequence():
         energy density ``|B|^2`` onto the 0-forms (free space).
         """
         B_jk = self.evaluate_at_quadrature(B, 2, dirichlet)
-        return self.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False)
+        return self.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False, parity=1)
 
     def apply_leray_projection(self, v, k=2, p_guess=None, dirichlet_p=False, sigma_guess=None):
         """
@@ -1218,3 +1301,13 @@ class DeRhamSequence():
                 div_v, 0, dirichlet=dirichlet_p, guess=-p_guess)
             σ = -self.apply_strong_grad(q, dirichlet_p, False)
             return v - σ, -q
+
+
+# The sequence as a pytree: its device arrays -- the geometry at the
+# quadrature points, the element weights of the sum-factorised applies, the
+# extraction tables, the atoms, the harmonic forms, the float64 twin -- are
+# children, so a function of the sequence under ``eqx.filter_jit`` takes them
+# as inputs instead of baking them into the program as constants
+# (:mod:`mrx.pytree`). The equilibrium's host data and the host-side
+# extraction gram cores stay static.
+register_arrays(DeRhamSequence, static=("equilibrium", "_gram_core"))

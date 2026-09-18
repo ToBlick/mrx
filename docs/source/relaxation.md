@@ -100,7 +100,8 @@ Flags, defaults in brackets:
 | flag | meaning |
 |---|---|
 | `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
-| `--nfp N [file attribute]` | field periods, for a file that declares them wrong |
+| `--nfp N [file attribute]` | field periods, for a file that declares them wrong, or `1` for the whole torus: the map is then the file's full series (every period of it, projected over `zeta` in `[0, 1]`), so the `zeta` resolution grows by the file's `nfp`; needs `--symmetry none` or `field-period` |
+| `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): `nfp` field periods and stellarator symmetry `(R, phi, Z) -> (R, -phi, -Z)`, onto which the spline map is projected (`R` even, `Z` odd under `(theta, zeta) -> (-theta, -zeta)`; the `[geom]` line prints the defect) and which the run then keeps: the quadrature covers half the period (`mrx.symmetry`, an even number of `zeta` cells on uniform knots), every field stays of definite parity (`B`, `A`, `J` odd, velocities and pressures even), island chains keep their O-points on the symmetry planes, and a step costs about half; field periods only (the full period, no restriction), or none (`zeta` in `[0, 1]` is the whole torus, `nfp = 1`); recorded in `relax.json`, read by the tracer, which sections half a period or the whole one accordingly |
 | `--ns R,T,Z [16,32,32]`, `--p P [2]` | resolution (also the map's) and degree |
 | `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`) |
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
@@ -236,19 +237,27 @@ B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 
 
 `mrx.poincare` traces field lines of a discrete 2-form with the toroidal
 angle as the independent variable, so every crossing of a section plane is
-an integration time and nothing is interpolated. The building blocks are
-`logical_field(seq, dof, 2, dirichlet=True)` for the field,
-`seed_from_axis` for the seeds, `trace` for the
-integration, and `rotational_transform` and `to_RZ` for the section.
-`step_convergence` justifies the fixed step count by refinement. The module
-docstring explains the three design choices. Two drivers split the work by
-cost. `scripts/poincare_trace.py` (a GPU job) reads a run directory, traces
-the initial and the final checkpoint (`--fields ic,final,reconnect` adds the
-field before every reconnection) at the five standing planes, and archives
-the crossings in the run's `trace.npz`; `scripts/poincare_plot.py` (plain
-matplotlib, the login node) renders that archive, every field and plane on
-one iota and one pressure colour scale, and is the only thing to rerun when
-the figure changes:
+an integration time and nothing is interpolated. One call does it all:
+`poincare(seq, B, lines=160, periods=400, planes=5, seed=0)`
+seeds `lines` field lines from the magnetic axis to the edge, each at its own
+radius and at a random poloidal angle (`seed`), follows them for `periods`
+field periods (`seq.nfp` per toroidal turn), measures iota per line and
+flags the chaotic ones, and cuts the trajectories at `planes` planes -- a
+count spread over half a period for a stellarator-symmetric map, the whole
+period otherwise (`seq.symmetry`), or the planes themselves as fractions of
+a period; the step count follows from the planes
+(every plane a step endpoint, at least 24 per period) and the returned
+`drift` (h against h/2) justifies it. The building blocks underneath are
+`logical_field`, `seed_from_axis`, `trace`, `rotational_transform` and
+`to_RZ`; the module docstring explains the three design choices. Two
+drivers split the work by cost. `scripts/poincare_trace.py` (a GPU job)
+reads a run directory, traces the initial and the final checkpoint
+(`--fields ic,final,reconnect` adds the field before every reconnection;
+`--fields snapshots` every checkpoint) at the five standing planes, and
+archives the crossings in the run's `trace.npz`; `scripts/poincare_plot.py`
+(plain matplotlib, the login node) renders that archive, every field and
+plane on one iota and one pressure colour scale, and is the only thing to
+rerun when the figure changes:
 
 ```bash
 python -u scripts/poincare_trace.py --run outputs/run --periods 400
@@ -260,6 +269,37 @@ The module docstrings list the flags.
 
 A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_trace.py --fields snapshots --planes 0.5` traces every
 checkpoint, and the plotter then renders one frame per checkpoint with every axis held fixed, ready for `ffmpeg`.
+
+The island chains of a state are found, not read off the picture:
+`mrx.poincare.islands(seq, B, res=None)` returns every chain and its width.
+From a section `res` (`poincare`'s result; traced here when left out) it
+takes the iota profile of the regular lines, lists the rationals
+`nfp n / m` with `m <= m_max` inside its range (`resonances`), and at every
+radius where the profile meets one it runs Newton on the `m`-period return
+map from eight poloidal guesses across one chain period (`fixed_points`;
+Cary and Hanson, Phys. Fluids 29, 2464 (1986)). The map over `m` periods is
+the one-period map composed `m` times and its tangent map the product of
+the one-period Jacobians, forward mode through the integrator, so one
+compiled program serves every chain order and every field of a sequence.
+Greene's residue `R = 1/2 - tr S / 4` classifies each fixed point (an
+O-point for `0 < R < 1`, an X-point for `R < 0`). The width is then
+MEASURED: lines seeded on the radial ray through the O-point, all chains
+in one batched trace, and the largest `max(r) - min(r)` of the lines locked
+to the chain -- the measure the figures and the paper quote, aimed through
+the O-point instead of left to where the section's random seeds fall. A
+chain is reported only when locked lines pass through its O-point: an
+intact rational surface is a curve of fixed points with residue zero up to
+integration error. Each entry carries `m`, `n`, `iota`, `r_chain`, the O
+and X points with their residues, `width`, and the ray's extent.
+
+The residue is a property of the O-point (the rotation rate about it), not
+a width: the constant-shear single-harmonic pendulum relation between the
+two overestimated the traced separatrix by 1.35 to 1.6 on the paper's
+fields. What the fixed points give reliably is a chain's existence and its
+phase (where the O-point sits). The tangent map needs 96 steps per period,
+four times the trajectory's, for `det S = 1` to 1e-4. A chain inside a
+chaotic band, with no regular line either side of its rational, is not
+looked for (`docs/research/island_diagnostic_2026-09-18.md`).
 
 ## Figures
 

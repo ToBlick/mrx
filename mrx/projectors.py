@@ -182,7 +182,7 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
 #: function that already lives in the target space returns its own DOFs.
 
 
-def _conforming_restriction(e, c_full):
+def _conforming_restriction(e, c_full, dtype=DTYPE):
     """Restrict full tensor-product coefficients onto the extracted space.
 
     ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
@@ -225,7 +225,7 @@ def _conforming_restriction(e, c_full):
     for lab in np.unique(labels[core]):
         idx = order[bounds[lab]:bounds[lab + 1]]
         out[idx] = np.linalg.solve(gram[np.ix_(idx, idx)].toarray(), out[idx])
-    return jnp.asarray(out, dtype=DTYPE)
+    return jnp.asarray(out, dtype=dtype)
 
 
 def _matching_discrete_dofs(f, basis, extraction) -> Array | None:
@@ -258,7 +258,7 @@ def _extraction(seq, k: int, dirichlet: bool, bc: bool):
 
 def load(seq: "DeRhamSequence", f, k: int,
          dirichlet: bool = False, bc: bool = False,
-         frame: str = 'phys'):
+         frame: str = 'phys', parity=None):
     """Assemble the dual k-form load vector  v_i = ∫ Λ^k_i · f(ξ) w(ξ) dξ.
 
     Parameters
@@ -348,7 +348,8 @@ def load(seq: "DeRhamSequence", f, k: int,
     else:
         raise ValueError(f"k must be 0, 1, 2 or 3, got {k}")
 
-    return e @ integrate_against(w_jk, comp_info, comp_shapes, seq.quad.shape)
+    return e @ seq.symmetrize(integrate_against(w_jk, comp_info, comp_shapes, seq.quad.shape),
+                             k, parity)
 
 
 # ---------------------------------------------------------------------------

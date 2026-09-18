@@ -64,6 +64,7 @@ def _kron_mass_model_1d(seq, k: int):
     masses per component, and the 3-D scaling per component.
     """
     from mrx.mass import build_mass_diagonal  # noqa: PLC0415
+    from mrx.symmetry import mirror_zeta_1d  # noqa: PLC0415
 
     form = getattr(seq, f"basis_{k}")
     shapes = [tuple(int(s) for s in sh) for sh in form.shape]
@@ -78,6 +79,7 @@ def _kron_mass_model_1d(seq, k: int):
         deriv_axes = form.derivative_axes(c)
         bases = tuple(deriv[a] if a in deriv_axes else primal[a] for a in range(3))
         m1 = tuple(_assemble_weighted_1d_mass(bases[a], quad_w[a]) for a in range(3))
+        m1 = m1[:2] + (mirror_zeta_1d(seq, m1[2], 2 in deriv_axes),)
         for a in range(3):
             if int(m1[a].shape[0]) != shape[a]:
                 raise ValueError(

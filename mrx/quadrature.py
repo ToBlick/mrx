@@ -10,7 +10,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from mrx.pytree import register_arrays
 
+
+@register_arrays
 class QuadratureRule:
     """Tensor-product Gauss quadrature on the logical cube of a 0-form basis.
 
@@ -22,24 +25,46 @@ class QuadratureRule:
     with axes ``(r, theta, zeta)``; that is what :func:`evaluate_at_xq`,
     :func:`integrate_against` and every element-layout reshape rely on.
 
+    With ``half_zeta`` the zeta rule covers the spans in ``[0, 1/2]`` only,
+    with the weights DOUBLED: exact for even integrands on a
+    stellarator-symmetric geometry, and for the moments against the basis
+    once the parity projector combines the two mirror images
+    (:mod:`mrx.symmetry`). The fold ``1/2`` must be a knot.
+
     Attributes:
         x_x, x_y, x_z: 1-D quadrature points per axis.
         w_x, w_y, w_z: 1-D quadrature weights per axis.
         x: ``(n, 3)`` tensor-product points in the flat order above.
         w: ``(n,)`` tensor-product weights, the product of the axis weights.
         nx, ny, nz: points per axis; ``shape = (nx, ny, nz)``; ``n`` their product.
+        ne_x, ne_y, ne_z: knot spans covered per axis (``nz = ne_z * p``);
+            the first spans of the axis, so the element-to-DoF map of the
+            sum-factorised kernels is unchanged.
+        half_zeta: whether the zeta rule covers half the period.
     """
 
-    def __init__(self, form, p):
+    def __init__(self, form, p, half_zeta=False):
         """Build the rule for the axis bases of ``form`` with ``p`` Gauss points per span.
 
         Args:
             form: A :class:`~mrx.differential_forms.DifferentialForm` whose
                 first component's axis bases select the 1-D rules.
             p: Number of Gauss points per knot span.
+            half_zeta: cover zeta in ``[0, 1/2]`` only, weights doubled.
         """
-        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [
-            composite_quad(b.T[b.p:-b.p], p) for b in form.bases[0].bases]
+        spans = [b.T[b.p:-b.p] for b in form.bases[0].bases]
+        if half_zeta:
+            T_z = np.asarray(spans[2])
+            fold = np.flatnonzero(np.abs(T_z - 0.5) < 1e-12)
+            if fold.size != 1:
+                raise ValueError("a half-period quadrature needs zeta = 1/2 as a knot: an even "
+                                 "number of uniform zeta cells, or breakpoints containing 1/2")
+            spans[2] = jnp.asarray(T_z[:int(fold[0]) + 1])
+        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [composite_quad(T, p) for T in spans]
+        if half_zeta:
+            w_z = 2.0 * w_z
+        self.half_zeta = bool(half_zeta)
+        self.ne_x, self.ne_y, self.ne_z = (int(T.size) - 1 for T in spans)
         n = w_x.size * w_y.size * w_z.size
         x_q = jnp.stack(jnp.meshgrid(x_x, x_y, x_z, indexing='ij'), axis=-1)
         w_q = w_x[:, None, None] * w_y[None, :, None] * w_z[None, None, :]

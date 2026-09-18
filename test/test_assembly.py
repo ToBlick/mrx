@@ -31,23 +31,27 @@ def _weight(seq, k):
     return seq.metric_jkl / J[:, None, None]
 
 
-def _oracle_mass(seq, x, k, dirichlet):
-    """``M_k x`` by evaluate -> weight -> integrate, through the extraction."""
+def _oracle_mass(seq, x, k, dirichlet, parity):
+    """``M_k x`` by evaluate -> weight -> integrate, through the extraction;
+    on a half-period sequence the moments projected onto ``parity``."""
     u_q = seq.evaluate_at_quadrature(x, k, dirichlet)               # (n_q, d)
     w = _weight(seq, k)
     wu = u_q * w[:, None] if w.ndim == 1 else jnp.einsum('qij,qj->qi', w, u_q)
     comp_info, comp_shapes = seq._form_comp_info(k)
     raw = integrate_against(wu * seq.quad.w[:, None], comp_info, comp_shapes, seq.quad.shape)
-    return seq.E(k, dirichlet) @ raw
+    return seq.E(k, dirichlet) @ seq.symmetrize(raw, k, parity)
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_mass_apply_matches_quadrature_oracle(seq, k):
-    dirichlet = True
+    """A random vector of one parity (a half-period sequence's applies are
+    defined on those; a full-period one returns it unchanged)."""
+    dirichlet, parity = True, -1
     x = jnp.asarray(np.random.default_rng(k).standard_normal(seq.n(k, dirichlet)),
                     dtype=mrx.DTYPE)
+    x = seq.project_parity(x, k, parity, dirichlet)
     got = seq.apply_mass_matrix(x, k, dirichlet)
-    want = _oracle_mass(seq, x, k, dirichlet)
+    want = _oracle_mass(seq, x, k, dirichlet, parity)
     err = float(jnp.max(jnp.abs(got - want)) / jnp.max(jnp.abs(want)))
     assert err < IDENT, f"k={k}: kernel vs oracle off by {err:.2e}"
 
@@ -59,6 +63,7 @@ def test_projection_pairs_are_transposes(seq, pair, partner):
     rng = np.random.default_rng(7)
     x = jnp.asarray(rng.standard_normal(seq.n(k_in, True)), dtype=mrx.DTYPE)
     y = jnp.asarray(rng.standard_normal(seq.n(k_out, True)), dtype=mrx.DTYPE)
+    x, y = seq.project_parity(x, k_in, 1, True), seq.project_parity(y, k_out, 1, True)
     lhs = float(y @ seq.apply_projection_matrix(x, *pair, True, dirichlet_out=True))
     rhs = float(x @ seq.apply_projection_matrix(y, *partner, True, dirichlet_out=True))
     assert abs(lhs - rhs) < IDENT * abs(lhs), f"{pair}: {lhs:.6e} vs {rhs:.6e}"

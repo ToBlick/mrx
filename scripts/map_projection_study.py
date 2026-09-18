@@ -114,8 +114,8 @@ def main():
 
     maps = {}
     for route, (R_dof, Z_dof) in dofs.items():
-        R_h = DiscreteFunction(R_dof, seq.basis_0, seq.E(0))
-        Z_h = DiscreteFunction(Z_dof, seq.basis_0, seq.E(0))
+        R_h = lambda x, d=R_dof: DiscreteFunction(d, seq.basis_0, seq.E(0))(x)[0]  # noqa: E731
+        Z_h = lambda x, d=Z_dof: DiscreteFunction(d, seq.basis_0, seq.E(0))(x)[0]  # noqa: E731
         sign = _sign_of(R_h, Z_h, nfp)
         maps[route] = (_map_with_sign(R_h, Z_h, nfp, sign), sign)
     sign = maps["l2"][1]
