@@ -236,21 +236,24 @@ B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 
 
 `mrx.poincare` traces field lines of a discrete 2-form with the toroidal
 angle as the independent variable, so every crossing of a section plane is
-an integration time and nothing is interpolated. The building blocks are
-`logical_field(seq, 2, dirichlet=True)` for the field -- a function of the
-logical point AND the coefficient vector, so the compiled tracer is shared by
-every field on the mesh -- `seed_from_axis` for the seeds, `trace` for the
-integration, `rotational_transform` and `to_RZ` for the section, and
-`field_lines` for a few lines kept at every step (`--dense-lines` below).
-`trace_and_classify` justifies the fixed step count by refinement (its
-`drift`). The module docstring explains the three design choices. Two drivers split the work by
-cost. `scripts/poincare_trace.py` (a GPU job) reads a run directory, traces
-the initial and the final checkpoint (`--fields ic,final,reconnect` adds the
-field before every reconnection) at the five standing planes, and archives
-the crossings in the run's `trace.npz`; `scripts/poincare_plot.py` (plain
-matplotlib, the login node) renders that archive, every field and plane on
-one iota and one pressure colour scale, and is the only thing to rerun when
-the figure changes:
+an integration time and nothing is interpolated. One call does it all:
+`poincare(seq, B, nfp, lines=160, periods=400, planes=(0, .125, .25, .375, .5), seed=0)`
+seeds `lines` field lines from the magnetic axis to the edge, each at its own
+radius and at a random poloidal angle (`seed`), follows them for `periods`
+field periods, measures iota per line and flags the chaotic ones, and cuts
+the trajectories at every plane; the step count follows from the planes
+(every plane a step endpoint, at least 24 per period) and the returned
+`drift` (h against h/2) justifies it. The building blocks underneath are
+`logical_field`, `seed_from_axis`, `trace`, `rotational_transform` and
+`to_RZ`; the module docstring explains the three design choices. Two
+drivers split the work by cost. `scripts/poincare_trace.py` (a GPU job)
+reads a run directory, traces the initial and the final checkpoint
+(`--fields ic,final,reconnect` adds the field before every reconnection;
+`--fields snapshots` every checkpoint) at the five standing planes, and
+archives the crossings in the run's `trace.npz`; `scripts/poincare_plot.py`
+(plain matplotlib, the login node) renders that archive, every field and
+plane on one iota and one pressure colour scale, and is the only thing to
+rerun when the figure changes:
 
 ```bash
 python -u scripts/poincare_trace.py --run outputs/run --periods 400

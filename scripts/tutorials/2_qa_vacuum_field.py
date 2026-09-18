@@ -50,7 +50,7 @@ ap.add_argument("--ns", default="12,24,12")
 ap.add_argument("--p", type=int, default=3)
 ap.add_argument("--cuts", type=int, default=6)
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
-ap.add_argument("--seeds", type=int, default=24)
+ap.add_argument("--lines", type=int, default=24, help="Poincare field lines")
 ap.add_argument("--out", default="outputs/tutorials/qa_vacuum_field")
 cli = ap.parse_args([] if _INTERACTIVE else None)
 ns = tuple(int(v) for v in cli.ns.split(","))
@@ -70,8 +70,7 @@ from mrx.geometry import build_sequence, geometry_nfp
 from mrx.relaxation import compute_divergence_norm
 from mrx.nullspace import compute_nullspaces, get_nullspace, harmonic_rayleigh
 from mrx.plotting import get_2d_grids, plot_torus, render_section
-from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
-                          trace_and_classify, section_RZ, surface_label)
+from mrx.poincare import poincare, surface_label
 from mrx.relaxation import compute_force
 
 nfp = geometry_nfp(cli.geometry)
@@ -128,26 +127,19 @@ print(f"  -> {path}")
 # Now we trace the field lines once and take Poincare sections at five toroidal
 # planes -- one integration of the trajectories, cut at each plane.
 # A Poincare section integrates the field lines once; each toroidal plane is a
-# different cut through the same trajectories. section_figure does one plane --
-# here we reuse its pieces to cut five planes over half a field period.
-saves_per_period, steps_per_period = 8, 32
-field, dof = logical_field(seq, 2, True), jnp.asarray(B)
-info = require_zeta_parameterisation(field, dof, name="B")
-seeds = seed_from_axis(field, dof, cli.seeds, saves_per_period, n_rays=4,
-                       steps_per_period=steps_per_period)
-res = trace_and_classify(field, dof, seeds, nfp, n_periods=cli.periods,
-                         steps_per_period=steps_per_period, saves_per_period=saves_per_period)
-render_keep = ~(res["escaped"] | ~res["ok"])
-for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
-    R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], saves_per_period, plane)
+# different cut through the same trajectories (five planes over half a field
+# period, the other half being stellarator-symmetric).
+res = poincare(seq, B, nfp, lines=cli.lines, periods=cli.periods)
+for plane, sec in res["sections"].items():
+    R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
     a_eff, xlabel = surface_label(R, Z, aR, aZ)
     fig, _ = render_section(
-        R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
+        R, Z, res["iota"], res["iota_err"], res["seed_r"], res["keep"],
         title=f"vacuum field {ns} p={cli.p}  |  $\\zeta = {plane:g}$ -- {R.shape[1]} crossings/line",
         subtitle=(f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}   |   "
-                  f"$B^\\zeta/|B|$ in [{info['bz_over_b_min']:+.2e}, {info['bz_over_b_max']:+.2e}]"),
+                  f"$B^\\zeta/|B|$ in [{res['bz_over_b'][0]:+.2e}, {res['bz_over_b'][1]:+.2e}]"),
         axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-        logical=(lr, lth), iota_scatter=res["iota_scatter"])
+        logical=(sec["logr"], sec["logth"]), iota_scatter=res["iota_scatter"])
     path = os.path.join(cli.out, f"poincare_zeta{plane:g}.png")
     fig.savefig(path, dpi=200)
     if _INTERACTIVE:
@@ -156,8 +148,8 @@ for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
         plt.close(fig)
     print(f"  -> {path}")
 
-regular = ~(res["escaped"] | ~res["ok"] | res["chaotic"])
-r_reg, iota_reg = res["seeds"][:, 0][regular], res["iota"][regular]
+regular = res["shown"]
+r_reg, iota_reg = res["seed_r"][regular], res["iota"][regular]
 print(f"[vacuum] {int(regular.sum())}/{regular.size} regular lines, iota from "
       f"{float(iota_reg[np.argmin(r_reg)]):.4f} (r = {float(r_reg.min()):.2f}) to "
       f"{float(iota_reg[np.argmax(r_reg)]):.4f} (r = {float(r_reg.max()):.2f}); "

@@ -60,7 +60,7 @@ ap.add_argument("--descent-steps", type=int, default=200,
                 help="the descent's fast phase on the seeded field (a multiple of 50)")
 ap.add_argument("--newton-steps", type=int, default=5,
                 help="Newton steps after it (a multiple of 5)")
-ap.add_argument("--seeds", type=int, default=24, help="Poincare field lines")
+ap.add_argument("--lines", type=int, default=24, help="Poincare field lines")
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
 ap.add_argument("--out", default="outputs/tutorials/li383_island_seed")
 cli = ap.parse_args([] if _INTERACTIVE else None)
@@ -72,7 +72,6 @@ os.makedirs(cli.out, exist_ok=True)
 # relaxation time-stepper and loop, and the Poincare tracer.
 import json
 
-import jax.numpy as jnp
 import matplotlib
 if not _INTERACTIVE:
     matplotlib.use("Agg")  # headless as a script; a notebook keeps its inline backend
@@ -84,8 +83,7 @@ from mrx.gvec import load_clebsch
 from mrx.initial_conditions import (clebsch_potential_form, potential_two_form, resonant_rho)
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
-from mrx.poincare import (logical_field, require_zeta_parameterisation, seed_from_axis,
-                          trace_and_classify, section_RZ, surface_label)
+from mrx.poincare import poincare, surface_label
 from mrx.relaxation import (TimeStepper, compute_divergence_norm, initial_state, relax,
                             write_checkpoint)
 
@@ -116,21 +114,16 @@ print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {compute_divergence_nor
 # island at the resonant chain shows in the seeded sections, not the unseeded.
 # Trace once per field, cut five planes over half a field period.
 def sections(B_dof, tag, title):
-    field, dof = logical_field(seq, 2, True), jnp.asarray(B_dof)
-    require_zeta_parameterisation(field, dof, name=tag)
-    seeds = seed_from_axis(field, dof, cli.seeds, 8, n_rays=4, steps_per_period=32)
-    res = trace_and_classify(field, dof, seeds, nfp, n_periods=cli.periods,
-                             steps_per_period=32, saves_per_period=8)
-    render_keep = ~(res["escaped"] | ~res["ok"])
-    for plane in (0.0, 0.125, 0.25, 0.375, 0.5):
-        R, Z, aR, aZ, _, _, lr, lth = section_RZ(seq, res["ys"], res["axis"], 8, plane)
+    res = poincare(seq, B_dof, nfp, lines=cli.lines, periods=cli.periods, name=tag)
+    for plane, sec in res["sections"].items():
+        R, Z, aR, aZ = sec["R"], sec["Z"], sec["axisR"], sec["axisZ"]
         a_eff, xlabel = surface_label(R, Z, aR, aZ)
         fig, _ = render_section(
-            R, Z, res["iota"], res["iota_err"], res["seeds"][:, 0], render_keep,
+            R, Z, res["iota"], res["iota_err"], res["seed_r"], res["keep"],
             title=f"{title}  |  $\\zeta = {plane:g}$",
             subtitle=f"nfp = {nfp}   |   h/2 drift {res['drift']:.1e}",
             axis_RZ=(aR, aZ), profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp,
-            logical=(lr, lth), iota_scatter=res["iota_scatter"])
+            logical=(sec["logr"], sec["logth"]), iota_scatter=res["iota_scatter"])
         path = os.path.join(cli.out, f"poincare_{tag}_zeta{plane:g}.png")
         fig.savefig(path, dpi=200)
         if _INTERACTIVE:
