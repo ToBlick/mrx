@@ -161,3 +161,50 @@ fixed part of both), and it grows with the mesh; a (48,96,96) pair would
 say where it saturates. Not the 2x of the kernel count: the Krylov
 overhead, the atoms, the incidence applies and the polar core are
 unchanged, and the scheme adds O(n) per apply.
+
+## 5. n=48, and the setup penalty nobody had measured (2026-09-18)
+
+The (48,96,96) triple, same protocol (20 L-BFGS steps in one chunk,
+refined float32, compile included; runs under `outputs/half_period/lbfgs48_*`):
+
+| model | resolution | DoFs of V^2_0 | setup [s] | 20 steps [s] | s/step |
+|---|---|---|---|---|---|
+| whole torus, no symmetry | (48,96,288) | 3,788,352 | 555 | 1333 | 66.7 |
+| one field period | (48,96,96) | 1,262,784 | 164 | 607 | 30.3 |
+| half a period | (48,96,96) | 1,262,784 | 238 (1418 before the fix) | 259 (271) | 12.9 (13.5) |
+
+Half against full per step: 2.2x at n=48 against 1.4x at n=32 (7.3 against
+9.9), so the gain grows with the mesh as section 4 expected: the fixed
+part of the step (launches, the Krylov bookkeeping) is a smaller share.
+The two n=48 runs agree in energy to 1.3e-7 and helicity to 1.9e-7 after
+20 float32 steps, the per-step residuals diverge at the 25% level from
+step 3 and the final fields differ by 5e-3 -- the same round-off-seeded
+divergence as at n=32 (`compare_runs.py`).
+
+The whole-torus arm died of HOST memory on its first attempt: the chunk's
+compile captures 10.6 GB of constants at 3.79M DoFs (the mass and
+projection payloads baked into the scan), XLA constant-folds a scatter
+over them for ten seconds a piece, and the process reached 203 GB
+against the job's 128 GB. Rerun at 320 GB (the GPU nodes have 720): it
+peaked at 309 GB and finished, 20 steps in 1333 s (66.7 s/step); energy
+equal to the field-period arm's to 3e-7, helicity to 1e-6. Per step at
+n=48: torus 66.7 s, period 30.3, half 12.9 -- 2.2x and 2.3x.
+
+**The setup penalty.** The `[setup]` line (operators + harmonic forms)
+of the half-period runs read 455 s against 109 s at n=32 and 1418 s
+against 164 s at n=48 -- 4x and 8.6x, hidden in section 4 by quoting
+only the stepping wall. `diag_setup.py` split it: the sequence build
+366 s against 71 s, the nullspaces 56 against 42. `profile_build.py`
+(cProfile) named it: `_probe_rows` in `metric_lumping_laplacian.py`
+splits every probe column by parity, and `_parity_split` did that with
+`seq.project_parity` -- the host-side exact restriction (scipy sparse
+indexing, 40 ms a call) -- ten thousand times, 409 s of a 541 s build.
+The device projector (`seq.free_projector(k, d).post`, one gather; equal
+to the exact one to 1e-16, section 3) was already what the atoms apply
+with. With it (38e5ce3) the build is 70 s against 71 s; the relax.py
+setup 162 against 109 s at n=32 and 238 against 164 at n=48 -- the rest
+is the probes applying to both parities. Rule: `project_parity` is for
+tests and initial fields, never in a loop.
+
+The paper carries the three-model table (`outputs/paper/mrx_jcp.tex`,
+red, `tables/symmetry_table_jcp.tex`, Tobias 2026-09-18).
