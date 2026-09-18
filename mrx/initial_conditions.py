@@ -282,7 +282,7 @@ def initial_field(seq, seed=None):
         raise ValueError("the sequence has no geometry file: build it with mrx.geometry.build_sequence")
     kind = eq["kind"]
     if kind in ("gvec", "vmec"):
-        cb = load_clebsch(eq)
+        cb = load_clebsch(eq, nfp=seq.nfp)
         lam_norm, lam_energy = lambda_dirichlet_energy(cb["lam_h"], seq)
         info = dict(kind=kind, nfp=int(cb["nfp"]),
                     iota_axis=float(cb["dchi"][1] / cb["dPhi"][1]),

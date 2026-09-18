@@ -306,7 +306,9 @@ def build_gvec_map(st, seq, nfp=None, stellarator_symmetric=False):
     basis = seq.basis_0.bases[0]
 
     def raw(block):
-        return (seq.E(0).T @ series_spline_dofs(block, st["nfp"], seq)).reshape(seq.basis_0.shape[0])
+        # the map's nfp, not the file's: with an override the logical zeta
+        # spans nfp_file / nfp periods (nfp = 1: the whole torus)
+        return (seq.E(0).T @ series_spline_dofs(block, nfp, seq)).reshape(seq.basis_0.shape[0])
 
     raw_R, raw_Z = raw(st["X1"]), raw(st["X2"])
     if stellarator_symmetric:
@@ -331,7 +333,7 @@ def build_gvec_map(st, seq, nfp=None, stellarator_symmetric=False):
                        f"sampled ranges {tried}")
 
 
-def load_clebsch(st):
+def load_clebsch(st, nfp=None):
     """The radial profiles, a lambda callable and p(rho) of a parsed
     equilibrium ``st`` (:func:`read_equilibrium`).
 
@@ -357,12 +359,16 @@ def load_clebsch(st):
         from mrx.vmec import profile_spline as spline  # noqa: PLC0415  (imports this module)
     else:
         spline = profile_spline
+    # ``nfp`` is the MAP's (the sequence's), the file's by default: an
+    # override makes logical zeta span nfp_file / nfp periods, and lambda
+    # and the potential follow it.
+    nfp = st["nfp"] if nfp is None else int(nfp)
     rho = np.linspace(0.0, 1.0, 401)
     dPhi = spline(st, "phi").derivative()(rho)
-    return dict(nfp=st["nfp"], rho=rho, dPhi=dPhi,
+    return dict(nfp=nfp, rho=rho, dPhi=dPhi,
                 dchi=spline(st, "iota")(rho) * dPhi,
                 p=spline(st, "pressure")(rho),
-                lam_h=StateField(st["LA"], st["nfp"]))
+                lam_h=StateField(st["LA"], nfp))
 
 
 # ---------------------------------------------------------------------------
