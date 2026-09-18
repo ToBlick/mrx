@@ -37,7 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import _dual_norm
-from mrx.solvers import minres, pcg_steihaug, refine
+from mrx.solvers import minres, pcg_steihaug, pcg_steihaug_tr, refine
 
 #: The preconditioners of the Newton solve: the k=1 Laplacian atom, its
 #: square (the operator is fourth order in ``a``), the k=1 mass atom, or the
@@ -270,6 +270,38 @@ def _preconditioner(seq, name):
 
 
 NEWTON_SOLVERS = ("minres", "cg")
+
+
+def _newton_system(seq, B, J, parallel_penalty):
+    """``(curl, curl_t, A)`` of the Newton system ``curl^T H curl a = curl^T M_2 F`` on ``seq``."""
+    Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), parallel_penalty=parallel_penalty)
+
+    def curl(a):
+        return seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True)
+
+    def curl_t(y):
+        return seq.apply_incidence_matrix(y, 1, dirichlet_in=True, dirichlet_out=True, transpose=True)
+
+    def A(a):
+        return curl_t(Hs(curl(a)))
+    return curl, curl_t, A
+
+
+def newton_direction_tr(seq, B, J, MF, delta, tol=0.03, maxiter=300, precond="harmonic",
+                        parallel_penalty=0.0):
+    """The trust-region Newton direction (Nocedal & Wright 7.2): the minimiser of the quadratic
+    model ``m(a) = -b^T a + a^T A a / 2``, ``b = curl^T M_2 F``, over ``||a||_{P^-1} <= delta`` by
+    :func:`mrx.solvers.pcg_steihaug_tr` from a zero guess. Returns ``(u, a, info, hit,
+    predicted)`` with ``predicted = -m(a) = b^T a - a^T A a / 2`` the model's energy decrease
+    for the step ``dt = 1`` along ``u = curl a``, and ``hit`` True when the step is on the
+    boundary; the caller takes the step, measures the actual decrease, and moves ``delta``.
+    """
+    curl, curl_t, A = _newton_system(seq, B, J, parallel_penalty)
+    P = _preconditioner(seq, precond)
+    b = curl_t(MF)
+    a, info, hit = pcg_steihaug_tr(A, b, delta, M=P, tol=tol, maxiter=maxiter)
+    predicted = b @ a - 0.5 * (a @ A(a))
+    return curl(a), a, jnp.asarray(info, dtype=jnp.int32), hit, predicted
 
 
 def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="laplacian",

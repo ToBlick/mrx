@@ -194,6 +194,67 @@ def pcg_steihaug(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
     return x_final, info
 
 
+def pcg_steihaug_tr(A_matvec, b, delta, M=None, tol=None, maxiter=None):
+    """Steihaug-Toint CG with a trust region: the inner solve of the trust-region Newton-CG
+    method (Nocedal & Wright, Algorithm 7.2, preconditioned).
+
+    Minimises the model ``m(x) = -b^T x + x^T A x / 2`` over the ball ``||x||_{M^-1} <= delta``
+    (the preconditioner's norm, the one CG's iterates grow monotonically in; ``M ~ A^-1``
+    SPD), from ``x = 0``. Three exits: the residual test ``sqrt(r^T M r) < tol ||b||_M``,
+    the boundary (the iterate would leave the ball: the step goes to it along the current
+    direction), or negative curvature (``d^T A d <= 0``: the model decreases without
+    bound along ``d``, so the step goes to the boundary along it, the largest decrease the
+    region allows). ``||x||^2_{M^-1}`` and the cross terms are carried by the CG
+    recurrences (``M^-1`` is never applied). Returns ``(x, info, hit)`` with ``info`` as in
+    :func:`preconditioned_cg` and ``hit`` True when the step is on the boundary.
+    """
+    if tol is None:
+        tol = solve_tol()
+    if maxiter is None:
+        maxiter = b.shape[0]
+    if M is None:
+        def M(x): return x
+    y0 = M(b)
+    bnorm_M = jnp.sqrt(jnp.dot(b, y0))
+    bnorm_safe = jnp.where(bnorm_M > 0, bnorm_M, 1.0)
+    ry0 = jnp.dot(b, y0)
+    delta2 = delta * delta
+    # state: x, r, y, d, ry, xx = ||x||^2_{M^-1}, xd = x^T M^-1 d, dd = d^T M^-1 d, k, converged, hit, done
+    init = (jnp.zeros_like(b), b, y0, y0, ry0, 0.0, 0.0, ry0, 0, jnp.sqrt(ry0) < tol * bnorm_safe, False, False)
+
+    def to_boundary(x, d, xx, xd, dd):
+        tau = (-xd + jnp.sqrt(xd * xd + dd * (delta2 - xx))) / dd
+        return x + tau * d
+
+    def cond_fn(st):
+        return jnp.logical_and(st[8] < maxiter, ~(st[9] | st[11]))
+
+    def body_fn(st):
+        x, r, y, d, ry, xx, xd, dd, k, _, _, _ = st
+        Ad = A_matvec(d)
+        dAd = jnp.dot(d, Ad)
+        negative = dAd <= 0.0
+        alpha = jnp.where(negative, 0.0, ry / jnp.where(negative, 1.0, dAd))
+        xx_new = xx + 2.0 * alpha * xd + alpha * alpha * dd
+        leaves = xx_new >= delta2
+        stop = negative | leaves
+        x_b = to_boundary(x, d, xx, xd, dd)
+        x_new = jnp.where(stop, x_b, x + alpha * d)
+        r_new = r - alpha * Ad
+        y_new = M(r_new)
+        ry_new = jnp.dot(r_new, y_new)
+        beta = ry_new / ry
+        d_new = y_new + beta * d
+        xd_new = beta * (xd + alpha * dd)
+        dd_new = ry_new + beta * beta * dd
+        converged = (jnp.sqrt(ry_new) < tol * bnorm_safe) & ~stop
+        return (x_new, r_new, y_new, d_new, ry_new, xx_new, xd_new, dd_new, k + 1, converged, stop, stop)
+
+    st = jax.lax.while_loop(cond_fn, body_fn, init)
+    x, k, converged, hit = st[0], st[8], st[9], st[10]
+    return x, jnp.where(converged, -k, k), hit
+
+
 def deflation_projectors(vs, mass_matvec):
     """``(project_primal, project_dual)`` against the ``(m, n)`` rows of ``vs``,
     ``M``-orthonormal kernel vectors: ``x - (vs M x) vs`` on a primal vector,

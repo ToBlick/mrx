@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.hessian import HARMONIC_FLOOR, harmonic_preconditioner, newton_direction
+from mrx.hessian import HARMONIC_FLOOR, harmonic_preconditioner, newton_direction, newton_direction_tr
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -373,6 +373,7 @@ class State(eqx.Module):
     newton_it: int = 0
     newton_fallback: int = 0
     helicity_lambda: float = 0.0
+    trust_radius: float = 0.0
     B_best: Optional[jnp.ndarray] = None
     resid_best: float = np.inf
     step_best: int = 0
@@ -438,6 +439,8 @@ class Increment(NamedTuple):
     a: jnp.ndarray
     newton_it: jnp.ndarray
     newton_fallback: jnp.ndarray
+    predicted: jnp.ndarray = None
+    hit: jnp.ndarray = None
 
 
 #: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
@@ -556,6 +559,20 @@ class TimeStepper(eqx.Module):
         newton_warm_start: start the inner solve from the previous step's
             potential (the default) or from zero (a diagnostic: the warm
             start's residual is near noise once the direction has settled).
+        newton_trust_region: the trust-region Newton-CG method (Nocedal &
+            Wright 7.2, :func:`mrx.hessian.newton_direction_tr`) in place of
+            the line search: the step is ``dt = 1`` along the model's
+            minimiser over ``||a||_{P^-1} <= Delta`` (Steihaug-Toint CG,
+            negative curvature followed to the boundary), accepted when the
+            actual energy decrease is more than ``newton_trust_eta`` times
+            the model's (else a null step, ``dt = 0``), and ``Delta`` moves:
+            a quarter of itself when the ratio is below 1/4, twice when it
+            is above 3/4 and the step was on the boundary. ``State.trust_radius``
+            carries ``Delta``; ``newton_trust_radius`` is its initial value
+            (0: the norm of the first step's unconstrained solution).
+            ``newton_inner_tol`` (a number) is the solve's tolerance,
+            ``newton_maxiter`` its cap; the fallback and the dt cap do not
+            apply on this path.
         newton_parallel_penalty: ``alpha`` of the parallel-flow penalty
             ``H + alpha M_par`` in the Newton solve
             (:func:`mrx.hessian.second_variation`): Levenberg-Marquardt
@@ -631,6 +648,9 @@ class TimeStepper(eqx.Module):
     newton_inner_tol: Union[float, str] = 0.0
     newton_solver: str = "minres"
     newton_warm_start: bool = True
+    newton_trust_region: bool = False
+    newton_trust_eta: float = 0.1
+    newton_trust_radius: float = 0.0
     newton_force_scale: Callable = None
     newton_precond_apply: Callable = None
     newton_atom_field: str = "h"
@@ -778,7 +798,18 @@ class TimeStepper(eqx.Module):
             Fs = self.smooth_velocity(F)
             a = state.a
 
-        if self.newton:
+        predicted, hit = None, None
+        if self.newton and self.newton_trust_region:
+            precond = self.newton_precond_apply or self.newton_precond
+            if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
+                precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
+                                                  self.newton_parallel_penalty)
+            delta = jnp.where(state.trust_radius > 0, state.trust_radius, jnp.inf)
+            u, a, newton_it, hit, predicted = newton_direction_tr(
+                seq, B, J, MF, delta, self.newton_inner_tol, self.newton_maxiter, precond,
+                self.newton_parallel_penalty)
+            newton_fallback = jnp.int32(0)
+        elif self.newton:
             precond = self.newton_precond_apply or self.newton_precond
             if self.newton_precond == "harmonic" and self.newton_atom_field == "B":
                 precond = harmonic_preconditioner(seq, B, self.newton_atom_floor,
@@ -858,7 +889,7 @@ class TimeStepper(eqx.Module):
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
         return Increment(dB, u, Mu, F, MF, Fs, p, H, JxX, J, E, cfl_max,
-                         a, newton_it, newton_fallback)
+                         a, newton_it, newton_fallback, predicted, hit)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc`` and its CFL cap.
@@ -883,6 +914,26 @@ class TimeStepper(eqx.Module):
         if self.newton:
             dt = jnp.minimum(dt, self.newton_dt_cap)
         return dt, dt_star
+
+    def _trust_region_step(self, inc: Increment, trust_radius):
+        """``(dt, dt_star, Delta_new)`` of the trust-region acceptance test on the Newton
+        increment: the step is ``dt = 1`` when the actual energy decrease of the (linear)
+        induction step, ``<F, u>_M - ||dB||_M^2 / 2``, is more than ``newton_trust_eta``
+        times the model's ``predicted``, else ``dt = 0``; ``Delta`` moves by the ratio
+        (Nocedal & Wright Algorithm 4.1). A first step with ``Delta = 0`` (unconstrained)
+        sets ``Delta`` to the norm of its solution (``||a||_M``, the mass norm as the
+        proxy of ``||a||_{P^-1}`` at the same scale)."""
+        slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
+        actual = slope - 0.5 * curvature
+        ratio = actual / jnp.where(inc.predicted > 0, inc.predicted, 1.0)
+        ratio = jnp.where(inc.predicted > 0, ratio, -1.0)
+        accept = ratio > self.newton_trust_eta
+        dt = jnp.where(accept, 1.0, 0.0)
+        a_norm = jnp.sqrt(inc.a @ self.seq.apply_mass_matrix(inc.a, 1, True))
+        delta = jnp.where(trust_radius > 0, trust_radius, a_norm)
+        delta = jnp.where(ratio < 0.25, 0.25 * delta,
+                          jnp.where((ratio > 0.75) & inc.hit, 2.0 * delta, delta))
+        return dt, ratio, delta
 
     def _midpoint_solve(self, state: State):
         """Midpoint-implicit induction with the explicit descent velocity.
@@ -1020,7 +1071,11 @@ class TimeStepper(eqx.Module):
         if self.scheme == IntegrationScheme.EXPLICIT:
             inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
                                         state.J, state.E)
-            dt, dt_star = self._step_size(inc)
+            if self.newton_trust_region:
+                dt, dt_star, trust_radius = self._trust_region_step(inc, state.trust_radius)
+            else:
+                dt, dt_star = self._step_size(inc)
+                trust_radius = state.trust_radius
             if self.helicity_correction:
                 PB, H_D = self._helicity_proxy(B_n, inc.H, state.H)
                 lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
@@ -1033,6 +1088,7 @@ class TimeStepper(eqx.Module):
             # inc is the predictor's (u, F, dt* are the explicit step's);
             # only the induction is implicit.
             inc, dt, dt_star, B_nplus1, n_eval, restarts, resid, lam = self._midpoint_solve(state)
+            trust_radius = state.trust_radius
         else:
             raise ValueError(
                 f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
@@ -1046,13 +1102,13 @@ class TimeStepper(eqx.Module):
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda),
+                       s.a, s.newton_it, s.newton_fallback, s.helicity_lambda, s.trust_radius),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, inc.newton_fallback, lam))
+             inc.a, inc.newton_it, inc.newton_fallback, lam, trust_radius))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
@@ -1097,6 +1153,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         newton_it=jnp.int32(0),
         newton_fallback=jnp.int32(0),
         helicity_lambda=jnp.zeros((), dtype=DTYPE),
+        trust_radius=jnp.asarray(ts.newton_trust_radius, dtype=DTYPE),
         B_best=B_dof,
         resid_best=jnp.asarray(resid0, dtype=DTYPE),
         step_best=jnp.int32(step),
