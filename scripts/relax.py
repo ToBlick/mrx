@@ -374,7 +374,8 @@ def main(cli):
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     if cli.resistivity:
-        # B*: the start field without its rational-surface sheets
+        # B*: the start field, its rational-surface sheets removed by the heat step (c = 0 keeps them: only the
+        # drive then moves the steady state)
         B_star = state.B_n
         if cli.reference_smoothing:
             B_star = resistive_step(B_star, seq, cli.reference_smoothing * h_r_sq)[0]
