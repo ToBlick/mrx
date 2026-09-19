@@ -228,6 +228,10 @@ def parse_args(argv=None):
                     help='resonant seed "m,n,rho0,width" added to the potential (equilibrium files only)')
     ap.add_argument("--seed-eps", type=float, default=0.0,
                     help="its amplitude |dB^rho| / |B^zeta| at rho0 (island width ~ sqrt of it)")
+    ap.add_argument("--drive", default="",
+                    help='with --resistivity: a resonant drive "m,n,rho0,width" (the --seed perturbation of the '
+                         'potential) added to the source B* only, not to the field')
+    ap.add_argument("--drive-eps", type=float, default=0.0, help="the drive's amplitude, as --seed-eps")
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
@@ -295,6 +299,8 @@ def parse_args(argv=None):
         ap.error(f"--geometry {cli.geometry!r} is not a file (a .nc, .dat or .json)")
     if cli.seed and cli.geometry.endswith(".json"):
         ap.error("--seed needs an equilibrium file (.nc or .dat)")
+    if cli.drive and (cli.seed or not cli.resistivity):
+        ap.error("--drive needs --resistivity and no --seed (the drive is the source's, not the field's)")
     return cli
 
 
@@ -372,6 +378,15 @@ def main(cli):
         B_star = state.B_n
         if cli.reference_smoothing:
             B_star = resistive_step(B_star, seq, cli.reference_smoothing * h_r_sq)[0]
+        if cli.drive:
+            # the drive dA of the seed, as the difference of the two histopolated fields at the unseeded field's
+            # normalisation: d is linear, so the histopolation error of the unperturbed field cancels exactly
+            m, n, rho0, width = (float(v) for v in cli.drive.split(","))
+            B_d, ic_d = initial_field(seq, (int(m), int(n), rho0, width, cli.drive_eps))
+            dB_drive = B_d * (ic_d["B_norm_raw"] / ic["B_norm_raw"]) - B0
+            B_star = B_star + dB_drive
+            print(f"[drive] ({int(m)},{int(n)}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
+                  f"||dB_drive|| / ||B|| = {float(seq.l2_norm(dB_drive, 2) / seq.l2_norm(B0, 2)):.3e}", flush=True)
         ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
         print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the start field "
               f"after a heat step of {cli.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
