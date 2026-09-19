@@ -1204,6 +1204,7 @@ def pressure_line(d: dict) -> str:
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
           floor_tol: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
+          reconnect_eps: Optional[float] = None, reconnect_window: Optional[tuple] = None,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
     """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
@@ -1219,7 +1220,11 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of
     its helicity, ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J
-    . B``, then restarts the optimiser on the diffused field
+    . B``, or with ``reconnect_eps`` a constant dose ``eps`` per solve (a
+    constant resistivity: the ideal relaxation is fast and the diffusion slow,
+    so the solves go between blocks of ideal steps and the field is back in
+    equilibrium before the next one; the helicity spent is then an outcome),
+    only at steps inside ``reconnect_window = (start, stop)`` when given, then restarts the optimiser on the diffused field
     (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
     every chunk's sample and BEFORE a reconnection at that step, so what it
     saves is the field the solve starts from. ``it0`` is the absolute step
@@ -1314,10 +1319,13 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
-        if reconnect_every and n_done % reconnect_every == 0:
+        in_window = reconnect_window is None or reconnect_window[0] <= it <= reconnect_window[1]
+        if reconnect_every and n_done % reconnect_every == 0 and in_window:
             k = len(events) + 1
-            eps = reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"]))
-            ev = dict(k=k, it=it, resid=resid_now, eps=eps, helicity_target=reconnect_helicity,
+            eps = (reconnect_eps if reconnect_eps is not None
+                   else reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"])))
+            ev = dict(k=k, it=it, resid=resid_now, eps=eps,
+                      helicity_target=None if reconnect_eps is not None else reconnect_helicity,
                       F_before=float(state.F_norm), **{f"{kk}_before": v for kk, v in scalars.items()})
             B_new, info, rel = reconnect_fn(state.B_n, eps)
             state = initial_state(B_new, ts, dt=float(state.dt), step=it)
@@ -1328,7 +1336,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                       **{f"{kk}_after": v for kk, v in scalars.items()})
             events.append(ev)
             if verbose:
-                print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} for {reconnect_helicity:.2%} of H "
+                dose = "constant" if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H"
+                print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} {dose} "
                       f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
                       f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "
                       f"({ev['helicity_spent']:+.2%}), J/B {ev['JoverB_before']:.3f} -> "

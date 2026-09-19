@@ -167,8 +167,14 @@ Reconnection series:
     and the interval is a choice. The dose is set by the helicity it spends:
     ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J . B`` with
     ``X = --reconnect-helicity``; the record carries the target and the
-    helicity actually spent. The outcome is the series of ideal equilibria,
-    one per reconnection plus the final field, to choose from.
+    helicity actually spent. ``--reconnect-eps C`` instead applies a constant
+    dose ``eps = C / n_r^2`` per solve, a constant resistivity: the ideal
+    relaxation is fast and the diffusion slow, so the solves go between
+    blocks of ideal steps and the field relaxes back before the next one; the
+    helicity spent is then an outcome. ``--reconnect-window A:B`` restricts
+    the solves to steps A..B (relax ideally, reconnect gradually, relax
+    ideally). The outcome is the series of ideal equilibria, one per
+    reconnection plus the final field, to choose from.
 """
 from __future__ import annotations
 
@@ -239,6 +245,10 @@ def parse_args(argv=None):
                          "to whole chunks; 0 = off (see the docstring)")
     ap.add_argument("--reconnect-helicity", type=float, default=0.01,
                     help="the helicity each reconnection spends, |dH| / |H|")
+    ap.add_argument("--reconnect-eps", type=float, default=None,
+                    help="a constant dose eps = C / n_r^2 per resistive solve instead of the helicity target")
+    ap.add_argument("--reconnect-window", default=None,
+                    help="A:B, the resistive solves only at steps A..B")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -339,7 +349,10 @@ def main(cli):
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
-          + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",
+          + ((f" (eps {cli.reconnect_eps:g}/n_r^2 each" if cli.reconnect_eps is not None
+              else f" ({cli.reconnect_helicity:.2%} of H each")
+             + (f", steps {cli.reconnect_window})" if cli.reconnect_window else ")") if cli.reconnect_every else "")
+          + " ===",
           flush=True)
 
     def save(res):
@@ -361,7 +374,10 @@ def main(cli):
 
     res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
           reconnect_every=cli.reconnect_every,
-          reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
+          reconnect_helicity=cli.reconnect_helicity,
+          reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps / ns[0] ** 2,
+          reconnect_window=None if cli.reconnect_window is None
+          else tuple(int(v) for v in cli.reconnect_window.split(":")), on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
                      initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.step_best)}, "
