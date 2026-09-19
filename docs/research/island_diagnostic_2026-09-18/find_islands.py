@@ -15,7 +15,8 @@ import numpy as np
 
 from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces
-from mrx.poincare import islands, poincare
+from mrx.experimental.islands import islands
+from mrx.poincare import poincare
 
 DEMOS = "/kfs3/scratch/tblickhan/mrx/.claude/worktrees/newton/outputs/newton_demos/seeded_reconnect"
 

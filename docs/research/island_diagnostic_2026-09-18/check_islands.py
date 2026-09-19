@@ -7,7 +7,8 @@ from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
 from mrx.initial_conditions import clebsch_potential_form, potential_two_form, resonant_rho
 from mrx.nullspace import compute_nullspaces
-from mrx.poincare import islands, poincare
+from mrx.experimental.islands import islands
+from mrx.poincare import poincare
 
 seq, _ = build_sequence("data/wout_li383_1.4m.nc", (10, 16, 16), 2)
 compute_nullspaces(seq)

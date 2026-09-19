@@ -21,7 +21,8 @@ import numpy as np
 
 from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces
-from mrx.poincare import fixed_points, logical_field, rotational_transform, trace
+from mrx.experimental.islands import fixed_points
+from mrx.poincare import logical_field, rotational_transform, trace
 
 DEMOS = "/kfs3/scratch/tblickhan/mrx/.claude/worktrees/newton/outputs/newton_demos/seeded_reconnect"
 H_R, M, TARGET, TOL = 1.0 / 16.0, 5, 0.6, 2e-3

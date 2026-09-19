@@ -17,7 +17,7 @@ import numpy as np
 
 from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces
-from mrx.poincare import fixed_points, island_width
+from mrx.experimental.islands import fixed_points, island_width
 
 PULSE = "/kfs3/scratch/tblickhan/mrx/outputs/li383_pulse"
 DEMOS = "/kfs3/scratch/tblickhan/mrx/.claude/worktrees/newton/outputs/newton_demos"
