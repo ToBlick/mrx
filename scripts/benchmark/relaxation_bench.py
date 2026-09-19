@@ -503,7 +503,7 @@ def bench_relaxation(bench, seq, args, dtype):
     # benchmark starts a run from exactly where relax.py would.
     B0, _ = initial_field(seq)
 
-    # The scale is the stepper's own default, SMOOTHING_C / n_r^2, so a
+    # The scale is the stepper's own default, SMOOTHING_C h_r^2, so a
     # benchmark cannot drift from what production runs; it is recorded below
     # because the cost per step grows with it.
     ts = TimeStepper(seq=seq, cfl=0.5,

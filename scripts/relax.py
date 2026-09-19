@@ -81,7 +81,7 @@ Flags, defaults in brackets:
                                    the direction: Newton on the second
                                    variation (the Newton flags below) or
                                    gradient descent on the smoothed force
-      --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.02 / n_r^2]
+      --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.075 h_r^2]
                                    descent direction v = (I - MU L)^-G F
       --cfl C [0.5]                cap the line-search step at C / (largest
                                    logical CFL number of the velocity); inf
@@ -168,23 +168,24 @@ Reconnection series:
     ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J . B`` with
     ``X = --reconnect-helicity``; the record carries the target and the
     helicity actually spent. ``--reconnect-eps C`` instead applies a constant
-    dose ``eps = C / n_r^2`` per solve, a constant resistivity: the ideal
+    dose ``eps = C h_r^2`` per solve (``h_r`` the physical radial cell,
+    mrx.relaxation.radial_cell_sq; on li383 at (16,32,32) C = 0.16 spends
+    about 1% of the helicity), a constant resistivity: the ideal
     relaxation is fast and the diffusion slow, so the solves go between
     blocks of ideal steps and the field relaxes back before the next one; the
     helicity spent is then an outcome. ``--reconnect-window A:B`` restricts
     the solves to steps A..B (relax ideally, reconnect gradually, relax
-    ideally). ``--reconnect-sustained`` (with ``--reconnect-eps``) diffuses
-    ``B - B_ref`` only: Ohm's law with the current of ``B_ref`` as a source,
-    so a seeded island saturates instead of spending the helicity and the
-    pressure. ``B_ref`` is the unseeded initial field, unsmoothed: its
-    grid-scale current (the histopolated A curled twice) is O(h^2) at p = 2
-    like the rest of the discretisation, so a heat step of c h^2 would only
-    trade one O(h^2) constant for another; its force imbalance (VMEC's
-    equilibrium is not the discrete one, resid 2.5e-4 at every mesh on
-    li383) is smooth, and the unseeded control run measures its effect. Not
-    the relaxed equilibrium: ideal relaxation builds the shielding sheets at
-    the rational surfaces, and a sheet in the source would hold the seeded
-    island at a width set by the mesh. The outcome is the series of ideal
+    ideally). ``--reconnect-reference PATH`` (with ``--reconnect-eps``)
+    diffuses ``B - B_ref`` only: Ohm's law with the current of ``B_ref`` as a
+    source, so a seeded island saturates instead of spending the helicity and
+    the pressure. ``PATH`` is a checkpoint of the relaxed UNSEEDED run on the
+    same geometry, mesh, degree and symmetry; ``B_ref`` is that field after
+    one heat step of ``c h_r^2``, ``c = --reference-smoothing`` [1], a filter
+    one radial cell wide: ideal relaxation builds the shielding sheets at the
+    rational surfaces, a cell wide on the mesh, and a sheet in the source
+    would hold the island shut. The relaxed field is in force balance, so the
+    reference's imbalance is the filter's, O(h_r^2) (the VMEC initial field's
+    is 2.5e-4 at every mesh on li383). The outcome is the series of ideal
     equilibria, one per reconnection plus the final field, to choose from.
 """
 from __future__ import annotations
@@ -232,7 +233,7 @@ def parse_args(argv=None):
                          "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
                          "reconnection)")
     ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
-                    help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C / n_r^2]")
+                    help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C h_r^2, h_r the physical radial cell]")
     ap.add_argument("--cfl", type=float, default=0.5)
     ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
                     help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
@@ -257,12 +258,15 @@ def parse_args(argv=None):
     ap.add_argument("--reconnect-helicity", type=float, default=0.01,
                     help="the helicity each reconnection spends, |dH| / |H|")
     ap.add_argument("--reconnect-eps", type=float, default=None,
-                    help="a constant dose eps = C / n_r^2 per resistive solve instead of the helicity target")
+                    help="a constant dose eps = C h_r^2 per resistive solve (h_r the physical radial cell) "
+                         "instead of the helicity target")
     ap.add_argument("--reconnect-window", default=None,
                     help="A:B, the resistive solves only at steps A..B")
-    ap.add_argument("--reconnect-sustained", action="store_true",
-                    help="the solves diffuse B - B_ref only, B_ref the unseeded initial field "
-                         "(needs --reconnect-eps)")
+    ap.add_argument("--reconnect-reference", default=None,
+                    help="a checkpoint of the relaxed unseeded run (same geometry/mesh/degree/symmetry): "
+                         "the solves diffuse B - B_ref only, B_ref its smoothed field (needs --reconnect-eps)")
+    ap.add_argument("--reference-smoothing", type=float, default=1.0,
+                    help="the reference's heat step c h_r^2, a filter c^(1/2) radial cells wide")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -296,7 +300,7 @@ def main(cli):
     from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                                relax, write_checkpoint)
+                                radial_cell_sq, relax, resistive_step, write_checkpoint)
 
     if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
@@ -333,9 +337,6 @@ def main(cli):
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
     B0, ic = initial_field(seq, seed)
     results["ic"] = ic
-    B_ref = None
-    if cli.reconnect_sustained:
-        B_ref = B0 if seed is None else initial_field(seq, None)[0]
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                       for k, v in ic.items() if k != "kind"), flush=True)
@@ -358,6 +359,14 @@ def main(cli):
     else:
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
+    h_r_sq = radial_cell_sq(seq)
+    params["h_r_sq"] = h_r_sq
+    B_ref = None
+    if cli.reconnect_reference:
+        B_ref = resistive_step(read_checkpoint(cli.reconnect_reference, ts)[0].B_n, seq,
+                               cli.reference_smoothing * h_r_sq)[0]
+        print(f"[reconnect] reference {cli.reconnect_reference}, smoothed by "
+              f"{cli.reference_smoothing:g} h_r^2 = {cli.reference_smoothing * h_r_sq:.3e}", flush=True)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
@@ -366,7 +375,7 @@ def main(cli):
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
-          + ((f" (eps {cli.reconnect_eps:g}/n_r^2 each" if cli.reconnect_eps is not None
+          + ((f" (eps {cli.reconnect_eps:g} h_r^2 each" if cli.reconnect_eps is not None
               else f" ({cli.reconnect_helicity:.2%} of H each")
              + (f", steps {cli.reconnect_window})" if cli.reconnect_window else ")") if cli.reconnect_every else "")
           + " ===",
@@ -392,7 +401,7 @@ def main(cli):
     res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity,
-          reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps / ns[0] ** 2,
+          reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps * h_r_sq,
           reconnect_window=None if cli.reconnect_window is None
           else tuple(int(v) for v in cli.reconnect_window.split(":")),
           reconnect_reference=B_ref, on_chunk=save)

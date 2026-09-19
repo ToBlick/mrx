@@ -12,7 +12,7 @@ until ``J x B = grad p`` in the weak sense; ``p`` is not prescribed, it is
 the Lagrange multiplier the descent finds.
 
 This run turns on **velocity smoothing** of order 1 (gamma = 1): the descent
-direction is ``(I - scale L)^-1 F`` with ``scale = 0.02 / n_r^2``
+direction is ``(I - scale L)^-1 F`` with ``scale = 0.075 h_r^2``, ``h_r`` the physical radial cell
 (``mrx.relaxation.SMOOTHING_C``, the stepper's default). On li383
 this reaches a clean nested floor in ~1000 steps where the unsmoothed descent
 (gamma = 0) grinds for ~6000; the force residual need not fall monotonically,
@@ -94,7 +94,7 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 # Now we relax: the energy descent of mrx.relaxation with scripts/relax.py's
 # defaults plus velocity smoothing, run toward a nested floor (~500 steps).
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, the stepper's default
-# scale 0.02 / n_r^2 (mrx.relaxation.SMOOTHING_C).
+# scale 0.075 h_r^2 (mrx.relaxation.SMOOTHING_C, h_r the physical radial cell).
 ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
 print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
 res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,

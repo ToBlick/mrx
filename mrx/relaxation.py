@@ -263,6 +263,28 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     return B + delta, info.astype(jnp.int32), rel
 
 
+def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
+    """The smallest knot spacing of each logical direction, shape ``(3,)``."""
+    h = []
+    for b in seq.basis_0.bases[0].bases:
+        knots = np.asarray(b.T)
+        interior = knots[b.p:-b.p] if b.type in ('clamped', 'periodic') else knots
+        h.append(np.diff(interior).min())
+    return np.array(h)
+
+
+def radial_cell_sq(seq: DeRhamSequence) -> float:
+    """The squared physical radial cell, ``h_r^2 = <g_rr>_V dr^2``: the
+    radial knot spacing ``dr`` times the volume mean of the covariant
+    metric's ``rr`` entry (``a^2`` for a circular torus of minor radius
+    ``a``). The unit of the resistive doses: ``eps = C h_r^2`` damps the
+    radial two-cell mode by ``1 / (1 + C pi^2)`` on any geometry; a bare
+    ``C / n_r^2`` would carry the device's ``a^2`` (0.106 m^2 on li383)."""
+    wJ = np.asarray(seq.quad.w * seq.jacobian_j)
+    g_rr = np.asarray(seq.metric_jkl)[:, 0, 0]
+    return float(knot_spacing(seq)[0] ** 2 * np.sum(wJ * g_rr) / np.sum(wJ))
+
+
 def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     """Weights ``1 / (J h_i)`` turning 2-form values at the quadrature points into logical CFL numbers.
 
@@ -275,12 +297,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     it once at construction (everything it reads is fixed by the sequence),
     so it is never traced.
     """
-    h = []
-    for b in seq.basis_0.bases[0].bases:
-        knots = np.asarray(b.T)
-        interior = knots[b.p:-b.p] if b.type in ('clamped', 'periodic') else knots
-        h.append(np.diff(interior).min())
-    h = np.array(h)
+    h = knot_spacing(seq)
     weights = 1.0 / (np.asarray(seq.jacobian_j)[:, None] * h[None, :])
     weights[:, 1] *= np.asarray(seq.quad.x[:, 0]) >= h[0]
     return jnp.asarray(weights, dtype=DTYPE)
@@ -437,24 +454,26 @@ class Increment(NamedTuple):
     newton_it: jnp.ndarray
 
 
-#: The velocity smoothing scale in units of ``h^2`` (``h = 1 / n_r``,
-#: logical): ``mu = SMOOTHING_C / n_r^2`` damps a mode of wavenumber ``k``
-#: by ``1 / (1 + mu k^2)``, the two-cell mode by 1/1.2 and a four-cell mode
-#: by 1/1.05 -- the edge of the last octave, no resolved physics. Swept
-#: 2026-09-05 on li383 (16,32,32) p=2 in mixed precision, 5000 steps,
-#: ``SMOOTHING_C`` in {0.0064, 0.02, 0.064, 0.2, 0.64} against no
-#: smoothing (``outputs/mu_sweep``): the residual per step has a flat
-#: optimum over 0.02-0.064, per wall second 0.02 is the cheapest of them
-#: (the shifted solve's cost grows with the scale), the helicity drift is
-#: the same for every smoothed arm (it is the time discretisation's, not
-#: the smoother's), and the unsmoothed descent is a factor 2 behind at
-#: equal wall time. 0.064 before, from one sweep at 8^3 p=3.
-SMOOTHING_C = 0.02
+#: The velocity smoothing scale in squared physical radial cells:
+#: ``mu = SMOOTHING_C h_r^2`` (:func:`radial_cell_sq`) damps a mode of
+#: wavenumber ``k`` by ``1 / (1 + mu k^2)``, the radial two-cell mode by
+#: ``1 / (1 + SMOOTHING_C pi^2)`` = 1/1.7 on any device. Swept 2026-09-05 on
+#: li383 (16,32,32) p=2 in mixed precision, 5000 steps, as ``c / n_r^2``
+#: with c in {0.0064, 0.02, 0.064, 0.2, 0.64} against no smoothing
+#: (``outputs/mu_sweep``): the residual per step has a flat optimum over
+#: 0.02-0.064, per wall second 0.02 is the cheapest of them (the shifted
+#: solve's cost grows with the scale), the helicity drift is the same for
+#: every smoothed arm (it is the time discretisation's, not the smoother's),
+#: and the unsmoothed descent is a factor 2 behind at equal wall time. The
+#: bare ``c / n_r^2`` carried li383's metric: 0.02 / n_r^2 is 0.074 h_r^2
+#: there (<g_rr> = 0.208 m^2, knot spacing 1 / (n_r - p)), rounded to 0.075
+#: (2026-09-18); the logical sweep's other values are 3.68 c.
+SMOOTHING_C = 0.075
 
 
 def smoothing_scale(seq) -> float:
-    """``SMOOTHING_C / n_r^2``: the smoothing scale of the sequence's mesh."""
-    return SMOOTHING_C / seq.ns[0] ** 2
+    """``SMOOTHING_C h_r^2``: the smoothing scale of the sequence's mesh."""
+    return SMOOTHING_C * radial_cell_sq(seq)
 
 
 class TimeStepper(eqx.Module):
@@ -486,7 +505,7 @@ class TimeStepper(eqx.Module):
             for any long ideal run; order 0 only for short smoke runs.
         velocity_smoothing_scale: Length scale of the smoothing,
             the ``mu`` in ``(M_2 + mu L_2)^-1 M_2``; ``None`` (the default)
-            is :func:`smoothing_scale`, ``SMOOTHING_C / n_r^2``.
+            is :func:`smoothing_scale`, ``SMOOTHING_C h_r^2``.
         cfl: Cap on the step: ``dt = min(dt_star, cfl / cfl_max)`` with
             ``cfl_max`` the largest logical CFL number of the velocity. The
             linesearch minimiser cannot raise the energy, but a large step

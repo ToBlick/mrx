@@ -132,7 +132,7 @@ defaults -- gradient descent on the smoothed projected force by the potential
 route, analytic line search under a CFL cap
 of 0.5, no resistivity -- plus **velocity smoothing of order 1**
 (gamma = 1), the descent direction $(I - \text{scale}\,L)^{-1} F$ with
-$\text{scale} = 0.02 / n_r^2$ (`mrx.relaxation.SMOOTHING_C`, the stepper's
+$\text{scale} = 0.075\, h_r^2$ ($h_r$ the physical radial cell) (`mrx.relaxation.SMOOTHING_C`, the stepper's
 default), run through `relax`:
 
 ```python

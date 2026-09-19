@@ -38,7 +38,7 @@ GEOM_HI=$ROOT/data/wout_li383_1.4m.nc
 # floor 1e-4 since 2026-09-02 (the arms of that day ran at 1e-3 and all stopped
 # there): let --steps or the job limit end the run and show whether it bottoms out.
 COMMON="--floor-tol 1e-4 --steps 6000"
-G1="--velocity-smoothing-order 1"   # mu = 0.02 / n_r^2, the driver's default (SMOOTHING_C)
+G1="--velocity-smoothing-order 1"   # mu = 0.075 h_r^2, the driver's default (SMOOTHING_C)
 G1_12=$G1
 G1_16=$G1
 G1_32=$G1

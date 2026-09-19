@@ -45,10 +45,11 @@ chunks (section 2a).
 3. `smooth_velocity(u)`: `velocity_smoothing_order` times
    `u = (M_2 + mu L_2)^{-1} M_2 u` with `mu = velocity_smoothing_scale`, the
    smoothed direction `v = (I - mu Δ)^{-order} F`. Off at order 0. The
-   default scale is `SMOOTHING_C / n_r^2 = 0.02 / n_r^2`: the two-cell
-   mode damped by 1/1.2, nothing resolved touched; swept 2026-09-05 at
-   (16,32,32) p=2 (flat optimum 0.02-0.064 per step, 0.02 cheapest per
-   second, the helicity drift independent of the scale).
+   default scale is `SMOOTHING_C h_r^2 = 0.075 h_r^2`, $h_r^2 = \langle g_{rr} \rangle \Delta r^2$
+   the squared physical radial cell (`mrx.relaxation.radial_cell_sq`): the
+   radial two-cell mode damped by 1/1.7 on any device; swept 2026-09-05 on
+   li383 (16,32,32) p=2 (flat optimum 0.074-0.24 per step, 0.074 cheapest
+   per second, the helicity drift independent of the scale).
    The flow is incompressible without a projection of its own: the
    force is Leray-projected and the smoothing commutes with the
    divergence. A second Leray projection of the velocity was measured to
@@ -353,15 +354,15 @@ method per run. Flags, defaults in brackets:
 | Newton (`--method newton`) | the direction of the second variation by Newton-MR, `mrx.hessian.newton_direction`: MINRES with the harmonic atom of the current field as preconditioner, the parallel-flow penalty in the operator, the nonpositive-curvature exit; the line search along the direction is capped at the Newton length `dt = 1` |
 | `--newton-penalty KAPPA [3]` | the parallel-flow penalty, `KAPPA` times the strain along the field (`mrx.hessian.parallel_penalty_profile`): the one number of the Newton configuration; the Hessian is exactly null on the field-aligned flows and the penalty lifts them |
 | `--newton-maxiter N [200]`, `--newton-passes P [1]`, `--newton-tol TOL [0.1]` | the MINRES iterations per pass, the passes at most, and the forcing term that ends the solve early (the residual of the Newton system, in double precision and the mass-atom norm, below `TOL` of the right-hand side); the solve is inexact by design: 200 iterations give the same relaxation as any tighter solve |
-| `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.02 / n_r^2]` | `v = (I - MU L)^{-G} F` |
+| `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.075 h_r^2]` | `v = (I - MU L)^{-G} F` |
 | `--potential-velocity {false,true} [true for the gradient descent]` | the projected force as `curl a + c h` (k=1 Hodge solve) instead of the Leray saddle solve; Newton and the auxiliary field have their own routes |
 | `--cfl C [0.5]` | the CFL cap on the line-search step |
 | `--chunk N [20 Newton, 500 gradient]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`; the per-step trace is the scan's stacked output, the state its carry): once per chunk the qoi are sampled (section 3), the checkpoint `checkpoints/state_<step>.h5` and `relax.json` are written, and the floor, reconnect and wall-time tests run; `--steps` is a multiple of it. The checkpoints serve `scripts/poincare_trace.py --fields snapshots`, which traces every stored step at the chosen plane; `scripts/poincare_plot.py` then writes one frame per step with every axis, colour scale and the split line held fixed (`render_section(limits=...)`); `ffmpeg -framerate 4 -i frame_zeta0.5_%04d.png -c:v mpeg4 -q:v 2 movie.mp4` assembles them (`--snapshot-steps 0:500:2,500:2501:8` renders a subset, dense where the flow is fast; if the system ffmpeg lacks H.264, `pip install imageio-ffmpeg` provides one with libx264) |
 | `--steps N [100 Newton, 3000 gradient]` | the step budget; the checkpoint of every chunk restarts a job its time limit ended |
 | `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it; below `tol` the force's gradient-part remnant is more than a tenth of the descent (0.1 tol / resid, `precision.md`); `relax` prints that value at the start |
 | `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series (section 2a): every `K` steps (rounded to whole chunks) the field is written to `<out>/reconnect/<k>/` (`B.h5` in the layout of the run's, `state.eqx` to `--restart` from) and reconnected by one `resistive_step` spending the fraction `X` of the helicity, after which the descent restarts on the diffused field; `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
-| `--reconnect-eps C`, `--reconnect-window A:B` | a constant dose $\varepsilon = C / n_r^2$ per resistive solve instead of the helicity target (a constant resistivity, the solves between blocks of ideal steps; the helicity spent is an outcome), and the steps the solves are restricted to |
-| `--reconnect-sustained` | with `--reconnect-eps`: each solve diffuses $B - B_\mathrm{ref}$ only, $B_\mathrm{ref}$ the unseeded initial field (not the relaxed equilibrium, whose shielding sheets would hold the seeded island at a mesh-set width): the reference current is sustained and islands saturate |
+| `--reconnect-eps C`, `--reconnect-window A:B` | a constant dose $\varepsilon = C h_r^2$ ($h_r$ the physical radial cell) per resistive solve instead of the helicity target (a constant resistivity, the solves between blocks of ideal steps; the helicity spent is an outcome), and the steps the solves are restricted to |
+| `--reconnect-reference PATH`, `--reference-smoothing c [1]` | with `--reconnect-eps`: each solve diffuses $B - B_\mathrm{ref}$ only, $B_\mathrm{ref}$ the relaxed unseeded run's checkpoint after one heat step of $c h_r^2$ (a one-cell filter that removes the rational-surface sheets): the reference current is sustained and islands saturate |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` |
 | `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 = one `vmap` over all points; needed at (64,128,128) |
