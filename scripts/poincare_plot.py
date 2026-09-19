@@ -42,8 +42,8 @@ Flags (defaults in brackets):
                            then 1/3, 0.2, ...), one marker style each, drawn
                            on the logical chart [1]
     --dot-scale F          crossing-marker size relative to the house rule (which
-                           sets it from the point count); a quarter, for a dense
-                           section on a page [0.25]
+                           sets it from the point count); 0.15, for a dense
+                           section on a page [0.15]
     --paper                publication layout: no title/subtitle, no axis marker,
                            the house font hierarchy at --label-size for a
                            --page-width figure, PDF + PNG at --dpi. Default is the
@@ -153,7 +153,7 @@ def main():
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
     ap.add_argument("--profile-rays", type=int, default=1)
-    ap.add_argument("--dot-scale", type=float, default=0.25)
+    ap.add_argument("--dot-scale", type=float, default=0.15)
     ap.add_argument("--paper", action="store_true")
     ap.add_argument("--pressure-factor", type=float, default=1.0,
                     help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta) [1]")
