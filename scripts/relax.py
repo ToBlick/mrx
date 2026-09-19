@@ -175,20 +175,23 @@ Reconnection series:
     blocks of ideal steps and the field relaxes back before the next one; the
     helicity spent is then an outcome. ``--reconnect-window A:B`` restricts
     the solves to steps A..B (relax ideally, reconnect gradually, relax
-    ideally). ``--reconnect-sustained`` (with ``--reconnect-eps``, an
-    equilibrium file) diffuses ``B - B_ref`` only: Ohm's law with the file's
-    current as a source, ``E = eta (J - J_0)``, ``J_0`` the L2 projection of
-    the equilibrium's current with the seed
-    (mrx.initial_conditions.reference_current_field: one analytic curl of the
-    Clebsch potential, the second weak -- not the histopolated initial field,
-    whose two curls amplify the histopolation error). The current profile,
-    the helicity and the pressure are held while the shielding sheets that
-    ideal relaxation builds at the rational surfaces, absent from the
-    nested-surface solution, decay into islands that saturate; a seed is an
-    applied perturbation that stays. Not the relaxed field as the reference:
-    a run starting from it is a fixed point.
-    The outcome is the series of ideal equilibria, one per reconnection plus
-    the final field, to choose from.
+    ideally). The outcome is the series of ideal equilibria, one per
+    reconnection plus the final field, to choose from.
+
+Resistive steady state:
+    ``--resistivity C`` adds to EVERY step, after the ideal one, a
+    backward-Euler step of ``dB/dt = -eta curl (J - J*)`` with the dose
+    ``eps = C h_r^2`` (mrx.relaxation.TimeStepper.resistivity), and ``J*``
+    the current of ``B*``: the run's start field (the ``--restart``
+    checkpoint, a converged ideal run; or the initial field) after one heat
+    step of ``c h_r^2``, ``c = --reference-smoothing``, which removes the
+    rational-surface sheets of the ideal equilibrium (sustained, they would
+    make the start a fixed point) and costs ``O(c h_r^2)`` of the bulk
+    current. The run goes to the resistive steady state (the islands open
+    and saturate; the force residual is of order ``eps``); a restart of it
+    without ``--resistivity`` then relaxes it ideally, the islands frozen in.
+    A seed in the initial field of the converged run is in ``B*``: an
+    applied perturbation that stays.
 """
 from __future__ import annotations
 
@@ -264,9 +267,10 @@ def parse_args(argv=None):
                          "instead of the helicity target")
     ap.add_argument("--reconnect-window", default=None,
                     help="A:B, the resistive solves only at steps A..B")
-    ap.add_argument("--reconnect-sustained", action="store_true",
-                    help="the solves diffuse B - B_ref only, B_ref the L2 projection of the equilibrium file's "
-                         "field with the seed: its current is a source (needs --reconnect-eps)")
+    ap.add_argument("--resistivity", type=float, default=0.0,
+                    help="a resistive dose C h_r^2 in every step, E = eta (J - J*): see 'Resistive steady state'")
+    ap.add_argument("--reference-smoothing", type=float, default=0.1,
+                    help="B* = the start field after one heat step of c h_r^2 (with --resistivity)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -295,12 +299,13 @@ def parse_args(argv=None):
 
 
 def main(cli):
+    import equinox as eqx
     import mrx
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field, reference_current_field
+    from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                                radial_cell_sq, relax, write_checkpoint)
+                                radial_cell_sq, relax, resistive_step, write_checkpoint)
 
     if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
@@ -342,6 +347,8 @@ def main(cli):
                       for k, v in ic.items() if k != "kind"), flush=True)
 
     # --- the descent -------------------------------------------------------
+    h_r_sq = radial_cell_sq(seq)
+    params["h_r_sq"] = h_r_sq
     ts = TimeStepper(
         seq=seq, auxiliary_B_field=cli.auxiliary_B_field,
         scheme={"explicit": IntegrationScheme.EXPLICIT,
@@ -352,20 +359,23 @@ def main(cli):
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
         newton=cli.newton, newton_penalty=cli.newton_penalty, newton_tol=cli.newton_tol,
-        newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes)
+        newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes,
+        resistivity=cli.resistivity * h_r_sq)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
     else:
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
-    h_r_sq = radial_cell_sq(seq)
-    params["h_r_sq"] = h_r_sq
-    B_ref = None
-    if cli.reconnect_sustained:
-        B_ref = reference_current_field(seq, seed, ic["B_norm_raw"])
-        print(f"[reconnect] reference: the file's field L2-projected, ||B_0 - B_ref|| = "
-              f"{float(seq.l2_norm(B0 - B_ref, 2)):.3e} (the histopolation's part)", flush=True)
+    if cli.resistivity:
+        # B*: the start field without its rational-surface sheets
+        B_star = state.B_n
+        if cli.reference_smoothing:
+            B_star = resistive_step(B_star, seq, cli.reference_smoothing * h_r_sq)[0]
+        ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+        print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the start field "
+              f"after a heat step of {cli.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
+              f"{float(seq.l2_norm(state.B_n - B_star, 2) / seq.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
@@ -377,6 +387,8 @@ def main(cli):
           + ((f" (eps {cli.reconnect_eps:g} h_r^2 each" if cli.reconnect_eps is not None
               else f" ({cli.reconnect_helicity:.2%} of H each")
              + (f", steps {cli.reconnect_window})" if cli.reconnect_window else ")") if cli.reconnect_every else "")
+          + (f" resistivity={cli.resistivity:g} h_r^2 (B* smoothed {cli.reference_smoothing:g} h_r^2)"
+             if cli.resistivity else "")
           + " ===",
           flush=True)
 
@@ -402,8 +414,7 @@ def main(cli):
           reconnect_helicity=cli.reconnect_helicity,
           reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps * h_r_sq,
           reconnect_window=None if cli.reconnect_window is None
-          else tuple(int(v) for v in cli.reconnect_window.split(":")),
-          reconnect_reference=B_ref, on_chunk=save)
+          else tuple(int(v) for v in cli.reconnect_window.split(":")), on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
                      initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.step_best)}, "

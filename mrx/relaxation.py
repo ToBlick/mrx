@@ -245,7 +245,8 @@ def pressure_diagnostics(
                 JxBn_wall=JxBn_wall, beta_vol=beta_vol, beta_axis=beta_axis)
 
 
-def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp.ndarray] = None):
+def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp.ndarray] = None,
+                   guess: Optional[jnp.ndarray] = None):
     """One backward-Euler step of ``dB/dt = -eta curl curl B`` over ``dt``,
     ``eps = eta dt``, in defect form: ``(M_2 + eps L_2) delta = -eps L_2 B``
     and ``B + delta``. With ``B_ref`` the step diffuses ``B - B_ref`` only,
@@ -258,7 +259,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     this solve between chunks, a dose ``eps`` per reconnection."""
     rhs = -eps * seq.apply_laplacian(B if B_ref is None else B - B_ref, 2, dirichlet=True)
     delta, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
-        rhs, 2, eps, dirichlet=True, return_info=True)
+        rhs, 2, eps, dirichlet=True, guess=guess, return_info=True)
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
     return B + delta, info.astype(jnp.int32), rel
 
@@ -358,6 +359,17 @@ class State(eqx.Module):
     helicity_lambda : float
         The multiple of the Dirichlet proxy ``H_D`` removed from ``E`` by
         ``TimeStepper.helicity_correction`` (0 without it).
+    resistive_delta : jnp.ndarray (optional)
+        The last step's resistive increment (``TimeStepper.resistivity``),
+        the warm start of the next one: at a resistive steady state it
+        barely changes. Zeros without resistivity.
+    resistive_it : int
+        The signed iteration count of the step's resistive solve (0 without).
+    resistive_moved : float
+        ``||delta||_M / ||B||_M`` of the step's resistive increment: in mixed
+        precision ``B`` is stored in float32, so an increment near 1e-7 of the
+        field is rounded away in ``B + delta`` (the solve itself is in defect
+        form and accurate relative to ``delta``).
     B_best, resid_best, step_best : jnp.ndarray, float, int
         The field with the lowest squared normalised force residual the run
         has seen, that residual, and the absolute step it was at (the start
@@ -388,6 +400,9 @@ class State(eqx.Module):
     a: Optional[jnp.ndarray] = None
     newton_it: int = 0
     helicity_lambda: float = 0.0
+    resistive_delta: Optional[jnp.ndarray] = None
+    resistive_it: int = 0
+    resistive_moved: float = 0.0
     B_best: Optional[jnp.ndarray] = None
     resid_best: float = np.inf
     step_best: int = 0
@@ -571,6 +586,24 @@ class TimeStepper(eqx.Module):
             picks up ``-lambda curl H_D``, of the size of the leak, and the
             energy decrease is perturbed by ``lambda`` times the ``J . B``
             pairing: not variational. ``State.helicity_lambda`` records it.
+        resistivity: The resistive dose per step, ``eps = eta dt`` (a length
+            squared; ``scripts/relax.py --resistivity C`` gives ``C h_r^2``,
+            :func:`radial_cell_sq`), 0 for the ideal descent. After the ideal
+            step, one backward-Euler step of ``dB/dt = -eta curl (J - J_ref)``,
+            ``(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)``: two SPD PCG solves
+            with the shifted-stiffness atoms
+            (:meth:`DeRhamSequence.apply_inverse_mass_plus_eps_laplace_matrix`;
+            the right-hand side is a curl, so the gradient solve is trivial),
+            warm-started from the previous step's increment. Every step, not
+            between chunks: the fixed point is the resistive steady state (the
+            descent flow balancing the diffusion, a force residual of order
+            ``eps``) instead of the sawtooth of solves between blocks of ideal
+            steps. Switching it off afterwards relaxes that state ideally, the
+            islands it opened frozen in.
+        resistive_reference: ``B_ref``, the field whose current is the source
+            ``J_ref`` (``None``: no source, ``J_ref = 0``). It must not carry the
+            rational-surface sheets of an ideal equilibrium, or they are
+            sustained and a run started from it is a fixed point.
         picard_tol: Convergence tolerance of the midpoint fixed point,
             ``||g(x) - x||_M`` relative to the predictor's increment
             ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
@@ -590,6 +623,8 @@ class TimeStepper(eqx.Module):
     newton_maxiter: int = 200
     newton_passes: int = 1
     helicity_correction: bool = False
+    resistivity: float = 0.0
+    resistive_reference: Optional[jnp.ndarray] = None
     picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
@@ -929,6 +964,14 @@ class TimeStepper(eqx.Module):
             raise ValueError(
                 f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
 
+        res_delta, res_it, res_moved = state.resistive_delta, state.resistive_it, state.resistive_moved
+        if self.resistivity:
+            B_ideal = B_nplus1
+            B_nplus1, res_it, res_moved = resistive_step(B_ideal, self.seq, self.resistivity,
+                                                 self.resistive_reference, guess=state.resistive_delta)
+            res_delta = B_nplus1 - B_ideal
+            res_moved = res_moved.astype(state.resistive_moved.dtype)
+
         # The descent variable is the VELOCITY u, not B: grad_M E = -F is the
         # derivative of E with respect to u (dE = -(F, u)_M) and the line
         # search minimises along dt*u; B moves by dt*curl(u x H), a different
@@ -938,13 +981,14 @@ class TimeStepper(eqx.Module):
                        s.F_prev, s.MF_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
-                       s.a, s.newton_it, s.helicity_lambda),
+                       s.a, s.newton_it, s.helicity_lambda, s.resistive_delta, s.resistive_it,
+                       s.resistive_moved),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
              n_eval, restarts, resid,
-             inc.a, inc.newton_it, lam))
+             inc.a, inc.newton_it, lam, res_delta, res_it, res_moved))
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
@@ -988,6 +1032,9 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         a=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         newton_it=jnp.int32(0),
         helicity_lambda=jnp.zeros((), dtype=DTYPE),
+        resistive_delta=jnp.zeros(n, dtype=DTYPE),
+        resistive_it=jnp.int32(0),
+        resistive_moved=jnp.zeros((), dtype=DTYPE),
         B_best=B_dof,
         resid_best=jnp.asarray(resid0, dtype=DTYPE),
         step_best=jnp.int32(step),
@@ -1056,7 +1103,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
-            newton_it=state.newton_it,
+            newton_it=state.newton_it, res_it=state.resistive_it, res_moved=state.resistive_moved,
             hcorr=state.helicity_lambda, resid=resid,
             **{k: f(seq, state) for k, f in extra.items()})
         return state, trace
@@ -1226,7 +1273,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
           floor_tol: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           reconnect_eps: Optional[float] = None, reconnect_window: Optional[tuple] = None,
-          reconnect_reference: Optional[jnp.ndarray] = None,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
     """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
@@ -1246,10 +1292,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     constant resistivity: the ideal relaxation is fast and the diffusion slow,
     so the solves go between blocks of ideal steps and the field is back in
     equilibrium before the next one; the helicity spent is then an outcome),
-    only at steps inside ``reconnect_window = (start, stop)`` when given;
-    with ``reconnect_reference`` (a field on the same sequence, needs
-    ``reconnect_eps``) each solve diffuses ``B - B_ref`` only, a sustained
-    current: the islands saturate where their diffusion balances the drive. Then restarts the optimiser on the diffused field
+    only at steps inside ``reconnect_window = (start, stop)`` when given,
+    then restarts the optimiser on the diffused field
     (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
     every chunk's sample and BEFORE a reconnection at that step, so what it
     saves is the field the solve starts from. ``it0`` is the absolute step
@@ -1259,18 +1303,15 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         raise ValueError("steps must be a positive multiple of chunk")
     if reconnect_every:
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
-    if reconnect_reference is not None and reconnect_eps is None:
-        raise ValueError("a reconnection reference needs the constant dose reconnect_eps "
-                         "(the helicity target is set by the whole field's int J . B)")
     seq = ts.seq
     scale = force_scale(seq)
     run = chunk_runner(ts, chunk)
     sample = make_sampler(seq, ts)
-    reconnect_jit = eqx.filter_jit(lambda sq, B, eps, B_ref: resistive_step(B, sq, eps, B_ref))
-    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps), reconnect_reference)      # noqa: E731
+    reconnect_jit = eqx.filter_jit(lambda sq, B, eps: resistive_step(B, sq, eps))
+    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps))      # noqa: E731
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "hcorr")}
+                             "gain", "picard_it", "picard_resid", "newton_it", "hcorr", "res_it", "res_moved")}
     qoi: dict = {}
     events: list = []
 
@@ -1317,7 +1358,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
         for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "hcorr"):
+                  "newton_it", "hcorr", "res_it", "res_moved"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 
@@ -1335,6 +1376,9 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                      f"{np.abs(ch['newton_it']).max()}, unconverged {int((ch['newton_it'] > 0).sum())}, "
                      f"dt* mean {ch['dt_star'].mean():.3e}\n"
                      if ts.newton else "")
+                  + (f"           resistive: eps {ts.resistivity:.3e} per step, CG it mean "
+                     f"{np.abs(ch['res_it']).mean():.0f} max {np.abs(ch['res_it']).max()}, "
+                     f"||delta||/||B|| mean {ch['res_moved'].mean():.2e}\n" if ts.resistivity else "")
                   + f"           {pressure_line(scalars)}", flush=True)
         if resid_now < floor_tol:
             stop = "floor"
@@ -1364,8 +1408,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                       **{f"{kk}_after": v for kk, v in scalars.items()})
             events.append(ev)
             if verbose:
-                dose = (("constant" + (" on B - B_ref" if reconnect_reference is not None else ""))
-                        if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H")
+                dose = "constant" if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H"
                 print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} {dose} "
                       f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
                       f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "
