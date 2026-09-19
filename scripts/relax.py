@@ -175,14 +175,18 @@ Reconnection series:
     blocks of ideal steps and the field relaxes back before the next one; the
     helicity spent is then an outcome. ``--reconnect-window A:B`` restricts
     the solves to steps A..B (relax ideally, reconnect gradually, relax
-    ideally). ``--reconnect-sustained`` (with ``--reconnect-eps``) diffuses
-    ``B - B_0`` only, ``B_0`` the run's initial field (with its seed): Ohm's
-    law with the initial current as a source, ``E = eta (J - J_0)``, so the
-    current profile, the helicity and the pressure are held while the
-    shielding sheets that ideal relaxation builds at the rational surfaces,
-    absent from the nested-surface initial field, decay into islands that
-    saturate; a seed in ``B_0`` is an applied perturbation that stays. Not the
-    relaxed field as the reference: a run starting from it is a fixed point.
+    ideally). ``--reconnect-sustained`` (with ``--reconnect-eps``, an
+    equilibrium file) diffuses ``B - B_ref`` only: Ohm's law with the file's
+    current as a source, ``E = eta (J - J_0)``, ``J_0`` the L2 projection of
+    the equilibrium's current with the seed
+    (mrx.initial_conditions.reference_current_field: one analytic curl of the
+    Clebsch potential, the second weak -- not the histopolated initial field,
+    whose two curls amplify the histopolation error). The current profile,
+    the helicity and the pressure are held while the shielding sheets that
+    ideal relaxation builds at the rational surfaces, absent from the
+    nested-surface solution, decay into islands that saturate; a seed is an
+    applied perturbation that stays. Not the relaxed field as the reference:
+    a run starting from it is a fixed point.
     The outcome is the series of ideal equilibria, one per reconnection plus
     the final field, to choose from.
 """
@@ -261,8 +265,8 @@ def parse_args(argv=None):
     ap.add_argument("--reconnect-window", default=None,
                     help="A:B, the resistive solves only at steps A..B")
     ap.add_argument("--reconnect-sustained", action="store_true",
-                    help="the solves diffuse B - B_0 only, B_0 the initial field with its seed: the initial "
-                         "current is a source (needs --reconnect-eps)")
+                    help="the solves diffuse B - B_ref only, B_ref the L2 projection of the equilibrium file's "
+                         "field with the seed: its current is a source (needs --reconnect-eps)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -293,7 +297,7 @@ def parse_args(argv=None):
 def main(cli):
     import mrx
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field
+    from mrx.initial_conditions import initial_field, reference_current_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                                 radial_cell_sq, relax, write_checkpoint)
@@ -357,7 +361,11 @@ def main(cli):
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
     h_r_sq = radial_cell_sq(seq)
     params["h_r_sq"] = h_r_sq
-    B_ref = B0 if cli.reconnect_sustained else None
+    B_ref = None
+    if cli.reconnect_sustained:
+        B_ref = reference_current_field(seq, seed, ic["B_norm_raw"])
+        print(f"[reconnect] reference: the file's field L2-projected, ||B_0 - B_ref|| = "
+              f"{float(seq.l2_norm(B0 - B_ref, 2)):.3e} (the histopolation's part)", flush=True)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)

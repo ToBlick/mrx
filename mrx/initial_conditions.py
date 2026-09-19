@@ -239,6 +239,39 @@ def project_reference_two_form(seq, omega_ref):
     return B_raw / norm, norm
 
 
+def reference_current_field(seq, seed, norm):
+    """The equilibrium file's field for the current source of a sustained
+    reconnection (``E = eta (J - J_0)``): ``dA'`` of the Clebsch potential
+    (:func:`clebsch_potential_form`, with its ``seed``) taken ANALYTICALLY,
+    then L2-projected and Leray-cleaned, divided by the initial field's
+    ``norm`` (``info["B_norm_raw"]`` of :func:`initial_field`).
+
+    Only its weak curl enters the source, ``J_0 = M_1^-1 D_1^T M_2 B_ref``,
+    which is the L2 projection of the file's current (the weak curl commutes
+    with the projections; the Leray step removes a weak gradient, which the
+    weak curl annihilates): no histopolation noise, amplified by the two
+    curls of the initial field, and no second derivatives of lambda, whose
+    radial interpolant is the file's resolution -- ``dA'`` needs only its
+    angular derivatives. The nested-surface solver resolves no current sheets
+    at the rational surfaces, so the source holds none.
+    """
+    from mrx.gvec import load_clebsch  # noqa: PLC0415
+
+    eq = seq.equilibrium
+    if eq is None or eq["kind"] not in ("gvec", "vmec"):
+        raise ValueError("a reference current needs an equilibrium file (VMEC wout or GVEC state)")
+    A_ref = clebsch_potential_form(load_clebsch(eq, nfp=seq.nfp), seed)
+    dA = jax.jacfwd(A_ref)
+
+    def omega_ref(x):
+        d = dA(x)                     # d[i, j] = dA_i / dx_j
+        return jnp.array([d[2, 1] - d[1, 2], d[0, 2] - d[2, 0], d[1, 0] - d[0, 1]])
+
+    B, raw_norm = project_reference_two_form(seq, omega_ref)
+    B_leray, _ = seq.apply_leray_projection(B * raw_norm, k=2)
+    return B_leray / norm
+
+
 def leray_clean(seq, B):
     """Leray-project ``B`` and renormalise to ``||B||_M = 1``.
 
