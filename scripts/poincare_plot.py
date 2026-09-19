@@ -42,8 +42,8 @@ Flags (defaults in brackets):
                            then 1/3, 0.2, ...), one marker style each, drawn
                            on the logical chart [1]
     --dot-scale F          crossing-marker size relative to the house rule (which
-                           sets it from the point count); a third, for a dense
-                           section on a page [0.33]
+                           sets it from the point count); a quarter, for a dense
+                           section on a page [0.25]
     --paper                publication layout: no title/subtitle, no axis marker,
                            the house font hierarchy at --label-size for a
                            --page-width figure, PDF + PNG at --dpi. Default is the
@@ -153,7 +153,7 @@ def main():
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
     ap.add_argument("--profile-rays", type=int, default=1)
-    ap.add_argument("--dot-scale", type=float, default=0.33)
+    ap.add_argument("--dot-scale", type=float, default=0.25)
     ap.add_argument("--paper", action="store_true")
     ap.add_argument("--pressure-factor", type=float, default=1.0,
                     help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta) [1]")
@@ -206,7 +206,8 @@ def main():
     if cli.planes:
         planes = [pl for pl in planes if any(abs(pl - float(v)) < 1e-9 for v in cli.planes.split(","))]
     ns, nfp = tuple(int(v) for v in sec["ns"]), int(sec["nfp"])
-    source, movie = str(sec["source"]), bool(sec["movie"])
+    # A snapshots archive of ONE checkpoint is a section, not a movie: its own box and name
+    source, movie = str(sec["source"]), bool(sec["movie"]) and len(sec["fields"]) > 1
     kind = str(sec["pressure_kind"]) if cli.pressure else "none"
     print(f"[plot] {path}: {source}; fields {which}, planes {planes}, pressure {kind}"
           + (", movie" if movie else ""), flush=True)
@@ -320,9 +321,21 @@ def main():
                                 else f"poincare{infix}_zeta{pl:g}")
             if cli.paper:
                 paper_fonts(fig, label_size=cli.label_size, page_width=cli.page_width)
-                fig.savefig(stem + ".pdf", dpi=cli.dpi)     # dpi sets the rasterised scatter
-                fig.savefig(stem + ".png", dpi=cli.dpi)     # for viewing; the PDF is the deliverable
+                # tight: the layout's left margin (colour bars) is cropped here, not by the including document
+                tight = dict(bbox_inches="tight", pad_inches=0.02)
+                fig.savefig(stem + ".pdf", dpi=cli.dpi, **tight)     # dpi sets the rasterised scatter
+                fig.savefig(stem + ".png", dpi=cli.dpi, **tight)     # for viewing
                 print(f"  -> {stem}.pdf", flush=True)
+                if cli.pgf:
+                    # The same figure for \input into the paper: typeset by pdflatex in the document's own fonts
+                    # (rcfonts off), the scatter a raster -img*.png beside it, under pgf/.
+                    pgf_dir = os.path.join(out, "pgf")
+                    os.makedirs(pgf_dir, exist_ok=True)
+                    with matplotlib.rc_context({"pgf.texsystem": "pdflatex", "pgf.rcfonts": False,
+                                         "pgf.preamble": r"\providecommand{\mathdefault}[1]{#1}"}):
+                        fig.savefig(os.path.join(pgf_dir, os.path.basename(stem) + ".pgf"), backend="pgf",
+                                    dpi=cli.dpi, **tight)
+                    print(f"  -> {pgf_dir}/{os.path.basename(stem)}.pgf", flush=True)
             else:
                 # A movie's frames are for ffmpeg, not slides: no .pgf per frame.
                 save_section(fig, stem + ".png", want_pgf=cli.pgf and not (movie or cli.fly))

@@ -713,10 +713,10 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             m = sn & np.isfinite(r_line)
             if not m.any():
                 continue
-            bx.plot(r_line[m], iota_n[m], linestyle="none", marker=mk, ms=2.0,
+            bx.plot(r_line[m], iota_n[m], linestyle="none", marker=mk, ms=1.4,
                     color=IOTA_COLOR)
             if has_p:
-                px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=2.0,
+                px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=1.4,
                             color=P_COLOR, ecolor=P_COLOR, elinewidth=0.6, capsize=0)
             if lx is not None:
                 lx.axvline(th0, color="black", linestyle="-", lw=1.0,
