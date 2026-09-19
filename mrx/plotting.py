@@ -649,35 +649,32 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     ax.set_ylabel("Z")
 
     if lx is not None:
-        # The SAME crossings in the logical chart: r against theta, both in
-        # [0,1]. Nested surfaces are horizontal bands here, and anything that
+        # The SAME crossings in the logical chart: r (up) against theta (across),
+        # both in [0,1], the usual orientation of these charts (Tobias
+        # 2026-09-19). Nested surfaces are horizontal bands here, and anything that
         # is not -- a chain of islands, or surfaces sitting off-centre in r
         # because the magnetic axis is not at r=0 -- shows up immediately,
         # where the physical panel hides it behind the shaping.
         lr, lth = logical
         # The chart splits by ITS coordinate, per crossing: iota on theta < 1/2
-        # (the top half, theta increases downward), p on theta >= 1/2. The
+        # (the left half), p on theta >= 1/2 (the right half). The
         # physical panel's divider Z = z_axis maps to a theta interval that
         # wraps around on planes away from zeta = 0, so it is not reused here.
         top = jnp.asarray(lth) < 0.5 if split_iota_p else jnp.ones_like(R, dtype=bool)
         csel_iota = shown2 & top
-        lx.scatter(lr[csel_iota], lth[csel_iota], c=colour[csel_iota], s=size, vmin=lo,
+        lx.scatter(lth[csel_iota], lr[csel_iota], c=colour[csel_iota], s=size, vmin=lo,
                    vmax=hi, cmap=cmap, linewidths=0, rasterized=True)
         csel_p = shown2 & ~top
         if csel_p.any():
-            lx.scatter(lr[csel_p], lth[csel_p], c=pressure_scale * pressure[csel_p], s=size,
+            lx.scatter(lth[csel_p], lr[csel_p], c=pressure_scale * pressure[csel_p], s=size,
                        cmap=PRESSURE_CMAP, linewidths=0, rasterized=True, **p_range)
         if (~keep).any():
-            lx.scatter(lr[~keep], lth[~keep], c="0.55", s=size, linewidths=0,
+            lx.scatter(lth[~keep], lr[~keep], c="0.55", s=size, linewidths=0,
                        rasterized=True)
         lx.set_xlim(0.0, 1.0)
-        # theta increases DOWNWARD so the pressure half (below the magnetic
-        # axis) sits at the bottom, aligned with the physical panel where p is
-        # also below the axis -- without the flip p is at the top here and the
-        # bottom there.
-        lx.set_ylim(1.0, 0.0)
-        lx.set_xlabel(r"$r$")
-        lx.set_ylabel(r"$\theta$")
+        lx.set_ylim(0.0, 1.0)
+        lx.set_xlabel(r"$\theta$")
+        lx.set_ylabel(r"$r$")
 
     # ---- profile panel: iota (and p) against the surface label -------------
     logical_prof = profile_coord == "logical" and logical is not None
@@ -697,7 +694,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         # its neighbours as if it were on a surface. As points, an island chain
         # is a shelf of markers at n/m sharing one p, a chaotic line a marker
         # with a long p bar, and nested surfaces a smooth monotone dotting.
-        # Each ray is one MARKER, drawn as the theta = theta0 line in the
+        # Each ray is one MARKER, drawn as the (vertical) theta = theta0 line in the
         # logical chart so the reader can place it (the physical F(r, theta0)
         # marker is left out -- its per-turn average overshoots the boundary at
         # the edge). No legend: the ray is named in the caption (2026-09-12).
@@ -722,7 +719,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                 px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=2.0,
                             color=P_COLOR, ecolor=P_COLOR, elinewidth=0.6, capsize=0)
             if lx is not None:
-                lx.axhline(th0, color="black", linestyle="-", lw=1.0,
+                lx.axvline(th0, color="black", linestyle="-", lw=1.0,
                            alpha=0.85, zorder=6)
         bx.set_xlabel(r"$r$")
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
