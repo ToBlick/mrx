@@ -245,16 +245,18 @@ def pressure_diagnostics(
                 JxBn_wall=JxBn_wall, beta_vol=beta_vol, beta_axis=beta_axis)
 
 
-def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps):
+def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp.ndarray] = None):
     """One backward-Euler step of ``dB/dt = -eta curl curl B`` over ``dt``,
     ``eps = eta dt``, in defect form: ``(M_2 + eps L_2) delta = -eps L_2 B``
-    and ``B + delta``. Solving for the increment keeps the step meaningful in
+    and ``B + delta``. With ``B_ref`` the step diffuses ``B - B_ref`` only,
+    ``dB/dt = -eta curl (curl B - J_ref)``: Ohm's law with the source current
+    of ``B_ref``. Solving for the increment keeps the step meaningful in
     float32 (the solution is ``B`` plus something small, not something that
     happens to be close to ``B``). Returns ``(B + delta, info, ||delta||_M
     / ||B||_M)`` with ``info`` the solver's signed iteration count. The
     descent itself is ideal; ``scripts/relax.py --reconnect-every`` applies
     this solve between chunks, a dose ``eps`` per reconnection."""
-    rhs = -eps * seq.apply_laplacian(B, 2, dirichlet=True)
+    rhs = -eps * seq.apply_laplacian(B if B_ref is None else B - B_ref, 2, dirichlet=True)
     delta, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
         rhs, 2, eps, dirichlet=True, return_info=True)
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
@@ -1205,6 +1207,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
           floor_tol: float = 0.0,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           reconnect_eps: Optional[float] = None, reconnect_window: Optional[tuple] = None,
+          reconnect_reference: Optional[jnp.ndarray] = None,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
     """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
@@ -1224,7 +1227,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     constant resistivity: the ideal relaxation is fast and the diffusion slow,
     so the solves go between blocks of ideal steps and the field is back in
     equilibrium before the next one; the helicity spent is then an outcome),
-    only at steps inside ``reconnect_window = (start, stop)`` when given, then restarts the optimiser on the diffused field
+    only at steps inside ``reconnect_window = (start, stop)`` when given;
+    with ``reconnect_reference`` (a field on the same sequence, needs
+    ``reconnect_eps``) each solve diffuses ``B - B_ref`` only, a sustained
+    current: the islands saturate where their diffusion balances the drive. Then restarts the optimiser on the diffused field
     (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
     every chunk's sample and BEFORE a reconnection at that step, so what it
     saves is the field the solve starts from. ``it0`` is the absolute step
@@ -1234,12 +1240,15 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         raise ValueError("steps must be a positive multiple of chunk")
     if reconnect_every:
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
+    if reconnect_reference is not None and reconnect_eps is None:
+        raise ValueError("a reconnection reference needs the constant dose reconnect_eps "
+                         "(the helicity target is set by the whole field's int J . B)")
     seq = ts.seq
     scale = force_scale(seq)
     run = chunk_runner(ts, chunk)
     sample = make_sampler(seq, ts)
-    reconnect_jit = eqx.filter_jit(lambda sq, B, eps: resistive_step(B, sq, eps))
-    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps))      # noqa: E731
+    reconnect_jit = eqx.filter_jit(lambda sq, B, eps, B_ref: resistive_step(B, sq, eps, B_ref))
+    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps), reconnect_reference)      # noqa: E731
 
     trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
                              "gain", "picard_it", "picard_resid", "newton_it", "hcorr")}
@@ -1336,7 +1345,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                       **{f"{kk}_after": v for kk, v in scalars.items()})
             events.append(ev)
             if verbose:
-                dose = "constant" if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H"
+                dose = (("constant" + (" on B - B_ref" if reconnect_reference is not None else ""))
+                        if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H")
                 print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} {dose} "
                       f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
                       f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "

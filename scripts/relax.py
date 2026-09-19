@@ -173,8 +173,19 @@ Reconnection series:
     blocks of ideal steps and the field relaxes back before the next one; the
     helicity spent is then an outcome. ``--reconnect-window A:B`` restricts
     the solves to steps A..B (relax ideally, reconnect gradually, relax
-    ideally). The outcome is the series of ideal equilibria, one per
-    reconnection plus the final field, to choose from.
+    ideally). ``--reconnect-sustained`` (with ``--reconnect-eps``) diffuses
+    ``B - B_ref`` only: Ohm's law with the current of ``B_ref`` as a source,
+    so a seeded island saturates instead of spending the helicity and the
+    pressure. ``B_ref`` is the unseeded initial field, unsmoothed: its
+    grid-scale current (the histopolated A curled twice) is O(h^2) at p = 2
+    like the rest of the discretisation, so a heat step of c h^2 would only
+    trade one O(h^2) constant for another; its force imbalance (VMEC's
+    equilibrium is not the discrete one, resid 2.5e-4 at every mesh on
+    li383) is smooth, and the unseeded control run measures its effect. Not
+    the relaxed equilibrium: ideal relaxation builds the shielding sheets at
+    the rational surfaces, and a sheet in the source would hold the seeded
+    island at a width set by the mesh. The outcome is the series of ideal
+    equilibria, one per reconnection plus the final field, to choose from.
 """
 from __future__ import annotations
 
@@ -249,6 +260,9 @@ def parse_args(argv=None):
                     help="a constant dose eps = C / n_r^2 per resistive solve instead of the helicity target")
     ap.add_argument("--reconnect-window", default=None,
                     help="A:B, the resistive solves only at steps A..B")
+    ap.add_argument("--reconnect-sustained", action="store_true",
+                    help="the solves diffuse B - B_ref only, B_ref the unseeded initial field "
+                         "(needs --reconnect-eps)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -319,6 +333,9 @@ def main(cli):
         seed = (int(m), int(n), rho0, width, cli.seed_eps)
     B0, ic = initial_field(seq, seed)
     results["ic"] = ic
+    B_ref = None
+    if cli.reconnect_sustained:
+        B_ref = B0 if seed is None else initial_field(seq, None)[0]
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                       for k, v in ic.items() if k != "kind"), flush=True)
@@ -377,7 +394,8 @@ def main(cli):
           reconnect_helicity=cli.reconnect_helicity,
           reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps / ns[0] ** 2,
           reconnect_window=None if cli.reconnect_window is None
-          else tuple(int(v) for v in cli.reconnect_window.split(":")), on_chunk=save)
+          else tuple(int(v) for v in cli.reconnect_window.split(":")),
+          reconnect_reference=B_ref, on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
                      initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.step_best)}, "
