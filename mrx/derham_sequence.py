@@ -1017,7 +1017,7 @@ class DeRhamSequence():
 
         The physical cross product is formed in the reference representation
         that pairs metric-free with the output basis (covariant for ``n =
-        2``, contravariant density for ``n = 1``, :meth:`_vector_load_values`),
+        2``, contravariant density for ``n = 1``, :meth:`vector_load_values`),
         so at most one metric contraction is spent on the inputs. With ``G =
         DF^T DF``, ``J^2 = det G`` and ``(A a) x (A b) = det(A) A^-T (a x b)``:
         two 1-forms cross to the density ``w x u`` (the wedge product,
@@ -1066,7 +1066,7 @@ class DeRhamSequence():
             c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
                  else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
             rep = 2
-        return self._vector_load_values(c, rep, n, dirichlet_n, parity)
+        return self.vector_load_values(c, rep, n, dirichlet_n, parity)
 
     # --- the other quadratic operators ------------------------------------
     #
@@ -1105,7 +1105,7 @@ class DeRhamSequence():
         return self.E(n, dirichlet_n) @ self.symmetrize(integrate_against(
             (s_jk * weight)[:, None], comp_info, comp_shapes, self.quad.shape), n, parity)
 
-    def _vector_load_values(self, c_jk, rep, n, dirichlet_n=True, parity=None):
+    def vector_load_values(self, c_jk, rep, n, dirichlet_n=True, parity=None):
         """Load a physical vector, given in covariant (``rep = 1``) or
         contravariant-density (``rep = 2``) reference components, onto the
         n-form space, n = 1 or 2; the pairing is metric-free when ``rep``
@@ -1192,7 +1192,7 @@ class DeRhamSequence():
         if k not in (1, 2):
             raise ValueError("k must be 1 or 2")
         c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
-        return self._vector_load_values(c_jk, k, n, dirichlet_n, parity)
+        return self.vector_load_values(c_jk, k, n, dirichlet_n, parity)
 
     def scalar_vector_load(self, f, v, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
         """The n-form dual DOF vector of a scalar m-form times a vector

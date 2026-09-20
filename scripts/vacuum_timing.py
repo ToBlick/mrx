@@ -23,7 +23,7 @@ import jax  # noqa: E402
 import mrx  # noqa: E402
 from mrx.geometry import build_sequence  # noqa: E402
 from mrx.nullspace import compute_nullspaces, harmonic_rayleigh  # noqa: E402
-from mrx.relaxation import compute_force, force_scale  # noqa: E402
+from mrx.relaxation import compute_force, force_scale_jit  # noqa: E402
 
 
 def timed(fn):
@@ -61,11 +61,10 @@ def main():
     res["rayleigh"] = harmonic_rayleigh(seq, h, 2, True, ops)
 
     B = h / seq.l2_norm(h, 2, dirichlet=True)
-    scale = force_scale(seq)
     for i, key in enumerate(("t_force_first", "t_force_second")):
         (F, p, J, X, JxX), res[key] = timed(lambda: compute_force(B, seq))
         print(f"[force] call {i + 1}: {res[key]:.1f}s", flush=True)
-    s = float(scale(B))
+    s = float(force_scale_jit(seq, B))
     F_norm = float(seq.l2_norm(F, 2, dirichlet=True))
     JxB_norm = float(seq.l2_norm(JxX, 2, dirichlet=True))
     res.update(scale=s, F_norm=F_norm, JxB_norm=JxB_norm,

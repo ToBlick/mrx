@@ -188,6 +188,14 @@ def clebsch_potential_form(cb, seed=None):
     return A_ref
 
 
+def parse_seed(spec, eps, phase=0.0):
+    """The ``seed`` of :func:`clebsch_potential_form` from a command line's
+    ``"m,n,rho0,width"`` with its amplitude ``eps`` and ``phase`` (turns):
+    ``(m, n, rho0, width, eps, phase)``."""
+    m, n, rho0, width = (float(v) for v in spec.split(","))
+    return int(m), int(n), rho0, width, eps, phase
+
+
 def resonant_rho(cb, m, n):
     """``rho`` where the file's ``|iota|`` equals ``nfp n / m`` (linear
     interpolation between the profile's samples; ``nan`` if it never does)."""
@@ -267,7 +275,7 @@ def parallel_seed(seq, B, m, n, rho0, width, eps):
     s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))     # sign of the flux-ratio iota
     env = jnp.exp(-((x[:, 0] - rho0) / width) ** 2) * (1.0 - x[:, 0] ** 2) / (1.0 - rho0 ** 2)
     A_par = eps * env * jnp.cos(2.0 * jnp.pi * (m * x[:, 1] - s * n * x[:, 2]))
-    load = seq._vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True, parity=-1)
+    load = seq.vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True, parity=-1)
     dA = seq.apply_inverse_mass_matrix(load, 1, dirichlet=True)
     dB = seq.apply_incidence_matrix(dA, 1, dirichlet_in=True, dirichlet_out=True)
     div = float(seq.l2_norm(seq.apply_incidence_matrix(dB, 2, dirichlet_in=True, dirichlet_out=True), 3)

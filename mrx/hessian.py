@@ -39,9 +39,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.operators import _dual_norm
+from mrx.operators import _dual_norm, _parity
 from mrx.precision import RESIDUAL_DTYPE
 from mrx.solvers import minres
+
+#: The Newton configuration (:func:`newton_direction`, the defaults of
+#: :class:`mrx.relaxation.TimeStepper` and of ``scripts/relax.py``): the
+#: parallel-flow penalty in units of the strain, the forcing term, the MINRES
+#: iterations per pass and the passes (measured 2026-09-18).
+NEWTON_PENALTY = 3.0
+NEWTON_TOL = 0.1
+NEWTON_MAXITER = 200
+NEWTON_PASSES = 1
 
 def _ddx(f, x, axis, periodic):
     """Central difference of ``f`` along ``axis`` on the non-uniform grid ``x``
@@ -167,13 +176,13 @@ class HarmonicAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
-def second_variation(seq, B, J, kappa=0.0, tol=None):
+def second_variation(seq, B, J, kappa=0.0):
     """``u -> H u + kappa M_par u``: the Hessian of the energy along the flow of ``u`` with the
     parallel-flow penalty, as a dual 2-form.
 
     ``B`` the 2-form, ``J`` its weak curl (a Dirichlet 1-form, the ``J`` of
     :func:`mrx.relaxation.compute_force`). Three k=1 mass solves per apply,
-    each to ``tol`` (the sequence's by default): ``E = M_1^-1 load(u x B)``
+    each at the sequence's tolerance: ``E = M_1^-1 load(u x B)``
     for ``Q = curl E``, the weak curl ``dJ`` of ``Q``, and ``W = M_1^-1
     curl^T load(J x u)``; then
 
@@ -200,7 +209,7 @@ def second_variation(seq, B, J, kappa=0.0, tol=None):
     weight = jnp.repeat(parallel_penalty_profile(seq, B, kappa), n_angles)
 
     def m1_inv(rhs):
-        return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True, tol=tol)
+        return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True)
 
     def apply(u):
         u_jk = seq.evaluate_at_quadrature(u, 2, True)
@@ -218,12 +227,13 @@ def second_variation(seq, B, J, kappa=0.0, tol=None):
         return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True, parity=1)
                 + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True, parity=1)
                          + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True, parity=1))
-                + seq._vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True, parity=1))
+                + seq.vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True, parity=1))
 
     return apply
 
 
-def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=200, passes=1):
+def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
+                     passes=NEWTON_PASSES):
     """The Newton direction ``u = curl a`` at the field ``B``: Newton-MR.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -262,8 +272,8 @@ def newton_direction(seq, B, J, MF, a_guess, kappa=3.0, tol=0.1, maxiter=200, pa
     atom = harmonic_preconditioner(seq, B, kappa)
     rhs = curl_t(MF)
     # a half-period sequence: the residual loses the round-off of the other parity
-    pj = seq.free_projector(1, True)
-    project_dual = None if pj is None else pj.projectors(rhs)[1]
+    parity = _parity(seq, 1, True, rhs)
+    project_dual = None if parity is None else parity[1]
     a, info, _ = newton_mr(A_res, A, lambda x: atom(seq, x), rhs, a_guess, tol, maxiter, passes,
                            _dual_norm(ops, 1, True), inner_dtype=seq.dtype, project_dual=project_dual)
     a = a.astype(seq.dtype)
@@ -323,10 +333,9 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, proje
         def from_zero(_):
             d0, info0, _ = minres(A, (b / bnorm_safe).astype(inner_dtype), M=P, tol=0.0,
                                   maxiter=maxiter, npc_exit=True)
-            return (d0.astype(RESIDUAL_DTYPE) * bnorm_safe).astype(RESIDUAL_DTYPE), jnp.abs(info0).astype(jnp.int32)
+            return d0.astype(RESIDUAL_DTYPE) * bnorm_safe, jnp.abs(info0).astype(jnp.int32)
 
-        x_npc, its_npc = jax.lax.cond(npc, from_zero, lambda _: ((x + d).astype(RESIDUAL_DTYPE), jnp.zeros((), jnp.int32)), None)
-        x_new = jnp.where(npc, x_npc, x + d)
+        x_new, its_npc = jax.lax.cond(npc, from_zero, lambda _: (x + d, jnp.zeros((), jnp.int32)), None)
         r_new = project_dual(b - A_res(x_new))
         return x_new, r_new, k + 1, (its + jnp.abs(info) + its_npc).astype(jnp.int32), npc
 

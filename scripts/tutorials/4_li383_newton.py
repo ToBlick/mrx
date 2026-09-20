@@ -75,9 +75,9 @@ ap.add_argument("--descent-steps", type=int, default=200,
                 help="steps of the smoothed descent continued from the warm start, for comparison")
 ap.add_argument("--newton-steps", type=int, default=10, help="Newton steps from the warm start")
 ap.add_argument("--newton-chunk", type=int, default=5, help="compiled Newton steps per chunk")
-ap.add_argument("--newton-tol", type=float, default=0.1,
-                help="relative residual the truncated MINRES solve aims at")
-ap.add_argument("--newton-maxiter", type=int, default=200, help="its iteration budget per step")
+ap.add_argument("--newton-tol", type=float, default=None,
+                help="relative residual the truncated MINRES solve aims at [the stepper's default]")
+ap.add_argument("--newton-maxiter", type=int, default=None, help="its iteration budget per step [the stepper's default]")
 ap.add_argument("--out", default="outputs/tutorials/li383_newton")
 cli = ap.parse_args([] if _INTERACTIVE else None)
 ns = tuple(int(v) for v in cli.ns.split(","))
@@ -151,8 +151,10 @@ print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d
 # Now we run Newton from the same state: the Newton direction replaces the
 # smoothed force, the Newton-MR solve with the harmonic atom, the line search
 # capped at the Newton step.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True, newton_tol=cli.newton_tol,
-                        newton_maxiter=cli.newton_maxiter)
+# the Newton solve's tolerance and iteration budget: the stepper's defaults (mrx.hessian) unless set
+ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True,
+                        **{k: v for k, v in dict(newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter).items()
+                           if v is not None})
 res_n = relax(initial_state(B_start, ts_newton), ts_newton, steps=cli.newton_steps,
               chunk=cli.newton_chunk, floor_tol=0.0)
 F_n = np.asarray(res_n.trace["F"], dtype=float)
@@ -199,8 +201,8 @@ write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initia
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.h5"), res_n.state, res_n.steps)
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
               knots=None, precision=str(mrx.DTYPE), steps=res_n.steps, scheme="explicit",
-              auxiliary_B_field=False, ic="warmstart", newton=True, newton_tol=cli.newton_tol,
-              newton_maxiter=cli.newton_maxiter)
+              auxiliary_B_field=False, ic="warmstart", newton=True, newton_tol=ts_newton.newton_tol,
+              newton_maxiter=ts_newton.newton_maxiter)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res_n.trace, qoi=res_n.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")

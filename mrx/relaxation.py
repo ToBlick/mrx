@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.hessian import newton_direction
+from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL, newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -64,6 +64,15 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
 # %%
 
 
+def dirichlet_proxy(seq: DeRhamSequence, B: jnp.ndarray, guess: jnp.ndarray | None = None):
+    """``(P B, H_D)``: the dual Dirichlet 1-form of the 2-form ``B`` and its
+    Dirichlet proxy ``H_D = M_1^-1 P B`` (the auxiliary variable of the
+    midpoint scheme, the field of the helicity correction), the mass solve
+    warm-started from ``guess``."""
+    PB = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
+    return PB, seq.apply_inverse_mass_matrix(PB, 1, dirichlet=True, guess=guess)
+
+
 def compute_force(
     B: jnp.ndarray,
     seq: DeRhamSequence,
@@ -90,8 +99,7 @@ def compute_force(
     """
     J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
     if auxiliary_B_field:
-        H_dual = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
-        X = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H_guess)
+        _, X = dirichlet_proxy(seq, B, H_guess)
         JxX_dual = seq.cross_product_load(J, X, 2, 1, 1, True, True, True)
     else:
         X = B
@@ -254,9 +262,10 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     of ``B_ref``. Solving for the increment keeps the step meaningful in
     float32 (the solution is ``B`` plus something small, not something that
     happens to be close to ``B``). Returns ``(B + delta, info, ||delta||_M
-    / ||B||_M)`` with ``info`` the solver's signed iteration count. The
-    descent itself is ideal; ``scripts/relax.py --reconnect-every`` applies
-    this solve between chunks, a dose ``eps`` per reconnection."""
+    / ||B||_M)`` with ``info`` the solver's signed iteration count.
+    :func:`relax` applies this solve between chunks (``reconnect_every``),
+    a dose ``eps`` per reconnection; a :class:`TimeStepper` with
+    ``resistivity`` after every step."""
     rhs = -eps * seq.apply_laplacian(B if B_ref is None else B - B_ref, 2, dirichlet=True)
     delta, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
         rhs, 2, eps, dirichlet=True, guess=guess, return_info=True)
@@ -333,8 +342,6 @@ class State(eqx.Module):
     F_prev : jnp.ndarray (optional)
         The force from the previous time step (the warm start of the force
         solve, the ``Fu`` pairing of the trace).
-    MF_prev : jnp.ndarray (optional)
-        ``M_2 F_prev``.
     F_norm : float
         The norm of the force.
     v_norm : float
@@ -387,7 +394,6 @@ class State(eqx.Module):
     J: Optional[jnp.ndarray] = None
     E: Optional[jnp.ndarray] = None
     F_prev: Optional[jnp.ndarray] = None
-    MF_prev: Optional[jnp.ndarray] = None
     A: Optional[jnp.ndarray] = None
     dt: float = 1e-2
     dt_star: float = 1e-2
@@ -458,7 +464,6 @@ class Increment(NamedTuple):
     Mu: jnp.ndarray
     F: jnp.ndarray
     MF: jnp.ndarray
-    Fs: jnp.ndarray
     p: jnp.ndarray
     H: jnp.ndarray
     JxH: jnp.ndarray
@@ -497,8 +502,9 @@ class TimeStepper(eqx.Module):
     Force and descent direction (the smoothed force, or Newton's), velocity
     smoothing, the analytic line search with its CFL cap, and the
     induction, forward Euler or midpoint-implicit
-    (:class:`IntegrationScheme`). The step is ideal; reconnection is a
-    separate :func:`resistive_step` between chunks.
+    (:class:`IntegrationScheme`). The step is ideal unless ``resistivity``
+    adds a :func:`resistive_step` after it; reconnection between chunks is
+    :func:`relax`'s (``reconnect_every``).
 
     Attributes:
         seq: The de Rham sequence.
@@ -618,10 +624,10 @@ class TimeStepper(eqx.Module):
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
     newton: bool = False
-    newton_penalty: float = 3.0
-    newton_tol: float = 0.1
-    newton_maxiter: int = 200
-    newton_passes: int = 1
+    newton_penalty: float = NEWTON_PENALTY
+    newton_tol: float = NEWTON_TOL
+    newton_maxiter: int = NEWTON_MAXITER
+    newton_passes: int = NEWTON_PASSES
     helicity_correction: bool = False
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
@@ -654,13 +660,11 @@ class TimeStepper(eqx.Module):
         return u
 
     def _helicity_proxy(self, B: jnp.ndarray, X: jnp.ndarray, H_guess: jnp.ndarray):
-        """``(P B, H_D)``: the dual Dirichlet 1-form of ``B`` and its Dirichlet
-        proxy ``H_D = M_1^-1 P B``, which is ``X`` itself on the auxiliary
-        route and one warm-started mass solve on the plain one."""
-        seq = self.seq
-        PB = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
-        H_D = X if self.auxiliary_B_field else seq.apply_inverse_mass_matrix(PB, 1, dirichlet=True, guess=H_guess)
-        return PB, H_D
+        """``(P B, H_D)`` of :func:`dirichlet_proxy`, ``H_D`` being ``X`` itself
+        on the auxiliary route (no solve)."""
+        if self.auxiliary_B_field:
+            return self.seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True), X
+        return dirichlet_proxy(self.seq, B, H_guess)
 
     def _helicity_lambda(self, E: jnp.ndarray, PB: jnp.ndarray, H_D: jnp.ndarray, dt=None) -> jnp.ndarray:
         """The multiple of ``H_D`` whose removal from ``E`` zeroes the step's
@@ -741,8 +745,9 @@ class TimeStepper(eqx.Module):
         field ``H_guess`` passes through untouched.
         """
         seq = self.seq
+        newton_it = jnp.int32(0)
         if self.potential_velocity:
-            F, MF, Fs, J, a = self._potential_force(B, state.a, J_guess)
+            F, MF, u, J, a = self._potential_force(B, state.a, J_guess)   # u the smoothed force
             p, X, JxX = p_guess, B, JxH_guess     # not computed on this route
         else:
             F, p, J, X, JxX = compute_force(
@@ -752,16 +757,12 @@ class TimeStepper(eqx.Module):
             # M F once: ||F||_M and the Newton right-hand side; the increment
             # applies M_2 twice in total (M F, M u).
             MF = seq.apply_mass_matrix(F, 2)
-            Fs = F if self.newton else self.smooth_velocity(F)
-            a = state.a
-
-        if self.newton:
-            u, a, newton_it = newton_direction(seq, B, J, MF, state.a, self.newton_penalty,
-                                               self.newton_tol, self.newton_maxiter, self.newton_passes)
-        else:
-            # gradient descent on the smoothed force
-            u = Fs
-            newton_it = jnp.int32(0)
+            if self.newton:
+                u, a, newton_it = newton_direction(seq, B, J, MF, state.a, self.newton_penalty,
+                                                   self.newton_tol, self.newton_maxiter, self.newton_passes)
+            else:
+                # gradient descent on the smoothed force
+                u, a = self.smooth_velocity(F), state.a
         # M u once: the linesearch numerator and ||u||_M.
         Mu = seq.apply_mass_matrix(u, 2)
 
@@ -791,8 +792,7 @@ class TimeStepper(eqx.Module):
         # day -- cite the SYMBOL, not the line.)
         dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
-        return Increment(dB, u, Mu, F, MF, Fs, p, H, JxX, J, E, cfl_max,
-                         a, newton_it)
+        return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, a, newton_it)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """``(dt, dt_star)``: the line-search step at ``inc``, its CFL cap and, under
@@ -909,8 +909,7 @@ class TimeStepper(eqx.Module):
             k, n_eval, restarts, dt, x, H, E, resid, lam = carry
             B_mid = B_n + 0.5 * x
             if self.auxiliary_B_field:
-                H_dual = seq.apply_projection_matrix(B_mid, 2, 1, True, dirichlet_out=True)
-                H = seq.apply_inverse_mass_matrix(H_dual, 1, dirichlet=True, guess=H)
+                _, H = dirichlet_proxy(seq, B_mid, H)
             E = self._induction_field(u_jk, H if self.auxiliary_B_field else B_mid, E)
             if self.helicity_correction:
                 PB, H = self._helicity_proxy(B_mid, H, H)
@@ -978,14 +977,14 @@ class TimeStepper(eqx.Module):
         # vector in a different space.
         return eqx.tree_at(
             lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
-                       s.F_prev, s.MF_prev, s.F_norm, s.v_norm,
+                       s.F_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
                        s.picard_iterations, s.picard_restarts, s.picard_residual,
                        s.a, s.newton_it, s.helicity_lambda, s.resistive_delta, s.resistive_it,
                        s.resistive_moved),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
-             inc.F, inc.MF, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
+             inc.F, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
              n_eval, restarts, resid,
              inc.a, inc.newton_it, lam, res_delta, res_it, res_moved))
@@ -994,7 +993,7 @@ class TimeStepper(eqx.Module):
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: int = 0) -> State:
     """Build the state at ``B_dof`` with its force already evaluated.
 
-    ``F_prev``, ``MF_prev``, ``F_norm`` and the warm-start guesses ``p``,
+    ``F_prev``, ``F_norm`` and the warm-start guesses ``p``,
     ``H``, ``JxH``, ``J`` are seeded from one ``compute_force`` here, so the
     first step's solves start from the true previous force.
     Every leaf is an array of the working dtype, the scalars included: the
@@ -1009,7 +1008,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
     n = seq.n(2, True)
     F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
     MF0 = seq.apply_mass_matrix(F0, 2)
-    resid0 = (jnp.sqrt(F0 @ MF0) / force_scale(seq)(B_dof)) ** 2
+    resid0 = (jnp.sqrt(F0 @ MF0) / force_scale_jit(seq, B_dof)) ** 2
     return State(
         B_n=B_dof,
         dt=jnp.asarray(dt, dtype=DTYPE),
@@ -1024,7 +1023,6 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         E=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
-        MF_prev=MF0,
         F_norm=jnp.sqrt(F0 @ MF0),
         picard_iterations=jnp.int32(0),
         picard_restarts=jnp.int32(0),
@@ -1041,9 +1039,13 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
     )
 
 
-def chunk_runner(ts: TimeStepper, n_chunk: int,
-                 extra: Optional[dict[str, Callable[[State], jnp.ndarray]]] = None,
-                 ) -> Callable[[State, int], tuple[State, dict]]:
+#: The per-step scalars of :func:`chunk_runner`'s trace that :func:`relax`
+#: keeps (``v`` and ``Fu`` only feed the derived ``cos``, ``gain`` and ``dE_ls``).
+TRACE_COLUMNS = ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
+                 "newton_it", "hcorr", "res_it", "res_moved")
+
+
+def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[State, dict]]:
     """``run(state, it0) -> (state, trace)``, jit-compiled: ``n_chunk``
     relaxation steps as one ``lax.scan``.
 
@@ -1065,8 +1067,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     ``hcorr`` (the helicity correction's ``lambda``; 0 without it),
     ``resid`` (the squared normalised force residual ``||F||_M^2 /
     ||grad(B^2/2)||^2``, :func:`force_scale`, the force being the step's
-    start field's and the scale the end field's), plus ``extra[name](seq, state)``
-    for every extra probe. The body also keeps the best state: the start
+    start field's and the scale the end field's). The body also keeps the best state: the start
     field of any step whose ``resid`` is below ``state.resid_best`` replaces
     ``state.B_best`` with its residual and absolute step.
 
@@ -1083,14 +1084,12 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
     index is an array for the same reason: a Python int is static under
     ``filter_jit`` and would recompile every chunk.
     """
-    extra = extra or {}
-
     def body(ts, state, it):
         seq = ts.seq
         state = ts.relaxation_step(state)
         B_n, B_new = state.B_n, state.B_nplus1
         dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
-        resid = (state.F_norm / force_scale_value(seq, B_new)) ** 2
+        resid = (state.F_norm / force_scale(seq, B_new)) ** 2
         better = resid < state.resid_best
         state = eqx.tree_at(
             lambda s: (s.B_n, s.B_best, s.resid_best, s.step_best), state,
@@ -1104,8 +1103,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
             picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, res_it=state.resistive_it, res_moved=state.resistive_moved,
-            hcorr=state.helicity_lambda, resid=resid,
-            **{k: f(seq, state) for k, f in extra.items()})
+            hcorr=state.helicity_lambda, resid=resid)
         return state, trace
 
     @eqx.filter_jit
@@ -1119,29 +1117,25 @@ def chunk_runner(ts: TimeStepper, n_chunk: int,
 # The run: the residual scale, the diagnostics sampler, checkpoints, the loop
 # ---------------------------------------------------------------------------
 
-def force_scale_value(seq: DeRhamSequence, B: jnp.ndarray) -> jnp.ndarray:
+def force_scale(seq: DeRhamSequence, B: jnp.ndarray) -> jnp.ndarray:
     """``||grad(B^2/2)||_L2`` of the 2-form DoFs ``B``: the scale the force
-    residual is measured against (:func:`force_scale` is its jitted form).
+    residual is measured against (:func:`force_scale_jit` is its compiled form).
 
     ``grad p`` is a real scale too (the scheme converges to ``J x B = grad
     p``) but vanishes in the low-beta limit; ``grad(B^2/2)`` has the same
     units and stays O(1). Through the sequence: the 0-form load of
-    ``B^2/2`` (:meth:`dot_product_load`), one natural ``M_0`` solve, the
+    ``B^2/2`` (:meth:`~mrx.derham_sequence.DeRhamSequence.magnitude_squared_load`),
+    one natural ``M_0`` solve, the
     strong gradient, its norm.
     """
-    q = 0.5 * seq.dot_product_load(B, B, 0, 2, 2, dirichlet_n=False)
+    q = 0.5 * seq.magnitude_squared_load(B)
     w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
     g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
     return seq.l2_norm(g1, 1, dirichlet=False)
 
 
-_force_scale_jit = eqx.filter_jit(force_scale_value)
-
-
-def force_scale(seq: DeRhamSequence) -> Callable[[jnp.ndarray], jnp.ndarray]:
-    """``B -> ||grad(B^2/2)||_L2`` jitted, the sequence an argument of the
-    compiled function (:func:`force_scale_value`)."""
-    return lambda B: _force_scale_jit(seq, B)
+#: :func:`force_scale` compiled, the sequence an argument of the compiled function.
+force_scale_jit = eqx.filter_jit(force_scale)
 
 
 def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
@@ -1304,14 +1298,12 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     if reconnect_every:
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
-    scale = force_scale(seq)
     run = chunk_runner(ts, chunk)
     sample = make_sampler(seq, ts)
     reconnect_jit = eqx.filter_jit(lambda sq, B, eps: resistive_step(B, sq, eps))
     reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps))      # noqa: E731
 
-    trace = {k: [] for k in ("dE", "dE_ls", "F", "resid", "dt", "dt_star", "cfl", "div", "cos",
-                             "gain", "picard_it", "picard_resid", "newton_it", "hcorr", "res_it", "res_moved")}
+    trace = {k: [] for k in TRACE_COLUMNS + ("dE_ls", "cos", "gain")}
     qoi: dict = {}
     events: list = []
 
@@ -1320,7 +1312,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
-                   resid=float((state.F_norm / scale(state.B_n)) ** 2), **scalars)
+                   resid=float((state.F_norm / force_scale_jit(seq, state.B_n)) ** 2), **scalars)
         for k, v in row.items():
             qoi.setdefault(k, []).append(v)
 
@@ -1340,7 +1332,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         # resid = tol. Reported, not enforced: the tolerance and the floor
         # are the caller's choices.
         print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.F_norm):.4e}  "
-              f"resid={float((state.F_norm / scale(state.B_n)) ** 2):.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
+              f"resid={qoi['resid'][-1]:.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}\n"
               f"        {pressure_line(scalars)}\n"
               f"        solve tol {seq.tol:.1e}: the force's gradient-part term is a tenth of the "
               f"descent at the squared residual {seq.tol:.1e} (0.1 tol / resid)", flush=True)
@@ -1357,8 +1349,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             trace["cos"].extend(cos.tolist())
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())
             trace["dE_ls"].extend((-ch["dt"] * ch["Fu"] * (1.0 - 0.5 * ch["dt"] / ch["dt_star"])).tolist())
-        for k in ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                  "newton_it", "hcorr", "res_it", "res_moved"):
+        for k in TRACE_COLUMNS:
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
 

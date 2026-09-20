@@ -63,7 +63,7 @@ def main(cli):
     from mrx.hessian import newton_direction, second_variation
     from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import compute_force, force_scale, logical_cfl_weights, smoothing_scale
+    from mrx.relaxation import compute_force, force_scale_jit, logical_cfl_weights, smoothing_scale
 
     out = cli.out or os.path.join("outputs", "newton_probe", time.strftime("%Y-%m-%d/%H-%M-%S"))
     os.makedirs(out, exist_ok=True)
@@ -90,7 +90,7 @@ def main(cli):
     F, p, J, X, JxX = compute_force(B, seq)
     MF = seq.apply_mass_matrix(F, 2)
     F_norm = float(jnp.sqrt(F @ MF))
-    scale = float(force_scale(seq)(B))
+    scale = float(force_scale_jit(seq, B))
     E0 = 0.5 * float(seq.l2_norm_sq(B, 2))
     H = jax.jit(second_variation(seq, B, J))
     M2 = jax.jit(lambda v: seq.apply_mass_matrix(v, 2))

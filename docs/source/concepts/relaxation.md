@@ -193,7 +193,7 @@ Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
 `E`, without the auxiliary field).
 
 `State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
-`H`, `JxH`, `J`, `E`, `A`), `F_prev`, `MF_prev`,
+`H`, `JxH`, `J`, `E`, `A`), `F_prev`,
 `dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`,
 `picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first step's solves start from the true
