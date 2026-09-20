@@ -61,16 +61,9 @@ Flags, defaults in brackets:
     Descent:
       --auxiliary-B-field {false,true} [false]
                                    true routes both cross products through
-                                   the Dirichlet 1-form H = M_1^-1 P B, the
-                                   auxiliary variable that makes the midpoint
-                                   scheme conserve the discrete helicity
-                                   exactly (H_t = 0 on the wall); false
-                                   reads the 2-form B itself
-      --scheme {explicit,midpoint} [explicit]
-                                   forward Euler, or the midpoint-implicit
-                                   induction with the explicit velocity
-                                   (Picard on the increment, dt halved on a
-                                   blow-up; mrx.relaxation.PICARD_*)
+                                   the Dirichlet 1-form H = M_1^-1 P B
+                                   (H_t = 0 on the wall); false reads the
+                                   2-form B itself
       --helicity-correction {false,true} [false]
                                    remove from the induction field E the one
                                    component (a multiple of the Dirichlet
@@ -239,7 +232,6 @@ def parse_args(argv=None):
     ap.add_argument("--drive-phase", type=float, default=0.0, help="the drive's phase, as --seed-phase")
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
-    ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--velocity-smoothing-order", type=int, default=1,
@@ -316,8 +308,8 @@ def main(cli):
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
     from mrx.initial_conditions import initial_field, parse_seed
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                                radial_cell_sq, relax, resistive_step, write_checkpoint)
+    from mrx.relaxation import (TimeStepper, initial_state, read_checkpoint, radial_cell_sq, relax,
+                                resistive_step, write_checkpoint)
 
     if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
@@ -359,10 +351,7 @@ def main(cli):
     h_r_sq = radial_cell_sq(seq)
     params["h_r_sq"] = h_r_sq
     ts = TimeStepper(
-        seq=seq, auxiliary_B_field=cli.auxiliary_B_field,
-        scheme={"explicit": IntegrationScheme.EXPLICIT,
-                "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
-        cfl=cli.cfl,
+        seq=seq, auxiliary_B_field=cli.auxiliary_B_field, cfl=cli.cfl,
         helicity_correction=cli.helicity_correction,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
@@ -403,7 +392,7 @@ def main(cli):
     params.update(newton_penalty=ts.newton_penalty, newton_tol=ts.newton_tol,   # the effective Newton knobs
                   newton_maxiter=ts.newton_maxiter, newton_passes=ts.newton_passes)
     print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (ts.newton_penalty, ts.newton_tol, ts.newton_maxiter, ts.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
+          f"{'helicity-correction  ' if cli.helicity_correction else ''}"
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"

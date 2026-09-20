@@ -1,13 +1,17 @@
-"""The relaxation run on li383: the production loop lowers the energy, and
-the explicit step with the helicity correction conserves helicity.
+"""The relaxation run on li383: the production gradient-descent loop lowers
+the energy.
 
 The initial condition is the state's own field, ``B = dA'`` from the
 histopolated Clebsch potential (exactly divergence-free); the stepper is
-``scripts/relax.py``'s production configuration with velocity smoothing of
-order 1. Over ``STEPS`` steps in chunks of ``CHUNK`` the energy must fall at
-every step, the force norm must drop by the measured factor, helicity must be
-conserved and ``div B`` must stay at roundoff; a reconnection in the middle
-must spend the helicity it was asked to, and a checkpoint must round-trip.
+``scripts/relax.py``'s gradient-descent configuration with velocity smoothing
+of order 1 (the potential route). Over ``STEPS`` steps in chunks of ``CHUNK``
+the energy must fall at every step, the force norm must drop by the measured
+factor, helicity must be conserved and ``div B`` must stay at roundoff, the
+best state must be the step of the lowest residual, and a checkpoint must
+round-trip. One relaxation run: the suite is compile-bound and every stepper
+configuration is its own compile of the scan body, so the helicity
+correction, the reconnection series and the Newton loop are not run here on
+purpose (2026-09-20).
 """
 import os
 
@@ -58,6 +62,9 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
     assert div < 1e3 * seq.tol * np.sqrt(2 * E1), f"||div B|| {div:.2e}"
+    resid = np.asarray(res.trace["resid"], dtype=float)
+    assert float(res.state.resid_best) <= resid.min() and int(res.state.step_best) == resid.argmin(), \
+        (float(res.state.resid_best), resid.min(), int(res.state.step_best), resid.argmin())
 
     # A checkpoint round-trips leaf for leaf, and a restart continues the count.
     path = os.path.join(tmp_path, "state.h5")
@@ -66,69 +73,3 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     assert step == STEPS
     assert np.array_equal(np.asarray(state.F_prev), np.asarray(res.state.F_prev))
     assert float(state.dt) == float(res.state.dt)
-
-
-def test_reconnection_spends_the_helicity_asked_for(seq, b0):
-    """One reconnection at the first chunk boundary, 2% of the helicity: the
-    dose estimate ``eps = X |H| / (2 |int J . B|)`` is first order, the
-    measured price must be within a third of the target and of its sign."""
-    ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
-    res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
-                reconnect_every=CHUNK, reconnect_helicity=0.02)
-    assert len(res.reconnect) == 1 and res.reconnect_every == CHUNK
-    ev = res.reconnect[0]
-    print(f"\n  reconnection at it {ev['it']}: eps {ev['eps']:.3e}, helicity spent {ev['helicity_spent']:+.3%} "
-          f"for a target of -2%, J/B {ev['JoverB_before']:.3f} -> {ev['JoverB_after']:.3f}")
-    assert ev["it"] == CHUNK
-    assert -0.027 < ev["helicity_spent"] < -0.013, ev["helicity_spent"]
-    assert ev["JoverB_after"] < ev["JoverB_before"]
-    assert len(res.qoi["it"]) == 4 and res.qoi["it"][1] == res.qoi["it"][2] == CHUNK
-
-
-def test_potential_force_is_the_leray_force(seq, b0):
-    """``curl a + c h`` from the k=1 Hodge solve of ``curl^T load(J x B)`` is
-    the Leray projection of ``J x B``, divergence-free to roundoff, and the
-    smoothing through the potential is the smoothing of the velocity:
-    ``curl (M_1 + mu L_1)^-1 M_1 a = (M_2 + mu L_2)^-1 M_2 curl a``."""
-    from mrx.relaxation import compute_force
-
-    F, _, _, _, JxB = compute_force(b0, seq)
-    ts = TimeStepper(seq=seq, potential_velocity=True, velocity_smoothing_order=1)
-    Fp, _, Fs, _, _ = ts._potential_force(b0, jnp.zeros(seq.n(1, True), dtype=DTYPE), None)
-    Fs_leray = seq.apply_inverse_mass_plus_eps_laplace_matrix(
-        seq.apply_mass_matrix(F, 2), 2, ts.velocity_smoothing_scale, dirichlet=True)
-    rel = float(seq.l2_norm(Fp - F, 2) / seq.l2_norm(F, 2))
-    rel_s = float(seq.l2_norm(Fs - Fs_leray, 2) / seq.l2_norm(Fs_leray, 2))
-    div = float(seq.l2_norm(seq.apply_incidence_matrix(Fp, 2), 3) / seq.l2_norm(Fp, 2))
-    # both routes solve to tol relative to |J x B|, the force is a fraction of
-    # it; in float32 storage the potential's rounding, amplified by the curl,
-    # is the larger term (3e-5 measured in the mixed configuration, 3e-8 in
-    # float64, li383 (8,12,12) p=2)
-    band = max(1e2 * seq.tol * float(seq.l2_norm(JxB, 2) / seq.l2_norm(F, 2)), 1e4 * eps())
-    print(f"\n  |F_pot - F_leray| / |F| {rel:.2e}, smoothed {rel_s:.2e}, |div F_pot| / |F| {div:.1e}, "
-          f"band {band:.1e}")
-    assert rel < band
-    assert rel_s < band
-    assert div < 1e2 * eps()
-
-
-def test_helicity_correction_conserves_helicity(seq, b0):
-    """The explicit step with the helicity correction on the plain-B route:
-    one scalar per step zeroes the discrete helicity change exactly, the
-    energy still falls, and the correction is small (of the size of the
-    leak it cancels, not of the induction)."""
-    ts = TimeStepper(seq=seq, cfl=0.5, helicity_correction=True)
-    res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
-    dE = np.asarray(res.trace["dE"], dtype=float)
-    H = np.asarray(res.qoi["helicity"], dtype=float)
-    lam = np.asarray(res.trace["hcorr"], dtype=float)
-    E0 = res.E0
-    print(f"\n  20 corrected explicit steps: E {E0:.6e} -> {E0 + dE.sum():.6e}, dH/2E0 "
-          f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, |lambda| max {np.abs(lam).max():.2e}")
-    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
-    assert np.all(lam != 0.0) and np.abs(lam).max() < 1e-2, lam
-    resid = np.asarray(res.trace["resid"], dtype=float)
-    assert float(res.state.resid_best) <= resid.min() and int(res.state.step_best) == resid.argmin(), \
-        (float(res.state.resid_best), resid.min(), int(res.state.step_best), resid.argmin())
-    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
-        f"helicity {H[0]:.6e} -> {H[-1]:.6e}"

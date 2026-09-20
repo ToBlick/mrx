@@ -86,7 +86,11 @@ def test_manufactured_solution(toroid, specs, k, dirichlet):
 def test_leray_projection(toroid, k):
     """``P v`` is divergence-free at solver tolerance, ``P P v = P v`` and
     ``||P v||_M <= ||v||_M``. k=2 is the relaxation's projection (Dirichlet
-    spaces, k=3 pressure); k=1 the free-space one through the k=0 Laplacian."""
+    spaces, k=3 pressure); k=1 the free-space one through the k=0 Laplacian.
+    At k=2 the potential route of the descent (``TimeStepper.potential_velocity``:
+    ``curl a + c h`` with ``L_1 a = curl^T M_2 v`` in the Coulomb gauge and ``c
+    h`` the harmonic part) must give the same projection: one k=1 Hodge solve
+    against the saddle solve."""
     seq = toroid
     dbc = k == 2
     v = jnp.asarray(np.random.default_rng(5 * k).standard_normal(seq.n(k, dbc)), dtype=mrx.DTYPE)
@@ -111,3 +115,15 @@ def test_leray_projection(toroid, k):
     assert div_norm <= 10 * seq.tol + eps(10)
     assert moved <= 10 * seq.tol + eps(10)
     assert e_Pv < e_v
+    if k == 2:
+        Mv = seq.apply_mass_matrix(v, 2, True)
+        a = seq.apply_inverse_laplacian(
+            seq.apply_incidence_matrix(Mv, 1, dirichlet_in=True, dirichlet_out=True, transpose=True), 1)
+        h = seq.nullspace(2, True)[0]
+        Pv_pot = seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True) \
+            + ((h @ Mv) / (h @ seq.apply_mass_matrix(h, 2, True))) * h
+        rel = float(seq.l2_norm(Pv_pot - Pv, 2) / seq.l2_norm(Pv, 2))
+        print(f"  potential route vs Leray: |curl a + c h - P v| / |P v| = {rel:.2e}")
+        # both solves stop at seq.tol relative to their right-hand sides, the
+        # projection is a fraction of v (measured 2026-09-20)
+        assert rel < 1e2 * seq.tol * float(seq.l2_norm(v, 2) / seq.l2_norm(Pv, 2)) + eps(1e4)

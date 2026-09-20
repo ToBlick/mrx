@@ -1,6 +1,5 @@
 """Energy-descent relaxation of a 2-form magnetic field at fixed helicity: force, time stepper, and diagnostics."""
 # %%
-from enum import Enum
 from typing import Callable, NamedTuple, Optional
 
 import time
@@ -12,7 +11,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL, newton_direction
-from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
+from mrx.precision import DTYPE, RESIDUAL_DTYPE
 
 
 def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) -> tuple[float, jnp.ndarray]:
@@ -66,8 +65,8 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
 
 def dirichlet_proxy(seq: DeRhamSequence, B: jnp.ndarray, guess: jnp.ndarray | None = None):
     """``(P B, H_D)``: the dual Dirichlet 1-form of the 2-form ``B`` and its
-    Dirichlet proxy ``H_D = M_1^-1 P B`` (the auxiliary variable of the
-    midpoint scheme, the field of the helicity correction), the mass solve
+    Dirichlet proxy ``H_D = M_1^-1 P B`` (the auxiliary field, the field of
+    the helicity correction), the mass solve
     warm-started from ``guess``."""
     PB = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
     return PB, seq.apply_inverse_mass_matrix(PB, 1, dirichlet=True, guess=guess)
@@ -88,8 +87,7 @@ def compute_force(
     ``J`` is the weak curl of ``B`` (a Dirichlet 1-form). Without the
     auxiliary field the force is ``J x B`` with the 2-form ``B`` itself;
     with it, ``J x H`` where ``H = M_1^-1 P B`` is the Dirichlet 1-form
-    proxy of ``B``, the auxiliary variable that makes the midpoint scheme
-    conserve helicity exactly (:class:`IntegrationScheme`). Returns ``(F,
+    proxy of ``B``. Returns ``(F,
     p, J, X, JxX)``: ``p`` the Leray multiplier, ``X`` the field the cross
     products read (``H``, or ``B`` itself) and ``JxX`` the unprojected
     force. The guesses are the previous call's ``p``, ``X``, ``JxX`` and
@@ -346,15 +344,6 @@ class State(eqx.Module):
         The norm of the force.
     v_norm : float
         The norm of the velocity.
-    picard_iterations : int
-        1 under ``EXPLICIT``; the predictor plus every Picard sweep (two
-        k=1 mass solves and a curl each) under ``IMPLICIT_MIDPOINT``.
-    picard_restarts : int
-        Times the midpoint solve halved ``dt`` and restarted (0 explicit).
-    picard_residual : float
-        Fixed-point defect of the last midpoint sweep, ``||g(x) - x||_M``
-        relative to the predictor's increment ``||dt dB(B_n)||_M`` (0
-        explicit). Above ``picard_tol`` means the step went out unconverged.
     a : jnp.ndarray (optional)
         A Dirichlet 1-form potential: of the Newton direction, ``u = curl
         a`` (:func:`mrx.hessian.newton_direction`), or of the force on the
@@ -400,9 +389,6 @@ class State(eqx.Module):
     cfl_max: float = 0.0
     F_norm: float = 0.0
     v_norm: float = 0.0
-    picard_iterations: int = 0
-    picard_restarts: int = 0
-    picard_residual: float = 0.0
     a: Optional[jnp.ndarray] = None
     newton_it: int = 0
     helicity_lambda: float = 0.0
@@ -418,41 +404,6 @@ class State(eqx.Module):
             object.__setattr__(self, "B_nplus1", self.B_n)
 
 # %%
-
-
-#: A midpoint sweep whose defect exceeds this many times the predictor's
-#: increment is not contracting: halve ``dt`` and start again.
-PICARD_BLOWUP = 1e3
-#: Sweeps at one ``dt`` before the midpoint solve halves ``dt`` and restarts
-#: from the predictor.
-PICARD_MAX = 20
-#: Halvings allowed per step; after the last one the step goes out
-#: unconverged, ``state.picard_residual`` above the tolerance.
-PICARD_RESTARTS = 4
-#: The Picard tolerance in units of ``seq.tol``: the inner solves define the
-#: map, so a tighter fixed point means nothing.
-PICARD_TOL_FACTOR = 10.0
-#: ... plus this many roundoffs of the working dtype: the defect is formed in
-#: the stored precision and floors there (11 eps measured on li383 (8,12,12)
-#: p=2 in float32, 2026-09-05; 4e-15 in float64, inert).
-PICARD_EPS_FACTOR = 20.0
-
-
-class IntegrationScheme(Enum):
-    """``EXPLICIT`` is forward Euler on the descent velocity, ``B_{n+1} =
-    B_n + dt curl(u x X_n)``, with the line search choosing ``dt`` and ``X``
-    the field the cross products read (``B`` itself, or the auxiliary
-    1-form ``H``, see :class:`TimeStepper`). ``IMPLICIT_MIDPOINT`` keeps
-    that velocity and ``dt`` and makes the induction midpoint-implicit,
-    ``B_{n+1} = B_n + dt curl(u x X_mid)`` at the midpoint field ``(B_n +
-    B_{n+1}) / 2``, a linear fixed point solved by Picard iteration
-    (``TimeStepper._midpoint_solve``). With the auxiliary field it
-    conserves the discrete helicity ``<A, B + B_harm>`` exactly, ``E`` and
-    ``H`` sharing the Dirichlet 1-form space; without it what remains is
-    the grid's projection error of the pairing.
-    """
-    EXPLICIT = 0
-    IMPLICIT_MIDPOINT = 1
 
 
 class Increment(NamedTuple):
@@ -501,8 +452,7 @@ class TimeStepper(eqx.Module):
 
     Force and descent direction (the smoothed force, or Newton's), velocity
     smoothing, the analytic line search with its CFL cap, and the
-    induction, forward Euler or midpoint-implicit
-    (:class:`IntegrationScheme`). The step is ideal unless ``resistivity``
+    induction, forward Euler. The step is ideal unless ``resistivity``
     adds a :func:`resistive_step` after it; reconnection between chunks is
     :func:`relax`'s (``reconnect_every``).
 
@@ -511,9 +461,9 @@ class TimeStepper(eqx.Module):
         auxiliary_B_field: False (the default) reads the 2-form ``B`` itself
             in both cross products, ``J x B`` and ``u x B``. True routes
             them through the auxiliary Dirichlet 1-form ``H = M_1^-1 P B``,
-            ``J x H`` and ``u x H``: the variable that makes the midpoint
-            scheme conserve helicity exactly, at one extra k=1 mass solve
-            per force evaluation and ``H_t = 0`` on the wall.
+            ``J x H`` and ``u x H``, at one extra k=1 mass solve per force
+            evaluation and ``H_t = 0`` on the wall (the variable of the
+            midpoint scheme, removed 2026-09-20).
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``;
             1 is the default. 0 leaves the direction as it is -- and is fragile:
@@ -533,7 +483,6 @@ class TimeStepper(eqx.Module):
             leaves the ideal-induction flow (frozen-in topology violated at
             O(dt^2)) and diverges when ``||dB||`` collapses. ``inf`` disables
             the cap and leaves the trajectory untouched.
-        scheme: EXPLICIT (the default) or IMPLICIT_MIDPOINT.
         potential_velocity: Compute the projected force as ``F = curl a +
             c h`` instead of by the Leray saddle solve: ``a`` from the k=1
             Hodge Laplacian solve of ``curl^T load(J x B)`` (the curl-curl
@@ -552,9 +501,7 @@ class TimeStepper(eqx.Module):
             with the harmonic atom of the current field, the parallel-flow
             penalty in the operator, the nonpositive-curvature exit). The
             Hessian reads the 2-form ``B``; the force and the induction
-            follow ``auxiliary_B_field`` and ``scheme`` as usual, so the
-            midpoint scheme with the auxiliary field conserves the helicity
-            exactly along Newton directions too. The line search along the
+            follow ``auxiliary_B_field`` as usual. The line search along the
             direction is capped at the Newton length ``dt = 1``: a truncated
             direction mixes resolved modes, whose energy minimum is at the
             Newton step, with unresolved flat ones that want a longer step,
@@ -582,16 +529,18 @@ class TimeStepper(eqx.Module):
             DoFs of the natural proxy of ``B``: the leak of the plain-``B``
             route (``docs/research/implicit_midpoint_2026-09-04.md``). With
             ``E - lambda H_D``, ``H_D = M_1^-1 P B`` the Dirichlet proxy,
-            one scalar zeroes the change: under ``EXPLICIT`` the root near
-            zero of the quadratic in ``lambda``, under ``IMPLICIT_MIDPOINT``
-            ``lambda = <E, P B_mid> / <H_D, P B_mid>`` inside every sweep
-            (the ``dt^2`` term is the midpoint's). The pairings are formed
+            one scalar zeroes the change, the root near zero of the
+            quadratic in ``lambda``. The pairings are formed
             in the residual precision (a small total of large terms). The
             helicity is then flat to the solves and the field's own
             rounding, with ``H`` natural and no wall layer; the induction
             picks up ``-lambda curl H_D``, of the size of the leak, and the
             energy decrease is perturbed by ``lambda`` times the ``J . B``
             pairing: not variational. ``State.helicity_lambda`` records it.
+            Not covered by the test suite on purpose (2026-09-20): the
+            option is off by default and its 20-step run was 130 s of
+            compile per configuration; ``docs/research/helicity_correction_2026-09-11.md``
+            has the measurements.
         resistivity: The resistive dose per step, ``eps = eta dt`` (a length
             squared; ``scripts/relax.py --resistivity C`` gives ``C h_r^2``,
             :func:`radial_cell_sq`), 0 for the ideal descent. After the ideal
@@ -610,10 +559,6 @@ class TimeStepper(eqx.Module):
             ``J_ref`` (``None``: no source, ``J_ref = 0``). It must not carry the
             rational-surface sheets of an ideal equilibrium, or they are
             sustained and a run started from it is a fixed point.
-        picard_tol: Convergence tolerance of the midpoint fixed point,
-            ``||g(x) - x||_M`` relative to the predictor's increment
-            ``||dt dB(B_n)||_M``: ``PICARD_TOL_FACTOR`` times ``seq.tol``
-            plus ``PICARD_EPS_FACTOR`` roundoffs, set by ``__post_init__``.
         cfl_weights: ``logical_cfl_weights(seq)``, built by ``__post_init__``.
     """
     seq: DeRhamSequence
@@ -621,7 +566,6 @@ class TimeStepper(eqx.Module):
     velocity_smoothing_order: int = 1
     velocity_smoothing_scale: float = None
     cfl: float = 0.5
-    scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
     newton: bool = False
     newton_penalty: float = NEWTON_PENALTY
@@ -631,7 +575,6 @@ class TimeStepper(eqx.Module):
     helicity_correction: bool = False
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
-    picard_tol: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
@@ -648,7 +591,6 @@ class TimeStepper(eqx.Module):
             self.harmonic_norm_sq = h @ self.seq.apply_mass_matrix(h, 2)
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
-        self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def smooth_velocity(self, u: jnp.ndarray) -> jnp.ndarray:
@@ -666,16 +608,13 @@ class TimeStepper(eqx.Module):
             return self.seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True), X
         return dirichlet_proxy(self.seq, B, H_guess)
 
-    def _helicity_lambda(self, E: jnp.ndarray, PB: jnp.ndarray, H_D: jnp.ndarray, dt=None) -> jnp.ndarray:
+    def _helicity_lambda(self, E: jnp.ndarray, PB: jnp.ndarray, H_D: jnp.ndarray, dt) -> jnp.ndarray:
         """The multiple of ``H_D`` whose removal from ``E`` zeroes the step's
-        helicity change (``helicity_correction``): ``<E, P B> / <H_D, P B>``
-        for the midpoint pairing, or with ``dt`` the root near zero of ``2
+        helicity change (``helicity_correction``): the root near zero of ``2
         <E_l, P B> + dt <E_l, P curl E_l> = 0``, ``E_l = E - lambda H_D``.
         Every pairing in the residual precision."""
         on = self.seq if self.seq.residual is None else self.seq.residual
         E, PB, H_D = (x.astype(RESIDUAL_DTYPE) for x in (E, PB, H_D))
-        if dt is None:
-            return (E @ PB) / (H_D @ PB)
 
         def P_curl(y):
             return on.apply_projection_matrix(
@@ -736,9 +675,7 @@ class TimeStepper(eqx.Module):
         measured to change nothing in float64 and in mixed precision and
         to cost 1.5-4x the step (``docs/research/velocity_leray_ab_2026-09-04.md``;
         in float32 with a solve tolerance relative to ``J x B`` it was what
-        kept the step a descent). The explicit step evaluates the increment
-        once at ``B_n``; the midpoint step's Picard sweeps re-evaluate only
-        the induction at the midpoint field (``_midpoint_solve``). The five
+        kept the step a descent). The five
         guesses, and ``state.F_prev`` for the gradient part of the force,
         warm-start the Krylov solves;
         they come from ``state`` (the previous step). Without the auxiliary
@@ -811,157 +748,21 @@ class TimeStepper(eqx.Module):
             dt = jnp.minimum(dt, 1.0)              # the Newton length
         return dt, dt_star
 
-    def _midpoint_solve(self, state: State):
-        """Midpoint-implicit induction with the explicit descent velocity.
-
-        The step is ``B_{n+1} = B_n + dt curl(u x X_mid)`` with ``u`` the
-        descent velocity of the explicit predictor at ``B_n`` (direction,
-        smoothing, line-search ``dt``, CFL cap: all of
-        ``_ideal_increment``) and ``X_mid`` the MIDPOINT field ``(B_n +
-        B_{n+1}) / 2`` itself or, with ``auxiliary_B_field``, its 1-form
-        proxy ``H_mid = M_1^-1 P (B_n + B_{n+1}) / 2``: the
-        auxiliary-variable scheme, whose exact helicity conservation is
-        derived below. Without the proxy the pairing ``E^T P B_mid`` is the
-        grid's projection error and nothing else: the time-integration
-        error is gone, so that arm isolates the grid error of the helicity
-        from the time error.
-
-        WHY IT CONSERVES HELICITY.  The pairing of the 2-form ``B`` with a
-        discrete 1-form ``E`` goes through the proxy ``H = M_1^-1 P B``
-        (``P`` the 1-form/2-form pairing matrix)::
-
-            E^T P B = E^T M_1 H = H^T load(u x H) = int H_h . (u_h x H_h) = 0
-
-        at every quadrature node, for ANY ``u``.  With ``B = D_1 A + B_harm``
-        (``A`` the Dirichlet potential of ``compute_helicity``) and the exact
-        discrete Stokes identity ``<A, D_1 E> = <D_1 A, E>`` (``A``
-        tangentially zero)::
-
-            d/dt <A, B + B_harm> = 2 <A, D_1 E> + 2 <E, B_harm> = 2 <B, E> = 0,
-
-        ``B_harm`` being constant (``dB/dt = D_1 E`` lies in ``range D_1``)
-        and the gauge freedom in ``dA/dt`` pairing a Dirichlet gradient with
-        ``D_2 B_harm = 0``.  So the semi-discrete flow conserves the discrete
-        helicity exactly; as ``A`` and ``B_harm`` are linear in ``B`` the
-        helicity is a quadratic form ``Q(B)``, and evaluating ``E`` at the
-        midpoint field keeps it exactly, ``Q(B_{n+1}) - Q(B_n) = 2 dt <B_mid,
-        E> = 0``, whatever ``u`` is.  The explicit scheme's helicity drift is
-        entirely the time-integration error of evaluating ``H`` at ``B_n``.
-
-        THE ONE CONDITION.  ``E^T P B = E^T M_1 H`` needs ``E`` and ``H`` in
-        the SAME space, which is why the auxiliary ``H`` is a Dirichlet
-        1-form like ``E``: with a natural ``H`` the load ``load(u x H)``
-        loses its tangential wall DoFs on the way to ``E`` and both schemes
-        leak helicity through that wall layer alike (li383 (8,16,16) p=2,
-        float64, 1000 steps: -5.5e-7 explicit, -6.6e-7 midpoint); with the
-        Dirichlet ``H`` the midpoint scheme is exact to the solves (+5e-12
-        against +2.2e-7 explicit). docs/research/implicit_midpoint_2026-09-04.md.
-        Energy: ``E_{n+1} - E_n = dt B_mid^T M_2 D_1 E = -dt <u, F_mid>_M``
-        with ``F_mid`` the force at the midpoint field, so the step descends
-        as long as the predictor's velocity still correlates with the
-        midpoint force -- second order in ``dt``, not a guarantee; the line
-        search of the predictor sets ``dt``.
-
-        WHY THE VELOCITY STAYS EXPLICIT.  Taking ``u`` at the midpoint too
-        makes the step a nonlinear fixed point in ``B`` through the force,
-        whose linearisation is the descent operator ``|H|^2 curl curl`` on
-        the field: its largest eigenvalue is ``|H|^2 / h^2`` and the
-        line-search ``dt`` sits 35x above the Picard contraction limit on
-        li383 (8,16,16) p=2 (iterates blow up in six sweeps; a Laplacian
-        preconditioner only flips the spectrum, because the operator is
-        soft on the force-free perturbations the Laplacian is stiff on;
-        Newton is a Krylov solve inside a Krylov solve).  With ``u`` frozen
-        the map ``x -> dt curl(u x H(B_n + x / 2))`` is LINEAR in the
-        increment ``x`` with contraction constant ``dt |u| / (2 h)``, which
-        is small because ``u`` is the force (``dt* |u| ~ h^2 |F| / |H|^2``
-        under the line search), so plain Picard converges in a few sweeps,
-        each one k=1 mass solve for ``H_mid``, one for ``E`` and the
-        topological curl, warm-started from the previous sweep.  Should the
-        defect ever blow up (``PICARD_BLOWUP`` times the predictor's
-        increment, NaN included) or ``PICARD_MAX`` sweeps not converge,
-        ``dt`` is halved and the solve restarts from the predictor, at most
-        ``PICARD_RESTARTS`` times, after which the step goes out
-        unconverged with ``state.picard_residual`` above ``picard_tol``.
-        Convergence is judged on the defect ``||g(x) - x||_M / ||dt
-        dB(B_n)||_M``, relative to the predictor's INCREMENT and never to
-        ``B`` (the defect form of ``resistive_step``); ``picard_tol`` cannot
-        be tighter than the inner solves that define ``g``, hence its
-        value of ``PICARD_TOL_FACTOR`` times ``seq.tol``.
-
-        Returns ``(inc, dt, dt_star, B_ideal, evaluations, restarts,
-        residual, lambda)``: ``inc`` is the predictor's increment with ``H``
-        and ``E`` replaced by the midpoint's, the warm starts of the next
-        step (on the plain-``B`` route with ``helicity_correction`` the
-        ``H`` slot carries the Dirichlet proxy ``H_D``), ``lambda`` the
-        correction of the last sweep (0 without it).
-        """
-        B_n = state.B_n
-        seq = self.seq
-        inc0 = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
-                                     state.J, state.E)
-        dt0, dt_star = self._step_size(inc0)
-        dB0 = inc0.dB
-        dB0_norm = seq.l2_norm(dB0, 2)
-        u_jk = seq.evaluate_at_quadrature(inc0.u, 2, True)
-        one = jnp.ones((), B_n.dtype)
-
-        def sweep(carry):
-            k, n_eval, restarts, dt, x, H, E, resid, lam = carry
-            B_mid = B_n + 0.5 * x
-            if self.auxiliary_B_field:
-                _, H = dirichlet_proxy(seq, B_mid, H)
-            E = self._induction_field(u_jk, H if self.auxiliary_B_field else B_mid, E)
-            if self.helicity_correction:
-                PB, H = self._helicity_proxy(B_mid, H, H)
-                lam = self._helicity_lambda(E, PB, H).astype(B_n.dtype)
-                E = E - lam.astype(E.dtype) * H
-            g = dt * seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
-            resid = seq.l2_norm(g - x, 2) / (dt * dB0_norm)
-            k, n_eval = k + 1, n_eval + 1
-            converged = resid <= self.picard_tol
-            restart = (~converged & (~(resid < PICARD_BLOWUP) | (k >= PICARD_MAX))
-                       & (restarts < PICARD_RESTARTS))
-            dt = jnp.where(restart, 0.5 * dt, dt)
-            x = jnp.where(restart, dt * dB0, g)
-            k = jnp.where(restart, 0, k)
-            resid = jnp.where(restart, one, resid)
-            restarts = restarts + restart.astype(jnp.int32)
-            return k, n_eval, restarts, dt, x, H, E, resid, lam
-
-        def unconverged(carry):
-            k, _, _, _, _, _, _, resid, _ = carry
-            return ~(resid <= self.picard_tol) & (resid < PICARD_BLOWUP) & (k < PICARD_MAX)
-
-        carry = (jnp.int32(0), jnp.int32(1), jnp.int32(0), dt0, dt0 * dB0, inc0.H, inc0.E, one,
-                 jnp.zeros((), B_n.dtype))
-        _, n_eval, restarts, dt, x, H, E, resid, lam = jax.lax.while_loop(unconverged, sweep, carry)
-        return inc0._replace(H=H, E=E), dt, dt_star, B_n + x, n_eval, restarts, resid, lam
-
     def relaxation_step(self, state: State) -> State:
         """Advance ``state.B_n`` by one ideal step into ``state.B_nplus1``:
-        forward Euler on the descent velocity, ``B_n + dt curl(u x X)``, or
-        the implicit midpoint rule (``scheme``)."""
+        forward Euler on the descent velocity, ``B_n + dt curl(u x X)``."""
         B_n = state.B_n
         lam = jnp.zeros((), B_n.dtype)
-        if self.scheme == IntegrationScheme.EXPLICIT:
-            inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
-                                        state.J, state.E)
-            dt, dt_star = self._step_size(inc)
-            if self.helicity_correction:
-                PB, H_D = self._helicity_proxy(B_n, inc.H, state.H)
-                lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
-                E = inc.E - lam * H_D
-                inc = inc._replace(E=E, H=H_D, dB=self.seq.apply_incidence_matrix(
-                    E, 1, dirichlet_in=True, dirichlet_out=True))
-            B_nplus1 = B_n + dt * inc.dB
-            n_eval, restarts, resid = jnp.int32(1), jnp.int32(0), jnp.zeros((), B_n.dtype)
-        elif self.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
-            # inc is the predictor's (u, F, dt* are the explicit step's);
-            # only the induction is implicit.
-            inc, dt, dt_star, B_nplus1, n_eval, restarts, resid, lam = self._midpoint_solve(state)
-        else:
-            raise ValueError(
-                f"Unknown scheme: {self.scheme}. Supported schemes are given by the IntegrationScheme enum.")
+        inc = self._ideal_increment(B_n, state, state.p, state.H, state.JxH,
+                                    state.J, state.E)
+        dt, dt_star = self._step_size(inc)
+        if self.helicity_correction:
+            PB, H_D = self._helicity_proxy(B_n, inc.H, state.H)
+            lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
+            E = inc.E - lam * H_D
+            inc = inc._replace(E=E, H=H_D, dB=self.seq.apply_incidence_matrix(
+                E, 1, dirichlet_in=True, dirichlet_out=True))
+        B_nplus1 = B_n + dt * inc.dB
 
         res_delta, res_it, res_moved = state.resistive_delta, state.resistive_it, state.resistive_moved
         if self.resistivity:
@@ -979,14 +780,12 @@ class TimeStepper(eqx.Module):
             lambda s: (s.B_nplus1, s.v, s.p, s.H, s.JxH, s.J, s.E,
                        s.F_prev, s.F_norm, s.v_norm,
                        s.dt, s.dt_star, s.cfl_max,
-                       s.picard_iterations, s.picard_restarts, s.picard_residual,
                        s.a, s.newton_it, s.helicity_lambda, s.resistive_delta, s.resistive_it,
                        s.resistive_moved),
             state,
             (B_nplus1, inc.u, inc.p, inc.H, inc.JxH, inc.J, inc.E,
              inc.F, jnp.sqrt(inc.F @ inc.MF), jnp.sqrt(inc.u @ inc.Mu),
              dt, dt_star, inc.cfl_max,
-             n_eval, restarts, resid,
              inc.a, inc.newton_it, lam, res_delta, res_it, res_moved))
 
 
@@ -1024,9 +823,6 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
         A=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         F_prev=F0,
         F_norm=jnp.sqrt(F0 @ MF0),
-        picard_iterations=jnp.int32(0),
-        picard_restarts=jnp.int32(0),
-        picard_residual=jnp.zeros((), B_dof.dtype),
         a=jnp.zeros(seq.n(1, True), dtype=DTYPE),
         newton_it=jnp.int32(0),
         helicity_lambda=jnp.zeros((), dtype=DTYPE),
@@ -1041,8 +837,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
 
 #: The per-step scalars of :func:`chunk_runner`'s trace that :func:`relax`
 #: keeps (``v`` and ``Fu`` only feed the derived ``cos``, ``gain`` and ``dE_ls``).
-TRACE_COLUMNS = ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "picard_it", "picard_resid",
-                 "newton_it", "hcorr", "res_it", "res_moved")
+TRACE_COLUMNS = ("dE", "F", "resid", "dt", "dt_star", "cfl", "div", "newton_it", "hcorr", "res_it", "res_moved")
 
 
 def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[State, dict]]:
@@ -1060,8 +855,6 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
     ``dt_star``, ``cfl`` (the velocity's largest logical CFL number),
     ``div`` (``||div B||``), ``Fu`` (``<F_prev, u>_M``: the line search
     predicts ``dE = -dt Fu (1 - dt / 2 dt_star)``),
-    ``picard_it`` and ``picard_resid`` (the midpoint solve's increment
-    evaluations and final defect; 1 and 0 for the explicit step),
     ``newton_it`` (the Newton solve's signed MINRES count; 0 without
     ``newton``),
     ``hcorr`` (the helicity correction's ``lambda``; 0 without it),
@@ -1101,7 +894,6 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
             dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
             div=compute_divergence_norm(state.B_n, seq),
             Fu=state.F_prev @ seq.apply_mass_matrix(state.v, 2),
-            picard_it=state.picard_iterations, picard_resid=state.picard_residual,
             newton_it=state.newton_it, res_it=state.resistive_it, res_moved=state.resistive_moved,
             hcorr=state.helicity_lambda, resid=resid)
         return state, trace
@@ -1232,7 +1024,7 @@ class RelaxResult(NamedTuple):
     search's prediction ``-dt <F, u>_M (1 - dt / 2 dt_star)`` -- the two
     differ by ``-dt <u, grad p>_M``, zero for a divergence-free velocity
     --, ``F``, ``resid``, ``dt``, ``dt_star``, ``cfl``, ``div``, ``cos``,
-    ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
+    ``gain``), ``E0`` the energy at the
     start of the run (``E0 + cumsum(dE)`` is the trace's energy after every
     step, to the working precision's rounding per step), ``qoi`` the
     per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
@@ -1362,7 +1154,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  "
-                  f"picard max={int(ch['picard_it'].max())}  [{wall:.0f}s steps +{t_out:.0f}s other]\n"
+                  f"[{wall:.0f}s steps +{t_out:.0f}s other]\n"
                   + (f"           newton: MINRES it mean {np.abs(ch['newton_it']).mean():.0f} max "
                      f"{np.abs(ch['newton_it']).max()}, unconverged {int((ch['newton_it'] > 0).sum())}, "
                      f"dt* mean {ch['dt_star'].mean():.3e}\n"
@@ -1415,8 +1207,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
 def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     """The end-of-run summary of :func:`relax`: energy removed, residual,
-    the line-search identity, helicity drift, pressures, the CFL cap, the
-    midpoint solve."""
+    the line-search identity, helicity drift, pressures, the CFL cap."""
     tr, q = res.trace, res.qoi
     n = res.steps
     E0 = res.E0
@@ -1430,9 +1221,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
           f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
     print(f"    best state: step {int(res.state.step_best)}, residual {float(res.state.resid_best):.4e}")
     print(f"    |dE - dE_ls| / E0 (the velocity's gradient part against grad p): median {np.median(ident):.3e}"
-          f"  max {ident.max():.3e}"
-          + ("  (not an identity under the midpoint scheme)"
-             if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT else ""))
+          f"  max {ident.max():.3e}")
     print(f"    energy increases on {int((dE > 0).sum())}/{n} steps;  ||div B|| max {max(tr['div']):.3e};  "
           f"||J||/||B|| {q['JoverB'][0]:.4e} -> {q['JoverB'][-1]:.4e}")
     h = np.array(q["helicity"])
@@ -1449,8 +1238,3 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
               f"unconverged on {int((np.array(tr['newton_it']) > 0).sum())}/{n} steps;  "
               f"dt* mean {dt_star.mean():.3e}", flush=True)
-    if ts.scheme == IntegrationScheme.IMPLICIT_MIDPOINT:
-        pit, pres = np.array(tr["picard_it"]), np.array(tr["picard_resid"])
-        print(f"    midpoint solve: increment evaluations mean {pit.mean():.2f}  max {pit.max()};  "
-              f"defect max {pres.max():.2e};  unconverged on {int((pres > ts.picard_tol).sum())}/{n} "
-              f"steps (tolerance {ts.picard_tol:.1e})", flush=True)

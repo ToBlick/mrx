@@ -107,9 +107,8 @@ Flags, defaults in brackets:
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
 | `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual, `float32` and `float64` are both; exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
-| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
-| `--scheme {explicit,midpoint} [explicit]` | forward Euler on the descent velocity, or the midpoint-implicit induction with the explicit velocity (Picard on the increment, `dt` halved on a blow-up; `mrx.relaxation.PICARD_*`) |
-| `--helicity-correction {false,true} [false]` | remove from the induction field $E$ the one component, a multiple $\lambda$ of the Dirichlet proxy $H_D = M_1^{-1} P B$, that changes the discrete helicity over the step: exact conservation with $H$ natural under either scheme (`TimeStepper.helicity_correction`); the trace records $\lambda$ as `hcorr` |
+| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall) |
+| `--helicity-correction {false,true} [false]` | remove from the induction field $E$ the one component, a multiple $\lambda$ of the Dirichlet proxy $H_D = M_1^{-1} P B$, that changes the discrete helicity over the step: exact conservation with $H$ natural (`TimeStepper.helicity_correction`); the trace records $\lambda$ as `hcorr` |
 | `--method {newton,gradient} [newton]` | the direction: Newton on the second variation (the rows below), or gradient descent on the smoothed force |
 | Newton (`--method newton`) | the direction of the second variation by Newton-MR, `mrx.hessian.newton_direction`: MINRES with the harmonic atom of the current field as preconditioner, the parallel-flow penalty in the operator, the nonpositive-curvature exit; the line search along the direction is capped at the Newton length `dt = 1` |
 | `--newton-penalty KAPPA [3]` | the parallel-flow penalty, `KAPPA` times the strain along the field (`mrx.hessian.parallel_penalty_profile`): the one number of the Newton configuration; the Hessian is exactly null on the field-aligned flows and the penalty lifts them |
@@ -158,7 +157,7 @@ never fired.
 
 | file | content |
 |---|---|
-| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `dE` (the exact energy change of the step), `dE_ls` (the line search's prediction), `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`, `picard_resid`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
+| `relax.json` | `params` (every flag, `geometry_path` resolved, `ic` the kind of initial condition); `ic`, the initial field's numbers; `trace` with per-step `dE` (the exact energy change of the step), `dE_ls` (the line search's prediction), `F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`; `qoi` with per-chunk `it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB` and the pressure diagnostics `gradp_cmp`, `p_cmp`, `weak_resid`, `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis` (the first entry is the start of the run); `reconnect`, one record per reconnection; the `summary` with the stopping reason |
 | `checkpoints/state_<step>.h5` | the descent state at that step, one file per chunk plus step 0 (the initial field): every leaf of `mrx.relaxation.State` as a dataset named by its field (`B_n`, `p` the strong pressure, the warm starts, `dt`, ...; files written before 2026-09-17 also hold the L-BFGS pairs, which the reader ignores) and the step as an attribute. `--restart` continues from one; the plotters read the field and the strong pressure from them and compute the weak pressure on demand |
 | `checkpoints/best.h5` | the field with the lowest per-step squared residual of the run, rebuilt into a state (one force evaluation) and tagged with its step: the run's answer when it went past its floor (the residual is not monotone, and past the resolved floor the ideal descent raises it). `summary.best_step`, `summary.best_resid` in `relax.json` say which step |
 
@@ -177,7 +176,7 @@ resid = run["trace"]["resid"]             # ||F||² / ||grad(B²/2)||² after ev
 H = run["qoi"]["helicity"]                # at the sampled steps
 ```
 
-Three checks of a healthy run (`--scheme explicit`, no reconnection):
+Three checks of a healthy run (no reconnection):
 
 - `dE` is negative at every step and matches the line search's `dE_ls`
   to roundoff: their difference is `-dt <u, grad p>`, the velocity's

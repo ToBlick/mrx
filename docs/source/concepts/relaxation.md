@@ -31,9 +31,9 @@ and `sigma` as the previous `JxX - F` (a warm start on `p` alone leaves
 ## 2. The step
 
 `TimeStepper(seq, auxiliary_B_field, velocity_smoothing_order,
-velocity_smoothing_scale, cfl, scheme)` is an `eqx.Module`;
+velocity_smoothing_scale, cfl)` is an `eqx.Module`;
 `relaxation_step(state)` does one step, explicit Euler on the descent
-velocity, `B_{n+1} = B_n + dt · curl(u × X)`, or the midpoint rule below.
+velocity, `B_{n+1} = B_n + dt · curl(u × X)`.
 The step is ideal: reconnection is a separate resistive solve between
 chunks (section 2a).
 
@@ -110,35 +110,6 @@ descent between solves is a power law in the step, never a plateau
 (`docs/research/li383_sweep_results_2026-09-02.md`, section 5h), so the
 interval is a choice, not something to detect.
 
-**Midpoint-implicit induction** (`IntegrationScheme.IMPLICIT_MIDPOINT`,
-`--scheme midpoint`) keeps steps 1-7 and replaces step 8 by
-`B_{n+1} = B_n + dt · curl(u × X_mid)` at the midpoint field
-`(B_n + B_{n+1})/2`, with the predictor's velocity `u` and `dt`. With the
-auxiliary field, `X_mid = H_mid = M_1^{-1} P (B_n + B_{n+1})/2`, the 1-form
-proxy of the midpoint field: the auxiliary-variable scheme, which exists
-for one exact identity.
-The discrete helicity `<A, B + B_harm>` of `compute_helicity` is conserved
-by the semi-discrete flow for ANY velocity: the pairing of the 2-form `B`
-with a 1-form `E` goes through the proxy `H = M_1^{-1} P B`, so
-`E^T P B = H^T load(u × H) = ∫ H_h · (u_h × H_h) = 0` at every quadrature
-node, and with the exact discrete Stokes identity
-`d/dt <A, B + B_harm> = 2 <B, E> = 0` (`B_harm` is constant, `dB/dt` lies
-in `range D_1`). The helicity is a quadratic form in `B`, and evaluating
-`E` at the midpoint field keeps it exactly, whatever `u` is; the explicit
-scheme's drift is entirely the time-integration error of evaluating `H`
-at `B_n`. One condition: `E^T P B = E^T M_1 H` needs `E` and `H` in the
-same 1-form space, which is why the auxiliary `H` is a Dirichlet 1-form
-like `E` (so that `D_1 E` keeps `B · n = 0`): with a natural `H` (the
-proxy of a wall-tangent `B` has a tangential trace) the load `load(u × H)`
-loses its tangential wall DoFs on the way to `E` and both schemes leak
-helicity through that wall layer at the same rate (li383 (8,16,16) p=2,
-float64, 1000 descent steps: -5.5e-7 explicit, -6.6e-7 midpoint); with the
-Dirichlet `H` the midpoint scheme is exact to the solves (+2.2e-7
-explicit, +5e-12 midpoint), at the price of `H_t = 0` at the wall. Without
-the auxiliary field (`X = B`) the midpoint scheme has no time error either;
-what remains is the grid's projection error of the pairing, about 1e-6
-on that mesh. See `docs/research/implicit_midpoint_2026-09-04.md`.
-
 **The helicity correction** (`TimeStepper.helicity_correction`,
 `--helicity-correction true`) keeps `H` natural and removes the leak
 instead. Over one explicit step the identity above reads, exactly on the
@@ -147,9 +118,8 @@ pairing `<E, P B>` is one number per step: the projection residual of
 `u x B` paired with the tangential wall DoFs of the natural proxy. With
 `E - lambda H_D`, `H_D = M_1^{-1} P B` the Dirichlet proxy of the field, the
 change is a quadratic in `lambda` whose root near zero the explicit step
-takes (two pairings of curls, one warm-started k=1 mass solve for `H_D`);
-inside the midpoint sweep the `dt^2` term is the scheme's and `lambda =
-<E, P B_mid> / <H_D, P B_mid>`. The pairings are formed in the residual
+takes (two pairings of curls, one warm-started k=1 mass solve for `H_D`).
+The pairings are formed in the residual
 precision, a small total of large terms. The helicity is then flat to the
 solves and to the stored field's rounding, `E` stays Dirichlet so `B` keeps
 its wall condition, and there is no wall layer. What the correction removes
@@ -158,44 +128,11 @@ and which is the only one that changes helicity; the induction picks up
 `-lambda curl H_D`, of the size of the leak, and the energy decrease is
 perturbed by `lambda` times the `J . B` pairing. The step is no longer
 variational: the energy is monotone up to that term. The trace records
-`lambda` as `hcorr`. The
-energy change is `-dt <u, F_mid>_M` with the force at the
-midpoint field: descent while the predictor's velocity still correlates
-with the midpoint force, second order in `dt`, not the line search's
-guarantee.
-
-The velocity stays explicit on purpose. Taking `u` at the midpoint too
-makes the step a nonlinear fixed point in `B` through the force, whose
-linearisation is the descent operator `|H|² curl curl` with largest
-eigenvalue `|H|²/h²`; on li383 (8,16,16) p=2 the line-search `dt` is 35x
-above the Picard contraction limit (the iterates blow up in six sweeps,
-Anderson acceleration and a Laplacian preconditioner do not rescue it
-because the operator is soft on the force-free perturbations the
-Laplacian is stiff on, and Newton is a Krylov solve inside a Krylov
-solve). With `u` frozen the map `x -> dt · curl(u × H(B_n + x/2))` is
-linear in the increment `x` with contraction constant `dt |u| / 2h`, small
-because `u` is the force, so plain Picard (`_midpoint_solve`) converges in a
-few sweeps of one k=1 mass solve for `H_mid`, one for `E` and the
-topological curl, warm-started from the previous sweep. Convergence is
-judged on the defect `||g(x) - x||_M` relative to the predictor's increment
-`||dt · dB(B_n)||_M` (the defect form again) against `picard_tol`,
-`PICARD_TOL_FACTOR` (10) times `seq.tol` because the inner solves define
-the map. Should the defect blow up (`PICARD_BLOWUP` times the predictor's
-increment, NaN included) or `PICARD_MAX` (20) sweeps not converge, `dt` is
-halved and the solve restarts from the predictor, at most
-`PICARD_RESTARTS` (4) times, after which the step goes out unconverged
-with `state.picard_residual` above the tolerance; no run has ever halved.
-The state records `picard_iterations` (1 for the explicit
-step, the predictor plus the sweeps otherwise), `picard_restarts` and
-`picard_residual`; `F` and `u` are the predictor's, as in
-the explicit step, and `H`, `E` carried as warm starts are the midpoint's.
-Cost: one explicit step plus a few pairs of k=1 mass solves (one, for
-`E`, without the auxiliary field).
+`lambda` as `hcorr`.
 
 `State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
 `H`, `JxH`, `J`, `E`, `A`), `F_prev`,
-`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`,
-`picard_iterations`, `picard_restarts`, `picard_residual`. Build it with `initial_state(B_dof, ts, dt)`, which
+`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`. Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first step's solves start from the true
 previous force. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics
@@ -347,9 +284,8 @@ method per run. Flags, defaults in brackets:
 | `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`precision.md`) |
 | `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual, `float32` and `float64` are both; exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
 | `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: adds the resonant term `eps |Φ'(rho0)|/m · g(rho) cos(2π(m θ − s n ζ))` to `A'_ζ` (`g` a Gaussian of that width tapered to zero at the wall, `s` the sign of the file's iota) before `B = dA'`, so `div B = 0` and `B·n = 0` stay exact; `EPS` is the resonant normal field `|δB^ρ|/|B^ζ|` at `rho0`, the chain sits where `|iota| = nfp n / m` (`resonant_rho`, printed) and opens an island of full width about `1.6 sqrt(EPS nfp/(m |iota'|))` in `rho`. A stability probe: under ideal descent the topology is frozen, so a seeded island that grows to an `EPS`-independent width marks a tearing-unstable surface, one that shrinks back to the seed width a stable one -- sweep `EPS` |
-| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1), the variable that makes the midpoint scheme conserve the discrete helicity exactly |
-| `--scheme {explicit,midpoint} [explicit]` | forward Euler, or midpoint-implicit induction with the explicit velocity (section 2): Picard on the increment to `PICARD_TOL_FACTOR` times the solver tolerance, `dt` halved after `PICARD_MAX` sweeps or a blow-up, at most `PICARD_RESTARTS` times; the trace records `picard_it`, `picard_resid` |
-| `--helicity-correction {false,true} [false]` | one scalar correction of `E` per step (a multiple of the Dirichlet proxy `H_D = M_1^{-1} P B`) that zeroes the step's discrete helicity change exactly, with `H` natural, under either scheme (section 2); the trace records the multiple as `hcorr` |
+| `--auxiliary-B-field {false,true} [false]` | `false` reads the 2-form `B` itself in both cross products; `true` routes them through the auxiliary Dirichlet 1-form `H = M_1^{-1} P B` (section 1) |
+| `--helicity-correction {false,true} [false]` | one scalar correction of `E` per step (a multiple of the Dirichlet proxy `H_D = M_1^{-1} P B`) that zeroes the step's discrete helicity change exactly, with `H` natural (section 2); the trace records the multiple as `hcorr` |
 | `--method {newton,gradient} [newton]` | the direction: Newton on the second variation, or gradient descent on the smoothed force |
 | Newton (`--method newton`) | the direction of the second variation by Newton-MR, `mrx.hessian.newton_direction`: MINRES with the harmonic atom of the current field as preconditioner, the parallel-flow penalty in the operator, the nonpositive-curvature exit; the line search along the direction is capped at the Newton length `dt = 1` |
 | `--newton-penalty KAPPA [3]` | the parallel-flow penalty, `KAPPA` times the strain along the field (`mrx.hessian.parallel_penalty_profile`): the one number of the Newton configuration; the Hessian is exactly null on the field-aligned flows and the penalty lifts them |
@@ -380,8 +316,7 @@ residual reaches `2.9e-6` at step 500 and floors around `1e-6` by step
 
 Output: `relax.json` with the parameters, the per-step trace (`dE` the
 exact energy change of the step, `dE_ls` the line search's prediction,
-`F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`, `picard_it`,
-`picard_resid`), the sampled quantities of interest
+`F`, `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `gain`), the sampled quantities of interest
 `qoi` (`it`, `wall`, `F`, `resid`, `helicity`, `JoverB`, `JB`, and the
 pressure diagnostics of section 3: `gradp_cmp`, `p_cmp`, `weak_resid`,
 `dpdn_wall`, `JxBn_wall`, `beta_vol`, `beta_axis`), the initial field's
