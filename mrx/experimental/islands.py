@@ -18,11 +18,12 @@ import numpy as np
 from functools import partial
 from math import gcd
 
+import diffrax as dfx
 import jax
 import jax.numpy as jnp
 
-from mrx.poincare import (MIN_STEPS_PER_PERIOD, R_AXIS, R_EDGE, logical_field, poincare, rotational_transform,
-                          trace)
+from mrx.poincare import (MIN_STEPS_PER_PERIOD, R_AXIS, R_EDGE, TWO_PI, cross_section_rhs, logical_field, poincare,
+                          rotational_transform, trace)
 
 #: Steps per period for the tangent map of the return map (:func:`fixed_points`):
 #: the variational equation needs more than the trajectory. On the seeded li383
