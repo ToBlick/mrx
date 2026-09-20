@@ -809,9 +809,7 @@ def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, gu
 
     # and, on a half-period sequence, both blocks lose the round-off of the
     # other parity (the parity of b, sigma's being the same)
-    par_k, par_l = _parity(seq, k, dirichlet, b), None
-    if par_k is not None:
-        par_l = _parity(seq, k - 1, dirichlet, None, sign=seq.free_projector(k, dirichlet).parity(b))
+    par_k, par_l = _parity_pair(seq, k, dirichlet, b)
     pd_k = (lambda r: r) if par_k is None else par_k[1]
     pd_l = (lambda r: r) if par_l is None else par_l[1]
 
@@ -864,15 +862,24 @@ def _outer(seq, tol):
     return (res, inner_tol(tol)) if res is not None else (seq, tol)
 
 
-def _parity(seq, k: int, dirichlet: bool, b, sign=None):
+def _parity(seq, k: int, dirichlet: bool, b):
     """``(project_primal, project_dual)`` of a solve on the ``(k, dirichlet)``
     space of a half-period sequence: the parity read off its right-hand
-    side ``b``, or the given ``sign`` (a composite solve's other block);
-    ``None`` on a full-period sequence (:mod:`mrx.symmetry`)."""
+    side ``b``; ``None`` on a full-period sequence (:mod:`mrx.symmetry`)."""
+    pj = seq.free_projector(k, dirichlet)
+    return None if pj is None else pj.projectors(b)
+
+
+def _parity_pair(seq, k: int, dirichlet: bool, b):
+    """:func:`_parity` of a composite solve's two blocks, the ``(k, dirichlet)``
+    space and the ``(k - 1, dirichlet)`` one below it, both at the parity of
+    the upper right-hand side ``b`` (``sigma`` follows ``u``): ``(upper,
+    lower)``, ``(None, None)`` on a full-period sequence."""
     pj = seq.free_projector(k, dirichlet)
     if pj is None:
-        return None
-    return pj.projectors(b) if sign is None else pj.with_sign(sign)
+        return None, None
+    sign = pj.parity(b)
+    return pj.with_sign(sign), seq.free_projector(k - 1, dirichlet).with_sign(sign)
 
 
 def _dual_norm(operators, k: int, dirichlet: bool):
@@ -961,12 +968,7 @@ def assemble_mass_metric_lumping_preconditioner(
             raise ValueError(
                 "metric_lumping mass preconditioner supports k=0..3")
         for dirichlet in dirichlet_variants:
-            atom = MetricLumpingMass(seq, operators, int(k), bool(dirichlet), **kwargs)
-            # Half-period sequence: the atom returns the parity of its input
-            # (mrx.symmetry.free_projector); before any apply is memoised.
-            atom.parity_projector = seq.free_projector(int(k), bool(dirichlet))
-            atom._apply_in = {}
-            atoms[(int(k), bool(dirichlet))] = atom
+            atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(seq, operators, int(k), bool(dirichlet), **kwargs)
     return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
@@ -1003,9 +1005,7 @@ def assemble_metric_lumping_laplacian_preconditioner(
     atoms = dict(operators.laplacian_lumping or {})
     for k in ks:
         for dbc in dirichlets:
-            atom = MetricLumpingLaplacian(seq, operators, int(k), bool(dbc), **kwargs)
-            atom.parity_projector = seq.free_projector(int(k), bool(dbc))
-            atoms[(int(k), bool(dbc))] = atom
+            atoms[(int(k), bool(dbc))] = MetricLumpingLaplacian(seq, operators, int(k), bool(dbc), **kwargs)
     return eqx.tree_at(lambda ops: ops.laplacian_lumping, operators, atoms,
                        is_leaf=lambda x: x is None or isinstance(x, dict))
 
@@ -1295,6 +1295,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
                                         dirichlet_out=dirichlet, transpose=True)
                 - apply_mass_matrix(res, s, k - 1, dirichlet=dirichlet))
 
+    parity_upper, parity_lower = _parity_pair(seq, k, dirichlet, rhs)
     return solve_saddle_point_minres(
         stiffness_matvec=lambda x: stiffness_on(seq, x),
         derivative_matvec=lambda s: apply_derivative_matrix(
@@ -1320,9 +1321,7 @@ def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: in
         norm_upper=_dual_norm(operators, k, dirichlet),
         norm_lower=_dual_norm(operators, k - 1, dirichlet),
         inner_tol=inner, inner_dtype=seq.dtype,
-        parity_upper=_parity(seq, k, dirichlet, rhs),
-        parity_lower=(None if seq.free_projector(k, dirichlet) is None else
-                      _parity(seq, k - 1, dirichlet, None, sign=seq.free_projector(k, dirichlet).parity(rhs))),
+        parity_upper=parity_upper, parity_lower=parity_lower,
     )
 
 

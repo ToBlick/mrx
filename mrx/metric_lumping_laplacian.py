@@ -1018,6 +1018,9 @@ class MetricLumpingLaplacian:
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL,
                  bc_entry="ibpd", bc_scale=PRODUCTION_BC_SCALE, bands=1, overlap=2):
         self.k, self.dirichlet = k, dirichlet
+        # on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the input
+        # (:func:`mrx.symmetry.free_projector`); ``None`` on a full-period one
+        self.parity_projector = seq.free_projector(k, dirichlet)
         self.bc_scale = bc_scale
         self.bands, self.overlap = int(bands), int(overlap)
         self.shapes = [tuple(int(s) for s in sh)
@@ -1121,10 +1124,6 @@ class MetricLumpingLaplacian:
             has_core=bool(self.probe_rows.size > 0),
             identity_perm=identity,
         )
-
-    #: on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the
-    #: input (:func:`mrx.symmetry.free_projector`); set by the builder
-    parity_projector = None
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
@@ -1259,6 +1258,9 @@ class MetricLumpingMass:
     def __init__(self, seq, operators, k, dirichlet, *, core_tol=CORE_TOL):
         from mrx.operators import apply_mass_matrix  # noqa: PLC0415
         from mrx.preconditioners import _kron_mass_model_1d  # noqa: PLC0415
+        # on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the input
+        # (:func:`mrx.symmetry.free_projector`); ``None`` on a full-period one
+        self.parity_projector = seq.free_projector(k, dirichlet)
 
         self.k, self.dirichlet = k, dirichlet
         shapes, mass_1d, lam = _kron_mass_model_1d(seq, k)
@@ -1320,10 +1322,6 @@ class MetricLumpingMass:
             has_core=bool(self.core.size > 0),
             identity_perm=identity,
         )
-
-    #: on a half-period sequence, ``(y, x) -> Pi y`` onto the parity of the
-    #: input (:func:`mrx.symmetry.free_projector`); set by the builder
-    parity_projector = None
 
     def apply(self, x):
         """Apply the preconditioner to an extracted-space vector."""
