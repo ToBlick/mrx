@@ -64,6 +64,12 @@ Flags, defaults in brackets:
                                    the Dirichlet 1-form H = M_1^-1 P B
                                    (H_t = 0 on the wall); false reads the
                                    2-form B itself
+      --midpoint {false,true} [false]  the induction midpoint-implicit at the
+                                   predictor's velocity and step (Picard on
+                                   the increment, dt halved on a blow-up;
+                                   mrx.relaxation.PICARD_*); with the
+                                   auxiliary field it conserves the discrete
+                                   helicity exactly
       --helicity-correction {false,true} [false]
                                    remove from the induction field E the one
                                    component (a multiple of the Dirichlet
@@ -232,6 +238,8 @@ def parse_args(argv=None):
     ap.add_argument("--drive-phase", type=float, default=0.0, help="the drive's phase, as --seed-phase")
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
+    ap.add_argument("--midpoint", default="false", choices=("false", "true"),
+                    help="midpoint-implicit induction at the predictor's velocity (Picard on the increment)")
     ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
                     help="zero the step's discrete helicity change by one scalar correction of E")
     ap.add_argument("--velocity-smoothing-order", type=int, default=1,
@@ -285,6 +293,7 @@ def parse_args(argv=None):
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
     cli.helicity_correction = cli.helicity_correction == "true"
+    cli.midpoint = cli.midpoint == "true"
     cli.newton = cli.method == "newton"
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
@@ -351,7 +360,7 @@ def main(cli):
     h_r_sq = radial_cell_sq(seq)
     params["h_r_sq"] = h_r_sq
     ts = TimeStepper(
-        seq=seq, auxiliary_B_field=cli.auxiliary_B_field, cfl=cli.cfl,
+        seq=seq, auxiliary_B_field=cli.auxiliary_B_field, cfl=cli.cfl, midpoint=cli.midpoint,
         helicity_correction=cli.helicity_correction,
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
@@ -392,7 +401,7 @@ def main(cli):
     params.update(newton_penalty=ts.newton_penalty, newton_tol=ts.newton_tol,   # the effective Newton knobs
                   newton_maxiter=ts.newton_maxiter, newton_passes=ts.newton_passes)
     print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (ts.newton_penalty, ts.newton_tol, ts.newton_maxiter, ts.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"{'helicity-correction  ' if cli.helicity_correction else ''}"
+          f"{'midpoint  ' if cli.midpoint else ''}{'helicity-correction  ' if cli.helicity_correction else ''}"
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
           f"reconnect-every={cli.reconnect_every}"
