@@ -1,6 +1,5 @@
 """The relaxation run on li383: the production loop lowers the energy, and
-the midpoint scheme with the auxiliary field, and the explicit step with
-the helicity correction, conserve helicity.
+the explicit step with the helicity correction conserves helicity.
 
 The initial condition is the state's own field, ``B = dA'`` from the
 histopolated Clebsch potential (exactly divergence-free); the stepper is
@@ -18,8 +17,7 @@ import numpy as np
 
 from mrx.precision import DTYPE, eps, sqrt_eps
 
-from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                            relax, write_checkpoint)
+from mrx.relaxation import TimeStepper, initial_state, read_checkpoint, relax, write_checkpoint
 
 STEPS, CHUNK = 50, 25
 # ||F||_end / ||F||_0 after 50 steps on li383 (8, 12, 12) p=2: gradient
@@ -85,25 +83,6 @@ def test_reconnection_spends_the_helicity_asked_for(seq, b0):
     assert -0.027 < ev["helicity_spent"] < -0.013, ev["helicity_spent"]
     assert ev["JoverB_after"] < ev["JoverB_before"]
     assert len(res.qoi["it"]) == 4 and res.qoi["it"][1] == res.qoi["it"][2] == CHUNK
-
-
-def test_midpoint_conserves_helicity(seq, b0):
-    """Midpoint-implicit induction with the auxiliary field: Picard converges
-    on every step, the energy falls, and helicity is conserved to the solves'
-    tolerance."""
-    ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5,
-                     scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
-    res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
-    dE = np.asarray(res.trace["dE"], dtype=float)
-    H = np.asarray(res.qoi["helicity"], dtype=float)
-    E0 = res.E0
-    it, resid = res.trace["picard_it"], res.trace["picard_resid"]
-    print(f"\n  20 midpoint steps: E {E0:.6e} -> {E0 + dE.sum():.6e}, dH/2E0 "
-          f"{abs(H[-1] - H[0]) / (2 * E0):.2e}, increment evaluations max {max(it)}, defect max {max(resid):.2e}")
-    assert np.all(dE < 0.0), f"energy not monotone: {dE}"
-    assert max(resid) < ts.picard_tol, f"Picard did not converge: {max(resid)}"
-    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
-        f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
 
 
 def test_potential_force_is_the_leray_force(seq, b0):

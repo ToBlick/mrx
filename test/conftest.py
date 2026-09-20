@@ -16,12 +16,29 @@ readers) are the milliseconds around them.
 
 The suite is XLA-compile-bound: every eager solve traces and compiles its own
 loop body, so the cost of a test is the number of distinct solves it makes,
-not the mesh. Keep it that way -- a new test is the production configuration
-plus at most one contrasting case.
+not the mesh (measured 2026-09-20: float64 runs faster than float32, and two
+50-step relaxations of the same stepper cost the same as one). Keep it that
+way -- a new test is the production configuration plus at most one
+contrasting case -- and the compiled programs persist on disk between runs
+(``outputs/xla_cache``, below).
 """
+import os
 import time
 
+import jax
 import pytest
+
+# The suite is XLA-compile-bound (below), so its programs are cached on disk
+# across runs: a rerun whose kernels did not change skips the compiles. The
+# key is the compiled HLO, so a stale entry cannot return a wrong result, only
+# an old compile time. Shared by the three precision configurations (their
+# programs differ). MRX_XLA_CACHE names the directory; empty disables it.
+_CACHE = os.environ.get("MRX_XLA_CACHE", os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                                       "outputs", "xla_cache"))
+if _CACHE:
+    jax.config.update("jax_compilation_cache_dir", _CACHE)
+    jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+    jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
 
 #: The wout geometry, tracked in the repository.
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
