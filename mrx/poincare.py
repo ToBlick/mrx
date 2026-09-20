@@ -202,10 +202,20 @@ def require_zeta_parameterisation(field, dof, name="field", *, n=4096,
     return info
 
 
+def to_uv(r, theta):
+    """The chart of the cross-section, ``(u, v) = r (cos 2 pi theta, sin 2 pi
+    theta)`` on the last axis, from logical ``(r, theta)`` (broadcast)."""
+    return jnp.stack([r * jnp.cos(TWO_PI * theta), r * jnp.sin(TWO_PI * theta)], axis=-1)
+
+
+def to_polar(uv):
+    """``(r, theta)`` of ``(u, v)`` points on the last axis, ``theta`` in ``[0, 1)``."""
+    return jnp.sqrt(uv[..., 0] ** 2 + uv[..., 1] ** 2), jnp.arctan2(uv[..., 1], uv[..., 0]) / TWO_PI % 1.0
+
+
 def _uv_to_logical(y, zeta):
-    r = jnp.sqrt(y[0] ** 2 + y[1] ** 2)
-    theta = jnp.arctan2(y[1], y[0]) / TWO_PI
-    return jnp.array([r, theta % 1.0, zeta % 1.0]), r, theta
+    r, theta = to_polar(y)
+    return jnp.array([r, theta, zeta % 1.0]), r, theta
 
 
 def cross_section_rhs(field):
@@ -266,9 +276,7 @@ def _trace(field, dof, seeds, n_periods, steps_per_period):
     n_steps = n_periods * steps_per_period
     step_ts = jnp.arange(n_steps + 1) / steps_per_period
 
-    r, theta = seeds[:, 0], seeds[:, 1]
-    y0s = jnp.stack([r * jnp.cos(TWO_PI * theta),
-                     r * jnp.sin(TWO_PI * theta)], axis=1)
+    y0s = to_uv(seeds[:, 0], seeds[:, 1])
 
     term = dfx.ODETerm(cross_section_rhs(field))
 
@@ -449,8 +457,7 @@ def _map_points(seq, x):
 def to_xyz(seq, ys, zeta):
     """Map ``(u, v)`` points at logical ``zeta`` (a scalar, or one per point) to
     Cartesian ``(x, y, z)``."""
-    r = jnp.sqrt(ys[..., 0] ** 2 + ys[..., 1] ** 2)
-    theta = jnp.arctan2(ys[..., 1], ys[..., 0]) / TWO_PI % 1.0
+    r, theta = to_polar(ys)
     x = jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1)
     return _map_points(seq, x)
 
@@ -572,20 +579,15 @@ def seed_from_axis(field, dof, n_lines, steps_per_period=MIN_STEPS_PER_PERIOD, *
     probe = jnp.array([[R_AXIS, 0.0], [R_EDGE, 0.0]])
     ys, _ = trace(field, dof, probe, PROBE_PERIODS, steps_per_period)
     centre = jnp.mean(ys[0, ::steps_per_period], axis=0)
-    probe2_uv = centre + jnp.array([R_AXIS, 0.0])
-    probe2 = jnp.array([[jnp.sqrt(probe2_uv[0] ** 2 + probe2_uv[1] ** 2),
-                         jnp.arctan2(probe2_uv[1], probe2_uv[0]) / TWO_PI % 1.0],
-                        [R_EDGE, 0.0]])
+    probe2 = jnp.array([to_polar(centre + jnp.array([R_AXIS, 0.0])), [R_EDGE, 0.0]])
     ys, _ = trace(field, dof, probe2, PROBE_PERIODS, steps_per_period)
     centre = jnp.mean(ys[0, ::steps_per_period], axis=0)
 
     thetas = jax.random.uniform(jax.random.PRNGKey(seed), (n_lines,))
-    edge = R_EDGE * jnp.stack([jnp.cos(TWO_PI * thetas), jnp.sin(TWO_PI * thetas)], axis=1)
+    edge = to_uv(R_EDGE, thetas)
     t = jnp.linspace(T_MIN, 1.0, n_lines)[:, None]        # one radial ladder, one line each
     uv = centre[None, :] + t * (edge - centre[None, :])
-    r = jnp.sqrt(uv[:, 0] ** 2 + uv[:, 1] ** 2)
-    th = jnp.arctan2(uv[:, 1], uv[:, 0]) / TWO_PI % 1.0
-    return jnp.concatenate([probe2[:1], jnp.stack([r, th], axis=1)], axis=0)
+    return jnp.concatenate([probe2[:1], jnp.stack(to_polar(uv), axis=1)], axis=0)
 
 
 # ---------------------------------------------------------------------------

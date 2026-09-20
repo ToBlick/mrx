@@ -22,8 +22,8 @@ import diffrax as dfx
 import jax
 import jax.numpy as jnp
 
-from mrx.poincare import (MIN_STEPS_PER_PERIOD, R_AXIS, R_EDGE, TWO_PI, cross_section_rhs, logical_field, poincare,
-                          rotational_transform, trace)
+from mrx.poincare import (MIN_STEPS_PER_PERIOD, R_AXIS, R_EDGE, cross_section_rhs, logical_field, poincare,
+                          rotational_transform, to_polar, to_uv, trace)
 
 #: Steps per period for the tangent map of the return map (:func:`fixed_points`):
 #: the variational equation needs more than the trajectory. On the seeded li383
@@ -113,14 +113,13 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     """
     field, dof = logical_field(seq, 2, True), jnp.asarray(dof)
     guesses = jnp.asarray(guesses, dtype=jnp.float64).reshape(-1, 2)
-    y0 = jnp.stack([guesses[:, 0] * jnp.cos(TWO_PI * guesses[:, 1]),
-                    guesses[:, 0] * jnp.sin(TWO_PI * guesses[:, 1])], axis=1)
+    y0 = to_uv(guesses[:, 0], guesses[:, 1])
     ys, defect, S = _fixed_points(field, dof, y0, jnp.asarray(int(periods)), int(steps_per_period), int(iters),
                                   float(step_cap))
     residue = 0.5 - jnp.trace(S, axis1=1, axis2=2) / 4.0
     kind = np.where(residue < 0.0, "X", np.where(residue < 1.0, "O", "reflecting"))
-    return {"r": np.asarray(jnp.sqrt(ys[:, 0] ** 2 + ys[:, 1] ** 2)),
-            "theta": np.asarray(jnp.arctan2(ys[:, 1], ys[:, 0]) / TWO_PI % 1.0),
+    r, theta = to_polar(ys)
+    return {"r": np.asarray(r), "theta": np.asarray(theta),
             "uv": np.asarray(ys), "residue": np.asarray(residue),
             "det": np.asarray(jnp.linalg.det(S)), "defect": np.asarray(defect), "kind": kind}
 
