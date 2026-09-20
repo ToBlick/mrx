@@ -877,7 +877,11 @@ def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window
     meets it, Newton looks for the chain's fixed points from ``n_theta``
     poloidal guesses across one chain period ``1/m`` (a chain dominated by
     its second harmonic has them every ``1/(4m)``, and nothing fixes the
-    phase on a field without stellarator symmetry). A chain is reported when
+    phase on a field without stellarator symmetry). The fixed points of all the guesses at one
+    rational are pooled and split by radius: a flattened profile meets the
+    rational several times across one island, and all of those guesses find
+    the same chain, while two groups mean the rational really does resonate
+    at two radii. A chain is reported when
     an O-point is found (residue above ``residue_min``, within ``window`` of
     the radius) AND lines locked to the chain pass through it; a closed
     rational surface has residue zero up to integration error and no
@@ -894,7 +898,7 @@ def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window
     of the locked set on the ray.
 
     Returns a list of dicts by increasing radius: ``m``, ``n``, ``iota``,
-    ``r_chain``, ``O`` and ``X`` (lists of ``(r, theta, residue)``),
+    ``r_chain`` (the mean radius of its O-points), ``O`` and ``X`` (lists of ``(r, theta, residue)``),
     ``residue`` (the largest O-point residue), ``width``, ``ray``,
     ``ray_lo``, ``ray_hi``, ``n_locked``.
     """
@@ -909,21 +913,31 @@ def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window
     chains = []
     for m, n in resonances(float(iota.min()), float(iota.max()), nfp, m_max):
         target = nfp * n / m
-        for r_chain in _chain_radii(r, iota, target, tol):
-            guesses = [(r_chain, j / (n_theta * m)) for j in range(n_theta)]
-            fp = fixed_points(seq, dof, m, guesses)
-            ok = (fp["defect"] < 1e-8) & (np.abs(fp["r"] - r_chain) < window)
-            pts = []
-            for k in np.flatnonzero(ok):                      # one entry per distinct fixed point
-                if all(np.hypot(*(fp["uv"][k] - fp["uv"][j])) > 1e-4 for j in pts):
-                    pts.append(int(k))
-            o_pts = [(float(fp["r"][k]), float(fp["theta"][k]), float(fp["residue"][k])) for k in pts
-                 if residue_min < fp["residue"][k] < 1.0]
-            x_pts = [(float(fp["r"][k]), float(fp["theta"][k]), float(fp["residue"][k])) for k in pts
-                 if fp["residue"][k] < -residue_min]
+        # Every radius at which the profile meets the rational is a STARTING GUESS: a
+        # flattened profile meets it several times across one island, and Newton then
+        # converges from all of them to the same chain. So pool the fixed points of all
+        # the guesses, drop the repeats, and split what is left by radius -- one group
+        # per chain, two only where the same rational really does resonate twice.
+        found = []
+        for r_guess in _chain_radii(r, iota, target, tol):
+            fp = fixed_points(seq, dof, m, [(r_guess, j / (n_theta * m)) for j in range(n_theta)])
+            ok = (fp["defect"] < 1e-8) & (np.abs(fp["r"] - r_guess) < window)
+            for k in np.flatnonzero(ok):
+                pt = (float(fp["r"][k]), float(fp["theta"][k]), float(fp["residue"][k]))
+                if all(np.hypot(*(fp["uv"][k] - uv)) > 1e-4 for uv, _ in found):
+                    found.append((np.asarray(fp["uv"][k]), pt))
+        groups, pts = [], sorted((pt for _, pt in found), key=lambda q: q[0])
+        for pt in pts:
+            if groups and pt[0] - groups[-1][-1][0] < window:
+                groups[-1].append(pt)
+            else:
+                groups.append([pt])
+        for g in groups:
+            o_pts = sorted((q for q in g if residue_min < q[2] < 1.0), key=lambda q: -q[2])
+            x_pts = [q for q in g if q[2] < -residue_min]
             if o_pts:
-                o_pts.sort(key=lambda p: -p[2])
-                chains.append(dict(m=m, n=n, iota=target, r_chain=r_chain, O=o_pts, X=x_pts, residue=o_pts[0][2]))
+                chains.append(dict(m=m, n=n, iota=target, r_chain=float(np.mean([q[0] for q in o_pts])),
+                                   O=o_pts, X=x_pts, residue=o_pts[0][2]))
     if not chains:
         return []
 
