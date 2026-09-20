@@ -52,10 +52,11 @@ Flags, defaults in brackets:
                                    float64 residual; float32, float64: both
                                    (MRX_DTYPE and MRX_RESIDUAL_DTYPE, exported
                                    before mrx is imported)
-      --seed m,n,rho0,width [""], --seed-eps EPS [0]
+      --seed m,n,rho0,width [""], --seed-eps EPS [0], --seed-phase P [0]
                                    equilibrium files only: a resonant term in
                                    A'_zeta that opens an island at the
-                                   |iota| = nfp n / m surface
+                                   |iota| = nfp n / m surface; the phase is in
+                                   turns of the resonant angle
     Descent:
       --auxiliary-B-field {false,true} [false]
                                    true routes both cross products through
@@ -226,12 +227,15 @@ def parse_args(argv=None):
     ap.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
     ap.add_argument("--seed", default="",
                     help='resonant seed "m,n,rho0,width" added to the potential (equilibrium files only)')
+    ap.add_argument("--seed-phase", type=float, default=0.0,
+                    help="the seed's phase in turns of the resonant angle (m theta - s n zeta)")
     ap.add_argument("--seed-eps", type=float, default=0.0,
                     help="its amplitude |dB^rho| / |B^zeta| at rho0 (island width ~ sqrt of it)")
     ap.add_argument("--drive", default="",
                     help='with --resistivity: a resonant drive "m,n,rho0,width" (the --seed perturbation of the '
                          'potential) added to the source B* only, not to the field')
     ap.add_argument("--drive-eps", type=float, default=0.0, help="the drive's amplitude, as --seed-eps")
+    ap.add_argument("--drive-phase", type=float, default=0.0, help="the drive's phase, as --seed-phase")
     ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
                     help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
     ap.add_argument("--scheme", default="explicit", choices=("explicit", "midpoint"))
@@ -345,7 +349,7 @@ def main(cli):
     seed = None
     if cli.seed:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-        seed = (int(m), int(n), rho0, width, cli.seed_eps)
+        seed = (int(m), int(n), rho0, width, cli.seed_eps, cli.seed_phase)
     B0, ic = initial_field(seq, seed)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
@@ -383,7 +387,7 @@ def main(cli):
             # the drive dA of the seed, as the difference of the two histopolated fields at the unseeded field's
             # normalisation: d is linear, so the histopolation error of the unperturbed field cancels exactly
             m, n, rho0, width = (float(v) for v in cli.drive.split(","))
-            B_d, ic_d = initial_field(seq, (int(m), int(n), rho0, width, cli.drive_eps))
+            B_d, ic_d = initial_field(seq, (int(m), int(n), rho0, width, cli.drive_eps, cli.drive_phase))
             dB_drive = B_d * (ic_d["B_norm_raw"] / ic["B_norm_raw"]) - B0
             B_star = B_star + dB_drive
             print(f"[drive] ({int(m)},{int(n)}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "

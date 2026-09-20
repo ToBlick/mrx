@@ -128,16 +128,23 @@ def clebsch_potential_form(cb, seed=None):
     profiles with ``Phi(0) = chi(0) = 0`` and a vanishing slope on the axis
     (both are ``rho^2`` there).
 
-    ``seed = (m, n, rho0, width, eps)`` adds the resonant term
-    ``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta))`` to
-    ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
+    ``seed = (m, n, rho0, width, eps, phase)`` adds the resonant term
+    ``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta - phase))``
+    to ``A'_zeta``, with ``g = exp(-((rho - rho0) / width)^2) (1 - rho^2) /
     (1 - rho0^2)`` and ``s`` the sign of the file's ``iota``: ``eps`` is the
     resonant normal field ``|dB^rho| / |B^zeta|`` at ``rho0``, the chain
     sits where ``|iota| = nfp n / m`` (:func:`resonant_rho`), the wall trace
     stays a function of ``rho`` alone (``B . n = 0`` exactly), and the
     island the seed opens has full width about
     ``1.6 sqrt(eps nfp / (m |iota'|))`` in ``rho`` (pendulum estimate; the
-    seed's non-resonant part is ``O(eps / (m width))``).
+    seed's non-resonant part is ``O(eps / (m width))``). ``phase`` shifts the
+    resonant angle in TURNS: the seed enters as ``cos(2 pi phase) A_c + sin(2
+    pi phase) A_s``, so every linear functional of it is sinusoidal in
+    ``phase`` and two evaluations determine the whole scan. It moves the
+    chain's O-points along the angle; the energy and helicity a seed costs
+    depend on it separately (``dE/da = <J, dA>`` against the resonant
+    harmonic of the CURRENT, ``dH/da = 2 <B, dA>`` against that of the
+    FIELD), which is what makes a helicity-neutral seed possible.
     """
     from scipy.interpolate import CubicSpline
 
@@ -162,14 +169,14 @@ def clebsch_potential_form(cb, seed=None):
         def seed_zeta(x):
             return 0.0
     else:
-        m, n, rho0, width, eps = seed
+        m, n, rho0, width, eps, phase = seed
         s = float(np.sign(np.mean(np.asarray(cb["dchi"]) / np.asarray(cb["dPhi"]))))
         amp = eps * abs(float(np.interp(rho0, rho, cb["dPhi"]))) / m
 
         def seed_zeta(x):
             r = x[0]
             g = jnp.exp(-((r - rho0) / width) ** 2) * (1.0 - r ** 2) / (1.0 - rho0 ** 2)
-            return amp * g * jnp.cos(two_pi * (m * x[1] - s * n * x[2]))
+            return amp * g * jnp.cos(two_pi * (m * x[1] - s * n * x[2] - phase))
 
     def A_ref(x):
         r = jnp.clip(x[0], 0.0, 1.0)
@@ -218,6 +225,56 @@ def potential_two_form(seq, A_ref):
     return B / norm, norm, wall
 
 
+def parallel_seed(seq, B, m, n, rho0, width, eps):
+    r"""SIESTA's island seed: ``dB = curl(A_par B / |B|)`` on an EXISTING field.
+
+    ``A_par = eps |B|_rms g(rho) cos(2 pi (m theta - s n zeta))`` with ``g = exp(-((rho - rho0) / width)^2)
+    (1 - rho^2) / (1 - rho0^2)`` and ``s`` the sign of the field's iota, as :func:`clebsch_potential_form`.
+    ``eps`` is SIGNED: the sign is the seed's only phase freedom, because a phase shift multiplies the seed by
+    ``cos(2 pi phase)`` and nothing else -- the quadrature part of the perturbation is ODD under ``(theta, zeta) ->
+    (-theta, -zeta)`` and the stellarator parity projector removes it exactly (measured: ``||dB||^2`` at phase 1/4
+    is 1e-25 of its phase-0 value).
+
+    Why parallel rather than one covariant component (:func:`clebsch_potential_form`'s ``A'_zeta`` seed): the energy
+    a seed costs is ``dE/da = <B, dB> = <J, dA>``, so with ``dA = A_par B / |B|`` it is ``int (J . B / |B|) A_par``,
+    the resonant harmonic of the PARALLEL CURRENT -- the quantity the shielding sheets carry and the one tearing
+    responds to. A single covariant component instead weights a metric-dependent projection of ``J`` with no
+    physical meaning, and its sign is not interpretable.
+
+    The construction is a projection, not an interpolation: ``B / |B|`` is the discrete field, known at the
+    quadrature points and not in closed form. The covariant components ``dA_i = A_par g_ij B^j / sqrt(g_kl B^k B^l)``
+    (the Jacobian cancels between the 2-form's density components and ``|B|``) are loaded onto the DIRICHLET 1-form
+    space and the exact incidence curl takes them to the Dirichlet 2-form space. Dirichlet on the 1-form matters:
+    ``d d = 0`` only holds along a sub-complex, so projecting onto the FREE space and restricting the curl afterwards
+    discards a wall-normal part whose divergence does not vanish -- measured, that gave ``||div dB|| / ||dB||`` up to
+    0.8 for the 3/5 chain at ``rho0 = 0.79``, where a narrow envelope sits close to the wall (2026-09-19). The
+    interpolated Clebsch seed escapes this only because its tangential ``A'`` is a function of ``rho`` alone, so the
+    discarded piece is exactly zero. With the tangential trace constrained, nothing is discarded and ``div dB`` is
+    round-off.
+
+    ``eps`` is NOT the Clebsch seed's ``eps`` (there it is the resonant ``|dB^rho| / |B^zeta|`` at ``rho0``, so the
+    pendulum width follows from it in closed form; here it scales ``A_par`` itself). The two seed families are
+    therefore compared by the WELL DEPTH ``-<B, dB>^2 / (2 ||dB||^2)``, which is the best energy a family can buy
+    and does not depend on how the family is parametrised, not by ``eps`` or ``a*``.
+
+    Returns ``(dB, wall)``: the 2-form increment at amplitude ``eps`` and the relative wall-normal part the
+    Dirichlet restriction discarded.
+    """
+    Bq = seq.evaluate_at_quadrature(B, 2, dirichlet=True)                  # contravariant density, (n_q, 3)
+    g_B = jnp.einsum('qij,qj->qi', seq.metric_jkl, Bq)                     # g_ij B^j, up to the common 1 / J
+    Bhat_cov = g_B / jnp.sqrt(jnp.einsum('qi,qi->q', g_B, Bq))[:, None]    # B_i / |B|: the Jacobian cancels
+    x, w = seq.quad.x, seq.quad.w
+    s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))     # sign of the flux-ratio iota
+    env = jnp.exp(-((x[:, 0] - rho0) / width) ** 2) * (1.0 - x[:, 0] ** 2) / (1.0 - rho0 ** 2)
+    A_par = eps * env * jnp.cos(2.0 * jnp.pi * (m * x[:, 1] - s * n * x[:, 2]))
+    load = seq._vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True, parity=-1)
+    dA = seq.apply_inverse_mass_matrix(load, 1, dirichlet=True)
+    dB = seq.apply_incidence_matrix(dA, 1, dirichlet_in=True, dirichlet_out=True)
+    div = float(seq.l2_norm(seq.apply_incidence_matrix(dB, 2, dirichlet_in=True, dirichlet_out=True), 3)
+                / seq.l2_norm(dB, 2))
+    return dB, div
+
+
 def project_reference_two_form(seq, omega_ref):
     """L2-project a reference 2-form onto the Dirichlet k=2 space.
 
@@ -263,7 +320,7 @@ def initial_field(seq, seed=None):
     by :func:`mrx.geometry.build_sequence`): an
     equilibrium file (VMEC wout, GVEC state) gives its own field ``B = dA'``
     through the histopolated Clebsch potential, exactly divergence-free,
-    optionally with a resonant ``seed = (m, n, rho0, width, eps)``; an
+    optionally with a resonant ``seed = (m, n, rho0, width, eps, phase)``; an
     analytic geometry file gives the logical-grid field of its ``profile``
     block, L2-projected and Leray-cleaned. ``||B||_M = 1`` in both cases.
 

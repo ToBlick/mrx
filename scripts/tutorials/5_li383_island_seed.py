@@ -96,7 +96,7 @@ compute_nullspaces(seq)
 # Now we build two initial fields: the plain equilibrium, and the same field
 # with a resonant seed added on the Clebsch potential.
 m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-seed = (int(m), int(n), rho0, width, cli.seed_eps)
+seed = (int(m), int(n), rho0, width, cli.seed_eps, 0.0)
 cb = load_clebsch(seq.equilibrium, nfp=seq.nfp)
 nfp = int(cb["nfp"])
 rho_res = resonant_rho(cb, int(m), int(n))

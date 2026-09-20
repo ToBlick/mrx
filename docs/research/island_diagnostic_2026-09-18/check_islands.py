@@ -26,7 +26,7 @@ iota_prime = float(np.polyfit(r0[near], i0[near], 1)[0])
 print(f"unseeded: chain at rho {rho_file:.4f}, iota' = {iota_prime:+.4f} from {int(near.sum())} lines", flush=True)
 
 for eps in (3e-3, 1e-2):
-    seed = (m, n, 0.544, 0.1, eps)
+    seed = (m, n, 0.544, 0.1, eps, 0.0)
     B, _, _ = potential_two_form(seq, clebsch_potential_form(cb, seed))
     res = poincare(seq, B, lines=48, periods=200)
     fit = islands(seq, B, m, n, res)

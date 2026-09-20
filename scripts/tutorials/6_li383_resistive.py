@@ -116,7 +116,7 @@ if B0 is None:
     seed = None
     if cli.seed:
         m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-        seed = (int(m), int(n), rho0, width, cli.seed_eps)
+        seed = (int(m), int(n), rho0, width, cli.seed_eps, 0.0)
         print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
     B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
