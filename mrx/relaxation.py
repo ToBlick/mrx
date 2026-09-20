@@ -463,7 +463,7 @@ class TimeStepper(eqx.Module):
             them through the auxiliary Dirichlet 1-form ``H = M_1^-1 P B``,
             ``J x H`` and ``u x H``, at one extra k=1 mass solve per force
             evaluation and ``H_t = 0`` on the wall (the variable of the
-            midpoint scheme, removed 2026-09-20).
+            midpoint scheme, :mod:`mrx.experimental.midpoint` since 2026-09-20).
         velocity_smoothing_order: Number of smoothing solves applied to the
             descent direction, ``v = (I - scale * Laplacian)^-order F``;
             1 is the default. 0 leaves the direction as it is -- and is fragile:

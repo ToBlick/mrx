@@ -50,7 +50,8 @@ testpaths = ["test"]
 # repository. The slowest tests are reported so suite cost is measured rather
 # than guessed; a new test is the production configuration plus at most one
 # contrasting case.
-addopts = "--durations=10"
+addopts = "--durations=10 -m 'not optional'"
+markers = ["optional: not run by default (a second stepper configuration is a second compile of the scan body); pytest -m optional runs them"]
 norecursedirs = ["test/deprecated", "deprecated", "test/experimental"]
 
 [tool.ruff]

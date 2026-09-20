@@ -1,15 +1,12 @@
-"""The lean suite: two sequences, few tests.
+"""The lean suite: one sequence, few tests.
 
-Two session fixtures, both at ``(8, 12, 12)`` p=2, built once with their
-preconditioners and harmonic forms:
-
-* ``seq``: the li383 equilibrium (``data/wout_li383_low_res_reference.nc``,
-  the project's fruit-fly stellarator). The assembly and exactness checks
-  probe its operators in place and the relaxation runs on its own field
-  (``b0``).
-* ``toroid``: the spline-interpolated analytic donut torus, where the eight
-  Hodge Laplacians have closed-form manufactured solutions
-  (``test/manufactured.py``, all ``(k, dirichlet)`` pairs).
+One session fixture, ``seq``: the li383 equilibrium
+(``data/wout_li383_low_res_reference.nc``, the project's fruit-fly
+stellarator) at ``(8, 12, 12)`` p=2, built once with its preconditioners
+and harmonic forms, a half-period sequence (the map is stellarator
+symmetric). The assembly and exactness checks probe its operators in
+place, the manufactured vacuum solves of the paper run on its domain
+(``test_vacuum.py``), the relaxation runs on its own field (``b0``).
 
 Tests that need no sequence (spline bases, quadrature, precision, the file
 readers) are the milliseconds around them.
@@ -42,14 +39,11 @@ if _CACHE:
 
 #: The wout geometry, tracked in the repository.
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
-#: Resolution (r, theta, zeta) and degree of both session sequences.
+#: Resolution (r, theta, zeta) and degree of the session sequence.
 NS, P = (8, 12, 12), 2
 TYPES = ("clamped", "periodic", "periodic")
 #: Betti numbers of a solid torus (free boundary conditions).
 BETTI = (1, 1, 0, 0)
-#: Donut-torus parameters of ``toroid_map``.
-TORUS_EPSILON = 1 / 3
-TORUS_R0 = 1.0
 
 
 @pytest.fixture(scope="session")
@@ -77,29 +71,3 @@ def b0(seq):
 
     B, _, _ = potential_two_form(seq, clebsch_potential_form(load_clebsch(seq.equilibrium)))
     return B
-
-
-@pytest.fixture(scope="session")
-def torus_map():
-    """Analytical map of the reference cube onto a donut-shaped solid torus."""
-    from mrx.mappings import toroid_map
-
-    return toroid_map(epsilon=TORUS_EPSILON, R0=TORUS_R0)
-
-
-@pytest.fixture(scope="session")
-def toroid(torus_map):
-    """The donut torus ``(8, 12, 12)`` p=2, spline-interpolated at the Greville
-    points, with its atoms and harmonic forms: the production setup on the
-    one geometry whose Hodge Laplacians have closed-form solutions."""
-    from mrx.derham_sequence import DeRhamSequence
-    from mrx.geometry import greville_interpolate_map
-    from mrx.nullspace import compute_nullspaces
-
-    t0 = time.perf_counter()
-    s = DeRhamSequence(NS, (P, P, P), P + 1, TYPES, polar=True, betti_numbers=BETTI)
-    s.set_spline_map(greville_interpolate_map(torus_map, s))
-    s.build_preconditioners()
-    compute_nullspaces(s)
-    print(f"\n  toroid {NS} p={P}: build {time.perf_counter() - t0:.0f} s", flush=True)
-    return s
