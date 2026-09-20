@@ -76,7 +76,7 @@ import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
 from mrx.geometry import build_sequence
-from mrx.initial_conditions import initial_field
+from mrx.initial_conditions import initial_field, parse_seed
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
 from mrx.poincare import poincare, surface_label
@@ -115,9 +115,8 @@ for run in cli.warm_start.split(","):
 if B0 is None:
     seed = None
     if cli.seed:
-        m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-        seed = (int(m), int(n), rho0, width, cli.seed_eps, 0.0)
-        print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, eps {cli.seed_eps:.2e}")
+        seed = parse_seed(cli.seed, cli.seed_eps)
+        print(f"[ic] seed (m, n) = ({seed[0]}, {seed[1]}) at rho0 {seed[2]:g}, eps {cli.seed_eps:.2e}")
     B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")

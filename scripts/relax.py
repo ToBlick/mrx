@@ -4,12 +4,13 @@ The command line of :func:`mrx.relaxation.relax`: builds the geometry
 (:func:`mrx.geometry.build_sequence`), the initial field
 (:func:`mrx.initial_conditions.initial_field`) and the stepper
 (:class:`mrx.relaxation.TimeStepper`), runs the descent in compiled chunks
-until the force residual floors, the step budget is spent or the wall-clock
-budget runs out, and writes the run. The descent is ideal, ``B_{n+1} = B_n +
-dt curl(u x B)`` (or ``u x H`` with the auxiliary field); reconnection, when
-asked for, is one resistive solve between chunks. The fixed point is ``J x B
-= grad p`` with ``p`` the Leray multiplier, so the relaxed state is a
-finite-beta equilibrium, not a force-free field.
+until the force residual floors or the step budget is spent, and writes the
+run. The descent is ideal, ``B_{n+1} = B_n + dt curl(u x B)`` (or ``u x H``
+with the auxiliary field); reconnection, when asked for, is one resistive
+solve between chunks (``--reconnect-every``) or a resistive dose after every
+step (``--resistivity``). The fixed point is ``J x B = grad p`` with ``p``
+the Leray multiplier, so the relaxed state is a finite-beta equilibrium, not
+a force-free field.
 
 Canonical invocation (one GPU; see slurm/README.md)::
 
@@ -123,7 +124,7 @@ Flags, defaults in brackets:
                                    interest are sampled (helicity, the two
                                    pressures, beta), a checkpoint and the
                                    outputs are written, and the floor,
-                                   reconnect and wall-time tests run, once
+                                   reconnect tests run, once
                                    per chunk; --steps is a multiple of it
       --reconnect-every K [0]      see "Reconnection series"; 0 = off
       --reconnect-helicity X [0.01] the helicity each reconnection spends,
@@ -253,16 +254,17 @@ def parse_args(argv=None):
                          "[true for the gradient descent; Newton and the auxiliary field have their own routes]")
     ap.add_argument("--method", default="newton", choices=("newton", "gradient"),
                     help="the direction: Newton on the second variation, or gradient descent on the smoothed force")
-    ap.add_argument("--newton-penalty", type=float, default=3.0,
-                    help="kappa of the parallel-flow penalty, kappa times the strain along the field")
-    ap.add_argument("--newton-tol", type=float, default=0.1,
-                    help="the forcing term of the Newton solve: the residual below TOL of the right-hand side")
-    ap.add_argument("--newton-maxiter", type=int, default=200, help="MINRES iterations per pass of the Newton solve")
-    ap.add_argument("--newton-passes", type=int, default=1, help="passes of the Newton solve at most")
+    ap.add_argument("--newton-penalty", type=float, default=None,
+                    help="kappa of the parallel-flow penalty, kappa times the strain along the field [mrx.hessian.NEWTON_PENALTY]")
+    ap.add_argument("--newton-tol", type=float, default=None,
+                    help="the forcing term of the Newton solve: the residual below TOL of the right-hand side [mrx.hessian.NEWTON_TOL]")
+    ap.add_argument("--newton-maxiter", type=int, default=None,
+                    help="MINRES iterations per pass of the Newton solve [mrx.hessian.NEWTON_MAXITER]")
+    ap.add_argument("--newton-passes", type=int, default=None, help="passes of the Newton solve at most [mrx.hessian.NEWTON_PASSES]")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
-                         "floor / reconnect / wall-time tests once per chunk")
+                         "floor / reconnect tests once per chunk")
     ap.add_argument("--floor-tol", type=float, default=1e-8,
                     help="stop when the last chunk's mean squared normalised force residual is below this")
     ap.add_argument("--reconnect-every", type=int, default=0,
@@ -312,7 +314,7 @@ def main(cli):
     import equinox as eqx
     import mrx
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field
+    from mrx.initial_conditions import initial_field, parse_seed
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
                                 radial_cell_sq, relax, resistive_step, write_checkpoint)
@@ -346,10 +348,7 @@ def main(cli):
 
     # --- initial condition -----------------------------------------------
     t1 = time.perf_counter()
-    seed = None
-    if cli.seed:
-        m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-        seed = (int(m), int(n), rho0, width, cli.seed_eps, cli.seed_phase)
+    seed = parse_seed(cli.seed, cli.seed_eps, cli.seed_phase) if cli.seed else None
     B0, ic = initial_field(seq, seed)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
@@ -368,9 +367,11 @@ def main(cli):
         velocity_smoothing_order=cli.velocity_smoothing_order,
         velocity_smoothing_scale=cli.velocity_smoothing_scale,
         potential_velocity=cli.potential_velocity,
-        newton=cli.newton, newton_penalty=cli.newton_penalty, newton_tol=cli.newton_tol,
-        newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes,
-        resistivity=cli.resistivity * h_r_sq)
+        newton=cli.newton, resistivity=cli.resistivity * h_r_sq,
+        # the Newton knobs left unset take the stepper's defaults (mrx.hessian)
+        **{k: v for k, v in dict(newton_penalty=cli.newton_penalty, newton_tol=cli.newton_tol,
+                                 newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes).items()
+           if v is not None})
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -386,11 +387,11 @@ def main(cli):
         if cli.drive:
             # the drive dA of the seed, as the difference of the two histopolated fields at the unseeded field's
             # normalisation: d is linear, so the histopolation error of the unperturbed field cancels exactly
-            m, n, rho0, width = (float(v) for v in cli.drive.split(","))
-            B_d, ic_d = initial_field(seq, (int(m), int(n), rho0, width, cli.drive_eps, cli.drive_phase))
+            drive = parse_seed(cli.drive, cli.drive_eps, cli.drive_phase)
+            B_d, ic_d = initial_field(seq, drive)
             dB_drive = B_d * (ic_d["B_norm_raw"] / ic["B_norm_raw"]) - B0
             B_star = B_star + dB_drive
-            print(f"[drive] ({int(m)},{int(n)}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
+            print(f"[drive] ({drive[0]},{drive[1]}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
                   f"||dB_drive|| / ||B|| = {float(seq.l2_norm(dB_drive, 2) / seq.l2_norm(B0, 2)):.3e}", flush=True)
         ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
         print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the start field "
@@ -399,7 +400,9 @@ def main(cli):
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
-    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (cli.newton_penalty, cli.newton_tol, cli.newton_maxiter, cli.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    params.update(newton_penalty=ts.newton_penalty, newton_tol=ts.newton_tol,   # the effective Newton knobs
+                  newton_maxiter=ts.newton_maxiter, newton_passes=ts.newton_passes)
+    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (ts.newton_penalty, ts.newton_tol, ts.newton_maxiter, ts.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}{'  helicity-correction' if cli.helicity_correction else ''}  "
           f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
           f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "

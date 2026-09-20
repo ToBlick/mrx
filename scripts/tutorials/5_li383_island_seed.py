@@ -80,7 +80,7 @@ import numpy as np
 import mrx
 from mrx.geometry import build_sequence
 from mrx.gvec import load_clebsch
-from mrx.initial_conditions import (clebsch_potential_form, potential_two_form, resonant_rho)
+from mrx.initial_conditions import clebsch_potential_form, parse_seed, potential_two_form, resonant_rho
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
 from mrx.poincare import poincare, surface_label
@@ -95,8 +95,8 @@ compute_nullspaces(seq)
 # %%
 # Now we build two initial fields: the plain equilibrium, and the same field
 # with a resonant seed added on the Clebsch potential.
-m, n, rho0, width = (float(v) for v in cli.seed.split(","))
-seed = (int(m), int(n), rho0, width, cli.seed_eps, 0.0)
+seed = parse_seed(cli.seed, cli.seed_eps)
+m, n, rho0, width = seed[:4]
 cb = load_clebsch(seq.equilibrium, nfp=seq.nfp)
 nfp = int(cb["nfp"])
 rho_res = resonant_rho(cb, int(m), int(n))

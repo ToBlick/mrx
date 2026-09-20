@@ -423,7 +423,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
                          f"but {geometry} has nfp = {seq.nfp}")
     if kind in ("gvec", "vmec"):
         seq.equilibrium = read_equilibrium(geometry)
-        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=nfp, stellarator_symmetric=exploit)
+        map_func, info = build_gvec_map(seq.equilibrium, seq, nfp=seq.nfp, stellarator_symmetric=exploit)
         print(f"[geom] {geometry}: nfp={info['nfp']} sign={info['sign']:+.0f} "
               f"det DF in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
               f"symmetry {symmetry}"
