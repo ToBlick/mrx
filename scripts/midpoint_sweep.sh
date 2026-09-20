@@ -71,20 +71,6 @@ r16() {
     arm mp_r16_f64_Hd    "--scheme midpoint $c --precision float64 $AUX" 150
 }
 
-r16() {
-    # the same eight arms on (16,32,32) p=2 (Tobias, 2026-09-04: the smoke
-    # mesh is too coarse); ~0.5 s/step float32, ~1.2 s/step float64, 1000 steps
-    local c="--steps 1000 --ns 16,32,32 --p 2"
-    arm ex_r16_f32_bonly "--scheme explicit $c --seconds 2400"                          75
-    arm mp_r16_f32_bonly "--scheme midpoint $c --seconds 3000"                          90
-    arm ex_r16_f32_Hd    "--scheme explicit $c --seconds 2400 $AUX"                     75
-    arm mp_r16_f32_Hd    "--scheme midpoint $c --seconds 3000 $AUX"                     90
-    arm ex_r16_f64_bonly "--scheme explicit $c --seconds 4200 --precision float64"      120
-    arm mp_r16_f64_bonly "--scheme midpoint $c --seconds 5400 --precision float64"      150
-    arm ex_r16_f64_Hd    "--scheme explicit $c --seconds 4200 --precision float64 $AUX" 120
-    arm mp_r16_f64_Hd    "--scheme midpoint $c --seconds 5400 --precision float64 $AUX" 150
-}
-
 f64() {
     # float64 on the production mesh, auxiliary H: the publication pair.
     arm ex_lbfgs_f64_Hd "--scheme explicit --steps 1500 --precision float64 $AUX" 120
