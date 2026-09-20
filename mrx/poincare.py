@@ -883,9 +883,12 @@ def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window
     the same chain, while two groups mean the rational really does resonate
     at two radii. A chain is reported when
     an O-point is found (residue above ``residue_min``, within ``window`` of
-    the radius) AND lines locked to the chain pass through it; a closed
-    rational surface has residue zero up to integration error and no
-    locked line, and is not.
+    the radius) AND at least two lines on the ray are locked to the chain:
+    the O-point's own line is locked by definition, so one is no evidence of
+    an island, and a closed rational surface (residue zero up to the tangent
+    map's integration error) is not reported. A chain narrower than the ray
+    spacing ``2 ray_halfwidth / (ray_seeds - 1)`` is therefore not resolved
+    rather than measured small.
 
     The width is MEASURED, not inferred from the residue: ``ray_seeds``
     lines on the radial ray through the O-point, ``+- ray_halfwidth`` about
@@ -966,4 +969,6 @@ def islands(seq, dof, res=None, *, m_max=12, n_theta=8, residue_min=1e-3, window
             c.update(width=0.0, ray=0.0, ray_lo=float(ray[lo]), ray_hi=float(ray[lo]), n_locked=0)
     # An intact rational surface is a curve of fixed points whose residue is zero up to the tangent map's
     # integration error, which can pass ``residue_min`` at high ``m``; an island has lines locked to it.
-    return sorted((c for c in chains if c["width"] > 0.0), key=lambda c: c["r_chain"])
+    # TWO of them, not one: the O-point's own line is locked by definition (its iota IS the rational), so a
+    # phantom passes a bare ``width > 0`` test on that single line, with a width below printing precision.
+    return sorted((c for c in chains if c["n_locked"] > 1), key=lambda c: c["r_chain"])
