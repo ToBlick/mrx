@@ -23,6 +23,15 @@ by a factor). The Leray projections (k=2, the relaxation's; k=1, the wall
 pressure's and the nullspace's) are divergence-free at solver tolerance,
 idempotent and non-expansive, and the descent's potential route gives the
 same k=2 projection from one k=1 Hodge solve.
+
+The scalar Laplacians get the same treatment with a scalar ``psi``, ANY
+smooth one (nothing harmonic about it): the k=0 natural solve of ``<grad f,
+grad v> = <grad psi, grad v>`` recovers ``psi`` up to the constant, the
+gradient of the data loaded against the gradient of the test function; the
+k=3 solve of ``<delta rho, delta tau> = <grad rho*, delta tau>`` with
+``delta`` the weak gradient into the Dirichlet 2-forms (zero normal flux)
+recovers ``grad rho*`` for a ``rho*`` whose normal derivative vanishes on the
+wall -- the natural condition of that space -- here ``(1 - r^2)^2 psi``.
 """
 import jax
 import jax.numpy as jnp
@@ -39,6 +48,15 @@ LAM = 1.0
 # (6, 12, 6) p=2 gave 0.087 and 0.152): to be replaced by 1.25x the measured
 # errors once the suite has run.
 ERROR_BAND = {1: 0.15, 2: 0.25}
+# Relative L2 error of psi (k=0, the constant removed) and of grad rho* (k=3).
+# PROVISIONAL likewise.
+SCALAR_ERROR_BAND = {0: 0.1, 3: 0.25}
+
+
+def psi(X):
+    """A smooth scalar of the physical point, stellarator symmetric (even in
+    ``(y, z) -> (-y, -z)``) and not harmonic: ``x^3 + x y^2 + x z^2 + 3 x y z``."""
+    return X[0] ** 3 + X[0] * X[1] ** 2 + X[0] * X[2] ** 2 + 3.0 * X[0] * X[1] * X[2]
 
 
 def vacuum_field(seq, lam=LAM):
@@ -138,3 +156,57 @@ def test_leray_projection(seq, k):
         # both solves stop at seq.tol relative to their right-hand sides, the
         # projection is a fraction of v
         assert rel < 1e2 * seq.tol * float(seq.l2_norm(v, 2) / seq.l2_norm(Pv, 2)) + eps(1e4)
+
+
+def _volume_integrals(seq, values):
+    """``int values dV`` on the quadrature grid, ``values`` per quadrature point."""
+    return float(jnp.sum(seq.quad.w * seq.jacobian_j * values))
+
+
+@pytest.mark.parametrize("k", (0, 3))
+def test_manufactured_scalar_solution(seq, k):
+    if k == 0:
+        grad_psi = jax.grad(psi)
+        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 1, dirichlet=False, parity=-1)
+        rhs = seq.apply_incidence_matrix(load, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
+        f, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
+        residual = seq.apply_stiffness(f, 0, dirichlet=False) - rhs
+        f = f.astype(mrx.DTYPE)
+        # the constant: the 0-forms contain 1 exactly (partition of unity)
+        psi_q = jax.vmap(lambda xi: psi(seq.map(xi)))(seq.quad.x)
+        one = jnp.ones(seq.n(0, False), dtype=mrx.DTYPE)
+        M1 = seq.apply_mass_matrix(one, 0, False)
+        f = f + (_volume_integrals(seq, psi_q) - float(one @ seq.apply_mass_matrix(f, 0, False))) / float(one @ M1) * one
+        load0 = seq.load(lambda xi: psi(seq.map(xi)), 0, dirichlet=False, parity=1)
+        target_sq = _volume_integrals(seq, psi_q ** 2)
+        err_sq = float(f @ seq.apply_mass_matrix(f, 0, False)) - 2.0 * float(f @ load0) + target_sq
+        what, k_res, dbc = "psi", 0, False
+    else:
+        def rho(xi):                        # normal derivative zero on the wall r = 1
+            return (1.0 - xi[0] ** 2) ** 2 * psi(seq.map(xi))
+
+        def grad_rho(xi):                   # the physical gradient, DF^-T d rho / d xi
+            return jnp.linalg.solve(jax.jacfwd(seq.map)(xi).T, jax.grad(rho)(xi))
+        load = seq.load(grad_rho, 2, dirichlet=True, parity=-1)
+        # rhs_i = <grad rho*, delta Lambda_i>, delta = -M_2^-1 D_2^T M_3 the weak gradient into the Dirichlet 2-forms
+        w = seq.apply_inverse_mass_matrix(load, 2, dirichlet=True)
+        rhs = -seq.apply_mass_matrix(seq.apply_incidence_matrix(w, 2, dirichlet_in=True, dirichlet_out=True), 3, True)
+        r3, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=True, return_info=True, dtype=RESIDUAL_DTYPE)
+        on = seq if seq.residual is None else seq.residual
+        residual = seq.__class__.apply_laplacian(on, r3, 3, dirichlet=True) - rhs.astype(RESIDUAL_DTYPE)
+        g = -seq.apply_inverse_mass_matrix(
+            seq.apply_derivative_matrix(r3.astype(mrx.DTYPE), 2, dirichlet_in=True, dirichlet_out=True, transpose=True),
+            2, dirichlet=True)
+        gq = jax.vmap(grad_rho)(seq.quad.x)
+        target_sq = _volume_integrals(seq, jnp.sum(gq ** 2, axis=1))
+        err_sq = float(g @ seq.apply_mass_matrix(g, 2, True)) - 2.0 * float(g @ load) + target_sq
+        what, k_res, dbc = "grad rho*", 3, True
+    err = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(target_sq))
+
+    def norm(v):
+        return float(jnp.sqrt(v @ seq.apply_mass_matrix_preconditioner(v.astype(mrx.DTYPE), k_res, dbc)))
+    rel_res = norm(residual) / norm(rhs)
+    print(f"\n  k={k}: relative L2 error of {what} {err:.3e}, {-int(info)} iterations, residual {rel_res:.2e}")
+    assert int(info) < 0, f"k={k} did not converge (info={int(info)})"
+    assert rel_res <= 1e2 * seq.tol
+    assert err < SCALAR_ERROR_BAND[k]

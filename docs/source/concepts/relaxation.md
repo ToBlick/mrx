@@ -130,9 +130,10 @@ perturbed by `lambda` times the `J . B` pairing. The step is no longer
 variational: the energy is monotone up to that term. The trace records
 `lambda` as `hcorr`.
 
-`State` holds `B_n`, `B_nplus1`, `v`, the warm-start guesses (`p`,
-`H`, `JxH`, `J`, `E`, `A`), `F_prev`,
-`dt`, `dt_star`, `cfl_max`, `F_norm`, `v_norm`. Build it with `initial_state(B_dof, ts, dt)`, which
+`State` holds `B_n`, `B_nplus1`, `dt`, `dt_star`, `cfl_max` and three
+subtrees: `warm` (the warm starts `p`, `H`, `JxH`, `J`, `E`, `a`, `A`,
+`resistive_delta`), `last` (the last step's `F`, `F_norm`, `v`, `v_norm`
+and its diagnostics) and `best` (the best field, its residual and step). Build it with `initial_state(B_dof, ts, dt)`, which
 runs one `compute_force` so the first step's solves start from the true
 previous force. `relax(state, ts, steps, chunk, ...)` runs the steps in
 `jax.lax.scan` chunks of `chunk` (`chunk_runner`), samples the diagnostics

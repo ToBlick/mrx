@@ -140,7 +140,7 @@ def main():
     for name in fields:
         with h5py.File(ckpts[steps_of[name]], "r") as fh:
             dofs["B_" + name] = np.asarray(fh["B_n"], dtype=np.float64)
-            dofs["p_" + name] = np.asarray(fh["p"], dtype=np.float64)
+            dofs["p_" + name] = np.asarray(fh["warm.p"], dtype=np.float64)
     geometry = cli.geometry or str(attrs["geometry_path"])
     ns = tuple(int(v) for v in attrs["ns"])
     p = int(attrs["p"])

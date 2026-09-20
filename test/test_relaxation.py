@@ -60,15 +60,15 @@ def _check_run(seq, ts, res, steps, chunk, saved, force_drop, tmp_path):
         f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
     assert div < 1e3 * seq.tol * np.sqrt(2 * E1), f"||div B|| {div:.2e}"
     resid = np.asarray(res.trace["resid"], dtype=float)
-    assert float(res.state.resid_best) <= resid.min() and int(res.state.step_best) == resid.argmin(), \
-        (float(res.state.resid_best), resid.min(), int(res.state.step_best), resid.argmin())
+    assert float(res.state.best.resid) <= resid.min() and int(res.state.best.step) == resid.argmin(), \
+        (float(res.state.best.resid), resid.min(), int(res.state.best.step), resid.argmin())
 
     # A checkpoint round-trips leaf for leaf, and a restart continues the count.
     path = os.path.join(tmp_path, "state.h5")
     write_checkpoint(path, res.state, steps)
     state, step = read_checkpoint(path, ts)
     assert step == steps
-    assert np.array_equal(np.asarray(state.F_prev), np.asarray(res.state.F_prev))
+    assert np.array_equal(np.asarray(state.last.F), np.asarray(res.state.last.F))
     assert float(state.dt) == float(res.state.dt)
 
 

@@ -416,7 +416,7 @@ def main(cli):
                          E0=res.E0, E_removed=res.E0 - res.qoi["E"][-1], F_final=res.trace["F"][-1],
                          resid_final=res.trace["resid"][-1],
                          resid_window_mean=float(sum(res.trace["resid"][-res.chunk:]) / res.chunk),
-                         best_step=int(res.state.step_best), best_resid=float(res.state.resid_best),
+                         best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
                          **last))
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
@@ -428,9 +428,9 @@ def main(cli):
           reconnect_window=None if cli.reconnect_window is None
           else tuple(int(v) for v in cli.reconnect_window.split(":")), on_chunk=save)
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
-                     initial_state(res.state.B_best, ts, step=int(res.state.step_best)), int(res.state.step_best))
-    print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.step_best)}, "
-          f"residual {float(res.state.resid_best):.3e})", flush=True)
+                     initial_state(res.state.best.B, ts, step=int(res.state.best.step)), int(res.state.best.step))
+    print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.best.step)}, "
+          f"residual {float(res.state.best.resid):.3e})", flush=True)
 
 
 if __name__ == "__main__":

@@ -98,7 +98,7 @@ def midpoint_solve(ts: TimeStepper, state: State):
     B_n = state.B_n
     seq = ts.seq
     tol = picard_tol(ts)
-    inc0 = ts._ideal_increment(B_n, state, state.p, state.H, state.JxH, state.J, state.E)
+    inc0 = ts._ideal_increment(B_n, state, state.warm.p, state.warm.H, state.warm.JxH, state.warm.J, state.warm.E)
     dt0, dt_star = ts._step_size(inc0)
     dB0 = inc0.dB
     dB0_norm = seq.l2_norm(dB0, 2)
