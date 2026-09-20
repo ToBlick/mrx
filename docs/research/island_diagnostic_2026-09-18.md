@@ -187,6 +187,40 @@ island search 116 s including its compile.
 `island_width` (the pendulum formula) and `return_map` are gone from the
 module; the scripts of this folder that import them (`check_islands.py`,
 `paper_widths*.py`, `ray_widths.py`) ran at commit 0ff2369 and are the
-record of the tables above. `find_islands.py` is the check of the new
-function on fields with known islands (job 18657661; its results are not
-in this note yet).
+record of the tables above. `find_islands.py` is the check on five li383 (16,32,32) fields with known
+islands (jobs 18657661, 18683821, 18685367).
+
+WIDTHS, against the paper's table in logical r: 3/5 chain 0.2138 / 0.2042 /
+0.2127 for unseeded / (5,1) / (6,1) finals against 0.213 / 0.204 / 0.214;
+the (6,1)-seeded initial 1/2 chain 0.1677 against 0.164; 1/2 finals 0.0578
+/ 0.0481 / 0.0971 against 0.059 / 0.039 / 0.093; 3/7 0.0476 / 0.0377
+against 0.055 / 0.037. The narrow chains are only a few ray samples wide,
+so the ray spacing is the resolution there, and the two loose entries
+(1/2 in the (5,1) final, 3/7 unseeded) are that.
+
+NEW: an (11,2) chain at iota 0.5455 in all three final states, width 0.073
+to 0.076, residue 0.12 to 0.135, at r 0.610-0.614. The paper tracks only
+3/5, 1/2 and 3/7. It is NOT in the equilibrium: on the unseeded initial
+field the same rational sits at r 0.673 with residue 0.0052 and no island,
+which agrees with the Islands session's sheet-strength inventory of the
+converged 48^3 equilibrium (resonant B^r 1.1e-5 against 1.78e-4 for 3/5).
+The chain appears only after the four resistive solves and migrates 0.06
+inward, so a seed table built on the equilibrium must not take its width
+from a reconnected state.
+
+TWO DEFECTS the check found, both in the first version:
+* one island reported up to six times -- a flattened profile meets the
+  rational at several radii and Newton converges from all of them to the
+  same chain; a state with 3 islands reported 12. Fixed in f7ad080 by
+  pooling the fixed points of all guesses at one rational and regrouping
+  them by radius: 12/12/12 became 4/4/3 with every width unchanged.
+* a phantom chain on the unseeded initial field survived the guard. The
+  test was ``width > 0``, and the O-point's own line is locked BY
+  DEFINITION (its iota is the rational), so an intact rational surface
+  always carries one locked line and a strictly positive width below
+  printing precision. Fixed in 09767b3: an island needs at least two
+  locked lines, and a chain narrower than the ray spacing is reported as
+  unresolved rather than measured small. Verification job 18685367.
+
+Cost at (16,32,32): about 40 s for the section and 2 to 5 min for the
+search per field.
