@@ -143,8 +143,8 @@ def direct_construction_unsupported_reason(betti_numbers):
     construction rather than Leray-projected (a k=3 solve).
     """
     b0, b1, b2, b3 = (int(b) for b in betti_numbers)
-    if b0 != 1:
-        return f"b0 = {b0}, expected 1 (connected domain)"
+    if b0 not in (0, 1):
+        return f"b0 = {b0}, expected 1 (connected domain; 0 on the odd parity view, whose constants are even)"
     if b3 != 0:
         return f"b3 = {b3}, expected 0"
     if b2 != 0:

@@ -998,6 +998,33 @@ def _flatten_payload(payload):
     return tuple(leaves), _jitted_for(treedef, impl)
 
 
+class ReducedAtom(eqx.Module):
+    """A metric-lumping atom of the unreduced half-period sequence on one of its
+    parity views (:meth:`~mrx.derham_sequence.DeRhamSequence.parity_view`):
+    ``X^T P X`` with ``X`` the view's expansion of that space. The same
+    sandwich the parity projector used to put around ``P`` at run time, but
+    static (no parity detection, no float64 round trip) and exact on the
+    reduced space; symmetric positive definite there when ``P`` is. The bulk
+    and core of ``P`` are the base sequence's; the view shares one build."""
+    atom: object
+    X: object
+
+    def apply(self, x):
+        leaves, jitted = self.atom._flat
+        return self.X.T @ jitted(leaves, self.X @ jnp.asarray(x))
+
+    def apply_in(self, dtype):
+        """``apply`` with the payload in ``dtype`` (see the atoms' ``apply_in``)."""
+        dtype = jnp.dtype(dtype)
+        leaves, jitted = self.atom._flat
+        leaves = tuple(leaf.astype(dtype) if jnp.issubdtype(leaf.dtype, jnp.floating) else leaf for leaf in leaves)
+        X = self.X
+
+        def apply(x):
+            return X.T @ jitted(leaves, X @ jnp.asarray(x, dtype))
+        return apply
+
+
 @register_arrays
 class MetricLumpingLaplacian:
     """Bulk FD atoms + a dense core inverse, applied independently.

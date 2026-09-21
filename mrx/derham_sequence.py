@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 import copy
+import equinox as eqx
 
 import mrx
 from mrx.pytree import register_arrays
@@ -427,6 +428,10 @@ class DeRhamSequence():
             return self._parity_views[s]
         view = copy.copy(self)
         view.parity, view._base, view._parity_views, view._residual, view.operators = s, self, None, None, None
+        # the harmonic forms are odd (the toroidal loop's 1-form, the flux 2-form),
+        # the constants (k=0 free, k=3 Dirichlet) even: each view holds its share
+        b0, b1, b2, b3 = self.betti_numbers
+        view.betti_numbers = (0, b1, b2, b3) if s == -1 else (b0, 0, 0, 0)
         view.extraction, view.reduction, view.n_dofs, view.core = {}, {}, {}, {}
         for k in range(4):
             for dirichlet in (False, True):
@@ -544,6 +549,22 @@ class DeRhamSequence():
         self._require_geometry()
         ks = tuple(int(v) for v in ks)
         dirichlets = tuple(bool(v) for v in dirichlets)
+        if self.parity is not None:
+            # a parity view: the base sequence's atoms, each reduced by the view's
+            # expansion (X^T P X, :class:`~mrx.metric_lumping_laplacian.ReducedAtom`);
+            # one build serves the base and both views
+            from mrx.metric_lumping_laplacian import ReducedAtom  # noqa: PLC0415
+            base = self._base.operators
+            if base is None or any((k, d) not in (base.laplacian_lumping or {}) for k in ks for d in dirichlets):
+                base = self._base.build_preconditioners(ks=ks, dirichlets=dirichlets, bc_scale=bc_scale,
+                                                        bands=bands, overlap=overlap)
+            ops = op.new_operators(self)
+            ops = eqx.tree_at(lambda o: (o.mass_lumping, o.laplacian_lumping), ops,
+                              ({key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.mass_lumping.items()},
+                               {key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.laplacian_lumping.items()}),
+                              is_leaf=lambda x: x is None or isinstance(x, dict))
+            self.operators = ops
+            return ops
         ops = op.new_operators(self)
         ops = op.assemble_mass_metric_lumping_preconditioner(
             self, ops, ks=ks, dirichlet_variants=dirichlets)
