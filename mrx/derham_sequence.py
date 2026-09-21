@@ -1427,4 +1427,7 @@ class DeRhamSequence():
 # as inputs instead of baking them into the program as constants
 # (:mod:`mrx.pytree`). The equilibrium's host data and the host-side
 # extraction gram cores stay static.
-register_arrays(DeRhamSequence, static=("equilibrium", "_gram_core"))
+# ``_base`` (a parity view's unreduced sequence) is static: it would close a cycle
+# with the base's ``_parity_views``, which ARE children, so that ``seq.odd`` /
+# ``seq.even`` inside a trace are the traced copies (built at setup, never in a trace).
+register_arrays(DeRhamSequence, static=("equilibrium", "_gram_core", "_base"))
