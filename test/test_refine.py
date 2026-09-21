@@ -17,6 +17,7 @@ from mrx.relaxation import compute_force
 
 
 def test_refined_mass_solve_residual(seq, b0):
+    seq = seq.odd                                   # b0's view
     b = seq.apply_mass_matrix(b0, 2, True)
     x = seq.apply_inverse_mass_matrix(b, 2, dtype=RESIDUAL_DTYPE)
     assert x.dtype == RESIDUAL_DTYPE
@@ -34,6 +35,7 @@ def test_refined_mass_solve_residual(seq, b0):
 
 def test_leray_projection_is_divergence_free_to_tolerance(seq, b0):
     F, p, J, X, JxX = compute_force(b0, seq)
+    seq = seq.even                                  # the force's view
     assert F.dtype == DTYPE and p.dtype == DTYPE and JxX.dtype == DTYPE
     div_F = seq.apply_derivative_matrix(F, 2, dirichlet_in=True, dirichlet_out=True)
     div_v = seq.apply_derivative_matrix(JxX, 2, dirichlet_in=True, dirichlet_out=True)

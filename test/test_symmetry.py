@@ -43,7 +43,7 @@ def test_the_equilibrium_field_is_odd(seq, b0):
     under the reflection: the projector onto the odd fields leaves them
     alone, the even projector annihilates them. This is the check of the
     permutation and the component signs together."""
-    for k, x in ((2, seq.E(2, True).T @ b0), (2, seq.E(2, True).T @ seq.nullspace(2, True)[0]),
+    for k, x in ((2, seq.odd.E(2, True).T @ b0), (2, seq.E(2, True).T @ seq.nullspace(2, True)[0]),
                  (1, seq.E(1, False).T @ seq.nullspace(1, False)[0])):
         plan = reflection_plan(seq, k)
         scale = float(jnp.max(jnp.abs(x)))
@@ -63,7 +63,7 @@ def test_half_period_mass_apply_matches_the_full_period(seq, b0):
                           half_period=False)
     full.set_map(seq.map)
     assert not full.half_period
-    for k, x, parity in ((2, b0, -1), (0, jnp.ones(seq.n(0, True), dtype=seq.dtype), 1)):
+    for k, x, parity in ((2, seq.odd.reduction[(2, True)] @ b0, -1), (0, jnp.ones(seq.n(0, True), dtype=seq.dtype), 1)):
         y_half = seq.apply_mass_matrix(x, k, dirichlet=True)
         y_full = full.apply_mass_matrix(x, k, dirichlet=True)
         tol = 1e3 * float(jnp.finfo(seq.dtype).eps)
@@ -98,7 +98,7 @@ def test_parity_views_agree_with_the_projected_applies(seq, b0):
     with ``X`` the view's expansion (verified 2026-09-20 to 2e-7 on every ``(k,
     dirichlet)`` of a torus)."""
     even = seq.project_parity(jnp.asarray(np.random.default_rng(2).standard_normal(seq.n(2, True)), dtype=seq.dtype), 2, 1)
-    for s, x in ((-1, b0), (1, even)):
+    for s, x in ((-1, seq.odd.reduction[(2, True)] @ b0), (1, even)):
         view = seq.parity_view(s)
         X = view.reduction[(2, True)]
         c = X.T @ x
@@ -118,10 +118,8 @@ def test_parity_view_solves_agree_with_the_base(seq, b0):
     projected ones did (a torus (6,8,8) p=2, 2026-09-20: k=2 dbc 61 vs 60
     iterations, k=1 dbc 40 vs 40, k=0 free 32 vs 32; agreement 1e-7..2e-6)."""
     view = seq.odd
-    view.build_preconditioners()
-    view.compute_nullspaces(verbose=False)
     X = view.reduction[(2, True)]
-    c = X.T @ b0
+    c, b0 = b0, X @ b0                        # the fixture's field lives on the view
     tol = 1e2 * seq.tol + 1e3 * float(jnp.finfo(seq.dtype).eps)   # a solve at 1e-3 scale in float32
     rhs_base, rhs_view = seq.apply_laplacian(b0, 2), view.apply_laplacian(c, 2)
     x_base, it_base = seq.apply_inverse_laplacian(rhs_base, 2, return_info=True)

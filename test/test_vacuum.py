@@ -15,7 +15,8 @@ the vector-valued ``L^2`` (the paper, "Manufactured vacuum solution"):
 ``B* = e_phi / R + lam grad(R^nfp sin(nfp phi))``: the toroidal-field flux
 part plus a stellarator-symmetric ripple (``Im (x + i y)^nfp``, harmonic), so
 it lives on the half-period sequence with its parity; the paper's ripple has
-``nfp = 2`` and ``cos``, li383 has ``nfp = 3``. The error is the exact
+``nfp = 2`` and ``cos``, li383 has ``nfp = 3``; the solves run on the odd
+view (``seq.odd``), the scalar ones below on the even one. The error is the exact
 ``||B_h - B*||_M^2 = <B_h, B_h>_M - 2 B_h . load(B*) + int |B*|^2 dV``. Each
 solve must converge to ``seq.tol`` and land under a measured band of the
 relative L2 error (a wrong metric factor, boundary row or extraction moves it
@@ -88,7 +89,8 @@ def bstar(seq):
 @pytest.mark.parametrize("k", (1, 2))
 def test_manufactured_vacuum_solution(seq, bstar, k):
     f, bstar_sq = bstar
-    load = seq.load(f, k, dirichlet=False, parity=-1)         # int Lambda_i . B*; B* odd
+    seq = seq.odd                                             # B* is odd
+    load = seq.load(f, k, dirichlet=False)                    # int Lambda_i . B*
     if k == 1:
         rhs = seq.apply_incidence_matrix(load, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
         phi, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
@@ -125,8 +127,8 @@ def test_leray_projection(seq, k):
     h`` the harmonic part) must give the same projection: one k=1 Hodge solve
     against the saddle solve."""
     dbc = k == 2
+    seq = seq.even                                # a velocity is even
     v = jnp.asarray(np.random.default_rng(5 * k).standard_normal(seq.n(k, dbc)), dtype=mrx.DTYPE)
-    v = seq.project_parity(v, k, 1, dbc)          # a velocity is even (a half-period sequence needs it)
     v = v / seq.l2_norm(v, k, dirichlet=dbc)
     Pv, p = seq.apply_leray_projection(v, k=k)
     PPv, _ = seq.apply_leray_projection(Pv, k=k, p_guess=p)
@@ -150,9 +152,9 @@ def test_leray_projection(seq, k):
         Mv = seq.apply_mass_matrix(v, 2, True)
         a = seq.apply_inverse_laplacian(
             seq.apply_incidence_matrix(Mv, 1, dirichlet_in=True, dirichlet_out=True, transpose=True), 1)
-        h = seq.nullspace(2, True)[0]
+        hs = seq.nullspace(2, True)                  # none on the even view: the harmonic 2-form is odd
         Pv_pot = seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True) \
-            + ((h @ Mv) / (h @ seq.apply_mass_matrix(h, 2, True))) * h
+            + hs.T @ ((hs @ Mv) / jnp.asarray([h @ seq.apply_mass_matrix(h, 2, True) for h in hs]))
         rel = float(seq.l2_norm(Pv_pot - Pv, 2) / seq.l2_norm(Pv, 2))
         print(f"  potential route vs Leray: |curl a + c h - P v| / |P v| = {rel:.2e}")
         # both solves stop at seq.tol relative to their right-hand sides, the
@@ -167,9 +169,10 @@ def _volume_integrals(seq, values):
 
 @pytest.mark.parametrize("k", (0, 3))
 def test_manufactured_scalar_solution(seq, k):
+    seq = seq.even                                # psi and its gradient are even
     if k == 0:
         grad_psi = jax.grad(psi)
-        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 1, dirichlet=False, parity=1)     # grad of an even scalar: even
+        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 1, dirichlet=False)
         rhs = seq.apply_incidence_matrix(load, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
         f, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
         residual = seq.apply_stiffness(f, 0, dirichlet=False) - rhs
@@ -179,13 +182,13 @@ def test_manufactured_scalar_solution(seq, k):
         one = jnp.ones(seq.n(0, False), dtype=mrx.DTYPE)
         M1 = seq.apply_mass_matrix(one, 0, False)
         f = f + (_volume_integrals(seq, psi_q) - float(one @ seq.apply_mass_matrix(f, 0, False))) / float(one @ M1) * one
-        load0 = seq.load(lambda xi: psi(seq.map(xi)), 0, dirichlet=False, parity=1)
+        load0 = seq.load(lambda xi: psi(seq.map(xi)), 0, dirichlet=False)
         target_sq = _volume_integrals(seq, psi_q ** 2)
         err_sq = float(f @ seq.apply_mass_matrix(f, 0, False)) - 2.0 * float(f @ load0) + target_sq
         what, k_res, dbc = "psi", 0, False
     else:
         grad_psi = jax.grad(psi)
-        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 2, dirichlet=False, parity=1)     # grad of an even scalar: even
+        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 2, dirichlet=False)
         # rhs_i = <grad psi, delta Lambda_i>, delta = -M_2^-1 D_2^T M_3 the weak gradient into the free 2-forms
         w = seq.apply_inverse_mass_matrix(load, 2, dirichlet=False)
         rhs = -seq.apply_mass_matrix(seq.apply_incidence_matrix(w, 2, dirichlet_in=False, dirichlet_out=False), 3, False)
