@@ -676,11 +676,8 @@ def core_rows(seq, k, dirichlet):
     only.
     """
     e = seq.E(k, dirichlet)
-    rows = np.asarray(e.rows)
-    n_ext = int(e.forward_shape[0])
-    counts = np.bincount(rows, minlength=n_ext)
-    core = np.flatnonzero(counts > 1)
-    bulk = np.setdiff1d(np.arange(n_ext), core)
+    core = np.asarray(seq.core_rows(k, dirichlet))
+    bulk = np.setdiff1d(np.arange(int(e.forward_shape[0])), core)
     return core, bulk, e
 
 

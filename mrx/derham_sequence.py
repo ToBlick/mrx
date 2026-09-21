@@ -259,9 +259,13 @@ class DeRhamSequence():
         raw_dbc = [PolarExtractionOperator(L, self.xi, True) for L in bases]
         self.extraction, self.boundary_extraction = {}, {}
         self.n_dofs, self.n_boundary = {}, {}
+        #: the extracted rows the polar surgery fuses, per ``(k, dirichlet)``:
+        #: the dense core of the preconditioners and the conforming restriction
+        self.core = {}
         for k in range(4):
             e, e_dbc = raw[k].build_extraction(), raw_dbc[k].build_extraction()
             self.extraction[(k, False)], self.extraction[(k, True)] = e, e_dbc
+            self.core[(k, False)], self.core[(k, True)] = raw[k].core_rows, raw_dbc[k].core_rows
             self.boundary_extraction[k] = bc_extraction_op(e, e_dbc, bases[k].n)
             self.n_dofs[(k, False)], self.n_dofs[(k, True)] = raw[k].n, raw_dbc[k].n
             self.n_boundary[k] = raw[k].n - raw_dbc[k].n
@@ -362,6 +366,13 @@ class DeRhamSequence():
         """Number of DoFs of the free (default) or Dirichlet ``k``-form space."""
         return self.n_dofs[(int(k), bool(dirichlet))]
 
+    def core_rows(self, k, dirichlet=False):
+        """The rows of ``E(k, dirichlet)`` that fuse raw DoFs (the polar surgery;
+        on a reduced view the DoFs built from them), where ``E E^T`` is not the
+        identity: the dense core of the preconditioners and of the conforming
+        restriction. Known from the construction, not probed."""
+        return self.core[(int(k), bool(dirichlet))]
+
     def n_bc(self, k):
         """Number of boundary DoFs of the ``k``-form space."""
         return self.n_boundary[int(k)]
@@ -416,12 +427,12 @@ class DeRhamSequence():
             return self._parity_views[s]
         view = copy.copy(self)
         view.parity, view._base, view._parity_views, view._residual, view.operators = s, self, None, None, None
-        view.extraction, view.reduction, view.n_dofs = {}, {}, {}
+        view.extraction, view.reduction, view.n_dofs, view.core = {}, {}, {}, {}
         for k in range(4):
             for dirichlet in (False, True):
-                e_red, x = parity_extraction(self, k, dirichlet, s)
+                e_red, x, core = parity_extraction(self, k, dirichlet, s)
                 view.extraction[(k, dirichlet)], view.reduction[(k, dirichlet)] = e_red, x
-                view.n_dofs[(k, dirichlet)] = int(e_red.forward_shape[0])
+                view.n_dofs[(k, dirichlet)], view.core[(k, dirichlet)] = int(e_red.forward_shape[0]), core
         # the boundary DoFs of the reduced free space: the orbits that touch a boundary raw DoF
         view.boundary_extraction, view.n_boundary = {}, {}
         for k in range(4):
@@ -489,8 +500,8 @@ class DeRhamSequence():
             view.xi = xi
             view.extraction, view.boundary_extraction = {}, {}
             for k in range(4):
-                e = PolarExtractionOperator(bases[k], xi, False).build_extraction(dtype=RESIDUAL_DTYPE)
-                e_dbc = PolarExtractionOperator(bases[k], xi, True).build_extraction(dtype=RESIDUAL_DTYPE)
+                free, dbc = PolarExtractionOperator(bases[k], xi, False), PolarExtractionOperator(bases[k], xi, True)
+                e, e_dbc = free.build_extraction(dtype=RESIDUAL_DTYPE), dbc.build_extraction(dtype=RESIDUAL_DTYPE)
                 view.extraction[(k, False)], view.extraction[(k, True)] = e, e_dbc
                 view.boundary_extraction[k] = bc_extraction_op(e, e_dbc, bases[k].n, dtype=RESIDUAL_DTYPE)
             pairs = [(din, dout) for din in (False, True) for dout in (False, True)]
@@ -722,7 +733,7 @@ class DeRhamSequence():
         e = self.E(k, dirichlet)
         v = jnp.asarray(v)
         raw = symmetrize(e.T @ v.astype(jnp.float64), self.reflection_plan[k], parity)
-        return _conforming_restriction(e, raw, dtype=jnp.float64).astype(v.dtype)
+        return _conforming_restriction(e, raw, self.core_rows(k, dirichlet), dtype=jnp.float64).astype(v.dtype)
 
     def l2_norm_sq(self, v, k, dirichlet=True):
         """Return the squared L² norm of a k-form DOF vector ``v``."""

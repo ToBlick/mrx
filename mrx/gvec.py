@@ -264,7 +264,7 @@ def series_spline_dofs(block, nfp, seq):
     Greville points and solving -- was measured against this projection
     and dropped (``docs/research/analytic_map_2026-08-28.md``)."""
     C_full = series_tensor_coefficients(block, nfp, seq)
-    return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)))
+    return _conforming_restriction(seq.E(0), jnp.asarray(C_full.reshape(-1)), seq.core_rows(0))
 
 
 def read_equilibrium(path):

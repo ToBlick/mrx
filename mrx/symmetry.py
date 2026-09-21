@@ -210,8 +210,7 @@ def parity_basis(seq, k, dirichlet, parity):
     perm, sign = raw_reflection(seq.reflection_plan[k])
     R = sparse.csr_matrix((sign, (np.arange(n_raw), perm)), shape=(n_raw, n_raw))
     gram = (E @ E.T).tocsr()
-    counts = np.bincount(np.asarray(e.rows), minlength=n_free)
-    core = np.flatnonzero(counts > 1)
+    core = seq.core_rows(k, dirichlet)
     is_core = np.zeros(n_free, dtype=bool)
     is_core[core] = True
     bulk = np.flatnonzero(~is_core)
@@ -278,21 +277,23 @@ def parity_basis(seq, k, dirichlet, parity):
         raise RuntimeError("E_red R != s E_red")
     if abs(X_try.T @ X_try - sparse.identity(n_red)).max() > TOL:
         raise RuntimeError("X^T X != I")
-    return X_try, E
+    return X_try, E, np.arange(j, n_red)
 
 
 def parity_extraction(seq, k, dirichlet, parity):
-    """``(E_red, X)`` of :func:`parity_basis` as :class:`MatrixFreeExtraction`
-    operators: ``E_red`` (``n_red x n_raw``, raw -> reduced) and the expansion
-    ``X`` (``n_free x n_red``, reduced -> free; ``X.T`` reduces a free vector of
-    that parity)."""
+    """``(E_red, X, core)`` of :func:`parity_basis` as :class:`MatrixFreeExtraction`
+    operators: ``E_red`` (``n_red x n_raw``, raw -> reduced), the expansion ``X``
+    (``n_free x n_red``, reduced -> free; ``X.T`` reduces a free vector of that
+    parity), and the reduced DoFs built from the polar core (the last block of
+    ``X``'s columns: the dense core of the reduced space, known from the
+    construction)."""
     from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
-    X, E = parity_basis(seq, k, dirichlet, parity)
+    X, E, core = parity_basis(seq, k, dirichlet, parity)
     e = seq.E(k, dirichlet)
     E_red = (X.T @ E).tocoo()
     X = X.tocoo()
     return (MatrixFreeExtraction.from_coo(E_red.row, E_red.col, E_red.data, E_red.shape, dtype=e.dtype),
-            MatrixFreeExtraction.from_coo(X.row, X.col, X.data, X.shape, dtype=e.dtype))
+            MatrixFreeExtraction.from_coo(X.row, X.col, X.data, X.shape, dtype=e.dtype), core)
 
 
 def reduce_operator(X_out, S, X_in, dtype):
@@ -325,8 +326,7 @@ def _extraction_gram_core(seq, k, dirichlet):
     E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64),
                            (np.asarray(e.rows), np.asarray(e.cols))), shape=(n_free, n_raw))
     gram = (E @ E.T).tocsr()
-    counts = np.bincount(np.asarray(e.rows), minlength=n_free)
-    core = np.flatnonzero(counts > 1)
+    core = seq.core_rows(k, dirichlet)
     inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray()) if core.size else np.zeros((0, 0))
     cache[key] = (core, inverse)
     return cache[key]

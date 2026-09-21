@@ -182,7 +182,7 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
 #: function that already lives in the target space returns its own DOFs.
 
 
-def _conforming_restriction(e, c_full, dtype=DTYPE):
+def _conforming_restriction(e, c_full, core, dtype=DTYPE):
     """Restrict full tensor-product coefficients onto the extracted space.
 
     ``a = (E E^T)^{-1} E c_full``.  ``E^T (E E^T)^{-1} E`` is idempotent, so
@@ -190,8 +190,8 @@ def _conforming_restriction(e, c_full, dtype=DTYPE):
     its own DOFs exactly.  Plain ``e @ c_full`` does not have that property --
     measured, the k=0 round-trip came back at 5.29e-01 without this.
 
-    ``E`` is a pure SELECTION on every row but the polar ones (the same
-    ``counts > 1`` discriminator ``block_jacobi_laplacian.core_rows`` uses), and
+    ``E`` is a pure SELECTION on every row but the polar ones (``core``, the
+    rows the construction records, ``seq.core_rows``), and
     the polar surgery acts only in (rho, theta) while the zeta index is carried
     along untouched.  So ``E E^T`` is the IDENTITY PLUS SMALL DENSE BLOCKS --
     one per zeta slice per affected component, of size ``n_polar``.  Confirmed
@@ -208,14 +208,12 @@ def _conforming_restriction(e, c_full, dtype=DTYPE):
     shows up in a profile; the blocks depend only on the extraction.
     """
     a = e @ c_full
-    rows = np.asarray(e.rows)
-    counts = np.bincount(rows, minlength=int(e.forward_shape[0]))
-    core = counts > 1
-    if not core.any():
+    core = np.asarray(core)
+    if core.size == 0:
         return a                       # pure selection: E E^T = I already
 
     E = sparse.csr_matrix(
-        (np.asarray(e.vals), (rows, np.asarray(e.cols))), shape=e.forward_shape)
+        (np.asarray(e.vals), (np.asarray(e.rows), np.asarray(e.cols))), shape=e.forward_shape)
     gram = (E @ E.T).tocsr()
     _, labels = csgraph.connected_components(gram, directed=False)
 
@@ -452,6 +450,7 @@ def _oneform_pullback(seq, v, frame: str = 'phys'):
 def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     """Greville collocation for a scalar 0-form."""
     e = seq.E(0, True) if dirichlet else seq.E(0)
+    core = seq.core_rows(0, dirichlet)
     exact = _matching_discrete_dofs(f, seq.basis_0, e)
     if exact is not None:
         return exact
@@ -469,7 +468,7 @@ def _interpolate_0form(seq, f, dirichlet: bool) -> Array:
     coeffs = values
     for j, ax in enumerate(axes):
         coeffs = _solve_tensor_collocation_axis(ax.coll, coeffs, axis=j)
-    return _conforming_restriction(e, coeffs.reshape(-1))
+    return _conforming_restriction(e, coeffs.reshape(-1), core)
 
 
 def _twoform_pullback(seq, v, frame: str = 'phys'):
@@ -525,7 +524,7 @@ def _greville_moments(seq, fn, rules) -> Array:
         integrate, cells, batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(sizes)
 
 
-def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
+def _histopolate_vector(seq, pullback, e, core, histopolated) -> Array:
     """Greville histopolation of a vector-valued form, component by component.
 
     ``histopolated(c, j)`` says whether component ``c`` is histopolated
@@ -543,17 +542,18 @@ def _histopolate_vector(seq, pullback, e, histopolated) -> Array:
             m = _solve_tensor_collocation_axis(
                 ax.hist if histopolated(c, j) else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))
-    return _conforming_restriction(e, jnp.concatenate(coeffs))
+    return _conforming_restriction(e, jnp.concatenate(coeffs), core)
 
 
 def _histopolate_1form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     """Greville histopolation for a 1-form."""
     e = seq.E(1, True) if dirichlet else seq.E(1)
+    core = seq.core_rows(1, dirichlet)
     exact = _matching_discrete_dofs(v, seq.basis_1, e)
     if exact is not None:
         return exact
     return _histopolate_vector(
-        seq, _oneform_pullback(seq, v, frame), e, lambda c, j: j == c)
+        seq, _oneform_pullback(seq, v, frame), e, core, lambda c, j: j == c)
 
 
 def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
@@ -564,16 +564,18 @@ def _histopolate_2form(seq, v, dirichlet: bool, frame: str = 'phys') -> Array:
     them -- the pullbacks do that via ``_wrap_periodic_point``.
     """
     e = seq.E(2, True) if dirichlet else seq.E(2)
+    core = seq.core_rows(2, dirichlet)
     exact = _matching_discrete_dofs(v, seq.basis_2, e)
     if exact is not None:
         return exact
     return _histopolate_vector(
-        seq, _twoform_pullback(seq, v, frame), e, lambda c, j: j != c)
+        seq, _twoform_pullback(seq, v, frame), e, core, lambda c, j: j != c)
 
 
 def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     """Greville histopolation for a scalar 3-form."""
     e = seq.E(3, True) if dirichlet else seq.E(3)
+    core = seq.core_rows(3, dirichlet)
     exact = _matching_discrete_dofs(f, seq.basis_3, e)
     if exact is not None:
         return exact
@@ -585,4 +587,4 @@ def _histopolate_3form(seq, f, dirichlet: bool) -> Array:
     coeffs = moments
     for j, ax in enumerate(axes):
         coeffs = _solve_tensor_collocation_axis(ax.hist, coeffs, axis=j)
-    return _conforming_restriction(e, coeffs.reshape(-1))
+    return _conforming_restriction(e, coeffs.reshape(-1), core)

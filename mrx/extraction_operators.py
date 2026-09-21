@@ -189,6 +189,7 @@ class PolarExtractionOperator:
         if not np.any(valid):
             return
         nnz = int(np.count_nonzero(valid))
+        self._core_rows.append(int(row_idx))
         rows.append(np.full(nnz, row_idx, dtype=np.int32))
         cols.append(col_idx[valid])
         data.append(values[valid])
@@ -263,6 +264,10 @@ class PolarExtractionOperator:
         rows = []
         cols = []
         data = []
+        #: the extracted rows the polar surgery writes (they fuse raw DoFs; every
+        #: other row is a selection): the dense core of the preconditioners and
+        #: of the conforming restriction, known from the construction
+        self._core_rows = []
 
         if self.k == 0:
             for p in range(self.n_polar):
@@ -454,6 +459,7 @@ class PolarExtractionOperator:
             rows_arr = jnp.zeros((0,), dtype=jnp.int32)
             cols_arr = jnp.zeros((0,), dtype=jnp.int32)
             vals_arr = jnp.zeros((0,), dtype=dtype)
+        self.core_rows = np.unique(np.asarray(self._core_rows, dtype=np.int32))
         return MatrixFreeExtraction(
             rows=rows_arr, cols=cols_arr, vals=vals_arr,
             forward_shape=(self.n, self.Lambda.n),
