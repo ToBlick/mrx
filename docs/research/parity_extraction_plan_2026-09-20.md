@@ -158,3 +158,30 @@ the inline mirror of the diagonal. `mrx/hessian.py`, `mrx/relaxation.py`,
   transpose is settled by the invariant `E_red R = s E_red` at build time,
   not by derivation.
 - Old half-period checkpoints: convert or drop.
+
+## 6. Log
+
+- Phase 1 (02f9f79, de90fca): the builder, verified on (6,8,8) p=2: every
+  `(k, dirichlet)` splits `n_free` exactly, each parity about half. The
+  invariant `E_red E_red^T = I` of section 2 was wrong -- neither `E` nor
+  `E_red` is row-orthonormal on the polar core; what holds is `X^T X = I`.
+- Phase 2 (d872c49): the views; mass, projections, grad/curl/div, evaluation
+  and loads agree with the projected applies to 2e-7 on a torus.
+- The core rows are DETERMINED, not probed (89227fe, Tobias): the extraction
+  records the rows its surgery writes, the parity basis its core columns,
+  `seq.core_rows(k, dirichlet)` serves both; the `bincount > 1`
+  discriminator would have called every orbit row of `E_red` core.
+- Phase 3a (3d4b2d7 + fixes): `ReducedAtom = X^T P X` of the base atoms (one
+  build for base and views), per-view Betti numbers (odd `(0, b1, 0, 0)`,
+  even `(b0, 0, 0, 0)`). Two bugs found by the CPU check: the view's float64
+  twin must be a cached attribute so it shares the bundle; and the reduced
+  basis is a CHOICE (the SVD basis of the core eigenspace), so working view
+  and twin must build it from the same float64 extraction -- built
+  independently they disagreed and every solve with a polar core was garbage
+  while k=3 (no core) was exact. Result on the torus: the odd view's mass,
+  Laplacian (k=0,1,2) and Leray solves agree with the base to 1e-7..2e-6
+  at the same iteration counts (61/60, 40/40, 32/32); the harmonic 2-form
+  to 4e-7; `n(2, dbc)` 720 -> 354.
+- Open before phase 4: the even view was not re-checked after the basis fix
+  (same code path); the Krylov loops still carry the `parity` arguments
+  (None on views) until phase 5.

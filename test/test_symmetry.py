@@ -108,3 +108,27 @@ def test_parity_views_agree_with_the_projected_applies(seq, b0):
                            view.reduction[(1, True)].T @ seq.apply_projection_matrix(x, 2, 1, True, True))):
             assert float(jnp.max(jnp.abs(got - want))) < tol * float(jnp.max(jnp.abs(want)))
         assert 0.4 * seq.n(2, True) < view.n(2, True) < 0.6 * seq.n(2, True)
+
+
+def test_parity_view_solves_agree_with_the_base(seq, b0):
+    """The odd view's solves (mass, Laplacian, Leray) on a field of its parity
+    reproduce the unreduced sequence's to the solve tolerance, with the same
+    iteration counts: the reduced atoms ``X^T P X`` precondition as the
+    projected ones did (a torus (6,8,8) p=2, 2026-09-20: k=2 dbc 61 vs 60
+    iterations, k=1 dbc 40 vs 40, k=0 free 32 vs 32; agreement 1e-7..2e-6)."""
+    view = seq.odd
+    view.build_preconditioners()
+    view.compute_nullspaces(verbose=False)
+    X = view.reduction[(2, True)]
+    c = X.T @ b0
+    tol = 1e2 * seq.tol + 1e2 * float(jnp.finfo(seq.dtype).eps)
+    rhs_base, rhs_view = seq.apply_laplacian(b0, 2), view.apply_laplacian(c, 2)
+    x_base, it_base = seq.apply_inverse_laplacian(rhs_base, 2, return_info=True)
+    x_view, it_view = view.apply_inverse_laplacian(rhs_view, 2, return_info=True)
+    assert int(it_view) < 0 and abs(int(it_view)) <= 1.5 * abs(int(it_base)), (int(it_view), int(it_base))
+    assert float(jnp.max(jnp.abs(x_view - X.T @ x_base))) < tol * float(jnp.max(jnp.abs(x_base)))
+    Pb, _ = seq.apply_leray_projection(b0, k=2)
+    Pc, _ = view.apply_leray_projection(c, k=2)
+    assert float(jnp.max(jnp.abs(Pc - X.T @ Pb))) < tol * float(jnp.max(jnp.abs(Pb)))
+    h, hb = view.nullspace(2, True)[0], seq.nullspace(2, True)[0]
+    assert abs(abs(float((X @ h) @ seq.apply_mass_matrix(hb, 2, True))) - 1.0) < tol
