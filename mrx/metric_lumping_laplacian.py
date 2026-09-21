@@ -1024,6 +1024,14 @@ class ReducedAtom(eqx.Module):
             return X.T @ jitted(leaves, X @ jnp.asarray(x, dtype))
         return apply
 
+    def shifted_stiffness_apply(self, eps):
+        """``x -> X^T (M^ + eps S^)^-1 X x`` (a Laplacian atom's shifted apply, reduced)."""
+        f, X = self.atom.shifted_stiffness_apply(eps), self.X
+
+        def apply(x):
+            return X.T @ f(X @ jnp.asarray(x))
+        return apply
+
 
 @register_arrays
 class MetricLumpingLaplacian:
