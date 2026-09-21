@@ -31,14 +31,18 @@ STEPS, CHUNK = 10, 5
 # PROVISIONAL (2026-09-20, not yet measured on this mesh): to be replaced by
 # 1.25x the measured drop once the suite has run.
 NEWTON_FORCE_DROP = 0.5
-# |H_end - H_0| / (2 E_0): the helicity drifts by the rounding of the stored
-# field, not by a solve (the solves are refined to 1e-8 in float64 whatever
-# the working dtype), so the band is a multiple of sqrt(eps) of the working
-# dtype: 3.5e-4 in float32, 1.5e-8 in float64.
+# |H_end - H_0| / (2 E_0) under gradient descent: the helicity drifts by the
+# rounding of the stored field, not by a solve (the solves are refined to 1e-8
+# in float64 whatever the working dtype), so the band is a multiple of
+# sqrt(eps) of the working dtype: 3.5e-4 in float32, 1.5e-8 in float64.
 HELICITY_DRIFT_TOL = 25.0
+# Under Newton the steps are O(1) (dt capped at the Newton length) and the
+# explicit induction's time-integration error moves the helicity: 3.9e-6 of
+# 2 E_0 over 10 steps measured in float64 (2026-09-21); band 5x, PROVISIONAL.
+NEWTON_HELICITY_DRIFT = 2e-5
 
 
-def _check_run(seq, ts, res, steps, chunk, saved, force_drop, tmp_path):
+def _check_run(seq, ts, res, steps, chunk, saved, force_drop, helicity_band, tmp_path):
     dE = np.asarray(res.trace["dE"], dtype=float)
     F = np.asarray(res.trace["F"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -56,8 +60,7 @@ def _check_run(seq, ts, res, steps, chunk, saved, force_drop, tmp_path):
     # descent is monotone to that roundoff, strictly in float64.
     assert np.all(dE < eps() * E0), f"energy not monotone: {dE}"
     assert F[-1] < force_drop * F[0], f"||F|| {F[0]:.3e} -> {F[-1]:.3e}"
-    assert abs(H[-1] - H[0]) < HELICITY_DRIFT_TOL * sqrt_eps() * 2 * E0, \
-        f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
+    assert abs(H[-1] - H[0]) < helicity_band * 2 * E0, f"helicity {H[0]:.6e} -> {H[-1]:.6e}"
     assert div < 1e3 * seq.tol * np.sqrt(2 * E1), f"||div B|| {div:.2e}"
     resid = np.asarray(res.trace["resid"], dtype=float)
     assert float(res.state.best.resid) <= resid.min() and int(res.state.best.step) == resid.argmin(), \
@@ -77,7 +80,7 @@ def test_newton_relaxation_lowers_the_energy(seq, b0, tmp_path):
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
                 on_chunk=lambda r: saved.append(r.steps))
-    _check_run(seq, ts, res, STEPS, CHUNK, saved, NEWTON_FORCE_DROP, tmp_path)
+    _check_run(seq, ts, res, STEPS, CHUNK, saved, NEWTON_FORCE_DROP, NEWTON_HELICITY_DRIFT, tmp_path)
     it = np.asarray(res.trace["newton_it"])
     print(f"  MINRES iterations per step: {np.abs(it).tolist()}")
     assert np.any(it != 0), "no step ran a Newton solve"   # 0 = the warm start already met the forcing term
@@ -97,4 +100,5 @@ def test_gradient_descent_lowers_the_energy(seq, b0, tmp_path):
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=GRADIENT_STEPS, chunk=GRADIENT_CHUNK, verbose=False,
                 on_chunk=lambda r: saved.append(r.steps))
-    _check_run(seq, ts, res, GRADIENT_STEPS, GRADIENT_CHUNK, saved, GRADIENT_FORCE_DROP, tmp_path)
+    _check_run(seq, ts, res, GRADIENT_STEPS, GRADIENT_CHUNK, saved, GRADIENT_FORCE_DROP,
+               HELICITY_DRIFT_TOL * sqrt_eps(), tmp_path)
