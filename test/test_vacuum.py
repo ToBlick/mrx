@@ -25,7 +25,9 @@ idempotent and non-expansive, and the descent's potential route gives the
 same k=2 projection from one k=1 Hodge solve.
 
 The scalar Laplacians get the same treatment with a scalar ``psi``, ANY
-smooth one (nothing harmonic about it): the k=0 natural solve of ``<grad f,
+smooth one (nothing harmonic about it; its gradient is an EVEN vector --
+``B``'s pattern is the odd one, the gradient of a symmetric scalar has the
+velocity's): the k=0 natural solve of ``<grad f,
 grad v> = <grad psi, grad v>`` recovers ``psi`` up to the constant, the
 gradient of the data loaded against the gradient of the test function; the
 k=3 natural solve of ``<delta rho, delta tau> = <grad psi, delta tau>``
@@ -167,7 +169,7 @@ def _volume_integrals(seq, values):
 def test_manufactured_scalar_solution(seq, k):
     if k == 0:
         grad_psi = jax.grad(psi)
-        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 1, dirichlet=False, parity=-1)
+        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 1, dirichlet=False, parity=1)     # grad of an even scalar: even
         rhs = seq.apply_incidence_matrix(load, 0, dirichlet_in=False, dirichlet_out=False, transpose=True)
         f, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
         residual = seq.apply_stiffness(f, 0, dirichlet=False) - rhs
@@ -183,7 +185,7 @@ def test_manufactured_scalar_solution(seq, k):
         what, k_res, dbc = "psi", 0, False
     else:
         grad_psi = jax.grad(psi)
-        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 2, dirichlet=False, parity=-1)
+        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 2, dirichlet=False, parity=1)     # grad of an even scalar: even
         # rhs_i = <grad psi, delta Lambda_i>, delta = -M_2^-1 D_2^T M_3 the weak gradient into the free 2-forms
         w = seq.apply_inverse_mass_matrix(load, 2, dirichlet=False)
         rhs = -seq.apply_mass_matrix(seq.apply_incidence_matrix(w, 2, dirichlet_in=False, dirichlet_out=False), 3, False)

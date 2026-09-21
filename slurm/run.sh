@@ -24,6 +24,7 @@
 #   MEM_GB       host memory                              (default: 64)
 #   CPUS         cpus per task                            (default: 32)
 #   EXTRA_ENV    space-separated VAR=VALUE pairs exported in the job
+#   DEPENDENCY   an sbatch --dependency spec, e.g. afterany:123:124 (optional)
 #
 # The job prints `mrx.__file__` before running anything, so the log shows
 # which checkout was tested.
@@ -41,6 +42,7 @@ TIMEOUT_MIN=${TIMEOUT_MIN:-60}
 MEM_GB=${MEM_GB:-64}
 CPUS=${CPUS:-32}
 EXTRA_ENV=${EXTRA_ENV:-}
+DEPENDENCY=${DEPENDENCY:-}
 ACCOUNT=${SLURM_ACCOUNT:?set SLURM_ACCOUNT}
 PARTITION=${SLURM_PARTITION:?set SLURM_PARTITION}
 EXCLUDE=${SLURM_EXCLUDE:-}
@@ -60,6 +62,7 @@ python -u ${SCRIPT} ${ARGS}"
 
 sbatch \
   ${EXCLUDE:+--exclude="${EXCLUDE}"} \
+  ${DEPENDENCY:+--dependency="${DEPENDENCY}"} \
   --partition="${PARTITION}" \
   --account="${ACCOUNT}" \
   --gpus-per-node=1 \
