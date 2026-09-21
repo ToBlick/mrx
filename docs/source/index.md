@@ -30,6 +30,7 @@ tutorials
 relaxation
 cluster
 tpu
+mps
 faq
 ```
 
