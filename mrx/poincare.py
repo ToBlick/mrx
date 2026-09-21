@@ -97,7 +97,7 @@ def logical_field(seq, k, dirichlet):
     the two seed probes, the trace, the two drift traces). Cached per
     ``(seq, k, dirichlet)`` so that the function object IS one per sequence.
     """
-    return _logical_field(seq, int(k), bool(dirichlet))
+    return _logical_field(seq.odd, int(k), bool(dirichlet))     # the traced fields (B, A) are odd
 
 
 @lru_cache(maxsize=None)

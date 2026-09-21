@@ -106,6 +106,7 @@ def lambda_dirichlet_energy(lam_h, seq) -> tuple[float, float]:
     stream function. The current sees lambda's mixed second derivatives, so a
     coarsely sampled export shows up in the ratio of the two before it shows
     up in ``||J||/||B||``."""
+    seq = seq.odd                              # lambda is a sine series: odd
     dof = seq.interpolate(lam_h, 0)
     return (float(seq.l2_norm_sq(dof, 0, False)),
             float(dof @ seq.apply_laplacian(dof, 0, dirichlet=False)))
@@ -225,6 +226,7 @@ def potential_two_form(seq, A_ref):
     before normalisation, and the relative wall-normal part discarded by the
     Dirichlet restriction (a check, not a correction).
     """
+    seq = seq.odd
     A = seq.interpolate(A_ref, 1, dirichlet=False, frame='ref')
     B_full = seq.apply_incidence_matrix(A, 1, dirichlet_in=False, dirichlet_out=False)
     B = seq.apply_incidence_matrix(A, 1, dirichlet_in=False, dirichlet_out=True)
@@ -268,6 +270,7 @@ def parallel_seed(seq, B, m, n, rho0, width, eps):
     Returns ``(dB, wall)``: the 2-form increment at amplitude ``eps`` and the relative wall-normal part the
     Dirichlet restriction discarded.
     """
+    seq = seq.odd
     Bq = seq.evaluate_at_quadrature(B, 2, dirichlet=True)                  # contravariant density, (n_q, 3)
     g_B = jnp.einsum('qij,qj->qi', seq.metric_jkl, Bq)                     # g_ij B^j, up to the common 1 / J
     Bhat_cov = g_B / jnp.sqrt(jnp.einsum('qi,qi->q', g_B, Bq))[:, None]    # B_i / |B|: the Jacobian cancels
@@ -275,7 +278,7 @@ def parallel_seed(seq, B, m, n, rho0, width, eps):
     s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))     # sign of the flux-ratio iota
     env = jnp.exp(-((x[:, 0] - rho0) / width) ** 2) * (1.0 - x[:, 0] ** 2) / (1.0 - rho0 ** 2)
     A_par = eps * env * jnp.cos(2.0 * jnp.pi * (m * x[:, 1] - s * n * x[:, 2]))
-    load = seq.vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True, parity=-1)
+    load = seq.vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True)
     dA = seq.apply_inverse_mass_matrix(load, 1, dirichlet=True)
     dB = seq.apply_incidence_matrix(dA, 1, dirichlet_in=True, dirichlet_out=True)
     div = float(seq.l2_norm(seq.apply_incidence_matrix(dB, 2, dirichlet_in=True, dirichlet_out=True), 3)
@@ -298,8 +301,9 @@ def project_reference_two_form(seq, omega_ref):
         dF = DF_map(x)
         return dF @ omega_ref(x) / jnp.linalg.det(dF)
 
+    seq = seq.odd
     B_raw = seq.apply_inverse_mass_matrix(
-        seq.load(B_phys, 2, dirichlet=True, parity=-1), 2, dirichlet=True)
+        seq.load(B_phys, 2, dirichlet=True), 2, dirichlet=True)
     norm = float(seq.l2_norm(B_raw, 2))
     return B_raw / norm, norm
 
@@ -312,6 +316,7 @@ def leray_clean(seq, B):
     this removes it once, up front. Returns ``(B, diff_B)`` with ``diff_B`` the
     M-norm of the removed part.
     """
+    seq = seq.odd
     B_leray, _ = seq.apply_leray_projection(B, k=2)
     diff_B = float(seq.l2_norm(B_leray - B, 2))
     return B_leray / float(seq.l2_norm(B_leray, 2)), diff_B
@@ -356,12 +361,6 @@ def initial_field(seq, seed=None):
         if seed is not None:
             info["seed_rho"] = float(resonant_rho(cb, seed[0], seed[1]))
         B, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
-        # A half-period sequence keeps the fields of definite parity; the
-        # histopolated B = dA' is odd to round-off already (the Greville
-        # points reflect onto each other), and this makes it so exactly.
-        B_odd = seq.project_parity(B, 2, -1)
-        info["parity_discarded"] = float(seq.l2_norm(B - B_odd, 2) / seq.l2_norm(B, 2))
-        B = B_odd
         div = float(compute_divergence_norm(B, seq))
         info.update(B_norm_raw=float(norm), wall_discarded=float(wall),
                     div_raw=div, div=div, leray_moved=0.0)

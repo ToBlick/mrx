@@ -10,6 +10,18 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+
+# THE PARITY TABLE of the relaxation on a stellarator-symmetric (half-period)
+# sequence, whose fields live on the reduced views ``seq.odd`` / ``seq.even``
+# (:meth:`mrx.derham_sequence.DeRhamSequence.parity_view`; a full-period
+# sequence is both views). ODD under the rotation by pi about X: the field ``B``
+# and every 2-form increment of it, its potentials ``A`` (helicity) and ``E``
+# (induction), the current ``J``, the auxiliary field ``H``. EVEN: the
+# velocity ``u``, the force ``F = J x B`` and its mass image, the pressures ``p``
+# (k=3) and ``p_w`` (k=0), the Newton / potential-route potential ``a`` (``u =
+# curl a``, ``F = curl a``). ``d`` keeps a parity, a product multiplies them:
+# ``J x B`` even, ``u x B`` odd. A product load is formed from each factor
+# evaluated on ITS view and assembled on the view of the product.
 from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL, newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
@@ -40,6 +52,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     # 85x is not a fraction of anything.  0.974 is, and it is the right size:
     # the IC is dominated by net toroidal flux, which IS the harmonic mode.
     # See docs/research/handoff_2026-08-25_relaxation_prelim.md.
+    seq = seq.odd
     A = seq.apply_inverse_laplacian(
         seq.apply_derivative_matrix(
             B, 1, dirichlet_in=True, dirichlet_out=True, transpose=True),
@@ -56,6 +69,7 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
     # hard-coded dirichlet=True for now
     # Incidence, so this measures the field's divergence and not the
     # mass solver's residual -- see TimeStepper.relaxation_step.
+    seq = seq.odd
     div_B = seq.apply_incidence_matrix(
         B, 2, dirichlet_in=True, dirichlet_out=True)
     return seq.l2_norm_sq(div_B, 3)**0.5
@@ -68,6 +82,7 @@ def dirichlet_proxy(seq: DeRhamSequence, B: jnp.ndarray, guess: jnp.ndarray | No
     Dirichlet proxy ``H_D = M_1^-1 P B`` (the auxiliary field, the field of
     the helicity correction), the mass solve
     warm-started from ``guess``."""
+    seq = seq.odd
     PB = seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
     return PB, seq.apply_inverse_mass_matrix(PB, 1, dirichlet=True, guess=guess)
 
@@ -95,13 +110,13 @@ def compute_force(
     previous gradient part ``JxX - F``, which warm-starts the lower block
     of the Leray saddle solve next to ``p_guess`` on its upper one.
     """
-    J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
-    if auxiliary_B_field:
-        _, X = dirichlet_proxy(seq, B, H_guess)
-        JxX_dual = seq.cross_product_load(J, X, 2, 1, 1, True, True, True)
-    else:
-        X = B
-        JxX_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
+    odd, even = seq.odd, seq.even
+    J = odd.apply_weak_curl(B, dirichlet=True, guess=J_guess)
+    X = dirichlet_proxy(seq, B, H_guess)[1] if auxiliary_B_field else B
+    k = 1 if auxiliary_B_field else 2
+    JxX_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1, True),
+                                              odd.evaluate_at_quadrature(X, k, True), 2, 1, k, True)
+    seq = even                               # J x X and everything below it are even
     # JxX in the residual precision: the Leray projection forms the force
     # as JxX - sigma, the small difference of two large fields, before it
     # rounds to the working dtype.
@@ -143,7 +158,11 @@ def weak_pressure(
         the weak force residual and the natural 1-form projection of
         ``J x H``, both in the natural 1-form space.
     """
-    v_dual = seq.cross_product_load(J, X, 1, 1, 1 if auxiliary_B_field else 2, False, True, True)
+    odd, even = seq.odd, seq.even
+    k = 1 if auxiliary_B_field else 2
+    v_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1, True),
+                                            odd.evaluate_at_quadrature(X, k, True), 1, 1, k, False)
+    seq = even
     v = seq.apply_inverse_mass_matrix(v_dual, 1, dirichlet=False)
     F_w, p_w = seq.apply_leray_projection(v, k=1, p_guess=p_guess, dirichlet_p=True)
     return p_w, F_w, v
@@ -206,6 +225,7 @@ def pressure_diagnostics(
     from mrx.differential_forms import DiscreteFunction
     from mrx.geometry import map_jacobian_at
 
+    odd, seq = seq.odd, seq.even                  # B is odd, the pressures and v even
     wJ = seq.quad.w * seq.jacobian_j
 
     # (a) the gauge-free comparisons: gradients in the Dirichlet 2-form
@@ -236,12 +256,12 @@ def pressure_diagnostics(
     JxBn_wall = jnp.max(jnp.abs(_wall_normal_component(v_w, G_inv_w))) / grad_max
 
     # (c) beta_vol: <p_w, 1>_{M_0} is the quadrature sum of p_w J.
-    energy = 0.5 * seq.l2_norm_sq(B, 2)
+    energy = 0.5 * odd.l2_norm_sq(B, 2)
     beta_vol = jnp.sum(wJ * pw_q) / energy
 
     # (d) beta_axis: the innermost radial quadrature layer, theta- and
     # zeta-averaged with the quadrature weights (the layer's own measure).
-    B_q = seq.evaluate_at_quadrature(B, 2, True)
+    B_q = odd.evaluate_at_quadrature(B, 2, True)
     Bsq_q = jnp.einsum('qi,qij,qj->q', B_q, seq.metric_jkl, B_q) / seq.jacobian_j ** 2
     axis = seq.quad.x[:, 0] == seq.quad.x_x[0]
     w_axis = jnp.where(axis, wJ, 0.0)
@@ -264,6 +284,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     :func:`relax` applies this solve between chunks (``reconnect_every``),
     a dose ``eps`` per reconnection; a :class:`TimeStepper` with
     ``resistivity`` after every step."""
+    seq = seq.odd
     rhs = -eps * seq.apply_laplacian(B if B_ref is None else B - B_ref, 2, dirichlet=True)
     delta, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
         rhs, 2, eps, dirichlet=True, guess=guess, return_info=True)
@@ -620,18 +641,23 @@ class TimeStepper(eqx.Module):
             raise ValueError("potential_velocity is the Leray route's replacement on the 2-form B: "
                              "it excludes newton and the auxiliary field.")
         if self.potential_velocity:
-            h = self.seq.nullspace(2, True)[0]
-            self.harmonic = h
-            self.harmonic_norm_sq = h @ self.seq.apply_mass_matrix(h, 2)
+            # the harmonic 2-forms of the FORCE's space: on a half-period sequence the
+            # force is even and the harmonic form odd, so the even view has none and
+            # ``harmonic`` is empty (shape (0, n)) -- the harmonic term is then zero
+            even = self.seq.even
+            hs = even.nullspace(2, True)
+            self.harmonic = hs
+            self.harmonic_norm_sq = jnp.asarray([h @ even.apply_mass_matrix(h, 2) for h in hs], dtype=hs.dtype)
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def smooth_velocity(self, u: jnp.ndarray) -> jnp.ndarray:
         """Apply ``(M_2 + scale L_2)^-1 M_2`` to ``u`` ``velocity_smoothing_order`` times."""
+        even = self.seq.even
         for _ in range(self.velocity_smoothing_order):
-            rhs = self.seq.apply_mass_matrix(u, 2, True)
-            u = self.seq.apply_inverse_mass_plus_eps_laplace_matrix(
+            rhs = even.apply_mass_matrix(u, 2, True)
+            u = even.apply_inverse_mass_plus_eps_laplace_matrix(
                 rhs, 2, self.velocity_smoothing_scale, dirichlet=True, guess=u)
         return u
 
@@ -639,7 +665,7 @@ class TimeStepper(eqx.Module):
         """``(P B, H_D)`` of :func:`dirichlet_proxy`, ``H_D`` being ``X`` itself
         on the auxiliary route (no solve)."""
         if self.auxiliary_B_field:
-            return self.seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True), X
+            return self.seq.odd.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True), X
         return dirichlet_proxy(self.seq, B, H_guess)
 
     def _helicity_lambda(self, E: jnp.ndarray, PB: jnp.ndarray, H_D: jnp.ndarray, dt=None) -> jnp.ndarray:
@@ -648,7 +674,8 @@ class TimeStepper(eqx.Module):
         for the midpoint pairing, or with ``dt`` the root near zero of ``2
         <E_l, P B> + dt <E_l, P curl E_l> = 0``, ``E_l = E - lambda H_D``.
         Every pairing in the residual precision."""
-        on = self.seq if self.seq.residual is None else self.seq.residual
+        odd = self.seq.odd
+        on = odd if odd.residual is None else odd.residual
         E, PB, H_D = (x.astype(RESIDUAL_DTYPE) for x in (E, PB, H_D))
         if dt is None:
             return (E @ PB) / (H_D @ PB)
@@ -666,11 +693,11 @@ class TimeStepper(eqx.Module):
     def _induction_field(self, u_jk: jnp.ndarray, X: jnp.ndarray, E_guess: jnp.ndarray) -> jnp.ndarray:
         """``E = M_1^-1 load(u x X)`` with ``u`` at the quadrature points and
         ``X`` the auxiliary 1-form ``H`` or the 2-form ``B`` itself."""
-        seq = self.seq
+        odd = self.seq.odd
         k = 1 if self.auxiliary_B_field else 2
-        X_jk = seq.evaluate_at_quadrature(X, k, True)
-        E_dual = seq.cross_product_load_values(u_jk, X_jk, 1, 2, k, True, parity=-1)
-        return seq.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
+        X_jk = odd.evaluate_at_quadrature(X, k, True)
+        E_dual = odd.cross_product_load_values(u_jk, X_jk, 1, 2, k, True)      # u x X is odd
+        return odd.apply_inverse_mass_matrix(E_dual, 1, guess=E_guess)
 
     def _potential_force(self, B: jnp.ndarray, a_guess: jnp.ndarray, J_guess: jnp.ndarray):
         """The projected force as ``F = curl a + c h`` and its smoothed version.
@@ -682,13 +709,14 @@ class TimeStepper(eqx.Module):
         harmonic part. The smoothing solves ``(M_1 + mu L_1) a_s = M_1 a``
         ``velocity_smoothing_order`` times. Returns ``(F, M F, F_s, J, a)``.
         """
-        seq = self.seq
-        J = seq.apply_weak_curl(B, dirichlet=True, guess=J_guess)
-        JxB_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
+        odd, seq = self.seq.odd, self.seq.even
+        J = odd.apply_weak_curl(B, dirichlet=True, guess=J_guess)
+        JxB_dual = seq.cross_product_load_values(odd.evaluate_at_quadrature(J, 1, True),
+                                                 odd.evaluate_at_quadrature(B, 2, True), 2, 1, 2, True)
         rhs = seq.apply_incidence_matrix(JxB_dual, 1, dirichlet_in=True, dirichlet_out=True,
                                          transpose=True)
         a = seq.apply_inverse_laplacian(rhs, 1, dirichlet=True, guess=a_guess)
-        ch = ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq) * self.harmonic
+        ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True) + ch
         a_s = a
         for _ in range(self.velocity_smoothing_order):
@@ -719,6 +747,7 @@ class TimeStepper(eqx.Module):
         field ``H_guess`` passes through untouched.
         """
         seq = self.seq
+        odd, even = seq.odd, seq.even
         newton_it = jnp.int32(0)
         if self.potential_velocity:
             F, MF, u, J, a = self._potential_force(B, state.warm.a, J_guess)   # u the smoothed force
@@ -730,7 +759,7 @@ class TimeStepper(eqx.Module):
                 J_guess=J_guess, F_guess=state.last.F)
             # M F once: ||F||_M and the Newton right-hand side; the increment
             # applies M_2 twice in total (M F, M u).
-            MF = seq.apply_mass_matrix(F, 2)
+            MF = even.apply_mass_matrix(F, 2)
             if self.newton:
                 u, a, newton_it = newton_direction(seq, B, J, MF, state.warm.a, self.newton_penalty,
                                                    self.newton_tol, self.newton_maxiter, self.newton_passes)
@@ -738,11 +767,11 @@ class TimeStepper(eqx.Module):
                 # gradient descent on the smoothed force
                 u, a = self.smooth_velocity(F), state.warm.a
         # M u once: the linesearch numerator and ||u||_M.
-        Mu = seq.apply_mass_matrix(u, 2)
+        Mu = even.apply_mass_matrix(u, 2)
 
         # u at the quadrature points once: the cross product and the CFL
         # number both read it.
-        u_jk = seq.evaluate_at_quadrature(u, 2, True)
+        u_jk = even.evaluate_at_quadrature(u, 2, True)
         E = self._induction_field(u_jk, X, E_guess)
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
 
@@ -764,7 +793,7 @@ class TimeStepper(eqx.Module):
         # so the warning described a contradiction that no longer existed. It
         # also cited a bare line number, which had drifted by three within a
         # day -- cite the SYMBOL, not the line.)
-        dB = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
+        dB = odd.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         H = X if self.auxiliary_B_field else H_guess
         return Increment(dB, u, Mu, F, MF, p, H, JxX, J, E, cfl_max, a, newton_it)
 
@@ -776,7 +805,7 @@ class TimeStepper(eqx.Module):
         along the increment exactly (``dE = -dt <F, u>_M + dt^2 ||dB||^2 / 2``).
         The cap: ``cfl = inf`` gives ``min(dt_star, inf) = dt_star`` exactly.
         """
-        slope, curvature = inc.F @ inc.Mu, self.seq.l2_norm_sq(inc.dB, 2)
+        slope, curvature = inc.F @ inc.Mu, self.seq.odd.l2_norm_sq(inc.dB, 2)
         dt_star = slope / curvature
         # a non-positive dt* is no step: the energy does not decrease along
         # the increment; a negative step would climb it
@@ -840,8 +869,8 @@ class TimeStepper(eqx.Module):
                                          state.warm.J, state.warm.E)
         dt0, dt_star = self._step_size(inc0)
         dB0 = inc0.dB
-        dB0_norm = seq.l2_norm(dB0, 2)
-        u_jk = seq.evaluate_at_quadrature(inc0.u, 2, True)
+        dB0_norm = seq.odd.l2_norm(dB0, 2)
+        u_jk = seq.even.evaluate_at_quadrature(inc0.u, 2, True)
         one = jnp.ones((), B_n.dtype)
 
         def sweep(carry):
@@ -854,8 +883,8 @@ class TimeStepper(eqx.Module):
                 PB, H = self._helicity_proxy(B_mid, H, H)
                 lam = self._helicity_lambda(E, PB, H).astype(B_n.dtype)
                 E = E - lam.astype(E.dtype) * H
-            g = dt * seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
-            resid = seq.l2_norm(g - x, 2) / (dt * dB0_norm)
+            g = dt * seq.odd.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
+            resid = seq.odd.l2_norm(g - x, 2) / (dt * dB0_norm)
             k, n_eval = k + 1, n_eval + 1
             converged = resid <= tol
             restart = (~converged & (~(resid < PICARD_BLOWUP) | (k >= PICARD_MAX))
@@ -895,7 +924,7 @@ class TimeStepper(eqx.Module):
                 PB, H_D = self._helicity_proxy(B_n, inc.H, state.warm.H)
                 lam = self._helicity_lambda(inc.E, PB, H_D, dt).astype(B_n.dtype)
                 E = inc.E - lam * H_D
-                inc = inc._replace(E=E, H=H_D, dB=self.seq.apply_incidence_matrix(
+                inc = inc._replace(E=E, H=H_D, dB=self.seq.odd.apply_incidence_matrix(
                     E, 1, dirichlet_in=True, dirichlet_out=True))
             B_nplus1 = B_n + dt * inc.dB
 
@@ -936,19 +965,18 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, dt: float = 1.0, step: in
     beats it.
     """
     seq = ts.seq
-    n = seq.n(2, True)
+    odd, even = seq.odd, seq.even
     F0, p0, J0, X0, JxX0 = compute_force(B_dof, seq, ts.auxiliary_B_field)
-    MF0 = seq.apply_mass_matrix(F0, 2)
+    MF0 = even.apply_mass_matrix(F0, 2)
     resid0 = (jnp.sqrt(F0 @ MF0) / force_scale_jit(seq, B_dof)) ** 2
-    n1 = seq.n(1, True)
-    zeros1 = jnp.zeros(n1, dtype=DTYPE)
+    zeros1_odd, zeros1_even = jnp.zeros(odd.n(1, True), dtype=DTYPE), jnp.zeros(even.n(1, True), dtype=DTYPE)
     return State(
         B_n=B_dof, B_nplus1=B_dof,
         dt=jnp.asarray(dt, dtype=DTYPE), dt_star=jnp.asarray(dt, dtype=DTYPE),
         cfl_max=jnp.zeros((), dtype=DTYPE),
-        warm=WarmStarts(p=p0, H=X0 if ts.auxiliary_B_field else zeros1, JxH=JxX0, J=J0, E=zeros1, a=zeros1,
-                        A=zeros1, resistive_delta=jnp.zeros(n, dtype=DTYPE)),
-        last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(n, dtype=DTYPE),
+        warm=WarmStarts(p=p0, H=X0 if ts.auxiliary_B_field else zeros1_odd, JxH=JxX0, J=J0, E=zeros1_odd,
+                        a=zeros1_even, A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2, True), dtype=DTYPE)),
+        last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2, True), dtype=DTYPE),
                       v_norm=jnp.zeros((), dtype=DTYPE), newton_it=jnp.int32(0),
                       helicity_lambda=jnp.zeros((), dtype=DTYPE), resistive_it=jnp.int32(0),
                       resistive_moved=jnp.zeros((), dtype=DTYPE)),
@@ -1000,7 +1028,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
         seq = ts.seq
         state = ts.relaxation_step(state)
         B_n, B_new = state.B_n, state.B_nplus1
-        dE = 0.5 * ((B_new - B_n) @ seq.apply_mass_matrix(B_new + B_n, 2))
+        dE = 0.5 * ((B_new - B_n) @ seq.odd.apply_mass_matrix(B_new + B_n, 2))
         resid = (state.last.F_norm / force_scale(seq, B_new)) ** 2
         better = resid < state.best.resid
         best = BestState(B=jnp.where(better, B_n, state.best.B),
@@ -1011,7 +1039,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
             dE=dE, F=state.last.F_norm, v=state.last.v_norm,
             dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
             div=compute_divergence_norm(state.B_n, seq),
-            Fu=state.last.F @ seq.apply_mass_matrix(state.last.v, 2),
+            Fu=state.last.F @ seq.even.apply_mass_matrix(state.last.v, 2),
             newton_it=state.last.newton_it, res_it=state.last.resistive_it, res_moved=state.last.resistive_moved,
             hcorr=state.last.helicity_lambda, resid=resid)
         if ts.midpoint:
@@ -1040,10 +1068,12 @@ def force_scale(seq: DeRhamSequence, B: jnp.ndarray) -> jnp.ndarray:
     one natural ``M_0`` solve, the
     strong gradient, its norm.
     """
-    q = 0.5 * seq.magnitude_squared_load(B)
-    w0 = seq.apply_inverse_mass_matrix(q, 0, dirichlet=False)
-    g1 = seq.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
-    return seq.l2_norm(g1, 1, dirichlet=False)
+    B_jk = seq.odd.evaluate_at_quadrature(B, 2, True)
+    even = seq.even                                        # |B|^2 is even
+    q = 0.5 * even.dot_product_load_values(B_jk, B_jk, 0, 2, 2, dirichlet_n=False)
+    w0 = even.apply_inverse_mass_matrix(q, 0, dirichlet=False)
+    g1 = even.apply_strong_grad(w0, dirichlet_in=False, dirichlet_out=False)
+    return even.l2_norm(g1, 1, dirichlet=False)
 
 
 #: :func:`force_scale` compiled, the sequence an argument of the compiled function.
@@ -1068,7 +1098,8 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     first use); the loop uses the compiled one.
     """
     aux = ts.auxiliary_B_field
-    on = seq if seq.residual is None else seq.residual      # the energy, in the residual precision
+    odd = seq.odd
+    on = odd if odd.residual is None else odd.residual      # the energy of B, in the residual precision
 
     def probe(seq, aux, B, p, H, JxH, J, F_prev, pw_guess, A):
         F, p, J, X, JxX = compute_force(B, seq, aux, p_guess=p, H_guess=H, JxH_guess=JxH,
@@ -1076,8 +1107,9 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
         p_w, F_w, v = weak_pressure(J, X, seq, aux, p_guess=pw_guess)
         diag = pressure_diagnostics(B, p, p_w, F_w, v, seq)
         h, A_new = compute_helicity(B, seq, A)
-        JoverB = seq.l2_norm(J, 1) / seq.l2_norm(B, 2)
-        JB = J @ seq.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
+        odd = seq.odd
+        JoverB = odd.l2_norm(J, 1) / odd.l2_norm(B, 2)
+        JB = J @ odd.apply_projection_matrix(B, 2, 1, True, dirichlet_out=True)
         return p, (X if aux else H), JxX, J, A_new, p_w, h, JoverB, JB, diag
 
     probe_jit = eqx.filter_jit(probe)      # the sequence an argument, not a captured constant
@@ -1230,7 +1262,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time in samples, callbacks and reconnections; wall excludes it
-    pw = jnp.zeros(seq.n(0, True), dtype=DTYPE)
+    pw = jnp.zeros(seq.even.n(0, True), dtype=DTYPE)
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw, eager=True)   # the start of THIS run
     E0, h0 = scalars["E"], scalars["helicity"]

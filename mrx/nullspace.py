@@ -370,6 +370,11 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
                                  f"use float64 for the gap")
                 print(line, flush=True)
 
+    if seq.half_period and seq.parity is None:
+        # the reduced views hold their shares of the forms (the odd view the
+        # harmonic 1- and 2-forms, the even view the constants)
+        for view in (seq.odd, seq.even):
+            compute_nullspaces(view, view._require_operators(), gap_sweeps=gap_sweeps, verbose=verbose)
     return operators
 
 

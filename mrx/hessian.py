@@ -78,7 +78,7 @@ def harmonic_atom_profiles(seq, field):
     velocity along ``c``. Traceable in ``field``.
     """
     shape = tuple(int(v) for v in seq.quad.shape)
-    f_jk = (seq.evaluate_at_quadrature(field, 2, True) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+    f_jk = (seq.odd.evaluate_at_quadrature(field, 2, True) / seq.jacobian_j[:, None]).reshape(shape + (3,))
     prof_t = f_jk[..., 1].mean(axis=(1, 2))
     prof_z = f_jk[..., 2].mean(axis=(1, 2))
     grads = [_ddx(f_jk, x, ax, ax > 0) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
@@ -202,32 +202,33 @@ def second_variation(seq, B, J, kappa=0.0):
     On a half-period sequence every load carries its parity (``u x B`` and
     ``J x u`` odd, the Hessian's image even; :mod:`mrx.symmetry`).
     """
-    B_jk = seq.evaluate_at_quadrature(B, 2, True)
-    J_jk = seq.evaluate_at_quadrature(J, 1, True)
+    odd, even = seq.odd, seq.even            # B, J, E, Q, dJ, W odd; u and the Hessian's image even
+    B_jk = odd.evaluate_at_quadrature(B, 2, True)
+    J_jk = odd.evaluate_at_quadrature(J, 1, True)
     Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
     n_angles = int(seq.quad.shape[1]) * int(seq.quad.shape[2])
     weight = jnp.repeat(parallel_penalty_profile(seq, B, kappa), n_angles)
 
     def m1_inv(rhs):
-        return seq.apply_inverse_mass_matrix(rhs, 1, dirichlet=True)
+        return odd.apply_inverse_mass_matrix(rhs, 1, dirichlet=True)
 
     def apply(u):
-        u_jk = seq.evaluate_at_quadrature(u, 2, True)
-        E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True, parity=-1))
-        Q = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
-        Q_jk = seq.evaluate_at_quadrature(Q, 2, True)
-        dJ = m1_inv(seq.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
+        u_jk = even.evaluate_at_quadrature(u, 2, True)
+        E = m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True))
+        Q = odd.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
+        Q_jk = odd.evaluate_at_quadrature(Q, 2, True)
+        dJ = m1_inv(odd.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
                                                 transpose=True))
-        dJ_jk = seq.evaluate_at_quadrature(dJ, 1, True)
-        JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True, parity=-1)
-        W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
+        dJ_jk = odd.evaluate_at_quadrature(dJ, 1, True)
+        JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True)
+        W = m1_inv(odd.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
                                               transpose=True))
-        W_jk = seq.evaluate_at_quadrature(W, 1, True)
+        W_jk = odd.evaluate_at_quadrature(W, 1, True)
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
-        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True, parity=1)
-                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True, parity=1)
-                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True, parity=1))
-                + seq.vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True, parity=1))
+        return (even.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
+                + 0.5 * (even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
+                         + even.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True))
+                + even.vector_load_values(B_jk * (weight * s)[:, None], 2, 2, True))
 
     return apply
 
@@ -265,23 +266,25 @@ def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TO
     curvature and makes no further progress there. Returns ``(u, a, info)``
     with ``info`` the iteration count, negative when the residual met ``tol``.
     """
-    ops = seq._require_operators(None)
-    on = seq if seq.residual is None else seq.residual
-    curl, curl_t, A = _newton_system(seq, B, J, kappa)
+    even = seq.even                           # the potential a and the direction u = curl a are even
+    ops = even._require_operators(None)
+    on = even if even.residual is None else even.residual
+    curl, curl_t, A = _newton_system(even, B, J, kappa)
     A_res = _newton_system(on, B, J, kappa)[2]
     atom = harmonic_preconditioner(seq, B, kappa)
     rhs = curl_t(MF)
-    # a half-period sequence: the residual loses the round-off of the other parity
-    parity = _parity(seq, 1, True, rhs)
+    # an unreduced half-period sequence: the residual loses the round-off of the other parity
+    parity = _parity(even, 1, True, rhs)
     project_dual = None if parity is None else parity[1]
-    a, info, _ = newton_mr(A_res, A, lambda x: atom(seq, x), rhs, a_guess, tol, maxiter, passes,
+    a, info, _ = newton_mr(A_res, A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, passes,
                            _dual_norm(ops, 1, True), inner_dtype=seq.dtype, project_dual=project_dual)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
 def _newton_system(seq, B, J, kappa):
-    """``(curl, curl_t, A)`` of the Newton system ``curl^T H curl a = curl^T M_2 F`` on ``seq``."""
+    """``(curl, curl_t, A)`` of the Newton system ``curl^T H curl a = curl^T M_2 F`` on the
+    even view ``seq`` (the potential's space)."""
     Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), kappa)
 
     def curl(a):
