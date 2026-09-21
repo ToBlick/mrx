@@ -31,10 +31,15 @@ smooth one (nothing harmonic about it; its gradient is an EVEN vector --
 velocity's): the k=0 natural solve of ``<grad f,
 grad v> = <grad psi, grad v>`` recovers ``psi`` up to the constant, the
 gradient of the data loaded against the gradient of the test function; the
-k=3 natural solve of ``<delta rho, delta tau> = <grad psi, delta tau>``
-with ``delta`` the weak gradient into the free 2-forms recovers ``grad psi``
-(the free space carries no normal condition, so nothing constrains ``psi``;
-the Dirichlet 2-forms would force ``d psi / dn = 0`` on the wall).
+k=3 natural solve of ``<delta rho, delta tau> = <grad rho*, delta tau>``
+with ``delta = -M_2^-1 D_2^T M_3`` the weak gradient into the FREE 2-forms
+recovers ``grad rho*`` for ``rho* = (1 - r^2) psi``: the weak gradient is
+the adjoint of the divergence on 2-forms with no normal condition, so it is
+the gradient of functions that VANISH on the wall -- the natural k=3
+Laplacian is the Dirichlet Laplacian on the density (measured 2026-09-21:
+for a psi with boundary values the free k=3 solve recovers 8% of ``grad
+psi``, the projection onto those gradients). The Dirichlet 2-forms give
+the Neumann one instead.
 """
 import jax
 import jax.numpy as jnp
@@ -51,7 +56,7 @@ LAM = 1.0
 # (6, 12, 6) p=2 gave 0.087 and 0.152): to be replaced by 1.25x the measured
 # errors once the suite has run.
 ERROR_BAND = {1: 0.15, 2: 0.25}
-# Relative L2 error of psi (k=0, the constant removed) and of grad psi (k=3).
+# Relative L2 error of psi (k=0, the constant removed) and of grad rho* (k=3).
 # PROVISIONAL likewise.
 SCALAR_ERROR_BAND = {0: 0.1, 3: 0.25}
 
@@ -187,9 +192,13 @@ def test_manufactured_scalar_solution(seq, k):
         err_sq = float(f @ seq.apply_mass_matrix(f, 0, False)) - 2.0 * float(f @ load0) + target_sq
         what, k_res, dbc = "psi", 0, False
     else:
-        grad_psi = jax.grad(psi)
-        load = seq.load(lambda xi: grad_psi(seq.map(xi)), 2, dirichlet=False)
-        # rhs_i = <grad psi, delta Lambda_i>, delta = -M_2^-1 D_2^T M_3 the weak gradient into the free 2-forms
+        def rho(xi):                        # vanishes on the wall r = 1: in the range of the weak gradient
+            return (1.0 - xi[0] ** 2) * psi(seq.map(xi))
+
+        def grad_rho(xi):                   # the physical gradient, DF^-T d rho / d xi
+            return jnp.linalg.solve(jax.jacfwd(seq.map)(xi).T, jax.grad(rho)(xi))
+        load = seq.load(grad_rho, 2, dirichlet=False)
+        # rhs_i = <grad rho*, delta Lambda_i>, delta = -M_2^-1 D_2^T M_3 the weak gradient into the free 2-forms
         w = seq.apply_inverse_mass_matrix(load, 2, dirichlet=False)
         rhs = -seq.apply_mass_matrix(seq.apply_incidence_matrix(w, 2, dirichlet_in=False, dirichlet_out=False), 3, False)
         r3, info = seq.apply_inverse_laplacian(rhs, 3, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
@@ -198,10 +207,10 @@ def test_manufactured_scalar_solution(seq, k):
         g = -seq.apply_inverse_mass_matrix(
             seq.apply_derivative_matrix(r3.astype(mrx.DTYPE), 2, dirichlet_in=False, dirichlet_out=False, transpose=True),
             2, dirichlet=False)
-        gq = jax.vmap(lambda xi: grad_psi(seq.map(xi)))(seq.quad.x)
+        gq = jax.vmap(grad_rho)(seq.quad.x)
         target_sq = _volume_integrals(seq, jnp.sum(gq ** 2, axis=1))
         err_sq = float(g @ seq.apply_mass_matrix(g, 2, False)) - 2.0 * float(g @ load) + target_sq
-        what, k_res, dbc = "grad psi", 3, False
+        what, k_res, dbc = "grad rho*", 3, False
     err = float(np.sqrt(max(err_sq, 0.0)) / np.sqrt(target_sq))
 
     def norm(v):
