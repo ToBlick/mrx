@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from mrx.spline_bases import DerivativeSpline, SplineBasis
-from mrx.symmetry import reflect, reflection_permutation, reflection_plan, symmetrize
+from mrx.symmetry import parity_extraction, raw_reflection, reflect, reflection_permutation, reflection_plan, symmetrize
 
 
 @pytest.mark.parametrize("n,p", [(8, 2), (9, 3), (12, 1)])
@@ -68,3 +68,24 @@ def test_half_period_mass_apply_matches_the_full_period(seq, b0):
         y_full = full.apply_mass_matrix(x, k, dirichlet=True)
         tol = 1e3 * float(jnp.finfo(seq.dtype).eps)
         assert float(jnp.max(jnp.abs(y_half - y_full))) < tol * float(jnp.max(jnp.abs(y_full)))
+
+
+@pytest.mark.parametrize("k", range(4))
+def test_parity_extraction_partitions_the_free_space(seq, k):
+    """``E_red = X^T E`` per parity: orthonormal rows, every reduced DoF a raw
+    field of that parity (``E_red R = s E_red``, asserted by the builder), and
+    the two parities together span the free space, ``n_+ + n_- = n_free``,
+    with ``n_-`` about half of it. Checked on the Dirichlet and the free space."""
+    perm, sign = raw_reflection(seq.reflection_plan[k])
+    for dirichlet in (True, False):
+        n_free = seq.n(k, dirichlet)
+        sizes = {}
+        for s in (1, -1):
+            e = parity_extraction(seq, k, dirichlet, s)
+            sizes[s] = int(e.forward_shape[0])
+            # a random reduced vector expands to a raw field of parity s
+            c = jnp.asarray(np.random.default_rng(k).standard_normal(sizes[s]), dtype=seq.dtype)
+            raw = e.T @ c
+            assert float(jnp.max(jnp.abs(sign * raw[perm] - s * raw))) < 1e-5 * float(jnp.max(jnp.abs(raw)))
+        assert sizes[1] + sizes[-1] == n_free, (k, dirichlet, sizes, n_free)
+        assert 0.4 * n_free < sizes[-1] < 0.6 * n_free, (k, dirichlet, sizes, n_free)

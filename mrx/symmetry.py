@@ -160,6 +160,121 @@ def symmetrize_like(y, x, plan_out, plan_in):
     return symmetrize(y, plan_out, parity_of(x, plan_in))
 
 
+def raw_reflection(plan):
+    """The reflection of a raw k-form DoF vector as a signed permutation,
+    ``(R x)[i] = sign[i] x[perm[i]]``, from the plan of :func:`reflection_plan`."""
+    n_raw = sum(int(np.prod(shape)) for *_, shape in plan)
+    perm, sign, off = np.empty(n_raw, dtype=np.int64), np.empty(n_raw), 0
+    for perm_t, perm_z, sgn, shape in plan:
+        n_c = int(np.prod(shape))
+        idx = np.arange(n_c).reshape(shape)
+        perm[off:off + n_c] = off + idx[:, list(perm_t), :][:, :, list(perm_z)].ravel()
+        sign[off:off + n_c] = sgn
+        off += n_c
+    return perm, sign
+
+
+def parity_extraction(seq, k, dirichlet, parity):
+    """The extraction of the k-form space of one PARITY on a half-period
+    sequence: ``E_red = X^T E`` (``n_red x n_raw``), ``E`` the polar and
+    boundary extraction (raw -> free) and ``X`` (``n_free x n_red``, orthonormal
+    columns) a basis of the ``parity``-eigenspace of the free-space reflection
+    ``R_free = (E E^T)^-1 E R E^T``. A field of parity ``s`` on the free space
+    is ``R_free v = s v``, equivalently ``R E^T v = s E^T v`` on the raw grid,
+    so every reduced DoF is a raw field of that parity and the half-period
+    kernels (which return ``2 x`` the half-period moments) are exact through
+    ``E_red`` with no projection: ``E_red (2 m_half) = E_red m_full``.
+
+    The basis: ``R_free`` is a signed permutation on the bulk rows (one
+    reduced DoF per pair ``{i, R(i)}``, ``(e_i + s sign_i e_R(i)) / sqrt 2``;
+    a fixed point on the fold planes ``zeta = 0, 1/2`` is kept when its sign
+    is ``s`` and dropped otherwise) and a small dense block on the polar core
+    rows (an orthonormal basis of its ``s``-eigenspace). Built once on the
+    host as COO triplets, applied like ``E`` (one gather + ``segment_sum``).
+    Asserted at build time: ``E_red R = s E_red`` and ``E_red E_red^T = I``;
+    the two parities partition the free space, ``n_+ + n_- = n_free``
+    (:func:`parity_extraction_sizes`)."""
+    from scipy import sparse  # noqa: PLC0415
+    from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
+
+    s = int(parity)
+    if s not in (1, -1):
+        raise ValueError("parity is +1 or -1")
+    e = seq.E(k, dirichlet)
+    n_free, n_raw = (int(v) for v in e.forward_shape)
+    E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64), (np.asarray(e.rows), np.asarray(e.cols))),
+                          shape=(n_free, n_raw))
+    perm, sign = raw_reflection(seq.reflection_plan[k])
+    R = sparse.csr_matrix((sign, (np.arange(n_raw), perm)), shape=(n_raw, n_raw))
+    gram = (E @ E.T).tocsr()
+    counts = np.bincount(np.asarray(e.rows), minlength=n_free)
+    core = np.flatnonzero(counts > 1)
+    is_core = np.zeros(n_free, dtype=bool)
+    is_core[core] = True
+    bulk = np.flatnonzero(~is_core)
+    ERE = (E @ R @ E.T).tocsr()
+    block = ERE[bulk].tocoo()
+    if block.nnz != bulk.size or np.any(is_core[block.col]):
+        raise RuntimeError("the free-space reflection is not a permutation on the bulk rows")
+    if core.size and np.abs(ERE[np.ix_(core, bulk)]).max() > 0:
+        raise RuntimeError("the free-space reflection couples core and bulk rows")
+    perm_free, sign_free = np.arange(n_free), np.ones(n_free)
+    perm_free[bulk[block.row]], sign_free[bulk[block.row]] = block.col, block.data
+
+    # the bulk orbits
+    rows, cols, vals = [], [], []          # of X (n_free x n_red)
+    seen = np.zeros(n_free, dtype=bool)
+    j = 0
+    for i in bulk:
+        if seen[i]:
+            continue
+        r = perm_free[i]
+        if r == i:
+            seen[i] = True
+            if sign_free[i] == s:
+                rows.append(i)
+                cols.append(j)
+                vals.append(1.0)
+                j += 1
+        else:
+            seen[i] = seen[r] = True
+            rows += [i, r]
+            cols += [j, j]
+            vals += [np.sqrt(0.5), s * sign_free[i] * np.sqrt(0.5)]
+            j += 1
+    # the polar core: the s-eigenspace of the core block, orthonormal
+    if core.size:
+        inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray())
+        C = inverse @ ERE[np.ix_(core, core)].toarray()
+        candidates = []
+        for M in (C, C.T):
+            _, sv, vt = np.linalg.svd(M - s * np.eye(core.size))
+            null = vt[sv < 1e-10 * max(1.0, sv.max())].T          # orthonormal columns
+            candidates.append(null)
+        for null in candidates:
+            n_c = null.shape[1]                                     # one reduced DoF per column
+            core_rows = np.tile(core, n_c)                          # column-major: column j fills core rows
+            core_cols = np.repeat(np.arange(j, j + n_c), core.size)
+            X_try = sparse.coo_matrix((np.concatenate([vals, null.ravel(order="F")]),
+                                       (np.concatenate([rows, core_rows]), np.concatenate([cols, core_cols]))),
+                                      shape=(n_free, j + n_c)).tocsr()
+            E_red = (X_try.T @ E).tocsr()
+            if abs(E_red @ R - s * E_red).max() < 1e-10:
+                break
+        else:
+            raise RuntimeError(f"no parity basis of the polar core rows satisfies E_red R = {s} E_red")
+    else:
+        X_try = sparse.coo_matrix((vals, (rows, cols)), shape=(n_free, j)).tocsr()
+        E_red = (X_try.T @ E).tocsr()
+    n_red = E_red.shape[0]
+    if abs(E_red @ R - s * E_red).max() > 1e-10:
+        raise RuntimeError("E_red R != s E_red")
+    if abs(E_red @ E_red.T - sparse.identity(n_red)).max() > 1e-10:
+        raise RuntimeError("E_red E_red^T != I")
+    coo = E_red.tocoo()
+    return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, (n_red, n_raw), dtype=e.dtype)
+
+
 def _extraction_gram_core(seq, k, dirichlet):
     """``(core, inverse)``: the rows of the extracted k-form space where
     ``E E^T`` is not the identity (the polar rows, where the extraction fuses
