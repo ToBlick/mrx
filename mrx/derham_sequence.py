@@ -482,8 +482,10 @@ class DeRhamSequence():
         if not REFINE or self.dtype == RESIDUAL_DTYPE:
             return None     # a sequence in the residual precision refines nothing
         if self.parity is not None:       # the float64 twin of a reduced view: the base twin, reduced
-            base = self._base.residual
-            return None if base is None else base.parity_view(self.parity)
+            if self._residual is None:
+                base = self._base.residual
+                self._residual = None if base is None else base.parity_view(self.parity)
+            return self._residual
         if self._residual is None:
             self._require_geometry()
             view = copy.copy(self)
@@ -564,6 +566,8 @@ class DeRhamSequence():
                                {key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.laplacian_lumping.items()}),
                               is_leaf=lambda x: x is None or isinstance(x, dict))
             self.operators = ops
+            if self.residual is not None:          # the twin shares the bundle, as the base's does
+                self.residual.operators = ops
             return ops
         ops = op.new_operators(self)
         ops = op.assemble_mass_metric_lumping_preconditioner(
