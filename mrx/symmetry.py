@@ -191,9 +191,10 @@ def parity_extraction(seq, k, dirichlet, parity):
     is ``s`` and dropped otherwise) and a small dense block on the polar core
     rows (an orthonormal basis of its ``s``-eigenspace). Built once on the
     host as COO triplets, applied like ``E`` (one gather + ``segment_sum``).
-    Asserted at build time: ``E_red R = s E_red`` and ``E_red E_red^T = I``;
-    the two parities partition the free space, ``n_+ + n_- = n_free``
-    (:func:`parity_extraction_sizes`)."""
+    Asserted at build time: ``E_red R = s E_red`` and ``X^T X = I``. Like
+    ``E``, ``E_red`` is not row-orthonormal on the polar core (``E_red E_red^T
+    = X^T (E E^T) X``, the identity plus the reduced core block); the two
+    parities partition the free space, ``n_+ + n_- = n_free``."""
     from scipy import sparse  # noqa: PLC0415
     from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
 
@@ -201,6 +202,7 @@ def parity_extraction(seq, k, dirichlet, parity):
     if s not in (1, -1):
         raise ValueError("parity is +1 or -1")
     e = seq.E(k, dirichlet)
+    TOL = 1e3 * float(np.finfo(np.dtype(e.dtype)).eps)       # the extraction's own rounding
     n_free, n_raw = (int(v) for v in e.forward_shape)
     E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64), (np.asarray(e.rows), np.asarray(e.cols))),
                           shape=(n_free, n_raw))
@@ -246,11 +248,15 @@ def parity_extraction(seq, k, dirichlet, parity):
     if core.size:
         inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray())
         C = inverse @ ERE[np.ix_(core, core)].toarray()
+        # C is an involution up to the extraction's dtype (its xi weights are stored in
+        # the working dtype: 3e-8 in float32), so the dimension of the s-eigenspace is
+        # the number of eigenvalues near s, and its basis the right singular vectors
+        # of C - s I with the smallest singular values.
         candidates = []
         for M in (C, C.T):
-            _, sv, vt = np.linalg.svd(M - s * np.eye(core.size))
-            null = vt[sv < 1e-10 * max(1.0, sv.max())].T          # orthonormal columns
-            candidates.append(null)
+            n_s = int(np.sum(np.abs(np.linalg.eigvals(M) - s) < 0.5))
+            _, _, vt = np.linalg.svd(M - s * np.eye(core.size))
+            candidates.append(vt[core.size - n_s:].T if n_s else np.zeros((core.size, 0)))
         for null in candidates:
             n_c = null.shape[1]                                     # one reduced DoF per column
             core_rows = np.tile(core, n_c)                          # column-major: column j fills core rows
@@ -259,7 +265,7 @@ def parity_extraction(seq, k, dirichlet, parity):
                                        (np.concatenate([rows, core_rows]), np.concatenate([cols, core_cols]))),
                                       shape=(n_free, j + n_c)).tocsr()
             E_red = (X_try.T @ E).tocsr()
-            if abs(E_red @ R - s * E_red).max() < 1e-10:
+            if abs(E_red @ R - s * E_red).max() < TOL:
                 break
         else:
             raise RuntimeError(f"no parity basis of the polar core rows satisfies E_red R = {s} E_red")
@@ -267,10 +273,10 @@ def parity_extraction(seq, k, dirichlet, parity):
         X_try = sparse.coo_matrix((vals, (rows, cols)), shape=(n_free, j)).tocsr()
         E_red = (X_try.T @ E).tocsr()
     n_red = E_red.shape[0]
-    if abs(E_red @ R - s * E_red).max() > 1e-10:
+    if abs(E_red @ R - s * E_red).max() > TOL:
         raise RuntimeError("E_red R != s E_red")
-    if abs(E_red @ E_red.T - sparse.identity(n_red)).max() > 1e-10:
-        raise RuntimeError("E_red E_red^T != I")
+    if abs(X_try.T @ X_try - sparse.identity(n_red)).max() > TOL:
+        raise RuntimeError("X^T X != I")
     coo = E_red.tocoo()
     return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, (n_red, n_raw), dtype=e.dtype)
 
