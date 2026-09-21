@@ -81,7 +81,7 @@ def test_parity_extraction_partitions_the_free_space(seq, k):
         n_free = seq.n(k, dirichlet)
         sizes = {}
         for s in (1, -1):
-            e = parity_extraction(seq, k, dirichlet, s)
+            e, _, _ = parity_extraction(seq, k, dirichlet, s)
             sizes[s] = int(e.forward_shape[0])
             # a random reduced vector expands to a raw field of parity s
             c = jnp.asarray(np.random.default_rng(k).standard_normal(sizes[s]), dtype=seq.dtype)
@@ -97,7 +97,8 @@ def test_parity_views_agree_with_the_projected_applies(seq, b0):
     on a field of that parity: ``X^T (M v) = M_red (X^T v)`` for ``v = X X^T v``,
     with ``X`` the view's expansion (verified 2026-09-20 to 2e-7 on every ``(k,
     dirichlet)`` of a torus)."""
-    for s, x in ((-1, b0), (1, seq.project_parity(jnp.ones(seq.n(2, True), dtype=seq.dtype), 2, 1))):
+    even = seq.project_parity(jnp.asarray(np.random.default_rng(2).standard_normal(seq.n(2, True)), dtype=seq.dtype), 2, 1)
+    for s, x in ((-1, b0), (1, even)):
         view = seq.parity_view(s)
         X = view.reduction[(2, True)]
         c = X.T @ x
@@ -121,7 +122,7 @@ def test_parity_view_solves_agree_with_the_base(seq, b0):
     view.compute_nullspaces(verbose=False)
     X = view.reduction[(2, True)]
     c = X.T @ b0
-    tol = 1e2 * seq.tol + 1e2 * float(jnp.finfo(seq.dtype).eps)
+    tol = 1e2 * seq.tol + 1e3 * float(jnp.finfo(seq.dtype).eps)   # a solve at 1e-3 scale in float32
     rhs_base, rhs_view = seq.apply_laplacian(b0, 2), view.apply_laplacian(c, 2)
     x_base, it_base = seq.apply_inverse_laplacian(rhs_base, 2, return_info=True)
     x_view, it_view = view.apply_inverse_laplacian(rhs_view, 2, return_info=True)
