@@ -184,8 +184,10 @@ def _half_period_apply(seq, core, k_in, k_out):
     accumulates); a mixed input has to be split by the caller, as the
     dense-core probes of the preconditioner build do
     (:func:`mrx.metric_lumping_laplacian._probe_rows`). A full-period
-    sequence gets ``core`` itself."""
-    if not seq.half_period:
+    sequence gets ``core`` itself, and so does a reduced parity view
+    (:meth:`~mrx.derham_sequence.DeRhamSequence.parity_view`): its extraction
+    combines the mirror images."""
+    if not seq.half_period or seq.parity is not None:
         return core
     plan_in, plan_out = seq.reflection_plan[k_in], seq.reflection_plan[k_out]
 

@@ -42,7 +42,7 @@ import mrx
 from mrx.pytree import register_arrays
 from mrx.differential_forms import DifferentialForm
 from mrx.precision import REFINE, RESIDUAL_DTYPE, cast_arrays, default_tol, solve_tol
-from mrx.extraction_operators import (PolarExtractionOperator,
+from mrx.extraction_operators import (MatrixFreeExtraction, PolarExtractionOperator,
                                       bc_extraction_op, get_xi)
 from mrx.nullspace import (compute_nullspaces, compute_nullspaces_iterative,
                            get_nullspace)
@@ -51,7 +51,7 @@ from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.quadrature import QuadratureRule
 from mrx.spline_bases import basis_derivative_table, basis_table
-from mrx.symmetry import free_projector, parity_of, reflection_plan, symmetrize
+from mrx.symmetry import free_projector, parity_extraction, parity_of, reduce_operator, reflection_plan, symmetrize
 from mrx.geometry import SequenceGeometry
 
 
@@ -244,6 +244,14 @@ class DeRhamSequence():
         self.half_period = bool(half_period)
         self.reflection_plan = ({k: reflection_plan(self, k) for k in range(4)}
                                 if half_period else None)
+        #: the parity of the fields this sequence holds: ``None`` on a full-period
+        #: sequence and on the unreduced half-period one, ``+1`` / ``-1`` on the
+        #: reduced views :attr:`even` / :attr:`odd` (:mod:`mrx.symmetry`)
+        self.parity = None
+        self._base = None
+        self._parity_views = {}
+        #: on a reduced view, the expansion ``X`` (free <- reduced) per ``(k, dirichlet)``
+        self.reduction = None
 
         bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
         self.xi = get_xi(ns[1])
@@ -381,6 +389,70 @@ class DeRhamSequence():
         self._residual = None
 
     @property
+    def odd(self):
+        """The sequence reduced to the fields ODD under the stellarator rotation
+        (``B``, ``A``, ``J``, ``E``, ``H``): :meth:`parity_view` of ``-1``."""
+        return self.parity_view(-1)
+
+    @property
+    def even(self):
+        """The sequence reduced to the fields EVEN under the stellarator rotation
+        (``u``, ``F``, ``p``): :meth:`parity_view` of ``+1``."""
+        return self.parity_view(1)
+
+    def parity_view(self, parity):
+        """The half-period sequence with its DoF spaces reduced to one parity
+        (:func:`mrx.symmetry.parity_extraction`): the same geometry, quadrature
+        and raw kernels, its own extraction tables (``E_red = X^T E``, half the
+        DoFs), incidence stencils (``X_out^T G X_in``), operator bundle and
+        residual view. Every apply on it is exact for the fields it holds and
+        needs no parity projection. A full-period sequence is its own view."""
+        if not self.half_period:
+            return self
+        if self.parity is not None:
+            return self if int(parity) == self.parity else self._base.parity_view(parity)
+        s = int(parity)
+        if s in self._parity_views:
+            return self._parity_views[s]
+        view = copy.copy(self)
+        view.parity, view._base, view._parity_views, view._residual, view.operators = s, self, None, None, None
+        view.extraction, view.reduction, view.n_dofs = {}, {}, {}
+        for k in range(4):
+            for dirichlet in (False, True):
+                e_red, x = parity_extraction(self, k, dirichlet, s)
+                view.extraction[(k, dirichlet)], view.reduction[(k, dirichlet)] = e_red, x
+                view.n_dofs[(k, dirichlet)] = int(e_red.forward_shape[0])
+        # the boundary DoFs of the reduced free space: the orbits that touch a boundary raw DoF
+        view.boundary_extraction, view.n_boundary = {}, {}
+        for k in range(4):
+            e_bc = self.E_bc(k)
+            bc_cols = np.zeros(int(e_bc.forward_shape[1]), dtype=bool)
+            bc_cols[np.asarray(e_bc.cols)] = True
+            e_red = view.extraction[(k, False)]
+            rows, cols, vals = np.asarray(e_red.rows), np.asarray(e_red.cols), np.asarray(e_red.vals)
+            hit = np.zeros(int(e_red.forward_shape[0]), dtype=bool)
+            hit[rows[bc_cols[cols]]] = True
+            keep = hit[rows]
+            new_row = np.cumsum(hit) - 1
+            view.boundary_extraction[k] = MatrixFreeExtraction.from_coo(
+                new_row[rows[keep]], cols[keep], vals[keep], (int(hit.sum()), int(e_red.forward_shape[1])),
+                dtype=e_red.dtype)
+            view.n_boundary[k] = int(hit.sum())
+        # the polar grad and curl stencils on the reduced spaces
+        import scipy.sparse as _sp  # noqa: PLC0415
+
+        def basis(k, dirichlet):
+            x = view.reduction[(k, dirichlet)]
+            return _sp.csr_matrix((np.asarray(x.vals, dtype=np.float64), (np.asarray(x.rows), np.asarray(x.cols))),
+                                  shape=x.forward_shape)
+        view.g0_grad = {(din, dout): reduce_operator(basis(1, dout), self.g0_grad[(din, dout)], basis(0, din), self.dtype)
+                        for (din, dout) in self.g0_grad}
+        view.g1_curl = {(din, dout): reduce_operator(basis(2, dout), self.g1_curl[(din, dout)], basis(1, din), self.dtype)
+                        for (din, dout) in self.g1_curl}
+        self._parity_views[s] = view
+        return view
+
+    @property
     def residual(self):
         """The sequence in the residual precision, for the residual of a
         refined solve (:mod:`mrx.precision`, :func:`mrx.solvers.refine`):
@@ -393,10 +465,14 @@ class DeRhamSequence():
         Built once per geometry, on first use."""
         if not REFINE or self.dtype == RESIDUAL_DTYPE:
             return None     # a sequence in the residual precision refines nothing
+        if self.parity is not None:       # the float64 twin of a reduced view: the base twin, reduced
+            base = self._base.residual
+            return None if base is None else base.parity_view(self.parity)
         if self._residual is None:
             self._require_geometry()
             view = copy.copy(self)
             view._residual = None
+            view._parity_views = {}
             view.dtype = RESIDUAL_DTYPE
             view.tol = default_tol(RESIDUAL_DTYPE, refine=False)
             view.geometry = cast_arrays(self.geometry, RESIDUAL_DTYPE)
@@ -612,8 +688,9 @@ class DeRhamSequence():
         (even: velocities, forces, pressures and their gradients) or ``-1``
         (odd: ``B``, ``A``, ``J``, ``H``, the harmonic forms), a Python int
         or a traced scalar. On a full-period sequence ``y_raw`` is returned
-        as is, ``parity`` ignored."""
-        if not self.half_period:
+        as is, ``parity`` ignored; so does a reduced view (:meth:`parity_view`),
+        whose extraction combines the mirror images itself."""
+        if not self.half_period or self.parity is not None:
             return y_raw
         if parity is None:
             raise ValueError("a reduction on a half-period sequence needs the field's parity: "
@@ -623,8 +700,9 @@ class DeRhamSequence():
     def free_projector(self, k, dirichlet=True):
         """The :class:`mrx.symmetry.FreeProjector` of the extracted
         ``(k, dirichlet)`` space (built once), ``None`` on a full-period
-        sequence: what the preconditioners and the solvers project with."""
-        if not self.half_period:
+        sequence: what the preconditioners and the solvers project with. A
+        reduced view (:meth:`parity_view`) holds pure fields and needs none."""
+        if not self.half_period or self.parity is not None:
             return None
         cache = self.__dict__.setdefault("_free_projectors", {})
         key = (int(k), bool(dirichlet))
@@ -637,8 +715,8 @@ class DeRhamSequence():
         (:mod:`mrx.symmetry`), on a half-period sequence: the raw projector
         restricted back onto the extracted space (the conforming restriction
         of :mod:`mrx.projectors`). Where a run is required to start of
-        definite parity. A full-period sequence returns ``v``."""
-        if not self.half_period:
+        definite parity. A full-period sequence and a reduced view return ``v``."""
+        if not self.half_period or self.parity is not None:
             return v
         from mrx.projectors import _conforming_restriction  # noqa: PLC0415  (imports this module)
         e = self.E(k, dirichlet)
@@ -1010,7 +1088,7 @@ class DeRhamSequence():
         u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
         return self.cross_product_load_values(
             w_jk, u_jk, n, m, k, dirichlet_n,
-            parity=self.parity(w, m, dirichlet_m) * self.parity(u, k, dirichlet_k))
+            parity=self.dof_parity(w, m, dirichlet_m) * self.dof_parity(u, k, dirichlet_k))
 
     def cross_product_load_values(self, w_jk, u_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i · (w × u)`` from quadrature values of ``w`` and ``u``.
@@ -1126,13 +1204,16 @@ class DeRhamSequence():
         return self.E(n, dirichlet_n) @ self.symmetrize(integrate_against(
             f_jk, comp_info, comp_shapes, self.quad.shape), n, parity)
 
-    def parity(self, dofs, k, dirichlet=True):
+    def dof_parity(self, dofs, k, dirichlet=True):
         """The parity of a k-form DoF vector of definite parity on a
         half-period sequence (:func:`mrx.symmetry.parity_of`, a traced
         ``+-1``); ``1`` on a full-period sequence. What the loads of a
-        product of two DoF vectors multiply to get the product's parity."""
+        product of two DoF vectors multiply to get the product's parity; on a
+        reduced view (:meth:`parity_view`) it is the view's, statically."""
         if not self.half_period:
             return 1
+        if self.parity is not None:
+            return self.parity
         return parity_of(self.E(k, dirichlet).T @ dofs, self.reflection_plan[k])
 
     def _physical_scalar(self, s_jk, k):
@@ -1166,7 +1247,7 @@ class DeRhamSequence():
         u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
         return self.dot_product_load_values(
             w_jk, u_jk, n, m, k, dirichlet_n,
-            parity=self.parity(w, m, dirichlet_m) * self.parity(u, k, dirichlet_k))
+            parity=self.dof_parity(w, m, dirichlet_m) * self.dof_parity(u, k, dirichlet_k))
 
     def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i f g`` from quadrature values of the scalar
@@ -1182,7 +1263,7 @@ class DeRhamSequence():
         g_jk = self.evaluate_at_quadrature(g, k, dirichlet_k)
         return self.scalar_product_load_values(
             f_jk, g_jk, n, m, k, dirichlet_n,
-            parity=self.parity(f, m, dirichlet_m) * self.parity(g, k, dirichlet_k))
+            parity=self.dof_parity(f, m, dirichlet_m) * self.dof_parity(g, k, dirichlet_k))
 
     def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i . (f v)`` from quadrature values of the scalar
@@ -1201,7 +1282,7 @@ class DeRhamSequence():
         v_jk = self.evaluate_at_quadrature(v, k, dirichlet_k)
         return self.scalar_vector_load_values(
             f_jk, v_jk, n, m, k, dirichlet_n,
-            parity=self.parity(f, m, dirichlet_m) * self.parity(v, k, dirichlet_k))
+            parity=self.dof_parity(f, m, dirichlet_m) * self.dof_parity(v, k, dirichlet_k))
 
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.

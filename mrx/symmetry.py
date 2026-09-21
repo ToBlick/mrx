@@ -174,9 +174,11 @@ def raw_reflection(plan):
     return perm, sign
 
 
-def parity_extraction(seq, k, dirichlet, parity):
-    """The extraction of the k-form space of one PARITY on a half-period
-    sequence: ``E_red = X^T E`` (``n_red x n_raw``), ``E`` the polar and
+def parity_basis(seq, k, dirichlet, parity):
+    """The basis ``X`` (``n_free x n_red``, scipy CSR, orthonormal columns) of
+    the k-form space of one PARITY on a half-period sequence, and ``E`` (scipy
+    CSR) the polar and boundary extraction it is built on. The extraction of the
+    reduced space is ``E_red = X^T E`` (``n_red x n_raw``), ``E`` the polar and
     boundary extraction (raw -> free) and ``X`` (``n_free x n_red``, orthonormal
     columns) a basis of the ``parity``-eigenspace of the free-space reflection
     ``R_free = (E E^T)^-1 E R E^T``. A field of parity ``s`` on the free space
@@ -196,7 +198,6 @@ def parity_extraction(seq, k, dirichlet, parity):
     = X^T (E E^T) X``, the identity plus the reduced core block); the two
     parities partition the free space, ``n_+ + n_- = n_free``."""
     from scipy import sparse  # noqa: PLC0415
-    from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
 
     s = int(parity)
     if s not in (1, -1):
@@ -277,8 +278,34 @@ def parity_extraction(seq, k, dirichlet, parity):
         raise RuntimeError("E_red R != s E_red")
     if abs(X_try.T @ X_try - sparse.identity(n_red)).max() > TOL:
         raise RuntimeError("X^T X != I")
-    coo = E_red.tocoo()
-    return MatrixFreeExtraction.from_coo(coo.row, coo.col, coo.data, (n_red, n_raw), dtype=e.dtype)
+    return X_try, E
+
+
+def parity_extraction(seq, k, dirichlet, parity):
+    """``(E_red, X)`` of :func:`parity_basis` as :class:`MatrixFreeExtraction`
+    operators: ``E_red`` (``n_red x n_raw``, raw -> reduced) and the expansion
+    ``X`` (``n_free x n_red``, reduced -> free; ``X.T`` reduces a free vector of
+    that parity)."""
+    from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
+    X, E = parity_basis(seq, k, dirichlet, parity)
+    e = seq.E(k, dirichlet)
+    E_red = (X.T @ E).tocoo()
+    X = X.tocoo()
+    return (MatrixFreeExtraction.from_coo(E_red.row, E_red.col, E_red.data, E_red.shape, dtype=e.dtype),
+            MatrixFreeExtraction.from_coo(X.row, X.col, X.data, X.shape, dtype=e.dtype))
+
+
+def reduce_operator(X_out, S, X_in, dtype):
+    """``X_out^T S X_in`` for a free-space operator ``S`` (a
+    :class:`MatrixFreeExtraction`, e.g. a polar grad or curl stencil) between the
+    parity bases ``X_in`` and ``X_out`` of :func:`parity_basis`: the operator on
+    the reduced spaces (``d`` commutes with the reflection, so the product is exact)."""
+    from scipy import sparse  # noqa: PLC0415
+    from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
+    Sm = sparse.csr_matrix((np.asarray(S.vals, dtype=np.float64), (np.asarray(S.rows), np.asarray(S.cols))),
+                           shape=S.forward_shape)
+    red = (X_out.T @ Sm @ X_in).tocoo()
+    return MatrixFreeExtraction.from_coo(red.row, red.col, red.data, red.shape, dtype=dtype)
 
 
 def _extraction_gram_core(seq, k, dirichlet):

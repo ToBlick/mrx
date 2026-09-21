@@ -89,3 +89,22 @@ def test_parity_extraction_partitions_the_free_space(seq, k):
             assert float(jnp.max(jnp.abs(sign * raw[perm] - s * raw))) < 1e-5 * float(jnp.max(jnp.abs(raw)))
         assert sizes[1] + sizes[-1] == n_free, (k, dirichlet, sizes, n_free)
         assert 0.4 * n_free < sizes[-1] < 0.6 * n_free, (k, dirichlet, sizes, n_free)
+
+
+def test_parity_views_agree_with_the_projected_applies(seq, b0):
+    """``seq.odd`` / ``seq.even`` (half the DoFs) apply the mass, the projections
+    and the strong derivatives exactly as the unreduced half-period sequence does
+    on a field of that parity: ``X^T (M v) = M_red (X^T v)`` for ``v = X X^T v``,
+    with ``X`` the view's expansion (verified 2026-09-20 to 2e-7 on every ``(k,
+    dirichlet)`` of a torus)."""
+    for s, x in ((-1, b0), (1, seq.project_parity(jnp.ones(seq.n(2, True), dtype=seq.dtype), 2, 1))):
+        view = seq.parity_view(s)
+        X = view.reduction[(2, True)]
+        c = X.T @ x
+        tol = 1e3 * float(jnp.finfo(seq.dtype).eps)
+        for got, want in ((view.apply_mass_matrix(c, 2, True), X.T @ seq.apply_mass_matrix(x, 2, True)),
+                          (view.apply_incidence_matrix(c, 2), view.reduction[(3, True)].T @ seq.apply_incidence_matrix(x, 2)),
+                          (view.apply_projection_matrix(c, 2, 1, True, True),
+                           view.reduction[(1, True)].T @ seq.apply_projection_matrix(x, 2, 1, True, True))):
+            assert float(jnp.max(jnp.abs(got - want))) < tol * float(jnp.max(jnp.abs(want)))
+        assert 0.4 * seq.n(2, True) < view.n(2, True) < 0.6 * seq.n(2, True)
