@@ -185,3 +185,16 @@ the inline mirror of the diagonal. `mrx/hessian.py`, `mrx/relaxation.py`,
 - Open before phase 4: the even view was not re-checked after the basis fix
   (same code path); the Krylov loops still carry the `parity` arguments
   (None on views) until phase 5.
+- 2026-09-21: `get_xi(nt, p)` puts the surgery weights at the splines'
+  centres (Tobias, option 2): the free-space reflection is then a signed
+  permutation on the polar core too and the parity basis is closed form
+  (orbit pairs everywhere, no eigen-decomposition). Phase 4 written and
+  smoke-tested on li383 (6,8,8) on the CPU: Newton, gradient descent and the
+  helicity correction run on the views (`n(2, dbc)` 720 -> 354 for B, 366 for
+  u); midpoint waits for the GPU. Suite on 1a6434f (before phase 4): 52/54,
+  cold 610/514/525 s vs warm 378/345/324 s (the persistent cache, ~38%).
+  Test lessons: the gradient of an even scalar is an EVEN vector; the natural
+  k=3 Laplacian is the Dirichlet Laplacian on the density (its weak gradient
+  is the adjoint of the free divergence), so its manufactured density must
+  vanish on the wall; the equilibrium field's divergence is round-off on
+  both sides of a comparison.

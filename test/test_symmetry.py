@@ -103,10 +103,12 @@ def test_parity_views_agree_with_the_projected_applies(seq, b0):
         X = view.reduction[(2, True)]
         c = X.T @ x
         tol = 1e3 * float(jnp.finfo(seq.dtype).eps)
-        for got, want in ((view.apply_mass_matrix(c, 2, True), X.T @ seq.apply_mass_matrix(x, 2, True)),
-                          (view.apply_incidence_matrix(c, 2), view.reduction[(3, True)].T @ seq.apply_incidence_matrix(x, 2)),
-                          (view.apply_projection_matrix(c, 2, 1, True, True),
-                           view.reduction[(1, True)].T @ seq.apply_projection_matrix(x, 2, 1, True, True))):
+        pairs = [(view.apply_mass_matrix(c, 2, True), X.T @ seq.apply_mass_matrix(x, 2, True)),
+                 (view.apply_projection_matrix(c, 2, 1, True, True),
+                  view.reduction[(1, True)].T @ seq.apply_projection_matrix(x, 2, 1, True, True))]
+        if s == 1:      # the divergence of b0 is round-off on both sides; the random field has one
+            pairs.append((view.apply_incidence_matrix(c, 2), view.reduction[(3, True)].T @ seq.apply_incidence_matrix(x, 2)))
+        for got, want in pairs:
             assert float(jnp.max(jnp.abs(got - want))) < tol * float(jnp.max(jnp.abs(want)))
         assert 0.4 * seq.n(2, True) < view.n(2, True) < 0.6 * seq.n(2, True)
 
