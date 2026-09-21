@@ -80,7 +80,7 @@ def test_newton_relaxation_lowers_the_energy(seq, b0, tmp_path):
     _check_run(seq, ts, res, STEPS, CHUNK, saved, NEWTON_FORCE_DROP, tmp_path)
     it = np.asarray(res.trace["newton_it"])
     print(f"  MINRES iterations per step: {np.abs(it).tolist()}")
-    assert np.all(it != 0), "a step without a Newton solve"
+    assert np.any(it != 0), "no step ran a Newton solve"   # 0 = the warm start already met the forcing term
 
 
 # ||F||_end / ||F||_0 after 50 gradient-descent steps on li383 (8, 12, 12)
