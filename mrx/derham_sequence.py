@@ -577,6 +577,9 @@ class DeRhamSequence():
             **({} if bc_scale is None else {"bc_scale": bc_scale}))
         ops = cast_arrays(ops)
         self.operators = ops
+        if self.half_period:                    # the parity views: the same atoms, reduced
+            for view in (self.odd, self.even):
+                view.build_preconditioners(ks=ks, dirichlets=dirichlets)
         return ops
 
     def set_map_and_preconditioners(self, map, *, ks=(0, 1, 2, 3), dirichlets=(False, True)):

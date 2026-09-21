@@ -436,8 +436,4 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         maps = {"torus": toroid_map, "cylinder": cylinder_map, "rot-ellipse": rotating_ellipse_map}
         seq.equilibrium = dict(read_analytic(geometry), kind=kind)
         seq.set_map(maps[kind](**seq.equilibrium["map_params"]))
-    ops = seq.build_preconditioners()
-    if seq.half_period:                         # the parity views share the atoms, reduced
-        seq.odd.build_preconditioners()
-        seq.even.build_preconditioners()
-    return seq, ops
+    return seq, seq.build_preconditioners()
