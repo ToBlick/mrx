@@ -6,13 +6,14 @@ compiles the StableHLO a JAX program lowers to and executes it with
 [MLX](https://github.com/ml-explore/mlx). Nothing is provisioned and nothing
 bills: unlike `tpu/`, the hardware is the laptop.
 
-The whole suite passes there, 59/59, in the plain float32 configuration. The
-useful summary of the performance is that it is not a laptop-sized version of
-the GPU story: the heavy sum-factorised applies run about 1.7x faster than
-the M3 Pro's CPU at `(16,32,16)` p=3, the small indexed applies and
-preconditioner atoms run 4-6x *slower* at every size measured, and at the
-test resolution `(8,12,12)` p=2 the GPU loses across the board. Whether a run
-is faster is a question about its mesh.
+The whole suite passes there, 59/59, in the plain float32 configuration, and
+a real li383 relaxation runs to completion. The useful summary of the
+performance is that this backend charges a **flat ~0.22 ms per dispatch**, so
+an operation is faster or slower than the CPU according to whether it is
+bigger or smaller than that floor. A Krylov solve is bigger, and wins 3.8x. A
+relaxation step is a few hundred things that are smaller, and loses 1.68x
+end to end. The numbers are under "What was measured" below, and
+`docs/research/mps_benchmark_2026-09-21.md` is the full record.
 
 ## The environment
 
@@ -40,7 +41,8 @@ Measurements here are an M3 Pro on macOS 27.
 ## The configuration: `MRX_X64=0`
 
 ```bash
-MRX_X64=0 JAX_PLATFORMS=mps python -m pytest test
+source mps/env.sh          # MRX_X64=0, JAX_PLATFORMS=mps, and the knob record
+python -m pytest test
 ```
 
 Metal has no float64, and this is the way it differs from a TPU. A TPU also
@@ -108,10 +110,44 @@ The suite is compile-bound, so that near-parity is mostly a statement about
 XLA-versus-MLX compile time, not about execution. The parts of it that are
 execution-bound disagree with each other: `test_poisson.py` alone is 24.8 s on
 the GPU against 45.3 s on the CPU, while `test_relaxation.py`'s longest case
-is 54.0 s against 37.4 s. The Poisson tests are Krylov solves over
-sum-factorised applies, which the GPU wins; the relaxation is a jitted
-`lax.scan`, whose per-iteration cost on this plugin grows with the trip count
-(jax-mps [#215](https://github.com/tillahoffmann/jax-mps/issues/215)).
+is 54.0 s against 37.4 s. The section below is why.
+
+### A real run, li383 `(12,24,12)` p=3 float32
+
+`scripts/relax.py --method lbfgs --steps 100 --chunk 25`, the same mesh as the
+v5e / H200 / H100 table in `docs/research/tpu_v5e_benchmark.md`:
+
+| | CPU | MPS | |
+|---|---|---|---|
+| 100 L-BFGS steps, end to end | **353.7 s** | 593.9 s | CPU 1.68x |
+| per step | 3.54 s | 5.94 s | CPU 1.68x |
+| one nested-CG Laplacian solve, k=1 | 284.3 ms | **74.9 ms** | MPS 3.8x |
+| inverse mass CG k=1, 20 iterations | 587 ms | **158 ms** | MPS 3.7x |
+
+Run-to-run spread on this machine is about 17%, so nothing is claimed on a
+smaller margin than that.
+
+### The floor, measured directly
+
+Steady ms per apply at `(12,24,12)` p=3:
+
+| primitive | CPU | MPS |
+|---|---|---|
+| `E` apply k=0 / k=1 / k=2 | 0.040 / 0.032 / 0.037 | 0.246 / 0.223 / 0.216 |
+| `E^T` apply k=0 / k=1 / k=2 | 0.054 / 0.053 / 0.052 | 0.248 / 0.240 / 0.231 |
+| `mass_core_apply` k=1 | 1.269 | 1.868 |
+| `apply_derivative_matrix` k=1 | 1.779 | 9.172 |
+| `apply_laplacian` k=1 free (nested CG) | 284.257 | **74.916** |
+
+Read the MPS column across the first two rows: six different operations over
+three form degrees and two array sizes, all between 0.216 and 0.248 ms. A cost
+that ignores what it is computing is dispatch, not arithmetic. The CPU does
+the same work in 0.03-0.05 ms, so those applies lose 4-7x; the nested CG is
+large enough to bury the floor and wins 3.8x.
+
+A compiled relaxation chunk is ~21,000 StableHLO ops of which only 1,271 are
+`dot_general` -- the rest is slice, gather, reshape and concatenate. 94% data
+movement against a fixed per-dispatch charge is the entire result.
 
 Per-apply cost, `scripts/benchmark/matvec_bench.py`, the `scan` column
 (the form the relaxation actually runs), ms per apply:
@@ -140,6 +176,45 @@ the sum-factorised applies dominate the preconditioner, and `(8,12,12)` p=2
 is far below that. Do not port a laptop-sized test case to the GPU and expect
 a speed-up.
 
+## Pass `--chunk 25`
+
+This is the one tuning change that matters, and it is worth about 2.3x.
+
+The persistent compilation cache does not work on this plugin: it writes zero
+entries and a second run recompiles in full, where the same script on the CPU
+backend writes 1118 entries and recompiles 2.7x faster. So every MPS run pays
+its compile. Meanwhile compile cost is *linear* in the chunk (about 7.9 s per
+step of chunk at `(12,24,12)` p=3) while the steady per-step cost is *flat* in
+it -- 5506.8 against 5504.8 ms/step at chunks of 5 and 10. A long chunk
+therefore buys nothing and costs a great deal.
+
+`scripts/relax.py` defaults to chunk 500 under L-BFGS. For a 500-step run:
+
+| | compile | stepping | total |
+|---|---|---|---|
+| `--chunk 500` | ~65 min | ~46 min | ~111 min |
+| `--chunk 25` | ~3 min | ~46 min | ~49 min |
+
+Every other knob was swept and none of them helped; `mps/env.sh` records which
+and by how much, so the sweep does not need repeating. `mps/env_sweep.py` runs
+it again if a version bump makes that worth doing.
+
+## Trusting a GPU run
+
+Plain float32 relaxation is sensitive to roundoff, and the two backends
+separate. Over 100 L-BFGS steps on li383 `(12,24,12)` p=3, the force residual
+agrees to 6e-6 at step 1 -- roundoff carried through solves whose own
+tolerance is `sqrt(eps) = 3.5e-4` -- then grows past 1% by step 12, and by
+step 100 the runs are on different trajectories.
+
+That is the descent amplifying a roundoff-sized perturbation, not a backend
+defect, and the conserved quantities say both runs are physical: helicity
+drifts by 2.7e-6 relative on MPS and 7.3e-5 on CPU, `||div B||` stays at
+1.5e-06 and 1.2e-06, and the energy decreases on 84 and 81 of 100 steps. Do
+not read the helicity figures as the GPU being more accurate; they are two
+samples of a chaotic trajectory. Compare backends on invariants and on
+converged states, never step by step.
+
 ## `JAX_MPS_ASYNC_DISPATCH=1`
 
 The plugin suggests this on startup and it is worth knowing what it does and
@@ -158,10 +233,17 @@ It is documented as experimental. Nothing in the suite was run with it.
 - Plain float32 only. There is no iterative refinement on this backend, so
   the accuracy discussion in {doc}`concepts/precision` about what float32
   alone does applies in full.
-- `lax.scan` per-iteration cost grows with the trip count
-  ([#215](https://github.com/tillahoffmann/jax-mps/issues/215)), which is the
-  relaxation's hot loop and the one place the GPU loses to the CPU on a test
-  that is not compile-bound.
+- The persistent compilation cache is inert here: every run recompiles. Keep
+  the chunk small, as above.
+- A per-dispatch floor of about 0.22 ms, which is what makes the relaxation
+  lose while the solves win. It is not the `lax.scan` trip-count growth of
+  jax-mps [#215](https://github.com/tillahoffmann/jax-mps/issues/215); that
+  was tested with `mps/scan_scaling.py` and does not reach MRX, on either
+  backend, at either mesh.
+- `MLX_METAL_FAST_SYNCH` aborts with `[metal::Device] Unable to load kernel
+  input_coherent` on 0.10.11. `MLX_ENABLE_TF32` must never be set: it undoes
+  the `jax_default_matmul_precision='highest'` that
+  {doc}`concepts/precision` relies on.
 - Single device. The plugin exposes one `MpsDevice` and no collectives, so
   `scripts/pmap_sweep.py` and the sharded paths have nothing to spread over.
 - The plugin is experimental and prints so on import. It pins a jaxlib minor
