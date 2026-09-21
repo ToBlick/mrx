@@ -83,7 +83,7 @@ def main():
         with h5py.File(ckpts[step], "r") as fh:
             B = jnp.asarray(np.asarray(fh["B_n"], dtype=np.float64))
         _, _, J, X, _ = compute_force(B, seq, aux)
-        pw = DiscreteFunction(weak_pressure(J, X, seq, aux)[0], seq.basis_0, seq.E(0, True))
+        pw = DiscreteFunction(weak_pressure(J, X, seq, aux)[0], seq.basis_0, seq.even.E(0, True))
 
         def p_h(x, pw=pw):
             return pw(x)[0]

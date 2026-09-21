@@ -127,7 +127,7 @@ def weak_p(field):
 
 pw_ic = weak_p(B0)
 pw_final = weak_p(B)
-pw = DiscreteFunction(jnp.asarray(pw_final), seq.basis_0, seq.E(0, True))
+pw = DiscreteFunction(jnp.asarray(pw_final), seq.basis_0, seq.even.E(0, True))
 
 def p_h(x):
     return pw(x)[0]

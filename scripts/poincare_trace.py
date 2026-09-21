@@ -167,11 +167,11 @@ def main():
 
     @jax.jit
     def weak_at(pd, x):
-        return jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.E(0, True)))(x)[:, 0]
+        return jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.even.E(0, True)))(x)[:, 0]
 
     @jax.jit
     def strong_at(pd, x):
-        e3 = seq.E(3, True) if pd.shape[0] == int(seq.n(3, True)) else seq.E(3)
+        e3 = seq.even.E(3, True) if pd.shape[0] == int(seq.even.n(3, True)) else seq.even.E(3)
         val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
         return val / jnp.linalg.det(map_jacobian_at(seq.map, x))
 
@@ -195,7 +195,7 @@ def main():
     for i, name in enumerate(fields):
         t_field = time.perf_counter()
         B = dofs["B_" + name]
-        assert B.shape == (seq.n(2, True),), (B.shape, seq.n(2, True))
+        assert B.shape == (seq.odd.n(2, True),), (B.shape, seq.odd.n(2, True))
         res = poincare(seq, B, lines=cli.lines, periods=cli.periods, planes=planes,
                        seed=cli.seed, name=name)
         sections[f"{name}_label"] = np.array(labels[name])

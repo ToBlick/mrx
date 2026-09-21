@@ -344,7 +344,7 @@ def main(cli):
     params.update(ns=list(ns), knots=knots)
     compute_nullspaces(seq)
     print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
-          f"n2_dbc={seq.n(2, True)}  operators+nullspaces "
+          f"n2_dbc={seq.odd.n(2, True)}  operators+nullspaces "
           f"{time.perf_counter() - t0:.1f}s", flush=True)
 
     # --- initial condition -----------------------------------------------
@@ -390,11 +390,11 @@ def main(cli):
             dB_drive = B_d * (ic_d["B_norm_raw"] / ic["B_norm_raw"]) - B0
             B_star = B_star + dB_drive
             print(f"[drive] ({drive[0]},{drive[1]}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
-                  f"||dB_drive|| / ||B|| = {float(seq.l2_norm(dB_drive, 2) / seq.l2_norm(B0, 2)):.3e}", flush=True)
+                  f"||dB_drive|| / ||B|| = {float(seq.odd.l2_norm(dB_drive, 2) / seq.odd.l2_norm(B0, 2)):.3e}", flush=True)
         ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
         print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the start field "
               f"after a heat step of {cli.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
-              f"{float(seq.l2_norm(state.B_n - B_star, 2) / seq.l2_norm(state.B_n, 2)):.3e}", flush=True)
+              f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
