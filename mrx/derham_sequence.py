@@ -255,7 +255,7 @@ class DeRhamSequence():
         self.reduction = None
 
         bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
-        self.xi = get_xi(ns[1])
+        self.xi = get_xi(ns[1], ps[1])
         raw = [PolarExtractionOperator(L, self.xi, False) for L in bases]
         raw_dbc = [PolarExtractionOperator(L, self.xi, True) for L in bases]
         self.extraction, self.boundary_extraction = {}, {}
@@ -502,7 +502,7 @@ class DeRhamSequence():
             # harmonic-form construction on the view leans on them
             # (measured 2026-09-05: cast, the k=2 Dirichlet form read 1e-6
             # on li383 and 1e-3 on QA; rebuilt, 1e-12 and better).
-            xi = get_xi(self.ns[1])
+            xi = get_xi(self.ns[1], self.basis_0.Λ[1].p)
             bases = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
             view.xi = xi
             view.extraction, view.boundary_extraction = {}, {}

@@ -187,12 +187,14 @@ def parity_basis(seq, k, dirichlet, parity):
     kernels (which return ``2 x`` the half-period moments) are exact through
     ``E_red`` with no projection: ``E_red (2 m_half) = E_red m_full``.
 
-    The basis: ``R_free`` is a signed permutation on the bulk rows (one
-    reduced DoF per pair ``{i, R(i)}``, ``(e_i + s sign_i e_R(i)) / sqrt 2``;
-    a fixed point on the fold planes ``zeta = 0, 1/2`` is kept when its sign
-    is ``s`` and dropped otherwise) and a small dense block on the polar core
-    rows (an orthonormal basis of its ``s``-eigenspace). Built once on the
-    host as COO triplets, applied like ``E`` (one gather + ``segment_sum``).
+    The basis: ``R_free`` is a signed permutation of the free rows -- on the
+    bulk rows because ``E`` selects there, on the polar core rows because the
+    surgery weights sit at the splines' centres (:func:`mrx.extraction_operators.get_xi`)
+    so the axis functions map onto each other -- and the reduced DoFs are
+    its orbits: one per pair ``{i, R(i)}``, ``(e_i + s sign_i e_R(i)) / sqrt 2``,
+    a fixed point on the fold planes ``zeta = 0, 1/2`` kept when its sign is
+    ``s`` and dropped otherwise. Closed form, no decomposition. Built once on
+    the host as COO triplets, applied like ``E`` (one gather + ``segment_sum``).
     Asserted at build time: ``E_red R = s E_red`` and ``X^T X = I``. Like
     ``E``, ``E_red`` is not row-orthonormal on the polar core (``E_red E_red^T
     = X^T (E E^T) X``, the identity plus the reduced core block); the two
@@ -208,7 +210,7 @@ def parity_basis(seq, k, dirichlet, parity):
     # float64 twin then get the SAME X -- the core eigenvectors are a basis choice,
     # and a refinement loop that alternates between the two views must agree on it.
     basis = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
-    e = PolarExtractionOperator(basis, get_xi(seq.ns[1]), dirichlet).build_extraction(dtype=np.float64)
+    e = PolarExtractionOperator(basis, get_xi(seq.ns[1], basis.Λ[1].p), dirichlet).build_extraction(dtype=np.float64)
     TOL = 1e3 * float(np.finfo(np.float64).eps)
     n_free, n_raw = (int(v) for v in e.forward_shape)
     E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64), (np.asarray(e.rows), np.asarray(e.cols))),
@@ -228,12 +230,22 @@ def parity_basis(seq, k, dirichlet, parity):
         raise RuntimeError("the free-space reflection couples core and bulk rows")
     perm_free, sign_free = np.arange(n_free), np.ones(n_free)
     perm_free[bulk[block.row]], sign_free[bulk[block.row]] = block.col, block.data
+    if core.size:
+        # R_free = (E E^T)^-1 E R E^T on the core rows: a signed permutation once the
+        # surgery weights sit at the splines' centres
+        C = np.linalg.inv(gram[np.ix_(core, core)].toarray()) @ ERE[np.ix_(core, core)].toarray()
+        C = np.where(np.abs(C) < TOL, 0.0, C)
+        if np.any(np.count_nonzero(C, axis=1) != 1) or np.abs(np.abs(C[C != 0]) - 1.0).max() > TOL:
+            raise RuntimeError("the free-space reflection is not a permutation on the polar core rows: "
+                               "the surgery weights are not at the splines' centres (get_xi)")
+        ci, cj = np.nonzero(C)
+        perm_free[core[ci]], sign_free[core[ci]] = core[cj], np.sign(C[ci, cj])
 
-    # the bulk orbits
+    # the orbits, the core rows last
     rows, cols, vals = [], [], []          # of X (n_free x n_red)
     seen = np.zeros(n_free, dtype=bool)
     j = 0
-    for i in bulk:
+    for i in np.concatenate([bulk, core]):
         if seen[i]:
             continue
         r = perm_free[i]
@@ -250,39 +262,15 @@ def parity_basis(seq, k, dirichlet, parity):
             cols += [j, j]
             vals += [np.sqrt(0.5), s * sign_free[i] * np.sqrt(0.5)]
             j += 1
-    # the polar core: the s-eigenspace of the core block, orthonormal
-    if core.size:
-        inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray())
-        C = inverse @ ERE[np.ix_(core, core)].toarray()
-        # C is an involution up to round-off, so the dimension of the s-eigenspace is
-        # the number of eigenvalues near s, and its basis the right singular vectors
-        # of C - s I with the smallest singular values.
-        candidates = []
-        for M in (C, C.T):
-            n_s = int(np.sum(np.abs(np.linalg.eigvals(M) - s) < 0.5))
-            _, _, vt = np.linalg.svd(M - s * np.eye(core.size))
-            candidates.append(vt[core.size - n_s:].T if n_s else np.zeros((core.size, 0)))
-        for null in candidates:
-            n_c = null.shape[1]                                     # one reduced DoF per column
-            core_rows = np.tile(core, n_c)                          # column-major: column j fills core rows
-            core_cols = np.repeat(np.arange(j, j + n_c), core.size)
-            X_try = sparse.coo_matrix((np.concatenate([vals, null.ravel(order="F")]),
-                                       (np.concatenate([rows, core_rows]), np.concatenate([cols, core_cols]))),
-                                      shape=(n_free, j + n_c)).tocsr()
-            E_red = (X_try.T @ E).tocsr()
-            if abs(E_red @ R - s * E_red).max() < TOL:
-                break
-        else:
-            raise RuntimeError(f"no parity basis of the polar core rows satisfies E_red R = {s} E_red")
-    else:
-        X_try = sparse.coo_matrix((vals, (rows, cols)), shape=(n_free, j)).tocsr()
-        E_red = (X_try.T @ E).tocsr()
+    X_try = sparse.coo_matrix((vals, (rows, cols)), shape=(n_free, j)).tocsr()
+    E_red = (X_try.T @ E).tocsr()
     n_red = E_red.shape[0]
     if abs(E_red @ R - s * E_red).max() > TOL:
         raise RuntimeError("E_red R != s E_red")
     if abs(X_try.T @ X_try - sparse.identity(n_red)).max() > TOL:
         raise RuntimeError("X^T X != I")
-    return X_try, E, np.arange(j, n_red)
+    core_red = np.unique(np.asarray(cols)[np.isin(rows, core)])       # the reduced DoFs of the core rows
+    return X_try, E, core_red
 
 
 def parity_extraction(seq, k, dirichlet, parity):

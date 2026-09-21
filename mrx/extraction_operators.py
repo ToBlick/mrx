@@ -467,28 +467,37 @@ class PolarExtractionOperator:
         )
 
 
-def get_xi(nt):
+def get_xi(nt, p):
     """Polar extraction weights ξ^ℓ_{ij}: barycentric coordinates of the
     first two control rings with respect to the equilateral control
     triangle (Toshniwal et al. CMAME 2017; Holderied thesis Eqs. 5.7–5.9).
 
     Ring 0 sits at the pole (triangle centroid) → weights 1/3. Ring 1 gets
-    the barycentric coordinates of the unit-circle points
-    ``(cos θ_j, sin θ_j)``: the logical-disk specialisation, which is exact
-    whenever ``∂F/∂r`` at the axis is a pure ``m = ±1`` mode. A constant of
-    ``nt``; the sequence builds it once.
+    the barycentric coordinates of the unit-circle points ``(cos θ_j, sin
+    θ_j)`` at the CENTRE of the periodic B-spline ``B_j`` of degree ``p``,
+    ``θ_j = 2π (j - (p - 1) / 2) / nt`` (``B_j`` starts ``p`` knots before
+    knot ``j`` in this basis, :func:`mrx.symmetry.reflection_permutation`):
+    the logical-disk specialisation, exact whenever ``∂F/∂r`` at the axis is
+    a pure ``m = ±1`` mode. Placed at the centres, the three axis functions
+    map onto each other under ``θ -> -θ`` (functions 1 and 2 swap), so the
+    polar surgery commutes with the stellarator reflection and the parity
+    reduction of the core is a pairing of rows (:func:`mrx.symmetry.parity_basis`);
+    at the nodal angles ``2π j / nt`` (until 2026-09-21) it did not. A
+    constant of ``(nt, p)``; the sequence builds it once.
 
     Parameters
     ----------
     nt : int
         Number of points in poloidal θ-direction.
+    p : int
+        Degree of the poloidal B-splines.
 
     Returns
     -------
     ξ : jnp.ndarray
         Polar extraction weights, shape ``(3, 2, nθ)`` indexed ``(ℓ, i, j)``.
     """
-    theta_js = (jnp.arange(nt) / nt) * 2 * jnp.pi
+    theta_js = ((jnp.arange(nt) - (p - 1) / 2.0) / nt) * 2 * jnp.pi
     dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
 
     s3 = jnp.sqrt(3.0)
