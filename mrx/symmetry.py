@@ -198,12 +198,18 @@ def parity_basis(seq, k, dirichlet, parity):
     = X^T (E E^T) X``, the identity plus the reduced core block); the two
     parities partition the free space, ``n_+ + n_- = n_free``."""
     from scipy import sparse  # noqa: PLC0415
+    from mrx.extraction_operators import PolarExtractionOperator, get_xi  # noqa: PLC0415
 
     s = int(parity)
     if s not in (1, -1):
         raise ValueError("parity is +1 or -1")
-    e = seq.E(k, dirichlet)
-    TOL = 1e3 * float(np.finfo(np.dtype(e.dtype)).eps)       # the extraction's own rounding
+    # The basis is built from the extraction in float64, rebuilt from the exact host
+    # data (as the residual view rebuilds its own): the working sequence and its
+    # float64 twin then get the SAME X -- the core eigenvectors are a basis choice,
+    # and a refinement loop that alternates between the two views must agree on it.
+    basis = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
+    e = PolarExtractionOperator(basis, get_xi(seq.ns[1]), dirichlet).build_extraction(dtype=np.float64)
+    TOL = 1e3 * float(np.finfo(np.float64).eps)
     n_free, n_raw = (int(v) for v in e.forward_shape)
     E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64), (np.asarray(e.rows), np.asarray(e.cols))),
                           shape=(n_free, n_raw))
@@ -248,8 +254,7 @@ def parity_basis(seq, k, dirichlet, parity):
     if core.size:
         inverse = np.linalg.inv(gram[np.ix_(core, core)].toarray())
         C = inverse @ ERE[np.ix_(core, core)].toarray()
-        # C is an involution up to the extraction's dtype (its xi weights are stored in
-        # the working dtype: 3e-8 in float32), so the dimension of the s-eigenspace is
+        # C is an involution up to round-off, so the dimension of the s-eigenspace is
         # the number of eigenvalues near s, and its basis the right singular vectors
         # of C - s I with the smallest singular values.
         candidates = []
@@ -288,8 +293,11 @@ def parity_extraction(seq, k, dirichlet, parity):
     ``X``'s columns: the dense core of the reduced space, known from the
     construction)."""
     from mrx.extraction_operators import MatrixFreeExtraction  # noqa: PLC0415
-    X, E, core = parity_basis(seq, k, dirichlet, parity)
-    e = seq.E(k, dirichlet)
+    from scipy import sparse  # noqa: PLC0415
+    X, _, core = parity_basis(seq, k, dirichlet, parity)
+    e = seq.E(k, dirichlet)                               # the sequence's own extraction, in its dtype
+    E = sparse.csr_matrix((np.asarray(e.vals, dtype=np.float64), (np.asarray(e.rows), np.asarray(e.cols))),
+                          shape=e.forward_shape)
     E_red = (X.T @ E).tocoo()
     X = X.tocoo()
     return (MatrixFreeExtraction.from_coo(E_red.row, E_red.col, E_red.data, E_red.shape, dtype=e.dtype),
