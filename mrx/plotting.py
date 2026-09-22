@@ -387,8 +387,9 @@ P_COLOR = "#6a3d9a"
 PROFILE_RAY_THETAS = (0.5, 1.0 / 3.0, 0.2, 1.0 / 6.0, 0.25, 0.75)
 
 
-def _scale_note(axis, scale, color=None):
-    """Write a smaller ``x scale`` after ``axis``'s label.
+def _scale_note(axis, scale, color=None, size=None):
+    """Write a smaller ``x scale`` after ``axis``'s label (``size`` pt; the annotation size by default, and
+    :func:`paper_fonts` keeps a ``size`` note at the tick size).
 
     An x label (under a colour bar, narrower than one row of both) gets it
     as a second row below; a y label (rotated, reading upwards) gets it on
@@ -401,7 +402,8 @@ def _scale_note(axis, scale, color=None):
                        xycoords=axis.label, xytext=(0, -1) if below else (0, 2),
                        textcoords="offset points", ha="center",
                        va="top" if below else "bottom", rotation=0 if below else 90,
-                       fontsize=FS.annot, color=color)
+                       fontsize=FS.annot if size is None else size, color=color,
+                       gid=None if size is None else "scale_note_tick")
 
 
 def _profile_ray_thetas(n):
@@ -527,6 +529,9 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     panels.append(("bx", 1.15))
     width = {2: 12.0, 3: 16.5}[len(panels)]
     fig = plt.figure(figsize=(width, 4.8), constrained_layout=True)
+    # tight packing: the pages are imported at their authored width, every inch of white is a smaller plot
+    # (Tobias 2026-09-22)
+    fig.get_layout_engine().set(w_pad=0.02, h_pad=0.02, wspace=0.03, hspace=0.02)
     axes = dict(zip((name for name, _ in panels),
                     fig.subplots(1, len(panels),
                                  width_ratios=[w for _, w in panels])))
@@ -599,7 +604,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if aR.ndim and aR.size > 1:
             ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
         ax.plot(jnp.mean(aR), jnp.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
-    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.02)
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.12)   # the outer (iota) bar: air between the two bars (Tobias 2026-09-22)
     # The label sits BELOW the bar: the Farey tick labels are wide, so a
     # side label was squeezed against the next panel, and above the bar the
     # section's title runs into it whenever the section is narrower than
@@ -725,7 +730,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
         bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
-            px.set_ylabel(f"{pressure_label} $\\times$ {pressure_scale:g}", color=P_COLOR)
+            px.set_ylabel(pressure_label, color=P_COLOR)
+            _scale_note(px.yaxis, pressure_scale, color=P_COLOR, size=FS.tick)   # a little smaller than the label (Tobias 2026-09-22)
             px.tick_params(axis="y", labelcolor=P_COLOR)
             if lim.p is not None:
                 px.set_ylim(*lim.p)
@@ -762,10 +768,11 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             mo, so = p_mean[prof][order], p_std[prof][order]
             _, (bx, px) = plot_twin_axis(
                 io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
-                right_label=f"{pressure_label} $\\times$ {pressure_scale:g}", left_log=False, right_log=False,
+                right_label=pressure_label, left_log=False, right_log=False,
                 x_label=profile_xlabel, grid=False, ax=bx,
                 left_plot_kwargs=dict(left, lw=0.8),
                 right_plot_kwargs=dict(right, lw=0.8))
+            _scale_note(px.yaxis, pressure_scale, color=right["color"], size=FS.tick)
             px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
                             label=r"$p \pm 1$ std over the line")
             if lim.p is not None:
@@ -825,8 +832,8 @@ def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
         a.tick_params(labelsize=tick_sz)
         a.xaxis.label.set_size(label_sz)
         a.yaxis.label.set_size(label_sz)
-        for t in a.texts:                           # Farey labels, in-axes notes
-            t.set_fontsize(annot_sz)
+        for t in a.texts:                           # Farey labels, in-axes notes; the axis scale note at tick size
+            t.set_fontsize(tick_sz if t.get_gid() == "scale_note_tick" else annot_sz)
         leg = a.get_legend()
         if leg is not None:
             for txt in leg.get_texts():
