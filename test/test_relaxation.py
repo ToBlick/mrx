@@ -129,3 +129,35 @@ def test_potential_force_is_the_leray_force(seq, b0):
     assert rel < band
     assert rel_s < band
     assert div < 1e2 * eps()
+
+
+def test_plain_float32_hodge_stops_after_two_passes(seq):
+    """The Hodge split's outer refinement is two passes in a plain float32
+    configuration and the full budget in mixed precision.
+
+    Later float32 passes pay a full inner CG for a correction the loop then
+    discards (the true residual floors near the solve tolerance). Pinning the
+    argument ``refine`` is called with is what stops that cap from silently
+    going back to six.
+    """
+    import mrx.operators as ops
+    from mrx.precision import MAX_PASSES
+
+    seen = []
+    real = ops.refine
+
+    def wrapped(*args, **kwargs):
+        # The outer loop is the one that measures the saddle residual of the
+        # pair; the inner stiffness solves go through refine without one.
+        if kwargs.get("residual") is not None:
+            seen.append(kwargs["max_passes"])
+        return real(*args, **kwargs)
+
+    ops.refine = wrapped
+    try:
+        rhs = jnp.ones(seq.n(1, True), dtype=DTYPE)
+        ops.apply_inverse_laplacian_hodge(seq, seq.operators, rhs, 1)
+    finally:
+        ops.refine = real
+    expect = 2 if seq.residual is None else MAX_PASSES
+    assert seen == [expect], f"Hodge outer passes {seen}, expected [{expect}]"

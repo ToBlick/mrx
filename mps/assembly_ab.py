@@ -181,6 +181,123 @@ def _kernel(gather: Callable, accumulate: Callable, plan, weights) -> Callable:
     return kernel
 
 
+def _fused_kernel(plan, weights) -> Callable:
+    """One gather and one scatter for every component of a mass apply.
+
+    The components have different shapes, so they are not stacked. Their
+    element indices are concatenated, with each component's offset into the
+    flat vector added, and the contributions are scattered back with the
+    same offset on the way out. The contractions are the production ones.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from mrx.mass import _element_index, _from_quadrature, _to_quadrature
+
+    b_r, b_c = plan.Bvals_r, plan.Bvals_c
+    pairs, cols = plan.pairs, plan.cols
+    starts = plan.starts_c
+    n_c, n_r = len(b_c), len(b_r)
+
+    gather_parts = []
+    local_shapes = []
+    g_off = [0]
+    for c in range(n_c):
+        idx = _element_index(plan.gather_plans[c])
+        local_shapes.append(idx.shape)
+        gather_parts.append(int(starts[c]) + idx.reshape(-1))
+        g_off.append(g_off[-1] + int(idx.size))
+    big_idx = jnp.asarray(np.concatenate(gather_parts))
+
+    scatter_parts = []
+    out_off = 0
+    for cr in range(n_r):
+        comp = plan.shift_plans[cr]
+        idx = _element_index(comp)
+        (_, _, sx), (_, _, sy), (_, _, sz) = comp
+        scatter_parts.append(out_off + idx.reshape(-1))
+        out_off += int(sx * sy * sz)
+    big_seg = jnp.asarray(np.concatenate(scatter_parts))
+
+    def kernel(x):
+        gathered = x[big_idx]
+        u = [_to_quadrature(b_c[c], gathered[g_off[c]:g_off[c + 1]].reshape(local_shapes[c]))
+             for c in range(n_c)]
+        w = {pair: weights[i] for pair, i in zip(pairs, cols)}
+        parts = []
+        for cr in range(n_r):
+            v = sum(w[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
+            parts.append(_from_quadrature(b_r[cr], v).reshape(-1))
+        return jax.ops.segment_sum(jnp.concatenate(parts), big_seg, num_segments=out_off)
+
+    return kernel
+
+
+def _composed_mass(seq, k: int, dirichlet: bool = True) -> Callable:
+    """``E @ M @ E^T`` as one weighted gather and one weighted scatter.
+
+    Each element-local slot reads the raw DoF ``(e + l) mod S``. ``E^T``
+    writes that raw DoF as a sum of extracted DoFs with the polar weights,
+    so the slot gathers that short list instead of the raw vector. The
+    scatter is the same list run backwards, into the extracted space.
+    """
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from mrx.mass import _element_index, _from_quadrature, _to_quadrature
+
+    plan = seq.mass_plan[k]
+    weights = seq.geometry.mass_weights[k]
+    e = seq.E(k, dirichlet)
+    rows = np.asarray(e.rows)
+    cols = np.asarray(e.cols)
+    vals = np.asarray(e.vals, dtype=np.float32)
+    parents: dict[int, list[tuple[int, float]]] = {}
+    for extracted, raw, weight in zip(rows, cols, vals):
+        parents.setdefault(int(raw), []).append((int(extracted), float(weight)))
+
+    b_r, b_c = plan.Bvals_r, plan.Bvals_c
+    pairs, wcols = plan.pairs, plan.cols
+    n_c, n_r = len(b_c), len(b_r)
+
+    def lists_for(comp_plan, start: int):
+        idx = _element_index(comp_plan)
+        ext, wgt, slot = [], [], []
+        for s, local in enumerate(idx.reshape(-1)):
+            for extracted, weight in parents.get(start + int(local), []):
+                ext.append(extracted)
+                wgt.append(weight)
+                slot.append(s)
+        return (jnp.asarray(np.asarray(ext, np.int32)),
+                jnp.asarray(np.asarray(wgt, np.float32)),
+                jnp.asarray(np.asarray(slot, np.int32)),
+                idx.shape, int(idx.size))
+
+    reads = [lists_for(plan.gather_plans[c], int(plan.starts_c[c])) for c in range(n_c)]
+    writes = [lists_for(plan.shift_plans[c], int(plan.starts_c[c])) for c in range(n_r)]
+    n_ext = int(e.forward_shape[0])
+
+    def kernel(x):
+        u = []
+        for c, (ext, wgt, slot, shape, n_slot) in enumerate(reads):
+            acc = jax.ops.segment_sum(wgt * x[ext], slot, num_segments=n_slot)
+            u.append(_to_quadrature(b_c[c], acc.reshape(shape)))
+        w = {pair: weights[i] for pair, i in zip(pairs, wcols)}
+        parts_ext, parts_w = [], []
+        for cr in range(n_r):
+            v = sum(w[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
+            local = _from_quadrature(b_r[cr], v).reshape(-1)
+            ext, wgt, slot, _, _ = writes[cr]
+            parts_ext.append(ext)
+            parts_w.append(wgt * local[slot])
+        return jax.ops.segment_sum(jnp.concatenate(parts_w), jnp.concatenate(parts_ext),
+                                   num_segments=n_ext)
+
+    return kernel
+
+
 def _ops(fn: Callable, x) -> dict[str, int]:
     """Opcode counts in the lowered module of ``fn`` at ``x``."""
     import jax
@@ -282,7 +399,133 @@ def run(geometry: str, ns: tuple[int, int, int], p: int,
                   f"   ops {interesting}", flush=True)
             if err >= 1e-5:
                 raise SystemExit(f"{name} disagrees with the production apply")
+
+        fused = _fused_kernel(plan, weights)
+        got = np.asarray(jax.jit(fused)(x))
+        err = _rel(got, ref)
+        ops = _ops(fused, x)
+        if ops.get("dot_general") != out[str(k)]["indexed_flat"]["ops"].get("dot_general"):
+            raise SystemExit(
+                f"k={k} fused dot_general {ops.get('dot_general')} != "
+                f"indexed_flat {out[str(k)]['indexed_flat']['ops'].get('dot_general')}; "
+                "the timing would not be the gather change")
+        ms = _scan_ms(fused, x, length, repeats)
+        interesting = {op: ops[op] for op in
+                       ("gather", "scatter", "slice", "pad", "concatenate",
+                        "reshape", "dot_general", "add", "dynamic_update_slice")
+                       if op in ops}
+        out[str(k)]["indexed_fused"] = {"ms": ms, "err": err, "ops": interesting,
+                                        "ops_total": sum(ops.values())}
+        flag = "OK" if err < 1e-5 else "MISMATCH"
+        print(f"  {'indexed_fused':<18} {ms:8.3f} ms   err {err:.2e} {flag}"
+              f"   ops {interesting}", flush=True)
+        if err >= 1e-5:
+            raise SystemExit("indexed_fused disagrees with the production apply")
+
+        out[str(k)]["extraction"] = _extraction_cost(seq, k, length, repeats)
+        row = out[str(k)]["extraction"]
+        print(f"  extraction k={k}  core {row['core_ms']:.3f}  "
+              f"full {row['full_ms']:.3f}  E {row['E_ms']:.3f}  "
+              f"E^T {row['ET_ms']:.3f}  recovered {row['recovered_ms']:.3f}",
+              flush=True)
     return out
+
+
+# Every E and E^T apply counted in one L-BFGS step, from mps/attribute_step.py.
+_EXTRACTION_CALLS = 10545
+
+#: The part of a step that was not the mass kernel, after the indexed landing.
+_LEFTOVER_S = 0.84
+
+
+def _scan_ms_rect(fn: Callable, x, length: int, repeats: int) -> float:
+    """Milliseconds per call of a rectangular ``fn`` inside one jitted scan.
+
+    The input stays the carry and the output is reduced to a scalar, so a
+    map between two spaces of different size cannot be eliminated and does
+    not have to be square.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    @jax.jit
+    def scanned(v):
+        def body(c, _):
+            return c, jnp.sum(fn(c))
+        _, out = jax.lax.scan(body, v, None, length=length)
+        return out
+
+    jax.block_until_ready(scanned(x))
+    best = float("inf")
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        jax.block_until_ready(scanned(x))
+        best = min(best, time.perf_counter() - t0)
+    return 1e3 * best / length
+
+
+def _extraction_cost(seq, k: int, length: int, repeats: int) -> dict[str, float]:
+    """In-scan cost of the mass core, the full apply, and the extraction pair.
+
+    ``recovered_ms`` is what fusing the two extractions into the full apply
+    already saved, relative to calling them on their own. ``bound_s`` is the
+    standalone pair times the step's extraction-call count, the most that
+    folding ``E`` into the element index could return per step.
+    """
+    import jax.numpy as jnp
+    import numpy as np
+
+    from mrx.operators import mass_core_apply
+
+    e = seq.E(k, True)
+    n_raw = int(seq.E(k, False).forward_shape[1])
+    n_ext = int(seq.n(k, True))
+    rng = np.random.default_rng(200 + k)
+    raw = jnp.asarray(rng.standard_normal(n_raw).astype("float32"))
+    ext = jnp.asarray(rng.standard_normal(n_ext).astype("float32"))
+    core = mass_core_apply(seq, k)
+    core_ms = _scan_ms(core, raw, length, repeats)
+    full_ms = _scan_ms(lambda v, k=k: seq.apply_mass_matrix(v, k, True), ext, length, repeats)
+    e_ms = _scan_ms_rect(lambda v, e=e: e @ v, raw, length, repeats)
+    et_ms = _scan_ms_rect(lambda v, e=e: e.T @ v, ext, length, repeats)
+    pair = e_ms + et_ms
+    return {
+        "core_ms": core_ms,
+        "full_ms": full_ms,
+        "E_ms": e_ms,
+        "ET_ms": et_ms,
+        "recovered_ms": pair - (full_ms - core_ms),
+        # 10545 already counts every E and every E^T, so the standalone
+        # time is the mean of the two directions, not their sum.
+        "bound_s": 0.5 * pair * _EXTRACTION_CALLS / 1e3,
+        "gap_ms": full_ms - core_ms,
+    }
+
+
+def compare_composed(platform_note: str = "") -> None:
+    """Agreement and in-scan cost of the composed mass against the sandwich."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from mrx.geometry import build_sequence
+
+    print(f"composed {platform_note}", flush=True)
+    seq, _ = build_sequence("data/wout_li383_low_res_reference.nc", (12, 24, 12), 3)
+    for k in (1, 2):
+        n_ext = int(seq.n(k, True))
+        rng = np.random.default_rng(300 + k)
+        x = jnp.asarray(rng.standard_normal(n_ext).astype("float32"))
+        ref = np.asarray(seq.apply_mass_matrix(x, k, True))
+        fn = _composed_mass(seq, k, True)
+        got = np.asarray(jax.jit(fn)(x))
+        err = _rel(got, ref)
+        sand = _scan_ms(lambda v, k=k: seq.apply_mass_matrix(v, k, True), x, SCAN, REPEATS)
+        comp = _scan_ms(fn, x, SCAN, REPEATS)
+        print(f"  k={k} err {err:.2e}  sandwich {sand:.3f} ms  composed {comp:.3f} ms  "
+              f"{sand / comp:.2f}x", flush=True)
+        if err >= 1e-5:
+            raise SystemExit(f"composed mass k={k} disagrees")
 
 
 def _report(results: dict[str, dict]) -> None:
@@ -293,6 +536,8 @@ def _report(results: dict[str, dict]) -> None:
         for k, variants in by_k.items():
             base = variants["shift"]["ms"]
             for name, row in variants.items():
+                if "ms" not in row:
+                    continue
                 ratio = base / row["ms"]
                 print(f"  k={k} {name:<18} {row['ms']:8.3f} ms   "
                       f"{ratio:5.2f}x vs shift   err {row['err']:.1e}")
@@ -300,16 +545,27 @@ def _report(results: dict[str, dict]) -> None:
     mps = results.get("mps")
     if mps is None:
         return
-    print("\n=== decision (indexed must beat shift by more than "
+    print("\n=== decision (must beat the reference by more than "
           f"{NOISE:.0%} on MPS) ===")
     for k, variants in mps.items():
         base = variants["shift"]["ms"]
         for name, row in variants.items():
-            if name == "shift":
+            if name in ("shift", "extraction") or "ms" not in row:
                 continue
             gain = base / row["ms"] - 1.0
-            verdict = "LANDS" if gain > NOISE else "does not clear the noise"
+            verdict = "LANDS vs shift" if gain > NOISE else "does not clear shift"
             print(f"  k={k} {name:<18} {gain:+5.0%}  {verdict}")
+        fused = variants.get("indexed_fused")
+        flat = variants.get("indexed_flat")
+        if fused and flat:
+            gain = flat["ms"] / fused["ms"] - 1.0
+            verdict = "LANDS vs indexed" if gain > NOISE else "does not clear indexed"
+            print(f"  k={k} {'fused vs flat':<18} {gain:+5.0%}  {verdict}")
+        ext = variants.get("extraction")
+        if ext:
+            share = ext["bound_s"] / _LEFTOVER_S
+            print(f"  k={k} extraction bound {ext['bound_s']:.2f} s/step  "
+                  f"({share:.0%} of the {_LEFTOVER_S:.2f} s leftover)")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

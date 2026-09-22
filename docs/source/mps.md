@@ -138,6 +138,18 @@ and 0.94x, inside the noise, which is why the CPU keeps the shifts.
 Run-to-run spread on this machine is about 17%, so nothing is claimed on a
 smaller margin than that.
 
+The potential-velocity Hodge solve, which an L-BFGS step uses for the force,
+was then capped at two outer passes in plain float32. It had been taking six,
+and the later passes are the ones `refine` discards when they stop improving
+the residual. Laplacian-preconditioner applies in one step went from 1482 to
+393. The same 20 steps with the cap lifted remove the same energy to 0.2%
+and finish with a force within 1%, in 61.2 s instead of 41.9 s, so the
+later passes were not buying accuracy. Twenty steps after the cap, same
+mesh: **41.9 s on the GPU (2.09 s/step) against 54.8 s on the CPU
+(2.74 s/step)**. The earlier 100-step averages
+(2.84 s and 3.52 s) are the run before this cap, so the two windows are not
+the same comparison; the iteration count is the change.
+
 `--floor-tol` defaults to `1e-8`, a squared normalised residual. A float32
 run sits at a few times `1e-3`, so the criterion cannot fire and the run
 stops on the step count. Pass `--floor-tol 0`.

@@ -752,7 +752,8 @@ def apply_inverse_mass_matrix(seq, operators: SequenceOperators, rhs, k: int,
     return (x, info) if return_info else x
 
 
-def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, guess, vs):
+def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, guess, vs,
+               max_passes=None):
     """The outer loop of a composite solve of ``(eps M_k + L_k) x = b``,
     on the pair ``(x, w)`` the split produces (``w = M_{k-1}^-1 D^T M x``:
     the Hodge split's first unknown ``g``, the shifted split's lower-level
@@ -817,8 +818,10 @@ def _pair_loop(seq, operators, on, k, dirichlet, eps, tol, maxiter, split, b, gu
     x0 = jnp.zeros(n_k, dtype=seq.dtype) if guess is None else guess
     p0 = jnp.concatenate([x0, jnp.zeros(n_l, dtype=seq.dtype)])
     b_packed = jnp.concatenate([b64, jnp.zeros(n_l, dtype=RESIDUAL_DTYPE)])
+    from mrx.precision import MAX_PASSES
     p, info = refine(None, solve, b_packed, x0=p0, tol=tol, norm=norm, inner_dtype=seq.dtype,
-                     residual=residual, project_dual=project_dual)
+                     residual=residual, project_dual=project_dual,
+                     max_passes=MAX_PASSES if max_passes is None else max_passes)
     return p[:n_k], info
 
 
@@ -1132,9 +1135,15 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
         a, _ = solve(M(g, k - 1) - DT(M(x_perp, k), k - 1), k - 1)
         return x_perp + D(a, k - 1), g, info
 
+    # Plain float32: the true residual of this split floors near the solve
+    # tolerance, and later passes of the outer loop still pay a full set of
+    # inner CG solves before a pass that does not improve is discarded.
+    # Two passes are the correction refine is built for; mixed precision,
+    # where each pass gains the inner tolerance, keeps the full budget.
     x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
                          lambda r: split(r.astype(seq.dtype)), rhs, guess,
-                         _nullspace_vectors(operators, k, d))
+                         _nullspace_vectors(operators, k, d),
+                         max_passes=2 if seq.residual is None else None)
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 

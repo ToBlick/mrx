@@ -135,6 +135,64 @@ The index constants are not the cost. Distinct component plans total 3.56 MB
 at `(12,24,12)` p=3 and 9.13 MB at `(16,32,16)` p=3, under a millisecond to
 build in NumPy and about 5 ms to copy to the device, once per trace.
 
+## Three levers after the indexed assembly
+
+The rule for landing any of them was the same 17% bar, at both k=1 and k=2,
+inside a dependent scan of 20 applies. None of the kernel changes cleared it.
+One solve change did.
+
+**Fusing the three component gathers does not.** `indexed_fused` in
+`mps/assembly_ab.py` concatenates the three element indices into one gather
+and one `segment_sum`. The components have different shapes, so they are not
+padded. The lowered module goes from 6 gathers and 6 scatters to 2 and 2,
+and the 12 `dot_general`s stay. On MPS the time goes from 0.499 ms to 0.493 ms
+at k=1 (1%) and from 0.604 ms to 0.519 ms at k=2 (16%). The op count fell and
+the time did not, which is MLX already fusing the three gathers. On the CPU
+the fused form is slower (0.89x and effectively tied). Not landed.
+
+**Folding `E` into the element index does not survive the timing.** A step
+issues 10,545 extraction applies. Standalone, `E` and `E^T` cost about 0.09 ms
+each on MPS inside a scan, and 0.09 ms times 10,545 is about 1.0 s, more than
+the 0.84 s of a step that is not the mass kernel. Inside `apply_mass_matrix`
+the pair is already fused: the full apply is 0.580 ms against a core of
+0.513 ms at k=1, and 0.566 against 0.526 at k=2. A composed kernel that
+gathers the extracted DoFs directly agrees with the sandwich to 1e-7 and
+measures 1.19x and 1.03x on MPS, 0.83x and 0.74x on the CPU. Short of 17% at
+k=2, and a regression on the CPU. Not landed. It is `_composed_mass` in
+`mps/assembly_ab.py`.
+
+**The Hodge split owns the preconditioner traffic, and capping its outer loop
+does.** `mps/solve_attr.py` tags every Laplacian-atom apply by the solve that
+built it. All 1,482 in one L-BFGS step are the Hodge split
+(`apply_inverse_laplacian_hodge`), which is the potential-velocity force.
+The shifted-stiffness atom, 61 applies, is the velocity smoothing and nothing
+else. The 1,482 are six passes of the outer `refine` loop. In plain float32
+that loop's later passes are the ones it discards when a pass stops
+improving the residual, and each discarded pass has already paid a CG whose
+largest solve was measured at 121 to 442 iterations. `apply_inverse_laplacian_hodge`
+now asks `_pair_loop` for two passes when there is no residual-precision view,
+and leaves the full budget of six in mixed precision, where each pass gains
+the inner tolerance. The count drops to 393. `test_poisson.py` and
+`test_relaxation.py` pass in float32 (14 passed, 193 s) and in the default
+mixed configuration (14 passed, 328 s). The same 20 L-BFGS steps with the
+cap lifted (six passes) take 61.2 s and remove 4.865e-5 of energy against
+4.874e-5 with the cap; the final force agrees to 1% and the first five
+steps' residuals to 0.2%. The trajectories then wander (one step's residual
+differs by 18%) because the line search sees a slightly different force, and
+they finish in the same place. The later passes were not buying accuracy.
+
+Twenty L-BFGS steps at `(12,24,12)` p=3, `--floor-tol 0`, after the cap:
+
+| | CPU, shift | MPS, indexed |
+|---|---|---|
+| 20 steps | 54.8 s | **41.9 s** |
+| per step | 2.74 s | **2.09 s** |
+
+The 100-step averages above (3.52 s and 2.84 s) are from before the cap, and
+a 20-step window is not the same average as a 100-step one. The GPU is 1.31x
+the CPU on this window. There is no fused-assembly column: that form was not
+landed, so the Metal default is still `indexed`.
+
 ## The per-dispatch floor, measured
 
 `relaxation_bench.py` primitives at `(12,24,12)` p=3, steady ms per apply:
