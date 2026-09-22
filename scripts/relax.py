@@ -184,7 +184,9 @@ Resistive steady state:
     backward-Euler step of ``dB/dt = -eta curl (J - J*)`` with the dose
     ``eps = C h_r^2`` (mrx.relaxation.TimeStepper.resistivity), and ``J*``
     the current of ``B*``: the run's start field (the ``--restart``
-    checkpoint, a converged ideal run; or the initial field) after one heat
+    checkpoint, a converged ideal run; or the initial field), or the field
+    of the ``--reference`` checkpoint (one common reference for differently
+    seeded arms), after one heat
     step of ``c h_r^2``, ``c = --reference-smoothing``, which removes the
     rational-surface sheets of the ideal equilibrium (sustained, they would
     make the start a fixed point) and costs ``O(c h_r^2)`` of the bulk
@@ -279,6 +281,9 @@ def parse_args(argv=None):
                     help="a resistive dose C h_r^2 in every step, E = eta (J - J*): see 'Resistive steady state'")
     ap.add_argument("--reference-smoothing", type=float, default=0.1,
                     help="B* = the start field after one heat step of c h_r^2 (with --resistivity)")
+    ap.add_argument("--reference", default=None,
+                    help="with --resistivity: B* from this checkpoint's field instead of the start field (one "
+                         "common reference for differently seeded arms, e.g. the nested equilibrium); smoothed as above")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -381,6 +386,13 @@ def main(cli):
         # B*: the start field, its rational-surface sheets removed by the heat step (c = 0 keeps them: only the
         # drive then moves the steady state)
         B_star = state.B_n
+        if cli.reference:
+            import h5py  # noqa: PLC0415
+            import jax.numpy as jnp  # noqa: PLC0415
+            with h5py.File(cli.reference, "r") as fh:
+                B_star = jnp.asarray(fh["B_n"][()], dtype=state.B_n.dtype)
+                ref_step = int(fh.attrs["step"])
+            print(f"[reference] B* from {cli.reference} (step {ref_step})", flush=True)
         if cli.reference_smoothing:
             B_star = resistive_step(B_star, seq, cli.reference_smoothing * h_r_sq)[0]
         if cli.drive:
@@ -393,7 +405,8 @@ def main(cli):
             print(f"[drive] ({int(m)},{int(n)}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
                   f"||dB_drive|| / ||B|| = {float(seq.l2_norm(dB_drive, 2) / seq.l2_norm(B0, 2)):.3e}", flush=True)
         ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
-        print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the start field "
+        print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the "
+              f"{'reference' if cli.reference else 'start'} field "
               f"after a heat step of {cli.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.l2_norm(state.B_n - B_star, 2) / seq.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
