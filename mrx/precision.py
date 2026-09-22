@@ -20,9 +20,15 @@ it, so a tolerance relative to ``J x B`` leaves an O(1) error in the
 force (``docs/research/velocity_leray_ab_2026-09-04.md``). With a float64
 residual the float32 solve reaches :data:`SOLVE_TOL` in a few passes, and
 the force is formed in float64 before it is stored. 64-bit mode is
-therefore always on; Python scalars stay weakly typed and do not promote.
+therefore on by default; Python scalars stay weakly typed and do not promote.
 ``MRX_RESIDUAL_DTYPE=float32`` is the configuration of a machine without
 float64 (a TPU): plain float32 solves, default tolerance ``sqrt(eps)``.
+``MRX_X64=0`` goes one step further, for a backend that *rejects* float64
+rather than downcasting it the way a TPU does (Apple Metal through
+``jax-mps``, which raises out of the buffer transfer): 64-bit mode itself
+is off, so a dtype-less array constructor makes float32 and nothing the
+backend would refuse can reach it. It implies the float32 residual and
+requires the float32 working dtype.
 
 Every tolerance in the package that depends on roundoff is expressed
 through :func:`eps` so it scales with the working precision. Tolerances
@@ -44,7 +50,22 @@ if _NAME not in ("float32", "float64"):
     raise ValueError(
         f"MRX_DTYPE={_NAME!r}; expected 'float32' or 'float64'")
 
-jax.config.update("jax_enable_x64", True)
+_X64 = os.environ.get("MRX_X64", "1")
+if _X64 not in ("0", "1"):
+    raise ValueError(f"MRX_X64={_X64!r}; expected '0' or '1'")
+
+#: Whether 64-bit mode is on. Off is the configuration of a backend with no
+#: float64 that rejects it instead of downcasting it (Apple Metal through
+#: ``jax-mps``); a TPU downcasts, so it keeps 64-bit mode on and only drops
+#: the residual precision. Read from the environment rather than from the
+#: backend: ``jax.devices()`` would initialise the backend before
+#: ``jax_enable_x64`` could be set.
+X64 = _X64 == "1"
+if not X64 and _NAME != "float32":
+    raise ValueError(
+        f"MRX_X64=0 is the float32-only configuration; MRX_DTYPE={_NAME}")
+
+jax.config.update("jax_enable_x64", X64)
 
 # On Ampere-and-later GPUs JAX runs float32 dot products (matmul, einsum,
 # dot_general) in TF32 by default: a 10-bit mantissa, relative error ~5e-4
@@ -59,10 +80,14 @@ jax.config.update("jax_default_matmul_precision", "highest")
 #: The working floating-point dtype.
 DTYPE = jnp.dtype(_NAME)
 
-_RES_NAME = os.environ.get("MRX_RESIDUAL_DTYPE", "float64")
+_RES_NAME = os.environ.get("MRX_RESIDUAL_DTYPE", "float64" if X64 else "float32")
 if _RES_NAME not in ("float32", "float64"):
     raise ValueError(
         f"MRX_RESIDUAL_DTYPE={_RES_NAME!r}; expected 'float32' or 'float64'")
+if not X64 and _RES_NAME != "float32":
+    raise ValueError(
+        f"MRX_RESIDUAL_DTYPE={_RES_NAME} needs 64-bit mode, which MRX_X64=0 turns "
+        "off; the solves are plain float32 there")
 
 #: The dtype of every solve's residual and accumulated solution: float64
 #: unless ``MRX_RESIDUAL_DTYPE=float32`` asks for the float32-only
@@ -140,7 +165,7 @@ def cast_arrays(obj, dtype=DTYPE, _seen=None):
     be rebuilt after the cast. An object reachable through several
     attributes is cast once and the same result installed everywhere.
     Built objects are cast once at the end of their construction, so that
-    64-bit mode (always on, see the module docstring) never lets a
+    64-bit mode (on by default, see the module docstring) never lets a
     NumPy-built array promote a float32 apply.
     """
     if _seen is None:

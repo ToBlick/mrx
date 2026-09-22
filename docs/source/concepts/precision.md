@@ -12,8 +12,10 @@ float32 Krylov iteration alone could make them.
 Set `MRX_DTYPE` to `float32` (the default) or `float64` before importing
 `mrx`. `mrx/precision.py` reads it and sets `jax_default_matmul_precision`
 to `"highest"` so that float32 dot products run at full float32 precision
-rather than TF32. 64-bit mode is always on (the residual precision needs
-it); nothing else in the package touches `jax_enable_x64`. Python scalars
+rather than TF32. 64-bit mode is on by default (the residual precision needs
+it) and `MRX_X64=0` turns it off, for a backend that rejects float64 rather
+than downcasting it (Apple Metal, {doc}`../mps`); nothing else in the package
+touches `jax_enable_x64`. Python scalars
 are weakly typed and do not promote; NumPy-built arrays would, so every
 built object (a sequence, its geometry, a preconditioner bundle) is passed
 through `cast_arrays` at the end of its construction, which pins every
@@ -27,6 +29,7 @@ The module exports:
 |---|---|
 | `DTYPE` | the working dtype (`mrx.DTYPE`) |
 | `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: the float32-only configuration of a machine without float64 (a TPU), plain float32 solves |
+| `X64` | whether 64-bit mode is on; `MRX_X64=0` turns it off and implies the float32 residual, for a backend that refuses float64 buffers instead of downcasting them (Apple Metal) |
 | `REFINE` | `DTYPE != RESIDUAL_DTYPE`: the solves refine |
 | `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, sqrt(eps) = 3.5e-4 for plain float32 |
 | `inner_tol(tol)` | the relative tolerance of one working-precision pass: the square root of the tolerance, two passes per solve; derived, not a second hyperparameter |

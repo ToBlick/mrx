@@ -4,7 +4,10 @@ No mass matrix is stored. Every mass-like operator ``M = int Lambda_row . W
 . Lambda_col`` is applied per element by three 1-D contractions to the
 quadrature points, a pointwise multiply by the weight, and three 1-D
 contractions back (:func:`_sumfact_kernel`, one compiled executable per
-operator shape). The applies act in the raw (unextracted, periodic) DoF
+operator shape). The element read and assembly are shifted dense copies,
+except on Metal, where they are one gather and one ``segment_sum``
+(:func:`_assembly_mode`): the same operator, and the form that backend is
+faster at. The applies act in the raw (unextracted, periodic) DoF
 space; the polar extraction ``E (.) E^T`` is applied by the caller
 (:mod:`mrx.operators`). An apply is a geometry-independent plan on the
 sequence (:class:`SumfactPlan`, built once in ``DeRhamSequence.__init__``)
@@ -28,7 +31,9 @@ weights are folded in per axis via the 1-D Gauss weights.
 factorisation, is the diagonal the metric-lumping mass atom is scaled by.
 """
 
+import contextvars
 import functools
+import os
 from typing import NamedTuple
 
 import equinox as eqx
@@ -557,29 +562,153 @@ def attach_weights(seq, geometry):
                        (mass_weights, reference), is_leaf=lambda x: x is None)
 
 
+#: Set by a caller that must see the shift assembly regardless of backend.
+#: The Newton matvec uses it: three hundred MINRES iterations amplify the
+#: indexed form's reordering of the sum, and on the tutorial mesh that
+#: changed the direction (three fallbacks against none). Read by
+#: :func:`_assembly_mode` at trace time, so it selects which executable is
+#: compiled rather than branching inside one.
+_assembly_override: contextvars.ContextVar = contextvars.ContextVar(
+    "mrx_assembly_override", default=None)
+
+
+def _assembly_mode() -> str:
+    """``"shift"`` or ``"indexed"``: which element assembly the kernel uses.
+
+    ``shift`` is :func:`_structured_gather` and :func:`_structured_accumulate`,
+    dense shifted copies, the form every backend but Metal runs and the form
+    the kernel has always had. ``indexed`` is :func:`_indexed_gather` and
+    :func:`_indexed_accumulate`, one gather and one ``segment_sum``. On MPS
+    the indexed form measured 2.5x on this apply inside a scan, past the 17%
+    run-to-run noise, while on the CPU the two agreed within that noise
+    (``mps/assembly_ab.py``); the indexed form is therefore Metal's and
+    nobody else's.
+
+    :data:`_assembly_override`, when set, wins. Otherwise ``MRX_ASSEMBLY``
+    overrides the choice. Unset, it follows ``jax.default_backend()``, which
+    is safe here in a way ``MRX_X64`` is not: the kernel is traced long after
+    the backend has initialised.
+
+    Returns:
+        ``"shift"`` or ``"indexed"``.
+
+    Raises:
+        ValueError: if ``MRX_ASSEMBLY`` is set to anything else.
+    """
+    override = _assembly_override.get()
+    choice = override if override is not None else os.environ.get("MRX_ASSEMBLY")
+    if choice is None:
+        choice = "indexed" if jax.default_backend() == "mps" else "shift"
+    if choice not in ("shift", "indexed"):
+        raise ValueError(
+            f"MRX_ASSEMBLY={choice!r}; expected 'shift' or 'indexed'")
+    return choice
+
+
+def _element_index(plan: tuple) -> np.ndarray:
+    """Flat C-order index of ``x_local[e, l] = x[(e + l) mod S]``.
+
+    ``plan`` is one component's ``((ne, nloc, S),) * 3``, static. The result
+    has shape ``(ne_x, ne_y, ne_z, nloc_x, nloc_y, nloc_z)`` and is built
+    with NumPy, so a caller tracing a kernel turns it into a constant of the
+    executable rather than into index arithmetic.
+
+    Args:
+        plan: The per-axis ``(ne, nloc, S)`` triples of one component.
+
+    Returns:
+        The int32 index array.
+    """
+    (nex, nlx, sx), (ney, nly, sy), (nez, nlz, sz) = plan
+
+    def axis(ne: int, nloc: int, size: int) -> np.ndarray:
+        return (np.arange(ne)[:, None] + np.arange(nloc)[None, :]) % size
+
+    ix = axis(nex, nlx, sx)[:, None, None, :, None, None]
+    iy = axis(ney, nly, sy)[None, :, None, None, :, None]
+    iz = axis(nez, nlz, sz)[None, None, :, None, None, :]
+    return (ix * (sy * sz) + iy * sz + iz).astype(np.int32)
+
+
+def _indexed_gather(x_flat, plan):
+    """Element-local read as one gather.
+
+    The same map as :func:`_structured_gather`, every source known from the
+    shift plan, but one indexed read instead of ``nloc`` rolled slices per
+    axis. The index is a constant of the executable (:func:`_element_index`).
+
+    Args:
+        x_flat: The component's DoFs, flat, length ``S_x S_y S_z``.
+        plan: The component's shift plan, static.
+
+    Returns:
+        ``(ne_x, ne_y, ne_z, nloc_x, nloc_y, nloc_z)``, agreeing with
+        :func:`_structured_gather` exactly.
+    """
+    return x_flat[jnp.asarray(_element_index(plan))]
+
+
+def _indexed_accumulate(y, plan):
+    """Element-to-DoF assembly as one ``segment_sum``.
+
+    The adjoint of :func:`_indexed_gather` and the same sum as
+    :func:`_structured_accumulate`. The two agree to float32 roundoff; the
+    difference is the order of the sum, nothing else.
+
+    Args:
+        y: ``(ne_x, ne_y, ne_z, nloc_x, nloc_y, nloc_z)`` element contributions.
+        plan: The component's shift plan, static.
+
+    Returns:
+        The ``(S_x, S_y, S_z)`` DoF grid.
+    """
+    (_, _, sx), (_, _, sy), (_, _, sz) = plan
+    seg = jnp.asarray(_element_index(plan))
+    out = jax.ops.segment_sum(y.reshape(-1), seg.reshape(-1),
+                              num_segments=int(sx * sy * sz))
+    return out.reshape(sx, sy, sz)
+
+
 def sumfact_apply(plan, weights, x):
     """``x -> int Lambda_row . W . Lambda_col x`` on the raw tensor-product
     DOF space, from a :class:`SumfactPlan` and its weights. Boundary and
-    polar extraction ``E (.) E^T`` are the caller's."""
+    polar extraction ``E (.) E^T`` are the caller's.
+
+    The element assembly is :func:`_assembly_mode`: shifted dense copies,
+    except on Metal, where it is one gather and one ``segment_sum``.
+    """
     return _sumfact_kernel(x, plan.Bvals_r, plan.Bvals_c, weights,
                            pairs=plan.pairs, cols=plan.cols,
                            starts_c=plan.starts_c,
                            shift_plans=plan.shift_plans,
-                           gather_plans=plan.gather_plans)
+                           gather_plans=plan.gather_plans,
+                           assembly=_assembly_mode())
 
 
 @functools.partial(jax.jit, static_argnames=("pairs", "cols", "starts_c",
-                                             "shift_plans", "gather_plans"))
+                                             "shift_plans", "gather_plans",
+                                             "assembly"))
 def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, *,
-                    pairs, cols, starts_c, shift_plans, gather_plans):
+                    pairs, cols, starts_c, shift_plans, gather_plans,
+                    assembly):
     """The sum-factorised matvec, ONE executable per operator shape.
 
     Module-level and keyed on the static plan (which component pairs exist,
-    which weight array each uses, the component offsets, the shift plans),
-    so a new geometry -- new ``Ws`` of the same shapes -- reuses the compiled
-    kernel; a kernel defined inside a builder was a new function object per
-    build and recompiled on every ``set_geometry``.
+    which weight array each uses, the component offsets, the shift plans)
+    and on ``assembly``, so a new geometry -- new ``Ws`` of the same shapes
+    -- reuses the compiled kernel, and the shifted and indexed forms do not
+    share a cache entry. A kernel defined inside a builder was a new
+    function object per build and recompiled on every ``set_geometry``.
+
+    ``assembly`` is a static Python branch, not a traced one. ``"shift"``
+    traces exactly the kernel this function has always traced.
     """
+    if assembly == "indexed":
+        read, write = _indexed_gather, _indexed_accumulate
+    elif assembly == "shift":
+        read, write = _structured_gather, _structured_accumulate
+    else:
+        raise ValueError(f"assembly={assembly!r}; expected 'shift' or 'indexed'")
     W = {pair: Ws[c] for pair, c in zip(pairs, cols)}
     n_c, n_r = len(Bvals_c), len(Bvals_r)
     # The read is here rather than inside _to_quadrature, so that the two
@@ -587,14 +716,13 @@ def _sumfact_kernel(x, Bvals_r, Bvals_c, Ws, *,
     # gather, contract, weight, contract, accumulate.
     u = [_to_quadrature(
             Bvals_c[c],
-            _structured_gather(x[starts_c[c]:starts_c[c + 1]], gather_plans[c]))
+            read(x[starts_c[c]:starts_c[c + 1]], gather_plans[c]))
          for c in range(n_c)]
     y_parts = []
     for cr in range(n_r):
         v = sum(W[(cr, cc)] * u[cc] for cc in range(n_c) if (cr, cc) in pairs)
         y_local = _from_quadrature(Bvals_r[cr], v)
-        y_parts.append(
-            _structured_accumulate(y_local, shift_plans[cr]).reshape(-1))
+        y_parts.append(write(y_local, shift_plans[cr]).reshape(-1))
     # Already assembled per component and in component order, so the
     # concatenation is the whole output.
     return jnp.concatenate(y_parts)
