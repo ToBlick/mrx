@@ -198,3 +198,10 @@ the inline mirror of the diagonal. `mrx/hessian.py`, `mrx/relaxation.py`,
   is the adjoint of the free divergence), so its manufactured density must
   vanish on the wall; the equilibrium field's divergence is round-off on
   both sides of a comparison.
+- 2026-09-21 evening: the suite on the phase-4 tip (cc2cd3e) was 53/54 in all
+  three configurations (cold 507/439/439 s): the one failure was the k=0
+  manufactured test's constant -- on the even view the constant function has
+  reduced coefficients `X^T 1` (sqrt 2 on every orbit pair), not the all-ones
+  vector (7355af0; error 37% -> 2.8%). Lesson for every consumer of a view: a
+  "known" coefficient vector of the base must be reduced through `X^T`, never
+  rewritten on the view. Suite resubmitted (18713216-8).
