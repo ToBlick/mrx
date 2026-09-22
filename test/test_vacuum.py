@@ -182,9 +182,12 @@ def test_manufactured_scalar_solution(seq, k):
         f, info = seq.apply_inverse_laplacian(rhs, 0, dirichlet=False, return_info=True, dtype=RESIDUAL_DTYPE)
         residual = seq.apply_stiffness(f, 0, dirichlet=False) - rhs
         f = f.astype(mrx.DTYPE)
-        # the constant: the 0-forms contain 1 exactly (partition of unity)
+        # the constant: the 0-forms contain 1 exactly (partition of unity), the
+        # all-ones vector of the base; on the even view its reduced coefficients
+        # are sqrt(2) on every orbit pair, so reduce it rather than write ones
         psi_q = jax.vmap(lambda xi: psi(seq.map(xi)))(seq.quad.x)
-        one = jnp.ones(seq.n(0, False), dtype=mrx.DTYPE)
+        x = seq.reduction[(0, False)]       # X: reduced -> free, so X^T reduces the free all-ones vector
+        one = (x.T @ jnp.ones(x.shape[0], dtype=mrx.DTYPE)).astype(mrx.DTYPE)
         M1 = seq.apply_mass_matrix(one, 0, False)
         f = f + (_volume_integrals(seq, psi_q) - float(one @ seq.apply_mass_matrix(f, 0, False))) / float(one @ M1) * one
         load0 = seq.load(lambda xi: psi(seq.map(xi)), 0, dirichlet=False)
