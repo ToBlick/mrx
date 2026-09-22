@@ -38,7 +38,7 @@ Flags, defaults in brackets:
                                    parity: mrx.symmetry), field periods only,
                                    or nothing (zeta in [0, 1] is the whole
                                    torus, nfp = 1); mrx.geometry.SYMMETRIES
-      --ns R,T,Z [16,32,32]        spline resolution (also the map's)
+      --ns R,T,Z [32,64,64]        spline resolution (also the map's)
       --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
                                    the breakpoints of that axis, comma-
                                    separated from 0 to 1, instead of the
@@ -115,7 +115,7 @@ Flags, defaults in brackets:
                                    the strain penalty the 0.1 forcing term
                                    is met late, so more passes only cost)
     Budgets and output:
-      --steps N [100 Newton, 3000 gradient]
+      --steps N [150 Newton, 3000 gradient]
                                    maximum number of steps
       --chunk N [20 Newton, 500 gradient]
                                    steps per compiled chunk (one lax.scan):
@@ -217,7 +217,7 @@ def parse_args(argv=None):
                     help="field periods; overrides the file's nfp attribute")
     ap.add_argument("--symmetry", default="stellarator", choices=("stellarator", "field-period", "none"),
                     help="what the map satisfies (mrx.geometry.SYMMETRIES)")
-    ap.add_argument("--ns", default="16,32,32")
+    ap.add_argument("--ns", default="32,64,64")   # the paper's reference run (Tobias 2026-09-22)
     for axis in ("r", "theta", "zeta"):
         ap.add_argument(f"--knots-{axis}", default="",
                         help=f'breakpoints of the {axis} axis, comma-separated from 0 to 1; "" = uniform')
@@ -261,7 +261,7 @@ def parse_args(argv=None):
     ap.add_argument("--newton-maxiter", type=int, default=None,
                     help="MINRES iterations per pass of the Newton solve [mrx.hessian.NEWTON_MAXITER]")
     ap.add_argument("--newton-passes", type=int, default=None, help="passes of the Newton solve at most [mrx.hessian.NEWTON_PASSES]")
-    ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
+    ap.add_argument("--steps", type=int, default=None, help="maximum steps [150 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect tests once per chunk")
@@ -296,7 +296,7 @@ def parse_args(argv=None):
     cli.midpoint = cli.midpoint == "true"
     cli.newton = cli.method == "newton"
     if cli.steps is None:
-        cli.steps = 100 if cli.newton else 3000
+        cli.steps = 150 if cli.newton else 3000
     if cli.chunk is None:
         cli.chunk = 20 if cli.newton else 500
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
