@@ -1,31 +1,139 @@
 # MRX on an Apple GPU: where the time goes
 
-An M3 Pro, macOS 27, `jax-mps` 0.10.11 on jax 0.10.x, MRX at `a1d0b26`, the
-plain float32 configuration (`MRX_X64=0`) throughout. The reference mesh is
-li383 `(12,24,12)` p=3, deliberately the one behind the v5e / H200 / H100
-table in `tpu_v5e_benchmark.md`.
+An M3 Pro, macOS 27, `jax-mps` 0.10.11 on jax 0.10.x, the plain float32
+configuration (`MRX_X64=0`) throughout. The shift-assembly numbers are MRX
+at `a1d0b26`; the indexed-assembly numbers are the change recorded below,
+on the same machine. The reference mesh is li383 `(12,24,12)` p=3,
+deliberately the one behind the v5e / H200 / H100 table in
+`tpu_v5e_benchmark.md`.
 
 ## The headline
 
-The GPU loses the relaxation and wins the solves, and both are the same fact
-about dispatch.
+The GPU now wins the L-BFGS relaxation, which is not the default method.
+The mass kernel was a dozen dense shifts where Metal wants one indexed read;
+with that swapped, and only on Metal, 100 L-BFGS steps at this mesh take
+283.8 s on the GPU against 352.5 s on the CPU. Newton is the default, and
+its matvec is pinned back to the shift assembly: on Tutorial 4's mesh the
+indexed form changed the direction. Both are below.
 
 | measurement | CPU | MPS | |
 |---|---|---|---|
-| `relax.py` L-BFGS, 100 steps, end to end | **353.7 s** | 593.9 s | CPU 1.68x |
-| per step, from that run | 3.54 s | 5.94 s | CPU 1.68x |
-| per step, `relaxation_bench.py` (steady / 5) | 3.68 s | 4.72 s | CPU 1.28x |
-| per step, `scan_scaling.py` at chunk 5 | 3.59 s | 5.51 s | CPU 1.53x |
+| `relax.py`, 100 steps, indexed assembly | 352.5 s | **283.8 s** | MPS 1.24x |
+| the same run with the shift assembly | **353.7 s** | 593.9 s | CPU 1.68x |
+| per step, indexed | 3.52 s | **2.84 s** | MPS 1.24x |
+| per step, shift assembly | 3.54 s | 5.94 s | CPU 1.68x |
+| per step, `relaxation_bench.py`, shift assembly | 3.68 s | 4.72 s | CPU 1.28x |
+| per step, `scan_scaling.py` chunk 5, shift assembly | 3.59 s | 5.51 s | CPU 1.53x |
 | one nested-CG Laplacian solve, k=1 | 284.3 ms | **74.9 ms** | MPS 3.8x |
 | inverse mass CG k=1, 20 iterations | 587 ms | **158 ms** | MPS 3.7x |
 | inverse mass CG k=2, 24 iterations | 674 ms | **158 ms** | MPS 4.3x |
 
-The per-step numbers disagree with each other by more than they disagree
-between backends, which is worth stating plainly: the run-to-run spread of a
-fixed configuration on this machine is about 17%, so nothing below is claimed
-on a margin smaller than that. The 1.68x end-to-end figure is the one to
-quote, because it is a single 100-step run of each and it is what a user
-experiences.
+The per-step numbers disagree with each other by more than a quiet machine
+would allow: the run-to-run spread of a fixed configuration here is about
+17%, so nothing is claimed on a smaller margin than that. The two
+end-to-end rows are the ones to quote. The CPU figure reproduced: the shift
+assembly re-run on the same revision came back at 352.5 s against 353.7 s
+the first time, and the printed trajectory matched to the last digit, which
+is the check that `shift` is the kernel it was.
+
+## The assembly change
+
+`_structured_gather` and `_structured_accumulate` exist because a TPU has no
+fast path for indexed memory. Measured on a v5e they were 33x faster than a
+gather and a `segment_sum`, and that is the form the kernel has shipped
+since. It is the wrong trade against a per-dispatch charge. One compiled
+mass apply lowers to 115-126 `slice`s and 61-66 `concatenate`s on top of its
+12 `dot_general`s; the indexed form is 6 gathers, 6 scatters and 1
+concatenate, with the same 12 `dot_general`s. The index is built with NumPy
+from the static shift plan at trace time, so it is a constant of the
+executable and `SumfactPlan` does not change.
+
+Inside a jitted scan, milliseconds per apply, best of three:
+
+| | CPU shift | CPU indexed | MPS shift | MPS indexed |
+|---|---|---|---|---|
+| k=1 | 1.312 | 1.231 (1.07x) | 1.226 | **0.503 (2.44x)** |
+| k=2 | 1.134 | 1.205 (0.94x) | 1.200 | **0.475 (2.52x)** |
+
+The decision rule was fixed first: land it only if the indexed form beat
+the shift form on MPS by more than the 17% noise. It beat it by 2.5x. On
+the CPU it is inside the noise in both directions, so the CPU, and a TPU,
+keep the shifts. A per-axis indexed form (one gather per axis rather than
+one for the element) also won on MPS, by 1.9x, and lost to the flat form,
+so it was not landed. `mps/assembly_ab.py` is the comparison.
+
+What a step actually calls, counted with a host callback on one step so the
+Krylov iterations are real ones: the mass kernel 2,757 times at k=1 and
+1,228 times at k=2. Priced at the in-scan costs above, that is 4.9 s of a
+5.9 s step, and the indexed form brings it down by 2.9 s. The measured step
+went from 5.94 s to 2.84 s. The model and the run agree.
+
+The other leaves do not deserve the same treatment. Inside a scan the
+incidence stencils cost 0.06-0.14 ms and the mass preconditioner 0.27 ms,
+against 1.2 ms for the mass kernel; the 5x the derivative lost as a
+standalone call was the mass kernel inside it plus a launch, not the
+stencil. 10,545 extraction applies remain, each on the dispatch floor, and
+they are the next place the floor shows.
+
+`MRX_ASSEMBLY=indexed` is the default on Metal and `shift` everywhere else,
+from `jax.default_backend()`. It is a static argument of `_sumfact_kernel`,
+so the two forms do not share a compilation cache entry and the shift trace
+is the trace it has always been. The gather agrees exactly and the assembly
+agrees to float32 roundoff (`test_indexed_assembly_matches_the_shift_form`). Over
+the 100 steps the indexed and shifted GPU runs agree to 4e-6 in the force
+at step 1 and then separate, the same float32 chaos as GPU against CPU.
+
+## Newton, measured after the assembly change
+
+`relax.py` defaults to `--method newton`. A step is 300 MINRES iterations
+with no criterion of their own (`tol=0.0` inside `newton_direction`), and
+each matvec is three k=1 mass solves, so the mass kernel is a larger share
+of a Newton step than of an L-BFGS step. `newton_tol=0.1` is the truncation,
+not a target the Laplacian atom reaches, so `newton_it` is `+300`.
+`--floor-tol 1e-8` cannot fire in float32; these runs pass `--floor-tol 0`.
+
+The suite, re-run after the kernel change: 61 passed in 150 s on MPS with
+the indexed assembly, and 61 passed in 300 s on the CPU in the default mixed
+configuration, which still traces `shift`. `test_hessian.py` on MPS: the
+second variation matches the energy derivatives, and the Newton direction
+has `||div u|| = 1.3e-9` and a descent cosine of +0.59.
+
+Two Newton steps from the equilibrium field at `(12,24,12)` p=3, before the
+matvec was pinned, so this is the indexed kernel against the shift kernel on
+the same step:
+
+| | CPU shift | MPS shift | MPS indexed |
+|---|---|---|---|
+| wall, 2 steps | 101.3 s | 120.9 s | 86.7 s |
+| per step | 50.6 s | 60.5 s | 43.4 s |
+| fallbacks | 1/2 | 1/2 | 1/2 |
+
+Step 1 agrees between indexed and shift to 8e-7 in `|F|` and 3e-7 in the
+descent cosine (0.994 on all three). The indexed kernel is 1.39x the shift
+kernel and 1.17x the CPU. This is the mesh where the change is honest.
+
+Tutorial 4 is not. `(10,16,16)` p=2, 10 steps, warm-started from
+`data/tutorials/li383_relaxation/checkpoints/state_000500.h5`:
+
+| | per step | fallbacks | minimum descent cosine |
+|---|---|---|---|
+| CPU, shift | 21.8 s | 0/10 | 0.20 |
+| MPS, shift | 38.9 s | 0/10 | 0.13 |
+| MPS, indexed | 31.3 s | 3/10 | 0.007 |
+
+The indexed and shift forces agree at step 1 (9.811e-4 against 9.810e-4).
+The directions do not: cosine 0.186 against 0.242 at step 1, 0.007 against
+0.127 at step 3, and then three fallbacks and a force spike to 2.9e-3 that
+the shift run never has. A matvec good to `sqrt(eps) = 3.5e-4`, repeated 300
+times, makes a 1e-7 reordering visible. `newton_direction` therefore pins
+`_assembly_override` to `shift` for its own trace. The force around it stays
+on the backend's assembly. Re-run with the pin, five steps on the tutorial
+mesh: no fallbacks, 39.0 s/step, the shift cost. The GPU still loses to the
+CPU at this resolution, indexed or not.
+
+The index constants are not the cost. Distinct component plans total 3.56 MB
+at `(12,24,12)` p=3 and 9.13 MB at `(16,32,16)` p=3, under a millisecond to
+build in NumPy and about 5 ms to copy to the device, once per trace.
 
 ## The per-dispatch floor, measured
 

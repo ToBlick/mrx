@@ -195,6 +195,21 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     double the cost. Returns ``(u, a, info)`` with ``info`` the iteration
     count, negative when the true residual met ``tol``.
     """
+    # The indexed assembly reorders the mass sum by ~1e-7. Over the 300
+    # MINRES iterations here that was enough, on the tutorial mesh, to change
+    # the direction: three steps fell back to the smoothed force against none
+    # with the shift assembly. The force evaluation outside this function
+    # keeps the backend's own assembly; only the matvec is pinned.
+    from mrx.mass import _assembly_override
+    token = _assembly_override.set("shift")
+    try:
+        return _newton_direction(seq, B, J, MF, a_guess, tol, maxiter, precond)
+    finally:
+        _assembly_override.reset(token)
+
+
+def _newton_direction(seq, B, J, MF, a_guess, tol, maxiter, precond):
+    """The body of :func:`newton_direction`, traced while the shift assembly is pinned."""
     ops = seq._require_operators(None)
     on = seq if seq.residual is None else seq.residual
 

@@ -6,13 +6,16 @@ compiles the StableHLO a JAX program lowers to and executes it with
 [MLX](https://github.com/ml-explore/mlx). Nothing is provisioned and nothing
 bills: unlike `tpu/`, the hardware is the laptop.
 
-The whole suite passes there, 59/59, in the plain float32 configuration, and
-a real li383 relaxation runs to completion. The useful summary of the
-performance is that this backend charges a **flat ~0.22 ms per dispatch**, so
-an operation is faster or slower than the CPU according to whether it is
-bigger or smaller than that floor. A Krylov solve is bigger, and wins 3.8x. A
-relaxation step is a few hundred things that are smaller, and loses 1.68x
-end to end. The numbers are under "What was measured" below, and
+The whole suite passes there, 61/61, in the plain float32 configuration, and
+a real li383 relaxation runs to completion. This backend charges a flat
+~0.22 ms per dispatch, so an operation is faster or slower than the CPU
+according to whether it is bigger or smaller than that floor. The mass
+kernel used to be on the wrong side of it, because it had been written as a
+dozen dense shifts in place of one indexed read: that is the form a TPU
+wants and the form Metal does not. On Metal the kernel is one gather and
+one ``segment_sum`` instead (``MRX_ASSEMBLY``, below). With that, 100 L-BFGS
+steps at `(12,24,12)` p=3 take **283.8 s on the GPU against 352.5 s on the
+CPU**. The numbers are under "What was measured" below, and
 `docs/research/mps_benchmark_2026-09-21.md` is the full record.
 
 ## The environment
@@ -102,9 +105,9 @@ Suite, `MRX_X64=0`, one M3 Pro, wall clock for `pytest test`:
 
 | backend | configuration | result |
 |---|---|---|
-| mps | plain float32 | 59 passed, 189 s |
-| cpu | plain float32 | 59 passed, 209 s |
-| cpu | mixed float32/float64 (the default, x64 on) | 59 passed, 273 s |
+| mps | plain float32, indexed assembly | 61 passed, 150 s |
+| cpu | mixed float32/float64, shift assembly (the default) | 61 passed, 300 s |
+| cpu | plain float32, before the assembly tests existed | 59 passed, 209 s |
 
 The suite is compile-bound, so that near-parity is mostly a statement about
 XLA-versus-MLX compile time, not about execution. The parts of it that are
@@ -114,18 +117,68 @@ is 54.0 s against 37.4 s. The section below is why.
 
 ### A real run, li383 `(12,24,12)` p=3 float32
 
-`scripts/relax.py --method lbfgs --steps 100 --chunk 25`, the same mesh as the
-v5e / H200 / H100 table in `docs/research/tpu_v5e_benchmark.md`:
+These are `--method lbfgs`. The default method is Newton, and it behaves
+differently; that run is the next section. `scripts/relax.py --method lbfgs
+--steps 100 --chunk 25`, the same mesh as the v5e / H200 / H100 table in
+`docs/research/tpu_v5e_benchmark.md`:
 
-| | CPU | MPS | |
+| | CPU | MPS, indexed assembly | |
 |---|---|---|---|
-| 100 L-BFGS steps, end to end | **353.7 s** | 593.9 s | CPU 1.68x |
-| per step | 3.54 s | 5.94 s | CPU 1.68x |
+| 100 L-BFGS steps, end to end | 352.5 s | **283.8 s** | MPS 1.24x |
+| per step | 3.52 s | **2.84 s** | MPS 1.24x |
+| the same run before the assembly change | 353.7 s | 593.9 s | CPU 1.68x |
 | one nested-CG Laplacian solve, k=1 | 284.3 ms | **74.9 ms** | MPS 3.8x |
 | inverse mass CG k=1, 20 iterations | 587 ms | **158 ms** | MPS 3.7x |
 
+The mass apply inside a scan, the change itself, at this mesh: 1.226 ms the
+shift form against **0.503 ms** the indexed form at k=1 (2.44x), and 1.200
+against **0.475 ms** at k=2 (2.52x). On the CPU the same comparison is 1.07x
+and 0.94x, inside the noise, which is why the CPU keeps the shifts.
+
 Run-to-run spread on this machine is about 17%, so nothing is claimed on a
 smaller margin than that.
+
+`--floor-tol` defaults to `1e-8`, a squared normalised residual. A float32
+run sits at a few times `1e-3`, so the criterion cannot fire and the run
+stops on the step count. Pass `--floor-tol 0`.
+
+### Newton, the default method
+
+A Newton step is a 300-iteration MINRES solve whose matvec is three k=1 mass
+solves, so it is more mass-bound than the descent, and `newton_tol=0.1` is
+not reached: every step spends the whole budget. That tolerance is the
+truncation, not a target, and `newton_it` reads `+300`.
+
+On the benchmark mesh, two steps from the equilibrium field, the indexed
+matvec and the shift matvec agree. The force at step 1 agrees to 8e-7 and
+the descent cosine to 3e-7, and both fall back to the smoothed force on that
+one step and not the next:
+
+| | CPU, shift | MPS, shift | MPS, indexed |
+|---|---|---|---|
+| 2 Newton steps | 101.3 s | 120.9 s | **86.7 s** |
+| per step | 50.6 s | 60.5 s | **43.4 s** |
+| fallbacks | 1/2 | 1/2 | 1/2 |
+
+That indexed column is not what a Newton run does. On Tutorial 4's mesh,
+`(10,16,16)` p=2, ten steps from the shipped descent state, the same indexed
+matvec changed the direction: the descent cosine collapsed to 0.007 at step
+3 where the shift assembly held 0.13, and 3 of 10 steps fell back to the
+smoothed force against none. Three hundred iterations of a matvec accurate
+to `sqrt(eps)` is enough room for a 1e-7 reordering of the sum to matter, and
+it mattered there. So `newton_direction` pins its own matvec to the shift
+assembly, whatever the backend. The force evaluation around it stays indexed.
+With that pin the tutorial run has no fallbacks, and it costs the shift
+step, 39 s, not the indexed 31 s.
+
+| Tutorial 4, 10 steps | per step | fallbacks | cosine, minimum |
+|---|---|---|---|
+| CPU, shift | 21.8 s | 0/10 | 0.20 |
+| MPS, shift | 38.9 s | 0/10 | 0.13 |
+| MPS, indexed, before the pin | 31.3 s | 3/10 | 0.007 |
+
+At `(10,16,16)` p=2 the GPU loses to the CPU either way. That is the small
+mesh, where it has lost before.
 
 ### The floor, measured directly
 
@@ -176,9 +229,30 @@ the sum-factorised applies dominate the preconditioner, and `(8,12,12)` p=2
 is far below that. Do not port a laptop-sized test case to the GPU and expect
 a speed-up.
 
+## `MRX_ASSEMBLY`
+
+```bash
+MRX_ASSEMBLY=indexed   # one gather and one segment_sum per element
+MRX_ASSEMBLY=shift     # the dense shifted copies, the TPU and CPU form
+```
+
+Unset, Metal takes `indexed` and every other backend takes `shift`, from
+`jax.default_backend()`. The two compute the same operator: the gather is
+the same integer map and agrees exactly, and the assembly is the same sum in
+a different order and agrees to float32 roundoff. `shift` traces the
+kernel every non-Metal run has always traced, so nothing about a CPU or GPU
+result moves.
+
+It is a static branch of the one mass kernel, not a second code path through
+the solvers. One L-BFGS step applies that kernel 2,757 times at k=1 and
+1,228 times at k=2, which is why a 2.5x on the kernel is a 2.1x on the step
+(593.9 s down to 283.8 s) and is what puts the GPU ahead of the CPU on that
+method. The Newton matvec does not take the branch: see above.
+
 ## Pass `--chunk 25`
 
-This is the one tuning change that matters, and it is worth about 2.3x.
+Compile is still uncacheable, so this is still worth about 2.3x, on top of
+the assembly change above.
 
 The persistent compilation cache does not work on this plugin: it writes zero
 entries and a second run recompiles in full, where the same script on the CPU
@@ -203,17 +277,19 @@ it again if a version bump makes that worth doing.
 
 Plain float32 relaxation is sensitive to roundoff, and the two backends
 separate. Over 100 L-BFGS steps on li383 `(12,24,12)` p=3, the force residual
-agrees to 6e-6 at step 1 -- roundoff carried through solves whose own
+agrees to 2e-6 at step 1 -- roundoff carried through solves whose own
 tolerance is `sqrt(eps) = 3.5e-4` -- then grows past 1% by step 12, and by
-step 100 the runs are on different trajectories.
+step 100 the runs are on different trajectories. The indexed and shifted
+forms on the GPU itself agree to 4e-6 at step 1 and then separate the same
+way, which is the check that the faster kernel is the same operator.
 
 That is the descent amplifying a roundoff-sized perturbation, not a backend
 defect, and the conserved quantities say both runs are physical: helicity
-drifts by 2.7e-6 relative on MPS and 7.3e-5 on CPU, `||div B||` stays at
-1.5e-06 and 1.2e-06, and the energy decreases on 84 and 81 of 100 steps. Do
-not read the helicity figures as the GPU being more accurate; they are two
-samples of a chaotic trajectory. Compare backends on invariants and on
-converged states, never step by step.
+drifts by 3.3e-5 relative on the GPU and 7.3e-5 on the CPU, `||div B||`
+stays at 1.5e-06 and 1.2e-06, and the energy decreases on 91 and 81 of 100
+steps. Do not read the helicity figures as the GPU being more accurate; they
+are two samples of a chaotic trajectory. Compare backends on invariants and
+on converged states, never step by step.
 
 ## `JAX_MPS_ASYNC_DISPATCH=1`
 
@@ -235,8 +311,9 @@ It is documented as experimental. Nothing in the suite was run with it.
   alone does applies in full.
 - The persistent compilation cache is inert here: every run recompiles. Keep
   the chunk small, as above.
-- A per-dispatch floor of about 0.22 ms, which is what makes the relaxation
-  lose while the solves win. It is not the `lax.scan` trip-count growth of
+- A per-dispatch floor of about 0.22 ms. It is what the indexed mass
+  assembly is avoiding, and it is still what the small extraction applies
+  pay. It is not the `lax.scan` trip-count growth of
   jax-mps [#215](https://github.com/tillahoffmann/jax-mps/issues/215); that
   was tested with `mps/scan_scaling.py` and does not reach MRX, on either
   backend, at either mesh.

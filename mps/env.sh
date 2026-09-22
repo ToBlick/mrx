@@ -18,6 +18,14 @@ export MRX_X64=0
 # explicitly anyway: it is what makes the CPU comparison a one-word edit.
 export JAX_PLATFORMS=mps
 
+# MRX_ASSEMBLY is deliberately unset.  On Metal the mass kernel defaults to
+# the indexed form (one gather and one segment_sum), which measured 2.5x on
+# the apply and took a 100-step L-BFGS li383 relaxation from 593.9 s to
+# 283.8 s, ahead of this machine's CPU at 352.5 s.  Every other backend keeps
+# the shifted form.  The Newton matvec pins itself back to shift: on the
+# tutorial mesh the indexed form changed the direction.  Set
+# MRX_ASSEMBLY=shift to compare the two on the GPU for everything else.
+
 # --- Not set, and why -------------------------------------------------------
 #
 # MLX_ENABLE_TF32
