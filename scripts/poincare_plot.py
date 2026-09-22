@@ -158,7 +158,7 @@ def main():
     ap.add_argument("--pressure-factor", type=float, default=1.0,
                     help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta) [1]")
     ap.add_argument("--pressure-label", default=None, help="label of the pressure axis and colour bar [p]")
-    ap.add_argument("--label-size", type=float, default=6.0)
+    ap.add_argument("--label-size", type=float, default=9.0)   # the paper's body size: import the PGF at its authored width, not through a resizebox (Tobias 2026-09-22)
     ap.add_argument("--page-width", type=float, default=6.5)
     ap.add_argument("--dpi", type=int, default=600)
     ap.add_argument("--no-pgf", dest="pgf", action="store_false")

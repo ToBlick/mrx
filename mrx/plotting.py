@@ -521,7 +521,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     # an off-centre axis is seen at a glance -- nested surfaces are
     # horizontal bands there -- so it stays in the relaxation figures too
     # (restored 2026-08-28).
-    panels = [("ax", 1.45)]
+    panels = [("ax", 1.2)]   # 1.45 left white margins around the equal-aspect section (Tobias 2026-09-22)
     if logical is not None:
         panels.append(("lx", 0.9))
     panels.append(("bx", 1.15))
@@ -719,14 +719,13 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                 px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=0.9,
                             color=P_COLOR, ecolor=P_COLOR, elinewidth=0.4, capsize=0)
             if lx is not None:
-                lx.axvline(th0, color="black", linestyle="-", lw=1.0,
+                lx.axvline(th0, color="black", linestyle=":", lw=1.0,
                            alpha=0.85, zorder=6)
         bx.set_xlabel(r"$r$")
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
         bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
-            px.set_ylabel(pressure_label, color=P_COLOR)
-            _scale_note(px.yaxis, pressure_scale, color=P_COLOR)
+            px.set_ylabel(f"{pressure_label} $\\times$ {pressure_scale:g}", color=P_COLOR)
             px.tick_params(axis="y", labelcolor=P_COLOR)
             if lim.p is not None:
                 px.set_ylim(*lim.p)
@@ -763,11 +762,10 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
             mo, so = p_mean[prof][order], p_std[prof][order]
             _, (bx, px) = plot_twin_axis(
                 io, mo, x_left=xo, x_right=xo, left_label=r"$\iota$",
-                right_label=pressure_label, left_log=False, right_log=False,
+                right_label=f"{pressure_label} $\\times$ {pressure_scale:g}", left_log=False, right_log=False,
                 x_label=profile_xlabel, grid=False, ax=bx,
                 left_plot_kwargs=dict(left, lw=0.8),
                 right_plot_kwargs=dict(right, lw=0.8))
-            _scale_note(px.yaxis, pressure_scale, color=right["color"])
             px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
                             label=r"$p \pm 1$ std over the line")
             if lim.p is not None:
