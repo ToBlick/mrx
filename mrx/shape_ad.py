@@ -29,14 +29,19 @@ changes the iteration count of the solves and nothing else.
 ``R`` and ``Z`` coefficients of the map, ``(n_theta, n_zeta)`` each,
 extended inwards by a radial ramp that vanishes on the two innermost rings,
 so the C1 polar structure and the coordinate axis of the start map are kept
-(the magnetic axis is free to move). The perturbation is projected onto
+(the magnetic axis is free to move); for large changes, harmonically in
+the logical disc, poloidal mode by mode, which moves the coordinate axis
+with the mean of the change. The perturbation is projected onto
 stellarator symmetry (``R`` even, ``Z`` odd), and the coefficients are
 rescaled so that the volume stays that of the start map exactly (a uniform
 scaling leaves the vacuum rotational transform unchanged). Optionally the
 aspect ratio is held exactly too, by scaling every cross-section about the
-coordinate axis first (:meth:`BoundaryShape.map_coefficients`). Interior
-coefficients are not free: they would let the logical surfaces bend and
-fool :func:`flux_ratio_iota`.
+coordinate axis first (:meth:`BoundaryShape.map_coefficients`). Or every
+coefficient is free (``free="all"``): the extended boundary change plus a
+change of every ring inside, the axis (ring 0) included, with ring 1 kept
+pure ``m = 1`` about it (C1). Then the logical surfaces bend with the
+variables, which can fool :func:`flux_ratio_iota` unless
+:func:`normal_field_fraction` holds them to the flux surfaces.
 
 **The objectives** (:func:`flux_ratio_iota`): ``iota = nfp <B^theta> /
 <B^zeta>`` on the logical surfaces, the averages over ``(theta, zeta)``
@@ -44,7 +49,9 @@ taken exactly from the DoFs. It is the rotational transform wherever the
 logical surfaces are flux surfaces; :func:`normal_field_fraction` measures
 how far they are from that. :func:`quasisymmetry_residual` is the two-term
 quasi-axisymmetry residual on the same surfaces, from the spline
-derivatives of the field and of the map at the quadrature points.
+derivatives of the field and of the map at the quadrature points, and
+:func:`edge_quasisymmetry_residual` the same on the boundary alone, which is
+a flux surface exactly.
 
 On a half-period sequence (:mod:`mrx.symmetry`) every field here is odd, the
 geometry even, and the parametrisation stellarator-symmetric by
@@ -149,47 +156,112 @@ def aspect_ratio(V, S, nfp):
 
 
 class BoundaryShape(eqx.Module):
-    """The map's ``R`` and ``Z`` coefficients as a function of the boundary
-    variables ``beta``, an array ``(2, n_theta, n_zeta)``: ``beta[0]`` the
-    change of the outermost ring of the ``R`` coefficients, ``beta[1]`` of
-    the ``Z`` ones.
+    """The map's ``R`` and ``Z`` coefficients as a function of the variables
+    ``beta``, an array ``(2, n_theta, n_zeta)``: ``beta[0]`` the change of
+    the outermost ring of the ``R`` coefficients, ``beta[1]`` of the ``Z``
+    ones.
 
     The change is projected onto stellarator symmetry (``R`` even, ``Z``
-    odd, :meth:`perturbation`) and extended inwards by ``ramp``, ``w_i =
-    ((i - 1) / (n_r - 2))^2`` on ring ``i >= 1``: zero on the two innermost
-    rings, which carry the C1 polar structure and the coordinate axis, one
-    on the boundary. :meth:`map_coefficients` holds the volume, and with
-    ``aspect`` the aspect ratio, exactly.
+    odd, :meth:`perturbation`) and extended inwards ring by ring, poloidal
+    mode by poloidal mode (:meth:`extension_weights`): the ``ramp``, ``w_i =
+    ((i - 1) / (n_r - 2))^2`` on ring ``i >= 1`` for every mode, zero on the
+    two innermost rings, which carry the C1 polar structure and the
+    coordinate axis; or the ``harmonic`` extension, ``rho_i^|m|`` on mode
+    ``m`` of ring ``i`` (``rho_i`` the ring's Greville abscissa), the
+    extension of ``exp(2 pi i m theta)`` harmonic in the logical disc, which
+    moves every ring, and the coordinate axis with them, by the ``m = 0``
+    part of the change (ring 1 keeps only ``|m| <= 1``: it stays pure ``m =
+    1`` about the axis). One on the boundary in both.
+
+    With ``free="all"`` every coefficient is a variable: ``beta`` is
+    ``(2, n_r, n_theta, n_zeta)``, its outermost ring the boundary change,
+    extended as above, and every ring inside a change of its own on top
+    (``interior``, :meth:`interior_modes`): ``m = 0`` on ring 0, the axis;
+    ``|m| = 1`` on ring 1, whose ``m = 0`` part is ring 0's, so it stays pure
+    ``m = 1`` about the moved axis. :meth:`map_coefficients` holds the
+    volume, and with ``aspect`` the aspect ratio, exactly.
     """
 
     raw_R: jnp.ndarray
     raw_Z: jnp.ndarray
-    ramp: jnp.ndarray
+    extension: jnp.ndarray
     volume: jnp.ndarray
     nfp: int = eqx.field(static=True)
     sign: float = eqx.field(static=True)
     basis_0: DifferentialForm = eqx.field(static=True)
     aspect: Optional[float] = eqx.field(static=True, default=None)
+    interior: Optional[jnp.ndarray] = None
 
     @classmethod
-    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, sign, volume=None, aspect=None):
+    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, sign, volume=None, aspect=None, extension="ramp",
+                          free="boundary"):
         """The parametrisation about the map with raw coefficients ``raw_R``,
         ``raw_Z`` (``nfp`` and handedness ``sign`` as in
         :func:`cylindrical_geometry`). ``volume`` (of one field period) is
         the one kept, that map's by default; ``aspect`` the aspect ratio
-        held (:func:`aspect_ratio`), none by default."""
-        n_r = raw_R.shape[0]
-        ramp = jnp.asarray((np.maximum(np.arange(n_r) - 1, 0) / (n_r - 2)) ** 2, dtype=raw_R.dtype)
+        held (:func:`aspect_ratio`), none by default; ``extension`` the
+        interior extension of the boundary change, ``"ramp"`` or
+        ``"harmonic"``; ``free`` the variables, the boundary ring
+        (``"boundary"``) or every ring (``"all"``)."""
         if volume is None:
             volume = section_moments(seq, raw_R, raw_Z, nfp, sign)[0]
-        return cls(raw_R, raw_Z, ramp, jnp.asarray(volume), int(nfp), float(sign), seq.basis_0,
-                   None if aspect is None else float(aspect))
+        weights = cls.extension_weights(seq.basis_0, extension)
+        interior = jnp.asarray(cls.interior_modes(seq.basis_0), dtype=raw_R.dtype) if free == "all" else None
+        return cls(raw_R, raw_Z, jnp.asarray(weights, dtype=raw_R.dtype), jnp.asarray(volume), int(nfp),
+                   float(sign), seq.basis_0, None if aspect is None else float(aspect), interior)
+
+    @property
+    def free(self):
+        """``"boundary"`` or ``"all"``: the variables."""
+        return "boundary" if self.interior is None else "all"
+
+    @staticmethod
+    def extension_weights(basis_0, extension):
+        """``(n_r, n_theta)``: the weight of poloidal mode ``m`` (FFT order over
+        the ring's theta coefficients) of the boundary change on ring ``i``."""
+        n_r, n_t = basis_0.Λ[0].n, basis_0.Λ[1].n
+        m = np.abs(np.fft.fftfreq(n_t, 1.0 / n_t))
+        if extension == "ramp":
+            return np.broadcast_to(((np.maximum(np.arange(n_r) - 1, 0) / (n_r - 2)) ** 2)[:, None], (n_r, n_t))
+        if extension != "harmonic":
+            raise ValueError(f"extension must be 'ramp' or 'harmonic', got {extension!r}")
+        rho = np.asarray(basis_0.Λ[0].greville_points(), dtype=np.float64)
+        weights = rho[:, None] ** m[None, :]
+        weights[1, m >= 2] = 0.0
+        return weights
+
+    @staticmethod
+    def interior_modes(basis_0):
+        """``(n_r, n_theta)``: the poloidal modes of ring ``i`` free on their
+        own with ``free="all"``, ``m = 0`` on ring 0, ``|m| = 1`` on ring 1
+        (its ``m = 0`` part is ring 0's), all on the rings inside, none on the
+        boundary ring (its change is the extended one)."""
+        n_r, n_t = basis_0.Λ[0].n, basis_0.Λ[1].n
+        m = np.abs(np.fft.fftfreq(n_t, 1.0 / n_t))
+        modes = np.ones((n_r, n_t))
+        modes[0], modes[1], modes[-1] = m == 0, m == 1, 0.0
+        return modes
 
     def perturbation(self, beta):
-        """``(b_R, b_Z)``, the boundary change ``beta`` projected onto ``R``
-        even and ``Z`` odd under ``(theta, zeta) -> (-theta, -zeta)``."""
+        """``(b_R, b_Z)``, the change ``beta`` projected onto ``R`` even and
+        ``Z`` odd under ``(theta, zeta) -> (-theta, -zeta)``, of the boundary
+        ring or of every ring."""
+        if self.interior is not None:
+            return (stellarator_symmetric_scalar(beta[0], self.basis_0, even=True),
+                    stellarator_symmetric_scalar(beta[1], self.basis_0, even=False))
         return (stellarator_symmetric_scalar(beta[0][None], self.basis_0, even=True)[0],
                 stellarator_symmetric_scalar(beta[1][None], self.basis_0, even=False)[0])
+
+    def change(self, beta):
+        """``(2, n_r, n_theta, n_zeta)``: the change of the raw ``R`` and ``Z``
+        coefficients at ``beta``, before the scalings."""
+        b = jnp.stack(self.perturbation(beta))
+        if self.interior is None:
+            spectrum = jnp.fft.fft(b, axis=1)                                            # (2, n_t, n_z)
+            return jnp.fft.ifft(self.extension[None, :, :, None] * spectrum[:, None], axis=2).real
+        spectrum = jnp.fft.fft(b, axis=2)                                                # (2, n_r, n_t, n_z)
+        own = (self.interior[None, :, :, None] * spectrum).at[:, 1, 0].set(spectrum[:, 0, 0])
+        return jnp.fft.ifft(self.extension[None, :, :, None] * spectrum[:, -1:] + own, axis=2).real
 
     def map_coefficients(self, seq, beta):
         """``(R, Z, mu, scale)``: the raw coefficients of the map at ``beta``
@@ -201,9 +273,8 @@ class BoundaryShape(eqx.Module):
         so ``mu = V_axis / (2 sqrt(pi) S^(3/2) aspect / nfp - V + V_axis)``
         in closed form; ``mu = 1`` without. Then the whole map is scaled by
         ``scale = (volume / V(mu))^(1/3)``, which keeps the aspect ratio."""
-        b_R, b_Z = self.perturbation(beta)
-        w = self.ramp[:, None, None]
-        R, Z = self.raw_R + w * b_R, self.raw_Z + w * b_Z
+        rings = self.change(beta)
+        R, Z = self.raw_R + rings[0], self.raw_Z + rings[1]
         V, V_axis, S = section_moments(seq, R, Z, self.nfp, self.sign)
         mu = jnp.ones_like(V)
         if self.aspect is not None:
@@ -395,41 +466,58 @@ def normal_field_fraction(seq, h):
     return normal / jnp.sum(w * jnp.einsum("qi,qij,qj->q", b, seq.metric_jkl, b) / J)
 
 
-def _two_form_derivatives(seq, h):
-    """``(b, db)``: the reference components of the Dirichlet 2-form ``h`` at
-    the quadrature points, ``(n_q, 3)``, and their logical derivatives,
-    ``(3, n_q, 3)`` with ``db[a, q, i] = d_a b^i``. Component ``c`` lives on
-    the primal splines on axis ``c`` and on the derivative splines on the
-    others, and ``d_a`` replaces the axis-``a`` table by its derivative:
-    ``B'_l = D_{l-1} - D_l`` on a primal axis, the tabulated ``D'`` on a
-    derivative axis."""
-    prim = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    der = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    dprim = tuple(grad_1d(d, t) for d, t in zip(der, seq.basis_0.types))
+def _tables(seq, radii=None):
+    """``(prim, der, dprim, dder, ddprim, shape)``: per axis the 1-D tables
+    ``(n, n_points)`` of the 0-form splines, of their derivative splines, of
+    the derivatives of both (``B'_l = D_{l-1} - D_l``, the tabulated ``D'``)
+    and the second derivatives of the 0-form splines, on the tensor grid of
+    the volume quadrature points, or with ``radii`` of those radii and the
+    angular quadrature points (a surface rule); ``shape`` is the grid's."""
+    types = seq.basis_0.types
+    if radii is None:
+        r_prim, r_der, r_dder = seq.basis_r_jk, seq.d_basis_r_jk, seq.dd_basis_jk[0]
+    else:
+        radii = jnp.asarray(radii)
+        r_prim, r_der = basis_table(seq.basis_0.Λ[0], radii), basis_table(seq.basis_0.dΛ[0], radii)
+        r_dder = basis_derivative_table(seq.basis_0.dΛ[0], radii)
+    prim = (r_prim, seq.basis_t_jk, seq.basis_z_jk)
+    der = (r_der, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    dder = (r_dder, seq.dd_basis_jk[1], seq.dd_basis_jk[2])
+    dprim = tuple(grad_1d(d, t) for d, t in zip(der, types))
+    ddprim = tuple(grad_1d(dd, t) for dd, t in zip(dder, types))
+    return prim, der, dprim, dder, ddprim, (int(r_prim.shape[1]), seq.quad.shape[1], seq.quad.shape[2])
+
+
+def _two_form_derivatives(seq, h, tables):
+    """``(b, db)``: the reference components of the Dirichlet 2-form ``h`` on
+    the grid of ``tables`` (:func:`_tables`), ``(n_q, 3)``, and their logical
+    derivatives, ``(3, n_q, 3)`` with ``db[a, q, i] = d_a b^i``. Component
+    ``c`` lives on the primal splines on axis ``c`` and on the derivative
+    splines on the others, and ``d_a`` replaces the axis-``a`` table by its
+    derivative."""
+    prim, der, dprim, dder, _, grid = tables
     shapes = [tuple(int(v) for v in sh) for sh in seq.basis_2.shape]
     raw = seq.E(2, True).T @ h
 
-    def tables(a):
-        info = []
+    def info(a):
+        out = []
         for c in range(3):
             tabs = [prim[i] if i == c else der[i] for i in range(3)]
             if a is not None:
-                tabs[a] = dprim[a] if a == c else seq.dd_basis_jk[a]
-            info.append((c, *tabs))
-        return info
-    b = evaluate_at_xq(raw, tables(None), shapes, seq.quad.shape, 3)
-    return b, jnp.stack([evaluate_at_xq(raw, tables(a), shapes, seq.quad.shape, 3) for a in range(3)])
+                tabs[a] = dprim[a] if a == c else dder[a]
+            out.append((c, *tabs))
+        return out
+    b = evaluate_at_xq(raw, info(None), shapes, grid, 3)
+    return b, jnp.stack([evaluate_at_xq(raw, info(a), shapes, grid, 3) for a in range(3)])
 
 
-def _cylindrical_derivatives(seq, raw_R, raw_Z):
-    """``(v, d1, d2)``: ``(R, Z)`` of the raw coefficients at the quadrature
-    points, ``(2, n_q)``, their first logical derivatives ``d1[q, c, i] =
-    d_i c`` ``(n_q, 2, 3)``, and their second ones ``d2[q, c, i, j]``
-    ``(n_q, 2, 3, 3)``, sum-factorised (``B''_l = D'_{l-1} - D'_l``)."""
-    types = seq.basis_0.types
-    tabs = ((seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk),
-            tuple(grad_1d(d, t) for d, t in zip((seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk), types)),
-            tuple(grad_1d(dd, t) for dd, t in zip(seq.dd_basis_jk, types)))
+def _cylindrical_derivatives(raw_R, raw_Z, tables):
+    """``(v, d1, d2)``: ``(R, Z)`` of the raw coefficients on the grid of
+    ``tables`` (:func:`_tables`), ``(2, n_q)``, their first logical
+    derivatives ``d1[q, c, i] = d_i c`` ``(n_q, 2, 3)``, and their second
+    ones ``d2[q, c, i, j]`` ``(n_q, 2, 3, 3)``, sum-factorised."""
+    prim, _, dprim, _, ddprim, _ = tables
+    tabs = (prim, dprim, ddprim)
     C = jnp.stack([raw_R, raw_Z])
 
     def ev(orders):
@@ -438,6 +526,35 @@ def _cylindrical_derivatives(seq, raw_R, raw_Z):
     d1 = jnp.stack([ev(unit[i]) for i in range(3)], -1)
     d2 = jnp.stack([jnp.stack([ev(unit[i] + unit[j]) for j in range(3)], -1) for i in range(3)], -2)
     return ev((0, 0, 0)), jnp.moveaxis(d1, 1, 0), jnp.moveaxis(d2, 1, 0)
+
+
+def _residual_terms(seq, h, raw_R, raw_Z, nfp, sign, tables):
+    """``(B, parallel, cross, B_cov, J)`` on the grid of ``tables``: ``|B|``,
+    ``B . grad|B|``, ``(B x grad r) . grad|B|``, the covariant components of
+    ``B`` and ``det DF``, from the spline derivatives of ``h`` and of the
+    map (:func:`quasisymmetry_residual`)."""
+    a = 2.0 * np.pi / nfp
+    (R, _), d1, d2 = _cylindrical_derivatives(raw_R, raw_Z, tables)
+    dR, dZ, ddR, ddZ = d1[:, 0], d1[:, 1], d2[:, 0], d2[:, 1]
+    G = jnp.einsum("qi,qj->qij", dR, dR) + jnp.einsum("qi,qj->qij", dZ, dZ)
+    G = G.at[:, 2, 2].add((a * R) ** 2)
+    dG = (jnp.einsum("qik,qj->qkij", ddR, dR) + jnp.einsum("qi,qjk->qkij", dR, ddR)
+          + jnp.einsum("qik,qj->qkij", ddZ, dZ) + jnp.einsum("qi,qjk->qkij", dZ, ddZ))
+    dG = dG.at[:, :, 2, 2].add(2.0 * a ** 2 * R[:, None] * dR)
+    cross_rz = dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1]
+    J = sign * a * R * cross_rz
+    dJ = sign * a * (dR * cross_rz[:, None] + R[:, None] * (
+        ddR[:, 1] * dZ[:, 0:1] + dR[:, 1:2] * ddZ[:, 0] - ddR[:, 0] * dZ[:, 1:2] - dR[:, 0:1] * ddZ[:, 1]))
+
+    b, db = _two_form_derivatives(seq, h, tables)
+    Gb = jnp.einsum("qij,qj->qi", G, b)
+    B2 = jnp.sum(b * Gb, -1) / J ** 2
+    dB2 = ((2.0 * jnp.einsum("qi,kqi->qk", Gb, db) + jnp.einsum("qi,qkij,qj->qk", b, dG, b)) / J[:, None] ** 2
+           - 2.0 * B2[:, None] * dJ / J[:, None])
+    B = jnp.sqrt(B2)
+    dB = dB2 / (2.0 * B[:, None])
+    B_cov = Gb / J[:, None]
+    return (B, jnp.sum(b * dB, -1) / J, (dB[:, 1] * B_cov[:, 2] - dB[:, 2] * B_cov[:, 1]) / J, B_cov, J)
 
 
 def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, sign, r_min):
@@ -462,39 +579,38 @@ def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, sign, r_min):
     flux surfaces (:func:`normal_field_fraction`), like the flux ratio.
     ``F_parallel`` is the same average of the first term alone, the scale the
     two terms cancel from."""
-    a = 2.0 * np.pi / nfp
-    (R, _), d1, d2 = _cylindrical_derivatives(seq, raw_R, raw_Z)
-    dR, dZ, ddR, ddZ = d1[:, 0], d1[:, 1], d2[:, 0], d2[:, 1]
-    G = jnp.einsum("qi,qj->qij", dR, dR) + jnp.einsum("qi,qj->qij", dZ, dZ)
-    G = G.at[:, 2, 2].add((a * R) ** 2)
-    dG = (jnp.einsum("qik,qj->qkij", ddR, dR) + jnp.einsum("qi,qjk->qkij", dR, ddR)
-          + jnp.einsum("qik,qj->qkij", ddZ, dZ) + jnp.einsum("qi,qjk->qkij", dZ, ddZ))
-    dG = dG.at[:, :, 2, 2].add(2.0 * a ** 2 * R[:, None] * dR)
-    cross_rz = dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1]
-    J = sign * a * R * cross_rz
-    dJ = sign * a * (dR * cross_rz[:, None] + R[:, None] * (
-        ddR[:, 1] * dZ[:, 0:1] + dR[:, 1:2] * ddZ[:, 0] - ddR[:, 0] * dZ[:, 1:2] - dR[:, 0:1] * ddZ[:, 1]))
-
-    b, db = _two_form_derivatives(seq, h)
-    Gb = jnp.einsum("qij,qj->qi", G, b)
-    B2 = jnp.sum(b * Gb, -1) / J ** 2
-    dB2 = ((2.0 * jnp.einsum("qi,kqi->qk", Gb, db) + jnp.einsum("qi,qkij,qj->qk", b, dG, b)) / J[:, None] ** 2
-           - 2.0 * B2[:, None] * dJ / J[:, None])
-    B = jnp.sqrt(B2)
-    dB = dB2 / (2.0 * B[:, None])
-    Bcov = Gb / J[:, None]
-
+    B, parallel, cross, B_cov, J = _residual_terms(seq, h, raw_R, raw_Z, nfp, sign, _tables(seq))
     A, C = _radial_moments(seq, h)
     D = basis_table(seq.basis_0.dΛ[0], seq.quad.x_x)
     radial = seq.quad.shape[1] * seq.quad.shape[2]
     iota = jnp.repeat(nfp * (A @ D) / (C @ D), radial)
     psi_prime = jnp.repeat((C @ D) / (2.0 * np.pi), radial)
     w = seq.quad.w
-    G_circ = nfp / (2.0 * np.pi) * jnp.sum(w * Bcov[:, 2]) / jnp.sum(w)
-    parallel = jnp.sum(b * dB, -1) / J
-    binormal = psi_prime * (dB[:, 1] * Bcov[:, 2] - dB[:, 2] * Bcov[:, 1]) / J
-    f = (G_circ * parallel - iota * binormal) / B ** 3
+    G_circ = nfp / (2.0 * np.pi) * jnp.sum(w * B_cov[:, 2]) / jnp.sum(w)
+    f = (G_circ * parallel - iota * psi_prime * cross) / B ** 3
     mask = jnp.repeat(seq.quad.x_x >= r_min, radial)
     weight = jnp.where(mask, w * J, 0.0)
     return (jnp.sum(weight * f ** 2) / jnp.sum(weight),
             jnp.sum(weight * (G_circ * parallel / B ** 3) ** 2) / jnp.sum(weight))
+
+
+def edge_quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, sign, eps=1e-6):
+    """``<f^2>`` on the logical surface ``r = 1 - eps``, the residual ``f`` of
+    :func:`quasisymmetry_residual` (the same ``G``, from the volume), averaged
+    with the volume Jacobian, ``int f^2 J dtheta dzeta / int J dtheta
+    dzeta``, by the Gauss rule of the angular quadrature points: the
+    thin-shell limit of the volume average. The boundary ``r = 1`` is a flux
+    surface of ``h`` exactly (``B . n = 0``), so it needs no alignment of the
+    logical surfaces; ``eps > 0`` because the end-point derivative tables of
+    the clamped radial splines are one-sided at ``r = 1`` exactly."""
+    b = seq.evaluate_at_quadrature(h, 2, True)
+    w = seq.quad.w
+    B_zeta = jnp.einsum("qj,qj->q", seq.metric_jkl[:, 2], b) / seq.jacobian_j
+    G_circ = nfp / (2.0 * np.pi) * jnp.sum(w * B_zeta) / jnp.sum(w)
+    B, parallel, cross, _, J = _residual_terms(seq, h, raw_R, raw_Z, nfp, sign, _tables(seq, [1.0 - eps]))
+    A, _ = _radial_moments(seq, h)
+    D = basis_table(seq.basis_0.dΛ[0], jnp.asarray([1.0 - eps]))[:, 0]
+    # iota psi' = nfp <B^theta> / 2 pi: the flux ratio times the toroidal flux density
+    f = (G_circ * parallel - nfp * (A @ D) / (2.0 * np.pi) * cross) / B ** 3
+    weight = (seq.quad.w_y[:, None] * seq.quad.w_z[None, :]).reshape(-1) * J
+    return jnp.sum(weight * f ** 2) / jnp.sum(weight)
