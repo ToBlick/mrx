@@ -1,9 +1,10 @@
 """One Newton relaxation from a warm-started field, for the assembly comparison.
 
-Newton is ``scripts/relax.py``'s default method, and it was not what the
-Apple-GPU timings were taken on. A step is a 300-iteration MINRES solve
-whose every matvec is three k=1 mass solves, so it spends far more of its
-time in the mass kernel than the L-BFGS descent does. This runs that step
+Newton is ``scripts/relax.py``'s method outside plain float32, and it was
+not what the Apple-GPU timings were taken on. A step is a 300-iteration
+MINRES solve whose every matvec is two k=1 mass solves, so it spends far
+more of its time in the mass kernel than the L-BFGS descent does. This runs
+that step
 from Tutorial 4's starting point: the field of a descent that has already
 been through its fast phase, not the equilibrium initial condition.
 
@@ -49,6 +50,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--chunk", type=int, default=5)
     ap.add_argument("--newton-tol", type=float, default=0.1)
     ap.add_argument("--newton-maxiter", type=int, default=300)
+    ap.add_argument("--precond", default="laplacian",
+                    choices=("laplacian", "laplacian2", "mass", "harmonic"))
     ap.add_argument("--out", required=True)
     return ap.parse_args(argv)
 
@@ -87,13 +90,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=0, velocity_smoothing_order=1,
                      newton=True, newton_tol=args.newton_tol,
                      newton_maxiter=args.newton_maxiter,
-                     newton_precond="laplacian", newton_dt_cap=1.0)
+                     newton_precond=args.precond, newton_dt_cap=1.0)
+    print(f"precond={args.precond}", flush=True)
     state = initial_state(jax.numpy.asarray(B), ts)
     result = relax(state, ts, steps=args.steps, chunk=args.chunk, floor_tol=0.0, verbose=True)
 
     os.makedirs(args.out, exist_ok=True)
     payload = {
         "assembly": _assembly_mode(),
+        "precond": args.precond,
         "device": str(jax.devices()[0]),
         "ns": list(ns), "p": args.p, "steps": result.steps,
         "wall": result.wall, "stop": result.stop,
@@ -109,7 +114,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     print(f"MINRES |it| mean {np.abs(it).mean():.0f}, "
           f"at the budget on {int((it > 0).sum())}/{result.steps}, "
           f"fallbacks {int(fb.sum())}")
+    dt = np.asarray(result.trace["dt_star"])
+    dE = np.asarray(result.trace["dE"])
     print(f"descent cosine min {cos.min():+.4f} mean {cos.mean():+.4f}")
+    print(f"dt* {dt[0]:+.4f} .. mean {dt.mean():+.4f};  "
+          f"energy removed {-dE.sum():.6e}")
     print(f"wrote {args.out}/newton.json")
 
 

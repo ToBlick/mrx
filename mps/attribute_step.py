@@ -6,10 +6,10 @@ inside it. What it can see is how many times each leaf runs, because a
 per-apply cost of those leaves was already measured at this mesh
 (``outputs/mps_bench/mps.json``, li383 ``(12,24,12)`` p=3, float32, MPS).
 
-The product of the two is an upper bound, not the step's wall clock: each
-measured cost is a standalone call and so pays the ~0.22 ms dispatch floor
-once, whereas inside the step that floor is paid per kernel. It is still the
-right ranking, and it bounds what fixing the mass kernel can return.
+The product of the two is a ranking, not the step's wall clock: the costs
+below are one leaf inside a scan of 40, so they do not pay a dispatch per
+call the way a standalone timing does. It bounds what fixing the mass kernel
+can return.
 
     MRX_X64=0 JAX_PLATFORMS=mps python mps/attribute_step.py
 """
@@ -22,14 +22,16 @@ from collections import Counter
 
 os.environ.setdefault("MRX_X64", "0")
 
-#: Standalone steady cost on MPS at this mesh, milliseconds, from
-#: outputs/mps_bench/mps.json. Each one includes one dispatch.
+#: Indexed in-scan cost on MPS at this mesh, milliseconds. li383
+#: ``(12, 24, 12)`` p=3, float32, one leaf inside a scan of 40, measured
+#: 2026-09-22 with the machine idle. The extraction row is the k=1 Dirichlet
+#: apply; the other degrees were 0.058-0.063 ms.
 COST_MS: dict[str, float] = {
-    "mass_core[0]": 0.697,
-    "mass_core[1]": 1.868,
-    "mass_core[2]": 1.969,
-    "mass_core[3]": 0.697,
-    "extraction": 0.230,
+    "mass_core[0]": 0.220,
+    "mass_core[1]": 0.560,
+    "mass_core[2]": 0.512,
+    "mass_core[3]": 0.158,
+    "extraction": 0.066,
 }
 
 #: Calls per scan when timing a leaf. Long enough that one launch is noise.
@@ -148,8 +150,8 @@ def _instrument() -> Counter:
 def _leaf_costs(seq, ops) -> dict[str, float]:
     """In-scan milliseconds per leaf, the cost inside the relaxation.
 
-    The standalone numbers in :data:`COST_MS` each pay one dispatch; these do
-    not, so the two columns together say how much of a leaf is the floor.
+    :data:`COST_MS` is this measurement for the mass kernel and the
+    extraction, kept as the price model. The rest is printed and not priced.
     """
     import jax.numpy as jnp
 
@@ -191,7 +193,8 @@ def main() -> None:
     from mrx.relaxation import TimeStepper, initial_state
 
     counts_only = "--counts-only" in sys.argv
-    print(f"setup  devices={jax.devices()}", flush=True)
+    newton = "--newton" in sys.argv
+    print(f"setup  devices={jax.devices()}  newton={newton}", flush=True)
     t0 = time.perf_counter()
     seq, ops = build_sequence("data/wout_li383_low_res_reference.nc", (12, 24, 12), 3)
     compute_nullspaces(seq, gap_sweeps=0, verbose=False)
@@ -204,8 +207,13 @@ def main() -> None:
 
     counts = _instrument()
     B0, _ = initial_field(seq)
-    ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
-                     velocity_smoothing_order=1, velocity_smoothing_scale=None)
+    if newton:
+        ts = TimeStepper(seq=seq, cfl=0.5, history_size=0,
+                         velocity_smoothing_order=1, velocity_smoothing_scale=None,
+                         newton=True, newton_precond="laplacian", newton_dt_cap=1.0)
+    else:
+        ts = TimeStepper(seq=seq, cfl=0.5, history_size=1,
+                         velocity_smoothing_order=1, velocity_smoothing_scale=None)
     print("\nseeding the state (not counted)", flush=True)
     state = initial_state(B0, ts, 1.0)
     jax.block_until_ready(state.B_n)
@@ -243,8 +251,7 @@ def main() -> None:
             print(f"  {name:<24} {n:7d} calls")
         else:
             print(f"  {name:<24} {n:7d} calls  x {cost:6.3f} ms  = {share:8.1f} ms")
-    print(f"\n  priced leaves (upper bound, standalone costs): {total:.0f} ms")
-    print("  a fused step is 5500-5900 ms, so a share near that is the floor")
+    print(f"\n  priced leaves (indexed in-scan costs): {total:.0f} ms")
 
 
 if __name__ == "__main__":

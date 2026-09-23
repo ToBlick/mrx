@@ -1,7 +1,7 @@
 # Environment for running MRX on an Apple GPU.  Source it, do not run it:
 #
 #     source mps/env.sh
-#     python scripts/relax.py --ns 12,24,12 --p 3 --chunk 25 ...
+#     python scripts/relax.py --ns 12,24,12 --p 3 ...
 #
 # Two variables are needed and the rest of this file is the record of what
 # was measured and found not to help, so that nobody sweeps these knobs a
@@ -60,20 +60,16 @@ export JAX_PLATFORMS=mps
 #     run recompiles in full.  The same script on the CPU backend writes 1118
 #     entries and recompiles 2.7x faster.  Every MPS run pays full compile.
 #
-# --- The one thing that does matter: keep the chunk small -------------------
+# --- Chunk size used to matter, and no longer does -------------------------
 #
-# Because compile is uncacheable (above) and its cost is linear in the chunk
-# -- about 7.9 s per step of chunk at this mesh -- while the steady per-step
-# cost is flat in the chunk (mps/scan_scaling.py measured 5506.8 vs 5504.8
-# ms/step at chunk 5 and 10), a long chunk is pure loss on this backend.
-# scripts/relax.py defaults to chunk 500 under L-BFGS, which is about 65
-# minutes of compile before the first step.  For a 500-step run:
-#
-#     --chunk 500    ~65 min compile + ~46 min stepping   ~111 min
-#     --chunk 25     ~3 min compile  + ~46 min stepping   ~49 min
-#
-# Pass --chunk 25 explicitly.  It is the only configuration change in this
-# file that was worth making, and it is worth about 2.3x.
+# Compile is uncacheable (above).  Before the indexed assembly and the Hodge
+# cap it was also linear in the chunk, about 7.9 s per step of chunk, and
+# --chunk 25 instead of the L-BFGS default of 500 was worth about 2.3x.
+# Remeasured 2026-09-22, two chunks back to back at this mesh: the first
+# chunk costs 1.9 / 0.5 / 3.1 s more than the second at chunk 5 / 10 / 25,
+# and the second chunk is 0.92 / 1.13 / 0.99 s/step.  The compile no longer
+# grows with the chunk, and the step is flat.  A 500-step run is about
+# 8-10 minutes at any of those.  Do not pass --chunk 25 for speed.
 #
 # JAX_MPS_DUMP_OPTIMIZED_IR=<dir> is the instrument behind most of the above:
 # it writes <dir>/module_*.mlir and is how the op census was taken.
