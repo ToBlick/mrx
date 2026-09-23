@@ -36,11 +36,13 @@ scaling leaves the vacuum rotational transform unchanged). Interior
 coefficients are not free: they would let the logical surfaces bend and
 fool :func:`flux_ratio_iota`.
 
-**The objective** (:func:`flux_ratio_iota`): ``iota = nfp <B^theta> /
+**The objectives** (:func:`flux_ratio_iota`): ``iota = nfp <B^theta> /
 <B^zeta>`` on the logical surfaces, the averages over ``(theta, zeta)``
 taken exactly from the DoFs. It is the rotational transform wherever the
 logical surfaces are flux surfaces; :func:`normal_field_fraction` measures
-how far they are from that.
+how far they are from that. :func:`quasisymmetry_residual` is the two-term
+quasi-axisymmetry residual on the same surfaces, from the spline
+derivatives of the field and of the map at the quadrature points.
 
 On a half-period sequence (:mod:`mrx.symmetry`) every field here is odd, the
 geometry even, and the parametrisation stellarator-symmetric by
@@ -59,7 +61,7 @@ from mrx.differential_forms import DifferentialForm, inv33
 from mrx.geometry import SequenceGeometry, _tp_evaluate, grad_1d
 from mrx.mappings import stellarator_symmetric_scalar
 from mrx.mass import attach_weights
-from mrx.quadrature import composite_quad
+from mrx.quadrature import composite_quad, evaluate_at_xq
 from mrx.spline_bases import DerivativeSpline, basis_derivative_table, basis_table
 
 
@@ -316,3 +318,108 @@ def normal_field_fraction(seq, h):
     w, J = seq.quad.w, seq.jacobian_j
     normal = jnp.sum(w * b[:, 0] ** 2 / (J * seq.metric_inv_jkl[:, 0, 0]))
     return normal / jnp.sum(w * jnp.einsum("qi,qij,qj->q", b, seq.metric_jkl, b) / J)
+
+
+def _two_form_derivatives(seq, h):
+    """``(b, db)``: the reference components of the Dirichlet 2-form ``h`` at
+    the quadrature points, ``(n_q, 3)``, and their logical derivatives,
+    ``(3, n_q, 3)`` with ``db[a, q, i] = d_a b^i``. Component ``c`` lives on
+    the primal splines on axis ``c`` and on the derivative splines on the
+    others, and ``d_a`` replaces the axis-``a`` table by its derivative:
+    ``B'_l = D_{l-1} - D_l`` on a primal axis, the tabulated ``D'`` on a
+    derivative axis."""
+    prim = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
+    der = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
+    dprim = tuple(grad_1d(d, t) for d, t in zip(der, seq.basis_0.types))
+    shapes = [tuple(int(v) for v in sh) for sh in seq.basis_2.shape]
+    raw = seq.E(2, True).T @ h
+
+    def tables(a):
+        info = []
+        for c in range(3):
+            tabs = [prim[i] if i == c else der[i] for i in range(3)]
+            if a is not None:
+                tabs[a] = dprim[a] if a == c else seq.dd_basis_jk[a]
+            info.append((c, *tabs))
+        return info
+    b = evaluate_at_xq(raw, tables(None), shapes, seq.quad.shape, 3)
+    return b, jnp.stack([evaluate_at_xq(raw, tables(a), shapes, seq.quad.shape, 3) for a in range(3)])
+
+
+def _cylindrical_derivatives(seq, raw_R, raw_Z):
+    """``(v, d1, d2)``: ``(R, Z)`` of the raw coefficients at the quadrature
+    points, ``(2, n_q)``, their first logical derivatives ``d1[q, c, i] =
+    d_i c`` ``(n_q, 2, 3)``, and their second ones ``d2[q, c, i, j]``
+    ``(n_q, 2, 3, 3)``, sum-factorised (``B''_l = D'_{l-1} - D'_l``)."""
+    types = seq.basis_0.types
+    tabs = ((seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk),
+            tuple(grad_1d(d, t) for d, t in zip((seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk), types)),
+            tuple(grad_1d(dd, t) for dd, t in zip(seq.dd_basis_jk, types)))
+    C = jnp.stack([raw_R, raw_Z])
+
+    def ev(orders):
+        return _tp_evaluate(C, *(tabs[o][a] for a, o in enumerate(orders))).reshape(2, -1)
+    unit = np.eye(3, dtype=int)
+    d1 = jnp.stack([ev(unit[i]) for i in range(3)], -1)
+    d2 = jnp.stack([jnp.stack([ev(unit[i] + unit[j]) for j in range(3)], -1) for i in range(3)], -2)
+    return ev((0, 0, 0)), jnp.moveaxis(d1, 1, 0), jnp.moveaxis(d2, 1, 0)
+
+
+def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, sign, r_min):
+    """``(F, F_parallel)``: the volume average over ``r >= r_min`` of the
+    squared two-term quasi-axisymmetry residual of the vacuum 2-form ``h`` on
+    the map of the raw coefficients ``raw_R``, ``raw_Z``
+    (:func:`cylindrical_geometry`),
+
+        f = (G B . grad|B| - iota (B x grad psi) . grad|B|) / |B|^3,
+
+    zero where ``|B|`` does not depend on the Boozer toroidal angle (the
+    toroidal current ``I`` vanishes in a vacuum). ``psi`` is the toroidal
+    flux over ``2 pi`` with the logical surfaces as its level sets, so
+    ``grad psi = psi'(r) grad r``, ``iota`` the flux ratio
+    (:func:`flux_ratio_iota`, signed), ``G`` the circulation of ``B`` once
+    around the torus over ``2 pi``, the mean of the covariant ``B_zeta`` over
+    the logical domain times ``nfp / 2 pi``. With the reference densities
+    ``b`` and ``J = det DF``: ``B . grad|B| = b^k d_k|B| / J``,
+    ``(B x grad psi) . grad|B| = psi' (d_theta|B| B_zeta - d_zeta|B|
+    B_theta) / J``, ``B_i = g_ij b^j / J``, and ``d_k|B|`` from the spline
+    derivatives of ``b`` and of the map. Exact where the logical surfaces are
+    flux surfaces (:func:`normal_field_fraction`), like the flux ratio.
+    ``F_parallel`` is the same average of the first term alone, the scale the
+    two terms cancel from."""
+    a = 2.0 * np.pi / nfp
+    (R, _), d1, d2 = _cylindrical_derivatives(seq, raw_R, raw_Z)
+    dR, dZ, ddR, ddZ = d1[:, 0], d1[:, 1], d2[:, 0], d2[:, 1]
+    G = jnp.einsum("qi,qj->qij", dR, dR) + jnp.einsum("qi,qj->qij", dZ, dZ)
+    G = G.at[:, 2, 2].add((a * R) ** 2)
+    dG = (jnp.einsum("qik,qj->qkij", ddR, dR) + jnp.einsum("qi,qjk->qkij", dR, ddR)
+          + jnp.einsum("qik,qj->qkij", ddZ, dZ) + jnp.einsum("qi,qjk->qkij", dZ, ddZ))
+    dG = dG.at[:, :, 2, 2].add(2.0 * a ** 2 * R[:, None] * dR)
+    cross_rz = dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1]
+    J = sign * a * R * cross_rz
+    dJ = sign * a * (dR * cross_rz[:, None] + R[:, None] * (
+        ddR[:, 1] * dZ[:, 0:1] + dR[:, 1:2] * ddZ[:, 0] - ddR[:, 0] * dZ[:, 1:2] - dR[:, 0:1] * ddZ[:, 1]))
+
+    b, db = _two_form_derivatives(seq, h)
+    Gb = jnp.einsum("qij,qj->qi", G, b)
+    B2 = jnp.sum(b * Gb, -1) / J ** 2
+    dB2 = ((2.0 * jnp.einsum("qi,kqi->qk", Gb, db) + jnp.einsum("qi,qkij,qj->qk", b, dG, b)) / J[:, None] ** 2
+           - 2.0 * B2[:, None] * dJ / J[:, None])
+    B = jnp.sqrt(B2)
+    dB = dB2 / (2.0 * B[:, None])
+    Bcov = Gb / J[:, None]
+
+    A, C = _radial_moments(seq, h)
+    D = basis_table(seq.basis_0.dΛ[0], seq.quad.x_x)
+    radial = seq.quad.shape[1] * seq.quad.shape[2]
+    iota = jnp.repeat(nfp * (A @ D) / (C @ D), radial)
+    psi_prime = jnp.repeat((C @ D) / (2.0 * np.pi), radial)
+    w = seq.quad.w
+    G_circ = nfp / (2.0 * np.pi) * jnp.sum(w * Bcov[:, 2]) / jnp.sum(w)
+    parallel = jnp.sum(b * dB, -1) / J
+    binormal = psi_prime * (dB[:, 1] * Bcov[:, 2] - dB[:, 2] * Bcov[:, 1]) / J
+    f = (G_circ * parallel - iota * binormal) / B ** 3
+    mask = jnp.repeat(seq.quad.x_x >= r_min, radial)
+    weight = jnp.where(mask, w * J, 0.0)
+    return (jnp.sum(weight * f ** 2) / jnp.sum(weight),
+            jnp.sum(weight * (G_circ * parallel / B ** 3) ** 2) / jnp.sum(weight))
