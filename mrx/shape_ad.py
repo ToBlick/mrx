@@ -32,7 +32,9 @@ so the C1 polar structure and the coordinate axis of the start map are kept
 (the magnetic axis is free to move). The perturbation is projected onto
 stellarator symmetry (``R`` even, ``Z`` odd), and the coefficients are
 rescaled so that the volume stays that of the start map exactly (a uniform
-scaling leaves the vacuum rotational transform unchanged). Interior
+scaling leaves the vacuum rotational transform unchanged). Optionally the
+aspect ratio is held exactly too, by scaling every cross-section about the
+coordinate axis first (:meth:`BoundaryShape.map_coefficients`). Interior
 coefficients are not free: they would let the logical surfaces bend and
 fool :func:`flux_ratio_iota`.
 
@@ -50,6 +52,7 @@ construction, so the half-period quadrature is exact for the objective and
 for its gradient with respect to the parameters.
 """
 import copy
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -98,6 +101,17 @@ def cylindrical_geometry(seq, raw_R, raw_Z, nfp, sign):
     Differentiable in the coefficients. The geometry carries no map (the
     solves never evaluate it).
     """
+    R, dR, dZ = _cylindrical_fields(seq, raw_R, raw_Z)
+    a = 2.0 * np.pi / nfp
+    G = dR[:, :, None] * dR[:, None, :] + dZ[:, :, None] * dZ[:, None, :]
+    G = G.at[:, 2, 2].add((a * R) ** 2)
+    J = sign * a * R * (dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1])
+    return SequenceGeometry(None, G, jax.vmap(inv33)(G), J)
+
+
+def _cylindrical_fields(seq, raw_R, raw_Z):
+    """``(R, dR, dZ)`` at the quadrature points: ``R`` ``(n_q,)`` and the
+    logical gradients of ``R`` and ``Z`` ``(n_q, 3)``, sum-factorised."""
     Br, Bt, Bz = seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk
     Dr, Dt, Dz = (grad_1d(d, t) for d, t in zip(
         (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk), seq.basis_0.types))
@@ -105,12 +119,33 @@ def cylindrical_geometry(seq, raw_R, raw_Z, nfp, sign):
     R = _tp_evaluate(C[:1], Br, Bt, Bz)[0].reshape(-1)
     d = jnp.stack([_tp_evaluate(C, Dr, Bt, Bz), _tp_evaluate(C, Br, Dt, Bz),
                    _tp_evaluate(C, Br, Bt, Dz)], axis=-1)            # (2, nqr, nqt, nqz, 3)
-    dR, dZ = d[0].reshape(-1, 3), d[1].reshape(-1, 3)
+    return R, d[0].reshape(-1, 3), d[1].reshape(-1, 3)
+
+
+def section_moments(seq, raw_R, raw_Z, nfp, sign):
+    """``(V, V_axis, S)`` of the map of :func:`cylindrical_geometry`, over
+    one field period by the quadrature: the volume ``V = int J``, its part
+    ``V_axis = int R_axis J / R`` (``R_axis(zeta)`` the coordinate axis, the
+    ring-0 coefficients), and the mean cross-section area ``S = int J / (2
+    pi R / nfp)`` (``dR dZ = J / (2 pi R / nfp) dr dtheta`` at fixed
+    ``zeta``). ``J / R`` is the in-plane Jacobian, so a scaling of every
+    cross-section by ``mu`` about the axis takes ``S`` to ``mu^2 S`` and
+    ``V`` to ``mu^2 V_axis + mu^3 (V - V_axis)`` exactly, quadrature
+    included."""
+    R, dR, dZ = _cylindrical_fields(seq, raw_R, raw_Z)
     a = 2.0 * np.pi / nfp
-    G = dR[:, :, None] * dR[:, None, :] + dZ[:, :, None] * dZ[:, None, :]
-    G = G.at[:, 2, 2].add((a * R) ** 2)
-    J = sign * a * R * (dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1])
-    return SequenceGeometry(None, G, jax.vmap(inv33)(G), J)
+    J_over_R = sign * a * (dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1])
+    axis = jnp.broadcast_to(raw_R[0, 0] @ seq.basis_z_jk, seq.quad.shape).reshape(-1)
+    w = seq.quad.w
+    return jnp.sum(w * R * J_over_R), jnp.sum(w * axis * J_over_R), jnp.sum(w * J_over_R) / a
+
+
+def aspect_ratio(V, S, nfp):
+    """VMEC's aspect ratio ``R_major / a_minor = V_torus / (2 sqrt(pi)
+    S^(3/2))`` from the volume ``V`` of one field period and the mean
+    cross-section area ``S`` (:func:`section_moments`), ``a_minor =
+    sqrt(S / pi)``, ``R_major = V_torus / (2 pi S)``."""
+    return nfp * V / (2.0 * np.sqrt(np.pi) * S ** 1.5)
 
 
 class BoundaryShape(eqx.Module):
@@ -123,8 +158,8 @@ class BoundaryShape(eqx.Module):
     odd, :meth:`perturbation`) and extended inwards by ``ramp``, ``w_i =
     ((i - 1) / (n_r - 2))^2`` on ring ``i >= 1``: zero on the two innermost
     rings, which carry the C1 polar structure and the coordinate axis, one
-    on the boundary. :meth:`geometry` rescales the map so that its volume
-    is ``volume``, the start map's, exactly.
+    on the boundary. :meth:`map_coefficients` holds the volume, and with
+    ``aspect`` the aspect ratio, exactly.
     """
 
     raw_R: jnp.ndarray
@@ -134,16 +169,21 @@ class BoundaryShape(eqx.Module):
     nfp: int = eqx.field(static=True)
     sign: float = eqx.field(static=True)
     basis_0: DifferentialForm = eqx.field(static=True)
+    aspect: Optional[float] = eqx.field(static=True, default=None)
 
     @classmethod
-    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, sign):
+    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, sign, volume=None, aspect=None):
         """The parametrisation about the map with raw coefficients ``raw_R``,
         ``raw_Z`` (``nfp`` and handedness ``sign`` as in
-        :func:`cylindrical_geometry`); its volume is the one kept."""
+        :func:`cylindrical_geometry`). ``volume`` (of one field period) is
+        the one kept, that map's by default; ``aspect`` the aspect ratio
+        held (:func:`aspect_ratio`), none by default."""
         n_r = raw_R.shape[0]
         ramp = jnp.asarray((np.maximum(np.arange(n_r) - 1, 0) / (n_r - 2)) ** 2, dtype=raw_R.dtype)
-        volume = jnp.sum(seq.quad.w * cylindrical_geometry(seq, raw_R, raw_Z, nfp, sign).jacobian_j)
-        return cls(raw_R, raw_Z, ramp, volume, int(nfp), float(sign), seq.basis_0)
+        if volume is None:
+            volume = section_moments(seq, raw_R, raw_Z, nfp, sign)[0]
+        return cls(raw_R, raw_Z, ramp, jnp.asarray(volume), int(nfp), float(sign), seq.basis_0,
+                   None if aspect is None else float(aspect))
 
     def perturbation(self, beta):
         """``(b_R, b_Z)``, the boundary change ``beta`` projected onto ``R``
@@ -151,21 +191,33 @@ class BoundaryShape(eqx.Module):
         return (stellarator_symmetric_scalar(beta[0][None], self.basis_0, even=True)[0],
                 stellarator_symmetric_scalar(beta[1][None], self.basis_0, even=False)[0])
 
-    def coefficients(self, beta, scale=1.0):
-        """The raw ``(R, Z)`` coefficients at ``beta``, times ``scale``."""
+    def map_coefficients(self, seq, beta):
+        """``(R, Z, mu, scale)``: the raw coefficients of the map at ``beta``
+        and the two scalings that made them. With ``aspect``, every
+        cross-section is scaled by ``mu`` about the coordinate axis, ``(R,
+        Z) -> axis + mu ((R, Z) - axis)`` on every ring (ring 0 stays the
+        axis, ring 1 stays pure ``m = 1``), which leaves ``V_axis / mu + V -
+        V_axis`` (:func:`section_moments`) proportional to the aspect ratio,
+        so ``mu = V_axis / (2 sqrt(pi) S^(3/2) aspect / nfp - V + V_axis)``
+        in closed form; ``mu = 1`` without. Then the whole map is scaled by
+        ``scale = (volume / V(mu))^(1/3)``, which keeps the aspect ratio."""
         b_R, b_Z = self.perturbation(beta)
         w = self.ramp[:, None, None]
-        return scale * (self.raw_R + w * b_R), scale * (self.raw_Z + w * b_Z)
+        R, Z = self.raw_R + w * b_R, self.raw_Z + w * b_Z
+        V, V_axis, S = section_moments(seq, R, Z, self.nfp, self.sign)
+        mu = jnp.ones_like(V)
+        if self.aspect is not None:
+            mu = V_axis / (2.0 * np.sqrt(np.pi) * S ** 1.5 * self.aspect / self.nfp - V + V_axis)
+            R = R[:1, :1] + mu * (R - R[:1, :1])
+            Z = Z[:1, :1] + mu * (Z - Z[:1, :1])
+            V = mu ** 2 * V_axis + mu ** 3 * (V - V_axis)
+        scale = (self.volume / V) ** (1.0 / 3.0)
+        return scale * R, scale * Z, mu, scale
 
     def geometry(self, seq, beta):
-        """``(geometry, scale)``: the geometry of the map at ``beta`` scaled
-        by ``scale = (volume / V)^(1/3)``, ``V`` the quadrature volume of the
-        unscaled map, so that the volume is ``volume`` at every ``beta``
-        (``G`` scales with ``scale^2``, ``J`` with ``scale^3``)."""
-        g = cylindrical_geometry(seq, *self.coefficients(beta), self.nfp, self.sign)
-        scale = (self.volume / jnp.sum(seq.quad.w * g.jacobian_j)) ** (1.0 / 3.0)
-        return SequenceGeometry(None, scale ** 2 * g.metric_jkl, g.metric_inv_jkl / scale ** 2,
-                                scale ** 3 * g.jacobian_j), scale
+        """The geometry of the map at ``beta`` (:meth:`map_coefficients`)."""
+        R, Z, _, _ = self.map_coefficients(seq, beta)
+        return cylindrical_geometry(seq, R, Z, self.nfp, self.sign)
 
 
 def _periodic_grams(basis):
@@ -305,6 +357,16 @@ def flux_ratio_iota(seq, h, rho):
     A, C = _radial_moments(seq, h)
     D = basis_table(seq.basis_0.dΛ[0], rho)
     return seq.nfp * (A @ D) / (C @ D), _flux_tables(seq, C, rho)[0]
+
+
+def mean_iota(seq, h):
+    """``int_0^1 iota ds`` of the flux-ratio iota (:func:`flux_ratio_iota`)
+    over the normalised toroidal flux: ``ds = <B^zeta> dr / sum C`` turns it
+    into ``nfp sum_i A_i / sum_i C_i`` (the derivative splines integrate to
+    one), the ratio of the poloidal to the toroidal flux per field period
+    times ``nfp``. simsopt's ``mean_iota`` of a VMEC equilibrium."""
+    A, C = _radial_moments(seq, h)
+    return seq.nfp * jnp.sum(A) / jnp.sum(C)
 
 
 def flux_surface_radius(seq, h, s, newton_steps=8):

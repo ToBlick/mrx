@@ -20,8 +20,7 @@ from mrx.shape_ad import (BoundaryShape, flux_ratio_iota, flux_seed, flux_surfac
 
 
 def _objective(beta, seq, shape, seed, s):
-    geom, _ = shape.geometry(seq, beta)
-    sq = with_geometry(seq, geom)
+    sq = with_geometry(seq, shape.geometry(seq, beta))
     h, _ = vacuum_two_form(sq, seed)
     iota, _ = flux_ratio_iota(sq, h, flux_surface_radius(sq, h, s))
     return jnp.sum(iota ** 2), h
