@@ -235,7 +235,7 @@ def vacuum_convergence(root, out):
         ax.set_yscale("log")
         ax.invert_xaxis()
         ax.set_xlabel(r"$h$")
-        ax.set_ylabel(r"$\|c\,\mathfrak{h} - B_{\mathrm{VMEC}}\|_{\mathrm{rel}}$")
+        ax.set_ylabel(r"$\|\tau\,\mathfrak{h} - B_{\mathrm{VMEC}}\|_{\mathrm{rel}}$")
         ax.grid(alpha=0.3, which="both")
         two_legends(ax, COLOURS[1:4], [f"p = {p}" for p in (2, 3, 4)], ["low-resolution VMEC", "high-resolution VMEC"],
                     "center right", "upper right")
