@@ -17,8 +17,8 @@ import numpy as np
 
 from mrx.precision import DTYPE, eps, sqrt_eps
 
-from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                            relax, write_checkpoint)
+from mrx.relaxation import (IntegrationScheme, TimeStepper, energy_floor, initial_state,
+                            read_checkpoint, relax, use_energy_floor, write_checkpoint)
 
 STEPS, CHUNK = 50, 25
 # ||F||_end / ||F||_0 after 50 steps on li383 (8, 12, 12) p=2, measured
@@ -36,7 +36,7 @@ def test_relaxation_lowers_the_energy(seq, b0, tmp_path):
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
-                on_chunk=lambda r: saved.append(r.steps))
+                energy_floor=False, on_chunk=lambda r: saved.append(r.steps))
     dE = np.asarray(res.trace["dE"], dtype=float)
     F = np.asarray(res.trace["F"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -74,7 +74,7 @@ def test_reconnection_spends_the_helicity_asked_for(seq, b0):
     measured price must be within a third of the target and of its sign."""
     ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
-                reconnect_every=CHUNK, reconnect_helicity=0.02)
+                energy_floor=False, reconnect_every=CHUNK, reconnect_helicity=0.02)
     assert len(res.reconnect) == 1 and res.reconnect_every == CHUNK
     ev = res.reconnect[0]
     print(f"\n  reconnection at it {ev['it']}: eps {ev['eps']:.3e}, helicity spent {ev['helicity_spent']:+.3%} "
@@ -91,7 +91,8 @@ def test_midpoint_conserves_helicity(seq, b0):
     tolerance."""
     ts = TimeStepper(seq=seq, auxiliary_B_field=True, cfl=0.5, history_size=1,
                      scheme=IntegrationScheme.IMPLICIT_MIDPOINT)
-    res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False)
+    res = relax(initial_state(b0, ts), ts, steps=20, chunk=10, verbose=False,
+                energy_floor=False)
     dE = np.asarray(res.trace["dE"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
     E0 = res.E0
@@ -161,3 +162,92 @@ def test_plain_float32_hodge_stops_after_two_passes(seq):
         ops.refine = real
     expect = 2 if seq.residual is None else MAX_PASSES
     assert seen == [expect], f"Hodge outer passes {seen}, expected [{expect}]"
+
+
+def test_force_hodge_solve_takes_one_pass_in_plain_float32(seq, b0):
+    """The force's k=1 solve is warm-started from the last step's potential,
+    and its outer loop is one pass in plain float32 and the solve's own cap
+    otherwise; a cold solve through the sequence keeps its two passes
+    (test_plain_float32_hodge_stops_after_two_passes)."""
+    import mrx.operators as ops
+    from mrx.relaxation import TimeStepper, initial_state, plain_float32
+
+    ts = TimeStepper(seq=seq)
+    expect = 1 if plain_float32(seq) else 0
+    assert ts.force_hodge_passes == expect
+
+    seen = []
+    real = ops.apply_inverse_laplacian_hodge
+
+    def wrapped(*args, **kwargs):
+        seen.append(kwargs.get("max_passes"))
+        return real(*args, **kwargs)
+
+    state = initial_state(b0, ts)
+    ops.apply_inverse_laplacian_hodge = wrapped
+    try:
+        ts.relaxation_step(state)
+    finally:
+        ops.apply_inverse_laplacian_hodge = real
+    assert seen and all(m == (expect or None) for m in seen), seen
+
+
+def test_transfer_field_keeps_div_b_and_the_field(seq, b0):
+    """Histopolation commutes with d, so a field moved between meshes stays
+    divergence-free. On its own mesh it comes back as itself, which pins
+    the frame: the callable hands over primal reference components. From
+    (5, 6, 6) the spaces are nested in (8, 12, 12) and only the map moves,
+    so the energy agrees to the map's resolution. With both bases the
+    start is the fine mesh's own and only the increment moves."""
+    from mrx.geometry import build_sequence
+    from mrx.gvec import load_clebsch
+    from mrx.initial_conditions import clebsch_potential_form, potential_two_form, transfer_field
+    from mrx.relaxation import compute_divergence_norm
+
+    same = transfer_field(b0, seq, seq)
+    assert float(seq.l2_norm(same - b0, 2)) < 1e3 * eps()
+
+    coarse, _ = build_sequence("data/wout_li383_low_res_reference.nc", (5, 6, 6), 2)
+    bc, _, _ = potential_two_form(coarse, clebsch_potential_form(load_clebsch(coarse.equilibrium)))
+    bf = transfer_field(bc, coarse, seq)
+    assert float(compute_divergence_norm(bf, seq)) < 1e3 * eps()
+    assert abs(float(seq.l2_norm(bf, 2)) - float(coarse.l2_norm(bc, 2))) < 5e-2
+
+    kept = transfer_field(bc, coarse, seq, base_from=bc, base_to=b0)
+    assert float(seq.l2_norm(kept - b0, 2)) < 1e3 * eps()
+
+
+class _Precision:
+    """A stand-in for the two fields :func:`use_energy_floor` reads."""
+
+    def __init__(self, residual, dtype):
+        self.residual = residual
+        self.dtype = dtype
+
+
+def test_energy_floor_stops_on_a_stall_and_not_on_a_descent():
+    """A window has stopped when 3 of its 10 steps raise the energy or its
+    decrease is under 5e-4 of the energy removed. A slow monotone descent,
+    1e-7 per window on 7e-5 removed (the production tail), is not a floor;
+    two noisy windows, or two at 1e-11, are. One stopped window is not, so
+    the first time a chunk is quiet the run takes another."""
+    down = [-1e-6] * 10
+    slow = [-1e-8] * 10
+    noisy = [-2e-8, 1e-8] * 5
+    flat = [-1e-12] * 10
+    assert not energy_floor([down] * 5 + [slow, slow], removed=7e-5)
+    assert energy_floor([down] * 5 + [noisy, noisy], removed=7e-5)
+    assert energy_floor([down] * 5 + [flat, flat], removed=7e-5)
+    assert not energy_floor([down] * 5 + [noisy, slow], removed=7e-5)
+    assert not energy_floor([noisy], removed=7e-5)
+
+
+def test_energy_floor_is_a_plain_float32_default():
+    """Mixed precision has a residual view, and plain float64 has none but
+    a float64 dtype. Neither arms the floor. The flag overrides both."""
+    f32, f64 = jnp.float32, jnp.float64
+    assert use_energy_floor(_Precision(None, f32), None) is True
+    assert use_energy_floor(_Precision(object(), f32), None) is False
+    assert use_energy_floor(_Precision(None, f64), None) is False
+    assert use_energy_floor(_Precision(None, f64), True) is True
+    assert use_energy_floor(_Precision(None, f32), False) is False

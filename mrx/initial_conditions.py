@@ -252,6 +252,32 @@ def leray_clean(seq, B):
     return B_leray / float(seq.l2_norm(B_leray, 2)), diff_B
 
 
+def transfer_field(B, seq_from, seq_to, base_from=None, base_to=None):
+    """A Dirichlet 2-form of ``seq_from`` on ``seq_to``, by histopolation.
+
+    The field is evaluated as its primal reference components (what
+    :class:`~mrx.differential_forms.DiscreteFunction` returns, the logical
+    fluxes) and histopolated on ``seq_to`` in the reference frame. The
+    histopolation commutes with ``d``, so ``div B`` stays at round-off, and
+    the wall flux is the face integral of ``B^rho = 0``. On nested meshes of
+    the same degree the coarse field is in the fine space and comes back
+    as itself.
+
+    The map is splined at each mesh's resolution, so the same logical field
+    has a slightly different energy on the two meshes, of the order of what
+    a float32 relaxation removes. With ``base_from`` and ``base_to`` (the
+    same initial field on each mesh) only the increment ``B - base_from`` is
+    transferred and added to ``base_to``: the fine mesh keeps its own start
+    and takes the coarse mesh's relaxation.
+    """
+    from mrx.differential_forms import DiscreteFunction  # noqa: PLC0415
+
+    delta = B if base_from is None else B - base_from
+    f = DiscreteFunction(delta, seq_from.basis_2, seq_from.E(2, True))
+    moved = seq_to.interpolate(lambda x: f(x), 2, dirichlet=True, frame='ref')
+    return moved if base_to is None else base_to + moved
+
+
 # ---------------------------------------------------------------------------
 # The initial field of a run
 # ---------------------------------------------------------------------------

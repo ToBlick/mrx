@@ -535,6 +535,17 @@ class TimeStepper(eqx.Module):
             order; the Leray route combines the forces and smooths the
             result). No pressure comes out of it; ``State.p`` keeps the
             sampler's. Excludes ``newton`` and the auxiliary field.
+        force_hodge_passes: Outer passes of the k=1 Hodge solve for ``a``;
+            0 is the solve's own cap. ``None`` (the default) is 1 in plain
+            float32 and 0 otherwise. The solve is warm-started from the last
+            step's ``a``, and a second float32 pass costs as much as the
+            first: one pass is 1.6-1.8x off the compiled step on li383 from
+            ``(12, 24, 12)`` p=3 to ``(16, 32, 32)`` p=2, on Metal and the
+            CPU, and the float32 floor removes more energy (6.1-6.5e-5
+            against 5.8-6.2e-5 at ``(12, 24, 12)``; docs/source/mps.md).
+            A cold solve needs both passes to converge
+            (``test/test_poisson.py``), and mixed precision reaches its
+            tolerance only through the passes.
         newton: Replace the L-BFGS direction by the Newton direction of the
             second variation, ``u = curl a`` with ``curl^T H curl a = curl^T
             M_2 F`` solved by MINRES
@@ -573,6 +584,7 @@ class TimeStepper(eqx.Module):
     cfl: float = 0.5
     scheme: IntegrationScheme = IntegrationScheme.EXPLICIT
     potential_velocity: bool = None
+    force_hodge_passes: int = None
     newton: bool = False
     newton_tol: float = 0.1
     newton_maxiter: int = 300
@@ -601,6 +613,8 @@ class TimeStepper(eqx.Module):
             h = self.seq.nullspace(2, True)[0]
             self.harmonic = h
             self.harmonic_norm_sq = h @ self.seq.apply_mass_matrix(h, 2)
+        if self.force_hodge_passes is None:
+            self.force_hodge_passes = int(plain_float32(self.seq))
         if self.velocity_smoothing_scale is None:
             self.velocity_smoothing_scale = smoothing_scale(self.seq)
         self.picard_tol = PICARD_TOL_FACTOR * self.seq.tol + PICARD_EPS_FACTOR * eps()
@@ -735,7 +749,8 @@ class TimeStepper(eqx.Module):
         JxB_dual = seq.cross_product_load(J, B, 2, 1, 2, True, True, True)
         rhs = seq.apply_incidence_matrix(JxB_dual, 1, dirichlet_in=True, dirichlet_out=True,
                                          transpose=True)
-        a = seq.apply_inverse_laplacian(rhs, 1, dirichlet=True, guess=a_guess)
+        a = seq.apply_inverse_laplacian(rhs, 1, dirichlet=True, guess=a_guess,
+                                        max_passes=self.force_hodge_passes or None)
         ch = ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq) * self.harmonic
         F = seq.apply_incidence_matrix(a, 1, dirichlet_in=True, dirichlet_out=True) + ch
         a_s = a
@@ -1242,7 +1257,9 @@ class RelaxResult(NamedTuple):
 
     ``state`` the descent state, ``steps`` the steps of this run so far
     (``it0 + steps`` is the absolute step), ``stop`` why it ended (``steps``,
-    ``floor``, or ``running``), ``wall`` the seconds in the
+    ``floor``, ``float32_floor``, or ``running``), ``best_step`` the step
+    whose field ``state`` holds when the run stopped on the energy floor
+    (otherwise ``steps``), ``wall`` the seconds in the
     compiled steps (sampling and callbacks excluded), ``trace`` the per-step
     scalars (``dE`` the exact energy change of the step, ``dE_ls`` the line
     search's prediction ``-dt <F, u>_M (1 - dt / 2 dt_star)`` -- the two
@@ -1251,11 +1268,12 @@ class RelaxResult(NamedTuple):
     ``gain``, ``picard_it``, ``picard_resid``), ``E0`` the energy at the
     start of the run (``E0 + cumsum(dE)`` is the trace's energy after every
     step, to the working precision's rounding per step), ``qoi`` the
-    per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
-    field in the residual precision, ``F``, ``resid``, ``helicity``,
-    ``JoverB``, ``JB`` and the pressure
-    diagnostics; the first entry is the start of the run, a reconnection
-    adds a second sample at its step), ``reconnect`` one record per
+    samples every ``sample_every`` chunks, and always at the exit
+    (``it``, ``wall``, ``E`` the energy of the stored field in the
+    residual precision, ``F``, ``resid``, ``helicity``, ``JoverB``,
+    ``JB`` and the pressure diagnostics; the first entry is the start of
+    the run, a reconnection adds a second sample at its step),
+    ``reconnect`` one record per
     reconnection, ``reconnect_every`` the interval actually used (rounded to
     whole chunks), ``chunk`` the chunk length.
     """
@@ -1269,6 +1287,7 @@ class RelaxResult(NamedTuple):
     reconnect_every: int
     chunk: int
     E0: float
+    best_step: int
 
 
 def pressure_line(d: dict) -> str:
@@ -1279,32 +1298,100 @@ def pressure_line(d: dict) -> str:
             f"wall dpw/dn={d['dpdn_wall']:.3e}  (JxB).n={d['JxBn_wall']:.3e}")
 
 
+def energy_floor(windows, removed: float, *, rel: float = 5e-4, rise: float = 0.3,
+                 patience: int = 2) -> bool:
+    """True when the last ``patience`` windows have stopped lowering the energy.
+
+    ``windows`` holds each window's per-step energy changes (negative when
+    the energy fell). A window has stopped when at least the fraction
+    ``rise`` of its steps raised the energy, or when its decrease is at most
+    ``rel * removed``, ``removed`` the energy removed over the whole run so
+    far. Fewer than ``patience`` windows is not a floor, so the first
+    descent is never the stop.
+
+    Set on li383 float32, 2026-09-23. A descent lowers the energy on every
+    step, down to decreases of 1e-7 per ten steps at ``(16, 32, 32)`` p=2;
+    at the floor 3 to 7 of every 10 steps raise it (``(12, 24, 12)`` p=3
+    from step 80, ``(16, 32, 16)`` p=3 from step 130). The rising steps
+    stop both benchmark meshes. The production mesh descends monotonically
+    for 800 steps on a power-law tail, and the ``rel`` test stops it at step
+    570 with 99.7% of the 2000-step energy removed. A band of 1% of the
+    removed energy stopped it at step 120 with 92%, and one of 4 ulps of
+    ``E0`` would have at step 200: the per-step changes come from the line
+    search, not from differencing ``E``, and resolve far below its ulp.
+    """
+    if len(windows) < patience:
+        return False
+    band = rel * max(float(removed), 0.0)
+    for w in list(windows)[-patience:]:
+        w = np.asarray(w, dtype=float)
+        if not ((w > 0).sum() >= rise * w.size or -w.sum() <= band):
+            return False
+    return True
+
+
+def use_energy_floor(seq, requested: bool | None) -> bool:
+    """Whether :func:`relax` stops on :func:`energy_floor`.
+
+    ``None`` arms it in plain float32 only. A float64 residual keeps
+    converging, mixed or plain float64, and the energy there is not a
+    random walk at the working epsilon, so neither arms it. ``True`` and
+    ``False`` are the caller's override.
+    """
+    if requested is not None:
+        return bool(requested)
+    return plain_float32(seq)
+
+
+def plain_float32(seq) -> bool:
+    """A float32 working precision with no float64 residual view."""
+    return seq.residual is None and jnp.dtype(seq.dtype) == jnp.float32
+
+
+# The parameter of :func:`relax` has the same name; the body calls this.
+_at_energy_floor = energy_floor
+
+
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
           floor_tol: float = 0.0,
+          energy_floor: bool | None = None,
+          energy_floor_rel: float = 5e-4, energy_floor_rise: float = 0.3,
+          energy_floor_patience: int = 2,
+          sample_every: int = 1,
           reconnect_every: int = 0, reconnect_helicity: float = 0.01,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
     """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
-    (:func:`chunk_runner`), the diagnostics sampled once per chunk
-    (:func:`make_sampler`), the stop tests and the reconnection series.
+    (:func:`chunk_runner`), the diagnostics sampled every ``sample_every``
+    chunks (:func:`make_sampler`), the stop tests and the reconnection series.
 
-    Stops on the step count or on ``floor_tol`` (the last chunk's mean of
+    The stop tests run after every chunk. They read the chunk's ``dE``
+    trace, which comes back with the steps, so they do not wait for a
+    sample. The full sample and ``on_chunk`` (a checkpoint, the outputs)
+    run every ``sample_every`` chunks and always when the run stops or
+    reconnects. ``sample_every`` counts chunks.
+
+    Stops on the step count, on ``floor_tol`` (the last chunk's mean of
     the squared normalised force residual ``||F||_M^2 / ||grad(B^2/2)||^2``
     below it; the residual is not monotone, the window mean is the
-    quantity); a job's
-    time limit is no stop, the checkpoint of every chunk restarts it.
+    quantity), or on ``energy_floor`` (plain float32 by default: the energy
+    trace has stopped descending, and the returned field is the
+    lowest-energy one, rebuilt by :func:`initial_state`). A job's
+    time limit is no stop, the checkpoint of a sampled chunk restarts it.
     ``reconnect_every`` (rounded to
     whole chunks, never on the last one) applies one :func:`resistive_step`
     to the field whose dose spends the fraction ``reconnect_helicity`` of
     its helicity, ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J
     . B``, then restarts the optimiser on the diffused field
     (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
-    every chunk's sample and BEFORE a reconnection at that step, so what it
+    that chunk's sample and BEFORE a reconnection at that step, so what it
     saves is the field the solve starts from. ``it0`` is the absolute step
     the run starts at (a restart); the trace and samples are this run's.
     """
     if chunk < 1 or steps % chunk:
         raise ValueError("steps must be a positive multiple of chunk")
+    if sample_every < 1:
+        raise ValueError("sample_every counts chunks and must be positive")
     if reconnect_every:
         reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
@@ -1318,8 +1405,17 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     qoi: dict = {}
     events: list = []
 
+    # The lowest-energy field seen at a chunk boundary. The start counts:
+    # a run that never descends returns it, not the uphill walk after.
+    energy_on = use_energy_floor(seq, energy_floor)
+    kept = {"removed": 0.0, "step": 0, "B": np.asarray(state.B_n), "dt": float(state.dt)}
+    windows: list[np.ndarray] = []
+    removed = 0.0
+
     def result(n_done, stop, wall):
-        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk, E0)
+        reported = kept["step"] if stop == "float32_floor" else n_done
+        return RelaxResult(state, n_done, stop, wall, trace, qoi, events,
+                           reconnect_every, chunk, E0, reported)
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.F_norm),
@@ -1364,9 +1460,37 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   "newton_it", "newton_fallback"):
             trace[k].extend(ch[k].tolist())
         resid_now = float(ch["resid"].mean())
+        windows.append(ch["dE"])
+        removed -= float(ch["dE"].sum())
+        if removed > kept["removed"]:
+            kept["removed"] = removed
+            kept["step"] = n_done
+            kept["B"] = np.asarray(state.B_n)
+            kept["dt"] = float(state.dt)
 
+        if energy_on and _at_energy_floor(
+                windows, removed, rel=energy_floor_rel, rise=energy_floor_rise,
+                patience=energy_floor_patience):
+            stop = "float32_floor"
+        elif resid_now < floor_tol:
+            stop = "floor"
+        elif n_done == steps:
+            stop = "steps"
+        # The sample is a full force evaluation. The stop above does not
+        # use it, so it runs every sample_every chunks, and whenever this
+        # chunk ends the run or reconnects.
+        reconnect_due = bool(reconnect_every and stop == "running"
+                             and n_done % reconnect_every == 0)
+        due = ((n_done // chunk) % sample_every == 0 or stop != "running"
+               or reconnect_due)
+        wall = time.perf_counter() - t_arm - t_out
+        if not due:
+            if verbose:
+                print(f"  it {it:>5d}  E_0-E={removed:.4e} (trace)  |F|={ch['F'][-1]:.4e}  "
+                      f"resid={resid_now:.3e} (chunk mean)  "
+                      f"[{wall:.0f}s steps +{t_out:.0f}s other]", flush=True)
+            continue
         tq = time.perf_counter()
-        wall = tq - t_arm - t_out
         state, pw, scalars = sample(state, pw)
         record(it, wall, scalars)
         if verbose:
@@ -1380,23 +1504,32 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                      f"fallbacks {int(ch['newton_fallback'].sum())}, dt* mean {ch['dt_star'].mean():.3e}\n"
                      if ts.newton else "")
                   + f"           {pressure_line(scalars)}", flush=True)
-        if resid_now < floor_tol:
-            stop = "floor"
-        elif n_done == steps:
-            stop = "steps"
+        if stop == "float32_floor" and kept["step"] != n_done:
+            # The patience windows walked uphill of the best field. The
+            # checkpoint and the returned state are that field, cold: the
+            # optimiser state belonged to a later step.
+            state = initial_state(jnp.asarray(kept["B"]), ts, dt=kept["dt"])
+            state, pw, scalars = sample(state, pw)
+            record(it0 + kept["step"], wall, scalars)
         if on_chunk is not None:
             on_chunk(result(n_done, stop, wall))
         if stop != "running":
-            if verbose and stop == "floor":
+            if verbose and stop == "float32_floor":
+                print(f"  [float32 floor] the last {energy_floor_patience} chunks of {chunk} each "
+                      f"raised the energy on {energy_floor_rise:.0%} of their steps or lowered it "
+                      f"by at most {energy_floor_rel * max(removed, 0.0):.2e}; returning the field at "
+                      f"step {it0 + kept['step']} (E_0 - E {kept['removed']:.4e}). "
+                      f"Going further is a restart in --precision mixed.", flush=True)
+            elif verbose and stop == "floor":
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
         if reconnect_every and n_done % reconnect_every == 0:
             k = len(events) + 1
-            eps = reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"]))
-            ev = dict(k=k, it=it, resid=resid_now, eps=eps, helicity_target=reconnect_helicity,
+            dose = reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"]))
+            ev = dict(k=k, it=it, resid=resid_now, eps=dose, helicity_target=reconnect_helicity,
                       F_before=float(state.F_norm), **{f"{kk}_before": v for kk, v in scalars.items()})
-            B_new, info, rel = reconnect_fn(state.B_n, eps)
+            B_new, info, rel = reconnect_fn(state.B_n, dose)
             state = initial_state(B_new, ts, dt=float(state.dt))
             state, pw, scalars = sample(state, pw)
             record(it, wall, scalars)
@@ -1405,7 +1538,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                       **{f"{kk}_after": v for kk, v in scalars.items()})
             events.append(ev)
             if verbose:
-                print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} for {reconnect_helicity:.2%} of H "
+                print(f"  [reconnect {k}] at it={it}: eps={dose:.3e} for {reconnect_helicity:.2%} of H "
                       f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
                       f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "
                       f"({ev['helicity_spent']:+.2%}), J/B {ev['JoverB_before']:.3f} -> "

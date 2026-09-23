@@ -15,10 +15,12 @@ the Lagrange multiplier the descent finds.
 This run turns on **velocity smoothing** of order 1 (gamma = 1): the descent
 direction is ``(I - scale L)^-1 F`` with ``scale = 0.02 / n_r^2``
 (``mrx.relaxation.SMOOTHING_C``, the stepper's default). On li383
-this reaches a clean nested floor in ~1000 steps where the unsmoothed descent
-(gamma = 0) grinds for ~6000; the force residual need not fall monotonically,
-what matters is the floor it settles at. It runs in float32 -- the descent is
-robust there and it is the production precision.
+gamma = 1 reaches a clean nested floor in ~1000 steps where the unsmoothed
+descent (gamma = 0) grinds for ~6000; the force residual need not fall
+monotonically. In plain float32 the energy stops descending much sooner.
+On this mesh, ``(10, 16, 16)`` p=2, the energy floor returns near step 90
+(6.7e-5 removed, about 50 s on an M3 Pro) and the force is still ~6e-3.
+The step count below is a cap. It runs in float32, the production precision.
 
 The script prints the traces, draws ``||F||`` against the energy and the weak
 pressure on the torus, and writes the run in ``scripts/relax.py``'s layout;
@@ -32,7 +34,8 @@ resistivity, seeds).
 
 # %%
 # Now we read the run's options and make the output folder. The defaults are
-# li383 at (10, 16, 16) p=2, 500 relaxation steps.
+# li383 at (10, 16, 16) p=2. The budget is 100 steps in chunks of 10; plain
+# float32 stops on the energy floor near step 90, inside that cap.
 from __future__ import annotations
 
 import argparse
@@ -49,7 +52,7 @@ ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations")
-ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")
+ap.add_argument("--inner", type=int, default=10, help="compiled steps per outer iteration")
 ap.add_argument("--floor-tol", type=float, default=1e-6,
                 help="stop once the chunk-mean squared normalised force residual falls below this")
 ap.add_argument("--cuts", type=int, default=6)
@@ -93,7 +96,9 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 
 # %%
 # Now we relax: the energy descent of mrx.relaxation with scripts/relax.py's
-# defaults plus velocity smoothing, run toward a nested floor (~500 steps).
+# defaults plus velocity smoothing. Plain float32 stops on the energy floor
+# (mrx.relaxation.energy_floor) inside this budget; the residual tolerance
+# below is not what ends the run.
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, the stepper's default
 # scale 0.02 / n_r^2 (mrx.relaxation.SMOOTHING_C).
 ts = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
@@ -102,10 +107,14 @@ res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.in
             floor_tol=cli.floor_tol)
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
+# On the energy floor the returned field is best_step, which can be a
+# chunk or two before the patience windows that ended the run.
+kept = res.best_step if res.stop == "float32_floor" else res.steps
 H = np.asarray(res.qoi["helicity"], dtype=float)
-print(f"[relax] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
-      f"E_0 - E = {-dE.sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
-      f"||div B|| {float(res.trace['div'][-1]):.1e}")
+print(f"[relax] {res.steps} steps ({res.stop}), field at step {kept}: "
+      f"||F|| {F[0]:.3e} -> {F[kept - 1]:.3e}, "
+      f"E_0 - E = {-dE[:kept].sum():.3e}, H {H[0]:+.3e} -> {H[-1]:+.3e} (dH = {H[-1] - H[0]:+.1e}), "
+      f"||div B|| {float(res.trace['div'][kept - 1]):.1e}")
 B = res.state.B_n
 
 fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
@@ -157,9 +166,9 @@ print(f"  -> {path}")
 # so scripts/poincare_trace.py + poincare_plot.py can draw the Poincare sections of both states.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{kept:06d}.h5"), res.state, kept)
 params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-              knots=None, precision=str(mrx.DTYPE), steps=res.steps, scheme="explicit",
+              knots=None, precision=str(mrx.DTYPE), steps=kept, stop=res.stop, scheme="explicit",
               auxiliary_B_field=False, ic=ic["kind"])
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)

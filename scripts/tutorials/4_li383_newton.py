@@ -42,8 +42,9 @@ descent for another ``--descent-steps`` and Newton for ``--newton-steps``,
 and draws ``||F||`` against the step and against the wall time for both. It
 writes the Newton run in ``scripts/relax.py``'s layout, so Tutorial 6 can
 warm-start from it and ``scripts/poincare_trace.py`` can section it.
-``scripts/relax.py`` runs the same from the command line: Newton is its
-default method.
+``scripts/relax.py`` runs the same from the command line with ``--method
+newton``, its default in mixed precision and float64 (plain float32
+defaults to the L-BFGS descent, which reaches the floor sooner).
 
     python -u scripts/tutorials/4_li383_newton.py
 """
@@ -108,7 +109,8 @@ compute_nullspaces(seq)
 # Now we get the starting field: Tutorial 3's relaxed B from the first run
 # directory whose checkpoint is on disk and matches this mesh (the user's run,
 # then the shipped state), otherwise the equilibrium initial condition taken
-# through the descent's fast phase here (Tutorial 3's run, 500 steps).
+# through the descent's fast phase here (Tutorial 3's run). Plain float32
+# stops that descent on the energy floor near step 90, inside the cap.
 ts_descent = TimeStepper(seq=seq, cfl=0.5, history_size=1, velocity_smoothing_order=1)
 B_start = None
 for run in cli.warm_start.split(","):
@@ -128,10 +130,11 @@ if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
-    fast = relax(initial_state(B0, ts_descent), ts_descent, steps=500, chunk=50, floor_tol=1e-6)
+    fast = relax(initial_state(B0, ts_descent), ts_descent, steps=100, chunk=10, floor_tol=1e-6)
     B_start = fast.state.B_n
+    kept = fast.best_step if fast.stop == "float32_floor" else fast.steps
     print(f"[ic] the descent's fast phase: {fast.steps} steps ({fast.stop}), "
-          f"||F|| {fast.trace['F'][0]:.3e} -> {fast.trace['F'][-1]:.3e}")
+          f"field at step {kept}, ||F|| {fast.trace['F'][0]:.3e} -> {fast.trace['F'][kept - 1]:.3e}")
 
 # %%
 # Now we continue the smoothed descent from that state, for comparison: the

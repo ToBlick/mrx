@@ -38,7 +38,8 @@ Flags, defaults in brackets:
                                    mrx.geometry.knot_vector)
       --p P [2]                    spline degree; p+1 Gauss points per span
       --solve-maxiter N [2000]     iteration budget of every inner solve
-      --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
+      --solve-tol TOL [1e-8 with a float64 residual, 1e-10 in float64,
+                                   sqrt(eps) ~ 3.5e-4 in plain float32]
       --precision {mixed,float32,float64} [mixed]
                                    mixed: float32 fields and solves with a
                                    float64 residual; float32, float64: both
@@ -61,10 +62,15 @@ Flags, defaults in brackets:
                                    induction with the explicit velocity
                                    (Picard on the increment, dt halved on a
                                    blow-up; mrx.relaxation.PICARD_*)
-      --method {newton,lbfgs} [newton]
+      --method {newton,lbfgs} [lbfgs in float32, else newton]
                                    the direction: Newton on the second
                                    variation (the Newton flags below) or the
-                                   L-BFGS descent
+                                   L-BFGS descent. In plain float32 L-BFGS
+                                   reaches the energy floor in about a
+                                   minute at (12,24,12) p=3 on an M3 Pro;
+                                   Newton had removed less energy after 30,
+                                   and at (16,32,16) half as much in the
+                                   same time (docs/source/mps.md)
       --history M [1]              L-BFGS secant pairs: 0 is steepest
                                    descent, 1 memoryless BFGS (= CG)
       --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.02 / n_r^2]
@@ -80,6 +86,10 @@ Flags, defaults in brackets:
                                    smoothing on the potential, L-BFGS on
                                    the smoothed forces; Newton and the
                                    auxiliary field have their own routes
+      --force-hodge-passes N [1 in float32, else 0]  outer passes of that
+                                   k=1 solve, warm-started from the last
+                                   step's potential; 0 is the solve's own
+                                   cap (two in float32)
     Newton (--method newton): the direction u = curl a with
     curl^T H curl a = curl^T M F by MINRES (mrx.hessian); a non-descending
     direction falls back to the smoothed force.
@@ -97,23 +107,44 @@ Flags, defaults in brackets:
     Budgets and output:
       --steps N [100 Newton, 3000 L-BFGS]
                                    maximum number of steps
-      --chunk N [20 Newton, 500 L-BFGS]
+      --chunk N [10 in float32, else 20 Newton, 500 L-BFGS]
                                    steps per compiled chunk (one lax.scan):
-                                   the trace comes back, the quantities of
-                                   interest are sampled (helicity, the two
-                                   pressures, beta), a checkpoint and the
-                                   outputs are written, and the floor,
-                                   reconnect and wall-time tests run, once
-                                   per chunk; --steps is a multiple of it
+                                   the trace comes back and the floor test
+                                   runs once per chunk; --steps is a
+                                   multiple of it
+      --sample-every N [one sample per about 50 steps in float32, else 1]
+                                   full sample, checkpoint and outputs
+                                   every N chunks, and always at the exit.
+                                   The floor test does not wait for it
       --reconnect-every K [0]      see "Reconnection series"; 0 = off
       --reconnect-helicity X [0.01] the helicity each reconnection spends,
                                    |dH| / |H|
-      --floor-tol TOL [1e-8]       stop when the last chunk's mean squared
+      --floor-tol TOL [0 in float32, else 1e-8]
+                                   stop when the last chunk's mean squared
                                    normalised force residual
                                    ||F||^2_M / ||grad(B^2/2)||^2 is below
                                    this (the residual is not monotone; the
-                                   window mean is the quantity)
+                                   window mean is the quantity). Plain
+                                   float32 never reaches 1e-8, so the
+                                   default there is 0 and the stop is
+                                   --energy-floor
+      --energy-floor auto|on|off [auto]
+                                   stop when the energy trace has stopped
+                                   descending (two chunks that each raise
+                                   the energy on 3 of every 10 steps or
+                                   lower it by at most 5e-4 of the energy
+                                   removed; mrx.relaxation.energy_floor)
+                                   and return the lowest-energy field.
+                                   auto is on in plain float32 and off
+                                   when a float64 residual is in use
       --out DIR [outputs/relax/<date>/<time>]
+      --warm-from R,T,Z [""]       relax that coarser mesh to its stop first,
+                                   then start from this mesh's initial field
+                                   plus the coarse relaxation, moved by the
+                                   commuting histopolation (div B stays at
+                                   round-off; mrx.initial_conditions.
+                                   transfer_field). relax.json records the
+                                   coarse run under "warm"
       --restart PATH               continue from a checkpoint of the same
                                    geometry, mesh, degree and precision
       --map-batch N [0]            cells per batch of the quadrature loops
@@ -127,12 +158,12 @@ Output (``--out``):
     relax.json           ``params`` (every flag, ``geometry_path`` resolved,
                          ``ic`` the kind of initial condition); ``ic``, the
                          initial field's numbers; the per-step ``trace``, the
-                         per-chunk ``qoi``, the ``reconnect`` records and the
+                         ``qoi`` (one row per sample), the ``reconnect`` records and the
                          ``summary`` with the stopping reason (the fields of
-                         mrx.relaxation.RelaxResult). Rewritten at every chunk.
+                         mrx.relaxation.RelaxResult). Rewritten at every sample.
     checkpoints/state_<step>.h5
-                         the descent state at that step, one file per chunk
-                         plus the initial field at step 0
+                         the descent state at a sampled step, plus the
+                         initial field at step 0
                          (mrx.relaxation.write_checkpoint); the plotters
                          read them next to relax.json, ``--restart`` continues
                          from one, a reconnection's ``it`` names the file it
@@ -198,8 +229,12 @@ def parse_args(argv=None):
     ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
                     help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
                          "[true for the L-BFGS descent; Newton and the auxiliary field have their own routes]")
-    ap.add_argument("--method", default="newton", choices=("newton", "lbfgs"),
-                    help="the direction: Newton on the second variation, or the L-BFGS descent")
+    ap.add_argument("--force-hodge-passes", type=int, default=None,
+                    help="outer passes of the force's k=1 Hodge solve; 0 is the solve's own cap "
+                         "[1 in plain float32, else 0]")
+    ap.add_argument("--method", default=None, choices=("newton", "lbfgs"),
+                    help="the direction: Newton on the second variation, or the L-BFGS descent "
+                         "[lbfgs in plain float32, newton otherwise]")
     ap.add_argument("--newton-tol", type=float, default=0.1,
                     help="relative residual tolerance of the Newton MINRES solve")
     ap.add_argument("--newton-maxiter", type=int, default=300,
@@ -210,16 +245,26 @@ def parse_args(argv=None):
                     help="cap on the line-search step along a Newton direction (1 = the Newton step)")
     ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 L-BFGS]")
     ap.add_argument("--chunk", type=int, default=None,
-                    help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
-                         "floor / reconnect / wall-time tests once per chunk")
-    ap.add_argument("--floor-tol", type=float, default=1e-8,
-                    help="stop when the last chunk's mean squared normalised force residual is below this")
+                    help="steps per compiled chunk; the trace comes back and the floor test runs "
+                         "once per chunk [10 in float32, else 20 Newton, 500 L-BFGS]")
+    ap.add_argument("--sample-every", type=int, default=None,
+                    help="full sample, checkpoint and outputs every N chunks, and always at the "
+                         "exit [one sample per about 50 steps in float32, else every chunk]")
+    ap.add_argument("--floor-tol", type=float, default=None,
+                    help="stop when the last chunk's mean squared normalised force residual is below "
+                         "this [0 in float32, where 1e-8 is unreachable; 1e-8 otherwise]")
+    ap.add_argument("--energy-floor", default="auto", choices=("auto", "on", "off"),
+                    help="stop when the energy trace has stopped descending, and return the "
+                         "lowest-energy field [auto: on in plain float32, off in mixed and float64]")
     ap.add_argument("--reconnect-every", type=int, default=0,
                     help="reconnect the field with one resistive solve every K steps, rounded "
                          "to whole chunks; 0 = off (see the docstring)")
     ap.add_argument("--reconnect-helicity", type=float, default=0.01,
                     help="the helicity each reconnection spends, |dH| / |H|")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--warm-from", default="",
+                    help='"R,T,Z": relax that coarse mesh first (same geometry, degree and stops), '
+                         "then start this mesh from its initial field plus the coarse relaxation")
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
                          "mesh, degree and precision")
@@ -230,11 +275,30 @@ def parse_args(argv=None):
     if cli.map_batch < 0:
         ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
     cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
+    # Plain float32 stops on the energy floor, and L-BFGS gets there
+    # first: Newton's 36 s steps (li383 (12,24,12) p=3, Metal) had removed
+    # less energy after 30 minutes than L-BFGS does in two.
+    cli.method_default = cli.method is None
+    if cli.method is None:
+        cli.method = "lbfgs" if cli.precision == "float32" else "newton"
     cli.newton = cli.method == "newton"
     if cli.steps is None:
         cli.steps = 100 if cli.newton else 3000
+    if cli.floor_tol is None:
+        # A squared residual of 1e-8 is below anything a plain float32 force
+        # reaches at this mesh (it oscillates from about 1e-3 to 1e-2), so
+        # the default would never fire. The energy floor is the stop there.
+        cli.floor_tol = 0.0 if cli.precision == "float32" else 1e-8
     if cli.chunk is None:
-        cli.chunk = 20 if cli.newton else 500
+        cli.chunk = 10 if cli.precision == "float32" else (20 if cli.newton else 500)
+    if cli.sample_every is None:
+        # A sample is a full force evaluation, about as long as the steps
+        # it sits between. The floor test reads the chunk trace, so float32
+        # samples about once per 50 steps. Mixed and float64 keep a sample
+        # on every chunk.
+        cli.sample_every = max(1, round(50 / cli.chunk)) if cli.precision == "float32" else 1
+    if cli.sample_every < 1:
+        ap.error("--sample-every counts chunks and must be positive")
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
     if cli.history < 0:
         ap.error("--history must be non-negative (0 is steepest descent)")
@@ -250,10 +314,10 @@ def parse_args(argv=None):
 def main(cli):
     import mrx
     from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field
+    from mrx.initial_conditions import initial_field, transfer_field
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (IntegrationScheme, TimeStepper, initial_state, read_checkpoint,
-                                relax, write_checkpoint)
+    from mrx.relaxation import (IntegrationScheme, TimeStepper, compute_divergence_norm,
+                                initial_state, read_checkpoint, relax, write_checkpoint)
 
     if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
         raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
@@ -295,16 +359,50 @@ def main(cli):
                       for k, v in ic.items() if k != "kind"), flush=True)
 
     # --- the descent -------------------------------------------------------
-    ts = TimeStepper(
-        seq=seq, auxiliary_B_field=cli.auxiliary_B_field,
-        scheme={"explicit": IntegrationScheme.EXPLICIT,
-                "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
-        cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
-        velocity_smoothing_order=cli.velocity_smoothing_order,
-        velocity_smoothing_scale=cli.velocity_smoothing_scale,
-        potential_velocity=cli.potential_velocity,
-        newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
-        newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap)
+    def stepper(s):
+        return TimeStepper(
+            seq=s, auxiliary_B_field=cli.auxiliary_B_field,
+            scheme={"explicit": IntegrationScheme.EXPLICIT,
+                    "midpoint": IntegrationScheme.IMPLICIT_MIDPOINT}[cli.scheme],
+            cfl=cli.cfl, history_size=0 if cli.newton else cli.history,
+            velocity_smoothing_order=cli.velocity_smoothing_order,
+            velocity_smoothing_scale=cli.velocity_smoothing_scale,
+            potential_velocity=cli.potential_velocity,
+            force_hodge_passes=cli.force_hodge_passes,
+            newton=cli.newton, newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter,
+            newton_precond=cli.newton_precond, newton_dt_cap=cli.newton_dt_cap)
+
+    ts = stepper(seq)
+    if cli.warm_from and not cli.restart:
+        # The coarse mesh relaxes to its own stop, then only its increment
+        # moves: the fine run starts from the fine mesh's initial field plus
+        # the coarse relaxation (mrx.initial_conditions.transfer_field).
+        tc = time.perf_counter()
+        ns_c = tuple(int(v) for v in cli.warm_from.split(","))
+        seq_c, _ = build_sequence(cli.geometry, ns_c, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
+                                  nfp=cli.nfp)
+        compute_nullspaces(seq_c)
+        B0_c, _ = initial_field(seq_c, seed)
+        setup_c = time.perf_counter() - tc
+        print(f"\n[warm] coarse ns={seq_c.ns} p={cli.p}: setup {setup_c:.1f}s", flush=True)
+        ts_c = stepper(seq_c)
+        res_c = relax(initial_state(B0_c, ts_c), ts_c, steps=cli.steps, chunk=cli.chunk,
+                      floor_tol=cli.floor_tol,
+                      energy_floor={"auto": None, "on": True, "off": False}[cli.energy_floor],
+                      sample_every=cli.sample_every)
+        tt = time.perf_counter()
+        E_base = 0.5 * float(seq.l2_norm_sq(B0, 2))
+        B0 = transfer_field(res_c.state.B_n, seq_c, seq, base_from=B0_c, base_to=B0)
+        E_warm = 0.5 * float(seq.l2_norm_sq(B0, 2))
+        transfer_s = time.perf_counter() - tt
+        results["warm"] = dict(ns=list(seq_c.ns), setup=setup_c, steps=res_c.steps,
+                               best_step=res_c.best_step, stop=res_c.stop, wall=res_c.wall,
+                               elapsed=time.perf_counter() - tc, transfer=transfer_s,
+                               E_base=E_base, E_warm=E_warm)
+        print(f"[warm] {res_c.steps} coarse steps ({res_c.stop}, field at {res_c.best_step}) in "
+              f"{res_c.wall:.1f}s; transfer {transfer_s:.1f}s: fine E {E_base:.8e} -> {E_warm:.8e} "
+              f"(removed {E_base - E_warm:.4e}), ||div B|| {float(compute_divergence_norm(B0, seq)):.2e}",
+              flush=True)
     if cli.restart:
         state, it0 = read_checkpoint(cli.restart, ts)
         print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
@@ -314,21 +412,31 @@ def main(cli):
     params["start_step"] = it0
     params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
     params["potential_velocity"] = bool(ts.potential_velocity)
-    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
+    params["force_hodge_passes"] = int(ts.force_hodge_passes)
+    print(f"\n=== {'newton tol=%.1e maxiter=%d precond=%s' % (cli.newton_tol, cli.newton_maxiter, cli.newton_precond) if cli.newton else 'L-BFGS m=%d' % cli.history}"
+          f"{' (the ' + cli.precision + ' default method)' if cli.method_default else ''}"
+          f"{'  potential-velocity (force Hodge passes %d)' % ts.force_hodge_passes if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
           f"scheme={cli.scheme}  smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
-          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
+          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} sample-every={cli.sample_every} "
+          f"floor-tol={cli.floor_tol:.1e} energy-floor={cli.energy_floor} "
           f"reconnect-every={cli.reconnect_every}"
           + (f" ({cli.reconnect_helicity:.2%} of H each)" if cli.reconnect_every else "") + " ===",
           flush=True)
 
     def save(res):
-        """The run so far: the checkpoint of this step, then relax.json."""
-        it = it0 + res.steps
+        """The run so far: the checkpoint of this step, then relax.json.
+
+        On the float32 energy floor the checkpoint is the lowest-energy
+        field, at ``best_step``, not the later chunk the patience windows
+        walked through.
+        """
+        it = it0 + res.best_step
         write_checkpoint(os.path.join(ckpt_dir, f"state_{it:06d}.h5"), res.state, it)
         last = {k: v[-1] for k, v in res.qoi.items() if k not in ("it", "wall")}
         results.update(
             trace=res.trace, qoi=res.qoi, reconnect=res.reconnect,
             summary=dict(steps=res.steps, stop=res.stop, wall=res.wall,
+                         best_step=res.best_step,
                          reconnect_every=res.reconnect_every,
                          E0=res.E0, E_removed=res.E0 - res.qoi["E"][-1], F_final=res.trace["F"][-1],
                          resid_final=res.trace["resid"][-1],
@@ -338,6 +446,8 @@ def main(cli):
             json.dump(results, fh, indent=1)
 
     relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
+          energy_floor={"auto": None, "on": True, "off": False}[cli.energy_floor],
+          sample_every=cli.sample_every,
           reconnect_every=cli.reconnect_every,
           reconnect_helicity=cli.reconnect_helicity, on_chunk=save)
     print(f"wrote {out}/relax.json and {ckpt_dir}/", flush=True)
