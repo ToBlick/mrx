@@ -6,7 +6,7 @@ compiles the StableHLO a JAX program lowers to and executes it with
 [MLX](https://github.com/ml-explore/mlx). Nothing is provisioned and nothing
 bills: unlike `tpu/`, the hardware is the laptop.
 
-The whole suite passes there, 61/61, in the plain float32 configuration, and
+The whole suite passes there, 67/67, in the plain float32 configuration, and
 a real li383 relaxation runs to completion. This backend charges a flat
 ~0.22 ms per dispatch, so an operation is faster or slower than the CPU
 according to whether it is bigger or smaller than that floor. The mass
@@ -101,13 +101,15 @@ Run it first after any upgrade of `jax-mps`, `jax` or macOS.
 
 ## What was measured
 
-Suite, `MRX_X64=0`, one M3 Pro, wall clock for `pytest test`:
+Suite, one M3 Pro, wall clock for `pytest test`, 2026-09-23. The skipped
+test initializes Metal and compares the indexed assembly with the shifted
+one, so a CPU process skips it.
 
 | backend | configuration | result |
 |---|---|---|
-| mps | plain float32, indexed assembly | 61 passed, 150 s |
-| cpu | mixed float32/float64, shift assembly (the default) | 61 passed, 300 s |
-| cpu | plain float32, before the assembly tests existed | 59 passed, 209 s |
+| mps | plain float32 (`mps/env.sh`) | 67 passed, 152 s |
+| cpu | plain float32 (`MRX_X64=0`) | 66 passed, 1 skipped, 241 s |
+| cpu | mixed (`MRX_X64=1`) | 66 passed, 1 skipped, 326 s |
 
 The suite is compile-bound, so that near-parity is mostly a statement about
 XLA-versus-MLX compile time, not about execution. The parts of it that are
