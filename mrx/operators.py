@@ -925,8 +925,9 @@ def assemble_mass_metric_lumping_preconditioner(
         for dirichlet in dirichlet_variants:
             atoms[(int(k), bool(dirichlet))] = MetricLumpingMass(
                 seq, operators, int(k), bool(dirichlet), **kwargs)
-    return eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
-                       is_leaf=lambda x: x is None or isinstance(x, dict))
+    operators = eqx.tree_at(lambda ops: ops.mass_lumping, operators, atoms,
+                            is_leaf=lambda x: x is None or isinstance(x, dict))
+    return operators
 
 
 def assemble_metric_lumping_laplacian_preconditioner(
@@ -1061,7 +1062,8 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
-                                  return_info: bool = False, dtype=None):
+                                  return_info: bool = False, dtype=None,
+                                  max_passes: Optional[int] = None):
     """``L_k^{-1} rhs`` for ``k >= 1`` by Hodge splitting (TB, 2026-09-02).
 
     ``L_k = S_k + M_k D_{k-1} M_{k-1}^{-1} D_{k-1}^T M_k`` and
@@ -1096,7 +1098,9 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     which the Leray projection, its consumer, needs); it stays on the saddle
     MINRES.  ``guess`` warm-starts the ``L^_k`` solve; ``return_info`` reports
     its signed count.  Harmonic forms of every level are deflated; the
-    solution is harmonic-orthogonal in ``M_k``.
+    solution is harmonic-orthogonal in ``M_k``.  ``max_passes`` overrides
+    the cap on the outer passes (two in plain float32, the full budget
+    otherwise).
     """
     if k not in (1, 2):
         raise ValueError(f"apply_inverse_laplacian_hodge: k must be 1 or 2, got {k}")
@@ -1143,7 +1147,8 @@ def apply_inverse_laplacian_hodge(seq, operators: SequenceOperators, rhs, k: int
     x, info = _pair_loop(seq, operators, on, k, d, 0.0, tol, maxiter,
                          lambda r: split(r.astype(seq.dtype)), rhs, guess,
                          _nullspace_vectors(operators, k, d),
-                         max_passes=2 if seq.residual is None else None)
+                         max_passes=max_passes if max_passes is not None
+                         else (2 if seq.residual is None else None))
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 
@@ -1173,7 +1178,8 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
                                   dirichlet: bool = True, guess=None,
                                   tol: Optional[float] = None,
                                   maxiter: Optional[int] = None,
-                                  return_info: bool = False, dtype=None):
+                                  return_info: bool = False, dtype=None,
+                                  max_passes: Optional[int] = None):
     """Solve with the inverse of the unshifted Hodge Laplacian ``L_k``.
 
     ``k = 0``: the deflated scalar PCG below.  ``k = 1, 2``: the Hodge-split
@@ -1206,7 +1212,7 @@ def apply_inverse_laplacian(seq, operators: SequenceOperators, rhs, k: int,
         return (u, info) if return_info else u
     return apply_inverse_laplacian_hodge(
         seq, operators, rhs, k, dirichlet=dirichlet, guess=guess,
-        tol=tol, maxiter=maxiter, return_info=return_info, dtype=dtype)
+        tol=tol, maxiter=maxiter, return_info=return_info, dtype=dtype, max_passes=max_passes)
 
 
 def apply_inverse_laplacian_saddle(seq, operators: SequenceOperators, rhs, k: int,

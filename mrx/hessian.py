@@ -121,12 +121,24 @@ def second_variation(seq, B, J, tol=None):
     """``u -> H u``: the Hessian of the energy along the flow of ``u``, as a dual 2-form.
 
     ``B`` the 2-form, ``J`` its weak curl (a Dirichlet 1-form, the ``J`` of
-    :func:`mrx.relaxation.compute_force`). Three k=1 mass solves per apply,
-    each to ``tol`` (the sequence's by default): ``E = M_1^-1 load(u x B)``
-    for ``Q = curl E``, the weak curl ``dJ`` of ``Q``, and ``W = M_1^-1
-    curl^T load(J x u)``; then
+    :func:`mrx.relaxation.compute_force`). Two k=1 mass inverses per apply,
+    each a mass solve to ``tol`` (the sequence's by default):
+    ``E = M_1^-1 load(u x B)`` for ``Q = curl E``, then one inverse for
+    ``X = dJ + W / 2``. ``dJ`` is the weak curl of ``Q`` and
+    ``W = M_1^-1 curl^T load(J x u)``; both are ``M_1^-1`` of a dual 1-form
+    and both enter only through ``load(B x .)``, which is linear in its
+    second argument, so
 
-        H u = load(B x dJ) + [load(Q x J) + load(B x W)] / 2.
+        H u = load(B x X) + load(Q x J) / 2
+
+    is the same operator as ``load(B x dJ) + [load(Q x J) + load(B x W)] / 2``
+    up to the tolerance of that one inverse.
+
+    Replacing those solves by one apply of the k=1 mass atom was measured on
+    2026-09-22 and rejected, because it changes the step: on the tutorial
+    field the line search takes ``dt*`` 0.05 and removes about 240 times
+    less energy (li383 ``(10, 16, 16)`` p=2, the shipped step-500 state, one
+    step, Metal, float32).
     """
     B_jk = seq.evaluate_at_quadrature(B, 2, True)
     J_jk = seq.evaluate_at_quadrature(J, 1, True)
@@ -139,16 +151,17 @@ def second_variation(seq, B, J, tol=None):
         E = m1_inv(seq.cross_product_load_values(u_jk, B_jk, 1, 2, 2, True))
         Q = seq.apply_incidence_matrix(E, 1, dirichlet_in=True, dirichlet_out=True)
         Q_jk = seq.evaluate_at_quadrature(Q, 2, True)
-        dJ = m1_inv(seq.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
-                                                transpose=True))
-        dJ_jk = seq.evaluate_at_quadrature(dJ, 1, True)
         JxU = seq.cross_product_load_values(J_jk, u_jk, 2, 1, 2, True)
-        W = m1_inv(seq.apply_incidence_matrix(JxU, 1, dirichlet_in=True, dirichlet_out=True,
-                                              transpose=True))
-        W_jk = seq.evaluate_at_quadrature(W, 1, True)
-        return (seq.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1, True)
-                + 0.5 * (seq.cross_product_load_values(Q_jk, J_jk, 2, 2, 1, True)
-                         + seq.cross_product_load_values(B_jk, W_jk, 2, 2, 1, True)))
+        X = m1_inv(seq.apply_derivative_matrix(Q, 1, dirichlet_in=True, dirichlet_out=True,
+                                               transpose=True)
+                   + 0.5 * seq.apply_incidence_matrix(
+                       JxU, 1, dirichlet_in=True, dirichlet_out=True, transpose=True))
+        X_jk = seq.evaluate_at_quadrature(X, 1, True)
+        # Both loads are a 2-form crossed with a 1-form onto the 2-forms, so
+        # the crosses share a reference representation and one integration
+        # of the sum is the same dual vector.
+        return seq.cross_product_load_sum(
+            ((1.0, B_jk, X_jk, 2, 1), (0.5, Q_jk, J_jk, 2, 1)), 2, True)
 
     return apply
 
@@ -179,6 +192,8 @@ def newton_direction(seq, B, J, MF, a_guess, tol=0.1, maxiter=300, precond="lapl
     preconditioner norm, ``maxiter`` its iteration budget, ``precond`` one
     of :data:`PRECONDITIONERS` or the preconditioner's apply itself (a
     callable); the Hessian's mass solves run at the sequence's tolerance.
+    Replacing them by the k=1 mass atom was measured on 2026-09-22 and
+    rejected, because it does not take the same step.
 
     A truncated solve by design: MINRES runs the ``maxiter`` budget with no
     criterion of its own (its residual is in the preconditioner's norm, not

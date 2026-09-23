@@ -766,8 +766,12 @@ class DeRhamSequence():
 
     def apply_inverse_laplacian(self, rhs, k, dirichlet=True, guess=None,
                                 operators=None, tol=None, maxiter=None,
-                                return_info=False, dtype=None):
+                                return_info=False, dtype=None, max_passes=None):
         """Solve ``L_k x = rhs`` for the k-form ``x``.
+
+        ``max_passes`` caps the outer passes of the ``k = 1, 2`` split
+        (``None``: its own cap; see
+        :func:`~mrx.operators.apply_inverse_laplacian_hodge`).
 
         ``k = 0``: ``L_0 = S_0`` is SPD up to its harmonic forms; deflated
         CG (:func:`~mrx.solvers.solve_singular_cg`), the harmonic forms of
@@ -794,7 +798,7 @@ class DeRhamSequence():
             dirichlet=dirichlet, guess=guess,
             tol=self.tol if tol is None else tol,
             maxiter=self.maxiter if maxiter is None else maxiter,
-            return_info=return_info, dtype=dtype)
+            return_info=return_info, dtype=dtype, max_passes=max_passes)
 
     def apply_inverse_shifted_laplacian(self, rhs, k, eps, dirichlet=True, guess=None,
                                         operators=None, tol=None, maxiter=None,
@@ -980,6 +984,34 @@ class DeRhamSequence():
         Returns:
             The n-form dual DOF vector.
         """
+        c, rep = self._cross_at_quadrature(w_jk, u_jk, n, m, k)
+        return self._vector_load_values(c, rep, n, dirichlet_n)
+
+    def cross_product_load_sum(self, terms, n, dirichlet_n=True):
+        """One integration of a sum of cross-product loads onto the same space.
+
+        ``terms`` is ``(scale, w_jk, u_jk, m, k)``. The crosses are formed
+        pointwise and summed before the quadrature integration, so this is
+        the same dual vector as summing :meth:`cross_product_load_values`
+        and it costs one integration instead of one per term. Every term
+        has to land in the same reference representation, which it does
+        when ``n``, ``m`` and ``k`` agree across the sum.
+        """
+        c = None
+        rep = None
+        for scale, w_jk, u_jk, m, k in terms:
+            ci, rep_i = self._cross_at_quadrature(w_jk, u_jk, n, m, k)
+            if rep is None:
+                rep = rep_i
+            elif rep_i != rep:
+                raise ValueError(
+                    "a summed cross-product load needs one reference representation")
+            c = scale * ci if c is None else c + scale * ci
+        return self._vector_load_values(c, rep, n, dirichlet_n)
+
+    def _cross_at_quadrature(self, w_jk, u_jk, n, m, k):
+        """Reference components of ``w x u``, and whether they are covariant
+        (1) or a contravariant density (2)."""
         if n not in (1, 2) or m not in (1, 2) or k not in (1, 2):
             raise ValueError("n, m and k must be 1 or 2")
 
@@ -988,19 +1020,18 @@ class DeRhamSequence():
 
         G, G_inv, J = self.metric_jkl, self.metric_inv_jkl, self.jacobian_j[:, None]
         if m == 1 and k == 1:
-            c, rep = jnp.cross(w_jk, u_jk, axis=1), 2
-        elif m == 2 and k == 2:
+            return jnp.cross(w_jk, u_jk, axis=1), 2
+        if m == 2 and k == 2:
             wxu = jnp.cross(w_jk, u_jk, axis=1)
-            c, rep = (wxu / J, 1) if n == 2 else (contract(G_inv, wxu), 2)
-        elif n == 2:      # covariant: G^-1 on the 1-form factor
+            return (wxu / J, 1) if n == 2 else (contract(G_inv, wxu), 2)
+        if n == 2:      # covariant: G^-1 on the 1-form factor
             c = (jnp.cross(contract(G_inv, w_jk), u_jk, axis=1) if m == 1
                  else jnp.cross(w_jk, contract(G_inv, u_jk), axis=1))
-            rep = 1
-        else:             # density: G on the 2-form factor, over J
-            c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
-                 else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
-            rep = 2
-        return self._vector_load_values(c, rep, n, dirichlet_n)
+            return c, 1
+        # density: G on the 2-form factor, over J
+        c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
+             else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
+        return c, 2
 
     # --- the other quadratic operators ------------------------------------
     #

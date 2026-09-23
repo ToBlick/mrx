@@ -16,6 +16,7 @@ send the loop to ``maxiter``; measured on li383 (16,32,32) p=3 in float32,
 every production solve converges to 1e-7 (``docs/research/velocity_leray_ab_2026-09-04.md``).
 """
 
+import contextvars
 from typing import NamedTuple
 
 import jax
@@ -23,6 +24,13 @@ import jax.numpy as jnp
 
 from mrx.precision import DTYPE, MAX_PASSES, RESIDUAL_DTYPE, solve_tol
 from mrx.precision import inner_tol as default_inner_tol
+
+#: Host callback ``(improved: int32) -> None`` for one pass of :func:`refine`,
+#: or ``None``. Read when ``refine`` is traced, so a run that never sets it
+#: does not trace the callback. ``mps/solve_attr.py`` counts how many passes
+#: ran and how many of them lowered the residual.
+_refine_passes: contextvars.ContextVar = contextvars.ContextVar(
+    "mrx_refine_passes", default=None)
 
 
 def preconditioned_cg(A_matvec, b, x0=None, M=None, tol=None, maxiter=None):
@@ -209,6 +217,7 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
         x = x0.astype(RESIDUAL_DTYPE)
     bnorm = norm(project_dual(b))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+    record_pass = _refine_passes.get()
 
     def cond(carry):
         _, r, k, _, keep_going = carry
@@ -231,6 +240,8 @@ def refine(apply_res, solve, b, x0=None, tol=None, project_dual=None, norm=None,
         r_new = residual(x_new)
         n_new = norm(r_new)
         better = jnp.logical_and(jnp.isfinite(n_new), n_new < s)
+        if record_pass is not None:
+            jax.debug.callback(record_pass, better.astype(jnp.int32))
         x = jnp.where(better, x_new, x)
         r = jnp.where(better, r_new, r)
         return x, r, k + 1, its + jnp.abs(info), better

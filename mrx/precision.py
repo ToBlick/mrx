@@ -135,6 +135,12 @@ def inner_tol(tol) -> float:
     return float(tol) ** 0.5
 
 #: Passes a refined solve may take before it reports non-convergence.
+#: Left at 6 in plain float32, not only in mixed precision. One L-BFGS step
+#: at li383 ``(12, 24, 12)`` p=3 (``mps/solve_attr.py``, 2026-09-22) spent
+#: 5 improving passes out of 5 on the mass inverse and 2 out of 2 on the
+#: saddle, so a global cap would drop corrections that still reduce the
+#: residual. The waste was the Hodge split, which caps its own loop at two
+#: when there is no residual-precision view.
 MAX_PASSES = 6
 
 
