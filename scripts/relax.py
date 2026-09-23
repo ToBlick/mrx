@@ -37,7 +37,7 @@ Flags, defaults in brackets:
                                    parity: mrx.symmetry), field periods only,
                                    or nothing (zeta in [0, 1] is the whole
                                    torus, nfp = 1); mrx.geometry.SYMMETRIES
-      --ns R,T,Z [16,32,32]        spline resolution (also the map's)
+      --ns R,T,Z [32,64,64]        spline resolution (also the map's)
       --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
                                    the breakpoints of that axis, comma-
                                    separated from 0 to 1, instead of the
@@ -115,7 +115,7 @@ Flags, defaults in brackets:
                                    the strain penalty the 0.1 forcing term
                                    is met late, so more passes only cost)
     Budgets and output:
-      --steps N [100 Newton, 3000 gradient]
+      --steps N [150 Newton, 3000 gradient]
                                    maximum number of steps
       --chunk N [20 Newton, 500 gradient]
                                    steps per compiled chunk (one lax.scan):
@@ -186,7 +186,8 @@ Resistive steady state:
     the current of ``B*``: the run's start field (the ``--restart``
     checkpoint, a converged ideal run; or the initial field), or the field
     of the ``--reference`` checkpoint (one common reference for differently
-    seeded arms), after one heat
+    seeded arms; ``--reference none`` drops the source current altogether,
+    plain resistive decay towards vacuum), after one heat
     step of ``c h_r^2``, ``c = --reference-smoothing``, which removes the
     rational-surface sheets of the ideal equilibrium (sustained, they would
     make the start a fixed point) and costs ``O(c h_r^2)`` of the bulk
@@ -219,7 +220,7 @@ def parse_args(argv=None):
                     help="field periods; overrides the file's nfp attribute")
     ap.add_argument("--symmetry", default="stellarator", choices=("stellarator", "field-period", "none"),
                     help="what the map satisfies (mrx.geometry.SYMMETRIES)")
-    ap.add_argument("--ns", default="16,32,32")
+    ap.add_argument("--ns", default="32,64,64")   # the paper's reference run (Tobias 2026-09-22)
     for axis in ("r", "theta", "zeta"):
         ap.add_argument(f"--knots-{axis}", default="",
                         help=f'breakpoints of the {axis} axis, comma-separated from 0 to 1; "" = uniform')
@@ -261,7 +262,7 @@ def parse_args(argv=None):
                     help="the forcing term of the Newton solve: the residual below TOL of the right-hand side")
     ap.add_argument("--newton-maxiter", type=int, default=200, help="MINRES iterations per pass of the Newton solve")
     ap.add_argument("--newton-passes", type=int, default=1, help="passes of the Newton solve at most")
-    ap.add_argument("--steps", type=int, default=None, help="maximum steps [100 Newton, 3000 gradient]")
+    ap.add_argument("--steps", type=int, default=None, help="maximum steps [150 Newton, 3000 gradient]")
     ap.add_argument("--chunk", type=int, default=None,
                     help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
                          "floor / reconnect / wall-time tests once per chunk")
@@ -283,7 +284,8 @@ def parse_args(argv=None):
                     help="B* = the start field after one heat step of c h_r^2 (with --resistivity)")
     ap.add_argument("--reference", default=None,
                     help="with --resistivity: B* from this checkpoint's field instead of the start field (one "
-                         "common reference for differently seeded arms, e.g. the nested equilibrium); smoothed as above")
+                         "common reference for differently seeded arms), smoothed as above; or 'none' for no source "
+                         "current at all, E = eta J, the field decays towards vacuum")
     ap.add_argument("--out", default=None)
     ap.add_argument("--restart", default=None,
                     help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
@@ -298,7 +300,7 @@ def parse_args(argv=None):
     cli.helicity_correction = cli.helicity_correction == "true"
     cli.newton = cli.method == "newton"
     if cli.steps is None:
-        cli.steps = 100 if cli.newton else 3000
+        cli.steps = 150 if cli.newton else 3000
     if cli.chunk is None:
         cli.chunk = 20 if cli.newton else 500
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
@@ -382,7 +384,13 @@ def main(cli):
     else:
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
-    if cli.resistivity:
+    if cli.resistivity and cli.reference == "none":
+        # plain resistivity, E = eta J: no source current, the whole field decays towards vacuum, the rational-surface
+        # sheets first (Tobias 2026-09-22: the demonstration's arms drive towards each other and collectively towards
+        # vacuum)
+        print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step, no reference current",
+              flush=True)
+    elif cli.resistivity:
         # B*: the start field, its rational-surface sheets removed by the heat step (c = 0 keeps them: only the
         # drive then moves the steady state)
         B_star = state.B_n
