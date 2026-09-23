@@ -10,9 +10,10 @@ parallel_seed), its profile a(r) free in the sequence's own radial basis within 
 for the amplitudes of least energy, a* = -G^-1 g with g_i = <B, dB_i> and G_ij = <dB_i, dB_j>, and B + Q sum a*_i
 dB_i over the --chain chains (all by default) is written as a checkpoint for relax.py --restart.
 
-Next to it, <out>.json lists every resonance: r_mn, |d_r iota|, the resonant normal field of its a*,
-dBr = |(sqrt(g) dB^r)_mn(r_mn)| / <sqrt(g) B^zeta>(r_mn) (the harmonic in the straight-field-line angle
-theta* = theta + lambda of the wout), and the pendulum width w = sqrt(8 dBr nfp / (pi m |d_r iota|)).
+Next to it, <out>.json lists every resonance: r_mn, |d_r iota|, the resonant normal field of its a*, dBr, the
+amplitude of the (m, n) harmonic of sqrt(g) dB^r at r_mn over <sqrt(g) B^zeta>(r_mn) (the Fourier transform in the
+straight-field-line angle theta* = theta + lambda of the wout), and the pendulum width
+w = sqrt(8 dBr nfp / (pi m |d_r iota|)).
 
 The one script of paper/ on mrx internals: no command-line tool seeds a checkpoint.
 """
@@ -42,6 +43,7 @@ def main():
     import scipy.io
     from scipy.interpolate import CubicSpline
 
+    import mrx
     from mrx.differential_forms import DiscreteFunction
     from mrx.experimental.islands import resonances
     from mrx.geometry import build_sequence
@@ -52,8 +54,9 @@ def main():
 
     params = json.load(open(os.path.join(cli.run, "relax.json")))["params"]
     ns, p = tuple(params["ns"]), params["p"]
-    seq, _ = build_sequence(params["geometry_path"], ns, p, params["solve_maxiter"], nfp=params["nfp"],
-                            knots=params["knots"], symmetry=params["symmetry"])
+    mrx.MAP_BATCH_SIZE_INNER = params["map_batch"]
+    seq, _ = build_sequence(params["geometry_path"], ns, p, params["solve_maxiter"], tol=params["solve_tol"],
+                            nfp=params["nfp"], knots=params["knots"], symmetry=params["symmetry"])
     compute_nullspaces(seq)
     ts = TimeStepper(seq=seq)
     ckpt = os.path.join(cli.run, "checkpoints", f"state_{cli.step:06d}.h5")
@@ -136,7 +139,7 @@ def main():
     blocks = [i for i in range(len(dB)) if keep is None or chains[owner[i]][:2] in keep]
     seeded = B + cli.scale * sum(float(a[i]) * dB[i] for i in blocks)
     os.makedirs(os.path.dirname(os.path.abspath(cli.out)), exist_ok=True)
-    write_checkpoint(cli.out, initial_state(seeded, ts), step)
+    write_checkpoint(cli.out, initial_state(seeded, ts, step=step), step)
     with open(os.path.splitext(cli.out)[0] + ".json", "w") as fh:
         json.dump(dict(checkpoint=ckpt, step=step, ns=list(ns), p=p, nfp=nfp, h_r=h_r, chains=keep, scale=cli.scale,
                        resonances=rows), fh, indent=1)
