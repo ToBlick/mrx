@@ -237,14 +237,27 @@ def vacuum_two_form(seq, seed):
     symmetric). ``h`` is not normalised: it carries the seed's toroidal
     flux. ``info`` is the forward solve's signed iteration count
     (:func:`mrx.solvers.refine`).
+
+    On a half-period sequence every right-hand side is projected onto the
+    odd dual vectors, the parity of ``h``. The forward one is odd already.
+    The adjoint one, ``-G_1^T dJ/dh``, is not wherever the half-period
+    quadrature of the objective is not exact for it (the products of ``h``
+    with a direction of the other parity): that part pairs to zero with
+    every odd tangent, and left in, it decides the parity the solver reads
+    off its right-hand side once the odd part is small (near an optimum of
+    a quadratic objective such as :func:`quasisymmetry_residual`), which
+    then solves for the wrong one.
     """
     b = op.apply_derivative_matrix(seq, seed, 1, dirichlet_in=True, dirichlet_out=True,
                                    transpose=True)
+    parity = seq.free_projector(1, True)
 
     def matvec(x):
         return op.apply_stiffness(seq, x, 1, dirichlet=True)
 
     def solve(_, r):
+        if parity is not None:
+            r = parity.dual(r, -1.0)
         return op.apply_inverse_laplacian(seq, seq.operators, r, 1, dirichlet=True,
                                           return_info=True)
 
