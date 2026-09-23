@@ -9,6 +9,14 @@ deliberately the one behind the v5e / H200 / H100 table in
 
 ## The headline
 
+The number to quote for a plain float32 relaxation is the time to the
+energy floor, not a fixed step count. L-BFGS reaches it in about two
+minutes at `(12,24,12)` p=3 and about four minutes at `(16,32,16)` p=3,
+against the old default of 3000 steps, which is about an hour and cannot
+stop: `--floor-tol 1e-8` is a squared residual float32 never reaches.
+The table is in "Time to the float32 floor", below. The rows here are the
+earlier measurement, from before the Hodge cap and before that stop.
+
 The GPU now wins the L-BFGS relaxation, which is not the default method.
 The mass kernel was a dozen dense shifts where Metal wants one indexed read;
 with that swapped, and only on Metal, 100 L-BFGS steps at this mesh take
@@ -63,10 +71,14 @@ one for the element) also won on MPS, by 1.9x, and lost to the flat form,
 so it was not landed. `mps/assembly_ab.py` is the comparison.
 
 What a step actually calls, counted with a host callback on one step so the
-Krylov iterations are real ones: the mass kernel 2,757 times at k=1 and
-1,228 times at k=2. Priced at the in-scan costs above, that is 4.9 s of a
-5.9 s step, and the indexed form brings it down by 2.9 s. The measured step
-went from 5.94 s to 2.84 s. The model and the run agree.
+Krylov iterations are real ones: before the Hodge cap, the mass kernel 2,757
+times at k=1 and 1,228 times at k=2. Priced at the in-scan costs above, that
+is 4.9 s of a 5.9 s step, and the indexed form brings it down by 2.9 s. The
+measured step went from 5.94 s to 2.84 s. The model and the run agree. After
+the cap the same count is 769 at k=1 and 334 at k=2, and the extraction
+applies fall from 10,545 to 2,883 (`mps/attribute_step.py`). A Newton step
+with the three mass solves applied the k=1 mass kernel 22,645 times; the
+merged matvec does two of those three inverses.
 
 The other leaves do not deserve the same treatment. Inside a scan the
 incidence stencils cost 0.06-0.14 ms and the mass preconditioner 0.27 ms,
@@ -87,10 +99,11 @@ at step 1 and then separate, the same float32 chaos as GPU against CPU.
 
 `relax.py` defaults to `--method newton`. A step is 300 MINRES iterations
 with no criterion of their own (`tol=0.0` inside `newton_direction`), and
-each matvec is three k=1 mass solves, so the mass kernel is a larger share
+each matvec was three k=1 mass solves and is now two (see below), so the mass kernel is a larger share
 of a Newton step than of an L-BFGS step. `newton_tol=0.1` is the truncation,
 not a target the Laplacian atom reaches, so `newton_it` is `+300`.
 `--floor-tol 1e-8` cannot fire in float32; these runs pass `--floor-tol 0`.
+The float32 default is now that, plus the energy-floor stop below.
 
 The suite, re-run after the kernel change: 61 passed in 150 s on MPS with
 the indexed assembly, and 61 passed in 300 s on the CPU in the default mixed
@@ -181,17 +194,207 @@ steps' residuals to 0.2%. The trajectories then wander (one step's residual
 differs by 18%) because the line search sees a slightly different force, and
 they finish in the same place. The later passes were not buying accuracy.
 
+The same waste is not in the other solves. With the cap in place, one L-BFGS
+step's refinement passes were 2/2 improving for the Hodge split, 2/2 for the
+saddle, 1/1 for the smoothing and 5/5 for the mass inverse
+(`mps/solve_attr.py`). The mass inverse uses almost the whole budget and
+every pass lowers the residual, so `MAX_PASSES` stays 6. The cap belongs on
+the Hodge split, which is where the discarded passes were.
+
+## The Newton matvec, measured and not landed
+
+`second_variation` was tried with its k=1 masses inverted by one apply of the
+mass atom instead of a nested solve. That option was tried and removed. The atom
+is a fixed linear SPD map, which the nested solve in plain float32 is not,
+and a step gets much cheaper: two steps from the equilibrium initial
+condition at `(12,24,12)` p=3 are about 100-130 s with the solve and
+23.8 s with the atom (12 s/step). The solve was re-timed idle, best of
+three: 102.5 s, and the three runs span 102.5, 128.9 and 126.1 s, wider
+than the 17% bar, so the earlier 108.4 s was inside that noise and a Newton
+step from this state is about a minute. It is not the same step. On Tutorial
+4's field (`(10,16,16)` p=2, the shipped step-500 state) the solve does not
+fall back, and one idle step is 40.3 s best of three (40.3, 41.0, 41.4 s),
+which confirms the earlier 39.7 s. The step itself moves between those
+runs: `dt*` 1.20, 0.93 and 0.99, energy removed 3.2e-8, 2.1e-8 and 1.8e-8.
+The single earlier sample (`dt*` 1.67, cosine 0.242, 6.78e-8) is the same
+kind of step and is not a stable target. The atom, measured once, points
+similarly (cosine 0.229) and then parts: `dt*` 0.050 and 2.83e-10 of energy,
+in 2.9 s. From the initial condition the trajectories split at step 1 (the
+solve falls back to the smoothed force, the atom does not, and over two
+steps the solve removes about 3.1e-5 against the atom's 1.73e-5). The option was tried and removed. The Newton matvec therefore
+stays the nested solve, and it stays pinned to the shift assembly: that pin
+is what kept Tutorial 4 from falling back, and a fixed linear matvec was the
+condition for removing it.
+
+Two of those three inverses are the same one. ``dJ`` and ``W`` are both
+``M_1^-1`` of a dual 1-form and both enter only through ``load(B x .)``, so
+one solve for ``X = dJ + W / 2`` replaces them. On a random 2-form the merged
+apply agrees with the three-solve apply to 1e-5 at `(12,24,12)` p=3 and to
+2e-6 at `(10,16,16)` p=2, inside the solve tolerance of 3.5e-4, and the
+energy identity still holds. A separate Newton step does not repeat to 1e-7:
+the three-solve's own tutorial steps, back to back, already span `dt*` 0.93
+to 1.20 and a cosine 0.13 to 0.19. The merged step sits in that same range
+(`dt*` 1.20, 1.49, 1.25; cosine 0.17 to 0.20; no fallbacks; `|F|` agrees to
+1e-7), and from the initial condition it falls back on the same first step
+with the same `dt*` 0.014 and removes the same 3.1e-5 over two steps.
+
+The wall clock does move. One tutorial step, best of three: 27.1 s against
+40.3 s, 1.5x, and the two ranges do not overlap (27.1-28.2 s against
+40.3-41.4 s). Two steps from the initial condition: 72.9 s best of three
+(72.9, 100.4, 98.5 s) against 102.5 s (102.5, 128.9, 126.1 s), 1.4x.
+Summing the two remaining loads pointwise and integrating once, which is the
+same dual vector, does not: one tutorial step took 27.8 s.
+
+A fixed Chebyshev inverse of the same mass, preconditioned by the atom, does
+not become the default either. Lanczos of the atom-preconditioned `M_1` on
+the tutorial mesh gives the spectrum `[6.9e-2, 2.6]`, and the degree that
+puts the error bound at `sqrt(eps)` is 27. One apply of that inverse matches
+a mass solve to the tolerance on the test fixture. On the tutorial field it
+does not take the solve's step. Three runs, no fallbacks: `dt*` 1.45 to 1.46,
+which is inside the solve's own spread, but the energy removed is 4.6e-7
+against the solve's 3e-8, about 15 times more, and the gate was 10%. A step
+that removes more energy is still a different step, so the Chebyshev option
+was tried and removed and the shift pin stays: the condition
+for removing it was this gate. The wall was 24.4 s best of three, inside the
+noise of the merged solve's 27 s, so it was not faster either.
+
+The MINRES budget stays 300. Five steps from the tutorial field, the merged
+solve, no fallbacks at any of these:
+
+| `newton_maxiter` | wall | energy change | force |
+|---|---|---|---|
+| 100 | 44.9 s | removed 8.8e-8 | 9.81e-4, unchanged |
+| 200 | 87.8 s | rose 7.5e-8 | 9.81e-4, unchanged |
+| 300 | 129.5 s | rose 2.0e-7 | 9.81e-4, unchanged |
+
+The force does not move and every energy change is a few ulps of an energy
+near 0.5, so 100 iterations "winning" on energy per second is the sign of
+roundoff, not a faster relaxation. The wall scales with the budget. The
+default is unchanged.
+
+`jax-mps` 0.11.0 with jax 0.11.2, in a clone of the environment
+(`mrx_mps011`; `mrx_mps` is still jax 0.10.2 and jax-mps 0.10.11), runs the
+same tutorial Newton step in 27.6 s. That is inside the 27.1-28.2 s of
+0.10.11, so the newer plugin does not move the dispatch-bound part of this
+step. The base environment was not changed.
+
+The harmonic preconditioner does not become the default either. On the same
+tutorial field, with the shipped matvec, one step is 40 s with the
+Laplacian atom (no fallback; `dt*` and the energy move between runs, see
+above) and 40.2 s
+with the harmonic atom, which falls back to the smoothed force and removes
+1.6e-9. With the mass-atom matvec the harmonic step does remove more of the
+line search's energy per second (1.1e-8 in 3.0 s against 2.8e-10 in 2.9 s
+for the Laplacian atom), and that matvec is not what a run uses. From the
+equilibrium initial condition at `(12,24,12)` p=3 the harmonic atom falls
+back as well, so the energy it removes is the smoothed force's. The default
+stays `laplacian`.
+
 Twenty L-BFGS steps at `(12,24,12)` p=3, `--floor-tol 0`, after the cap:
 
 | | CPU, shift | MPS, indexed |
 |---|---|---|
-| 20 steps | 54.8 s | **41.9 s** |
-| per step | 2.74 s | **2.09 s** |
+| 20 steps, best of 3, idle | **40.3 s** | **26.5 s** |
+| per step | 2.02 s | **1.32 s** |
+| the three runs | 40.3, 40.7, 40.3 s | 27.2, 27.6, 26.5 s |
 
+An earlier pair, 54.8 s and 41.9 s, was taken while other jobs were running.
 The 100-step averages above (3.52 s and 2.84 s) are from before the cap, and
-a 20-step window is not the same average as a 100-step one. The GPU is 1.31x
-the CPU on this window. There is no fused-assembly column: that form was not
-landed, so the Metal default is still `indexed`.
+a 20-step window is not the same average as a 100-step one. The GPU is 1.5x
+the CPU on this window, and both remove 4.9e-5 of energy. The one idle run
+with the cap lifted took 61.2 s, so the cap is about 2.3x, not the 1.46x
+that overlapping pair implied. There is no fused-assembly column: that form
+was not landed, so the Metal default is still `indexed`.
+
+## Which method removes energy
+
+Energy removed per wall second, Metal, indexed, the machine idle. Newton is
+still the default in `scripts/relax.py`; this does not change it.
+
+| state | method | steps | wall | energy removed | per second | force |
+|---|---|---|---|---|---|---|
+| equilibrium IC, `(12,24,12)` p=3 | L-BFGS | 20 | 26.5 s | 4.89e-5 | 1.8e-6 | 5.5e-2 to 7.9e-2 |
+| same | Newton | 2 | 102.5 s | 3.09e-5 | 3.0e-7 | 5.5e-2 to 0.19 |
+| Tutorial 4 step 500, `(10,16,16)` p=2 | L-BFGS | 50 | 21.3 s | 3.0e-8 | 1.4e-9 | 1.19e-3 to 1.14e-3 |
+| same | Newton | 3 | 119 s | 7.4e-8 | 6.2e-10 | 9.8e-4, unchanged |
+
+From the initial condition L-BFGS removes about 6x more energy per second.
+The Newton run falls back on its first step, and its force grows further.
+From the step-500 field both are at the float32 floor of an energy near
+0.5, the force does not come down, and L-BFGS is still ahead per second.
+Newton does not earn its minute later in this relaxation. The time left to
+take back is in the L-BFGS step. One such step's largest solves are the
+Hodge `L^_1` hat solves, 138-141 CG iterations (`mps/solve_attr.py`), and
+the lever on those is the k=1 Laplacian atom.
+
+## Time to the float32 floor
+
+The residual is the wrong stop in plain float32. At `(12,24,12)` p=3 it
+oscillates between about `1e-3` and `1e-2` and later blows up, while the
+energy has already stopped descending and then walks uphill. That split
+is `docs/research/floor_study_2026-09-05.md`. The per-step `dE` is the
+increment `<B_{n+1} - B_n, M(B_{n+1} + B_n)> / 2`, an increment against an
+`O(1)` field, so the trace resolves a change below one ulp of `E ≈ 0.5`.
+`relax` stopped when the last two chunks of 10 had each changed the energy
+by at most `max(0.01 * removed, 4 * eps * |E0|)`. On these meshes the
+`0.01 * removed` term binds, at about `6e-7`. (That rule stops the
+production mesh 8% short. It was replaced on 2026-09-23 by two chunks that
+each raise the energy on 3 of 10 steps or lower it by at most
+`5e-4 * removed`; see the last section.) The run returns the
+lowest-energy field seen at a chunk boundary. Going further is a restart
+in `--precision mixed`, where a float64 residual keeps converging and
+this stop stays off. It is also off in plain float64. It is on for any
+plain float32 backend, not only Metal.
+
+A 300-step L-BFGS calibration at `(12,24,12)`, stop off, chunk 10, reached
+6.10e-5 at step 94. The same trace would have exited at step 90 and
+returned the step-80 field, 6.02e-5, 1.4% less. By step 300 the energy
+had risen by 1.2e-3. At `(16,32,16)` the 150-step calibration peaked at
+6.24e-5 at step 136; the exit on that trace is step 140, returning step
+130 at 6.22e-5. Ten Newton steps on the smaller mesh, 362 s, removed
+4.32e-5 and were still descending. L-BFGS had removed 4.89e-5 by step 20,
+in about 40 s. The default method was not changed.
+
+With the stop on, from the equilibrium field, chunk 10, one sample per
+50 steps. Wall is the compiled steps. Best of three:
+
+| | exit | wall, best of 3 | the three runs | energy removed |
+|---|---|---|---|---|
+| MPS `(12,24,12)` | steps 70, 90, 100 | 108 s | 108, 139, 144 s | 5.77e-5, 5.98e-5, 6.19e-5 |
+| CPU, shift, `(12,24,12)` | step 90 | 122 s | 123, 122, 122 s | 6.05e-5 |
+| MPS `(16,32,16)` | step 130 | 255 s | 286, 255, 277 s | 6.32e-5, 6.29e-5, 6.22e-5 |
+| CPU, shift, `(16,32,16)` | step 130 | 432 s | 432, 432, 451 s | 6.31e-5 |
+
+The 108 s run is the trajectory that removed 5.77e-5. It peaked there,
+0.2% above the field the exit returned, and a longer run of that same
+trajectory does not get the 6.10e-5 the calibration found. The run that
+removed 6.19e-5 took 144 s. The old 3000-step budget at the idle
+1.32 s/step is 66 min, about 37x the fast exit and 28x the slow one.
+At `(16,32,16)` the three exits averaged 2.0 s/step, so 3000 steps is
+about 100 min against 255 s, about 24x. The CPU energy repeated to the
+last digit; Metal's did not, which is the same float32 separation as the
+rest of this note. The spread of the time to the floor is the step the
+windows go flat. On a fixed step count the clock spread is still about
+17%, and the per-step times inside one mesh sit inside it.
+
+Sampling every chunk cost 33 s beside 149 s of steps at the step-90
+exit. Every 50 steps, the other time was 9 s beside 108 s. A sample is a
+full force evaluation, and the stop does not use it, so the float32
+default is one sample per about 50 steps. The saving is inside the 17%
+spread. The per-step residual probe, `||grad(B^2/2)||` by an `M_0` solve
+inside the scan, was 33.2 s and 33.1 s for the same 20 L-BFGS steps. It
+stays in the step.
+
+Newton, then still the default, does not share the floor. On Metal at
+`(12,24,12)` the exit was step 50, 1795 s, 35.9 s/step, 5.48e-5 removed.
+Another run of 30 steps, 996 s, was still descending (5.70e-5, last
+window 1.7e-6). The old budget of 100 steps is about an hour at 36 s/step,
+so this exit is about 2x, not 20x, and the energy is short of the L-BFGS
+floor. On the CPU, 20 Newton steps took 435 s (21.8 s/step) and removed
+4.57e-5 without stalling. A step-50 exit at that rate is about 18 min,
+against 122 s for L-BFGS. Neither Newton figure is a best of three.
+`(16,32,16)` was not run to a Newton floor. The default method was left
+as it is then; it is L-BFGS in plain float32 since 2026-09-23 (last section).
 
 ## The per-dispatch floor, measured
 
@@ -293,21 +496,39 @@ Same script, same JAX cache settings, two consecutive runs:
 | MPS | **0** | 7.50 s | 8.58 s |
 
 The plugin never populates the persistent cache, so every MPS run recompiles
-from scratch. That interacts badly with the other half of the scan result:
-per-step cost is flat in the chunk, but *compile* cost is linear in it, about
-7.9 s per step of chunk at `(12,24,12)` p=3. `scripts/relax.py` defaults to
-chunk 500 under L-BFGS, which is roughly 65 minutes of uncacheable compile
-before the first step is taken.
+from scratch. Before the indexed assembly and the Hodge cap, that compile was
+linear in the chunk, about 7.9 s per step of chunk, and `--chunk 25` instead
+of the L-BFGS default of 500 was worth about 2.3x on a 500-step run.
 
-**This is the one actionable configuration finding.** For a 500-step run:
+It is not, now. Two chunks back to back at `(12,24,12)` p=3, L-BFGS, the
+first chunk minus the second is the compile, and the second is the step:
 
-| | compile | stepping | total |
-|---|---|---|---|
-| `--chunk 500` | ~65 min | ~46 min | ~111 min |
-| `--chunk 25` | ~3 min | ~46 min | ~49 min |
+| chunk | first chunk | second chunk | compile | s/step |
+|---|---|---|---|---|
+| 5 | 6.5 s | 4.6 s | 1.9 s | 0.92 |
+| 10 | 11.8 s | 11.3 s | 0.5 s | 1.13 |
+| 25 | 27.9 s | 24.9 s | 3.1 s | 0.99 |
 
-Worth about 2.3x, and it costs nothing but a command-line flag. It is baked
-into `mps/env.sh`.
+The compile is 1-3 s and does not grow with the chunk, and the step is flat
+at about 1 s. A 500-step run is about 8-10 minutes whichever of these is
+chosen. The program those 7.9 s were measured on applied the Laplacian atom
+1,482 times a step; this one applies it 393.
+
+## Where the GPU pulls ahead
+
+Five L-BFGS steps at `(16,32,16)` p=3, the mesh where the heavy applies were
+winning 1.7x before the indexed kernel, best of three with the machine
+idle: **15.6 s on the GPU (3.12 s/step) against 37.8 s on the CPU
+(7.56 s/step)**, 2.4x. One earlier pair, 14.7 s against 39.8 s, read 2.7x
+because the GPU run was a fast draw. The GPU was already ahead at
+`(12,24,12)` (1.32 s/step against 2.02 s on the idle 20-step window after
+the cap), so the crossover is below that mesh. A Newton step's
+calls, from the equilibrium initial condition, are a different shape: the
+direction was three nested k=1 mass solves (22,645 mass-kernel applies
+and 27,148 mass-atom applies; the merged matvec is two of the three) and
+then this particular step falls back to the smoothed force. That is why a
+Newton step stays near a minute while an L-BFGS step is near a second. The
+merge brings one tutorial step from 40.3 s to 27.1 s.
 
 ## The physics agrees; the trajectories do not
 
@@ -365,7 +586,46 @@ python scripts/benchmark/relaxation_bench.py --ns 12,24,12 --p 3 \
     --precision float32 --relax-steps 5
 python scripts/relax.py --ns 12,24,12 --p 3 --precision float32 \
     --method lbfgs --steps 100 --chunk 25
+# plain float32 now stops on the energy floor (chunk 10, floor-tol 0),
+# with L-BFGS and the one-pass force solve by default:
+python scripts/relax.py --ns 12,24,12 --p 3 --precision float32 --steps 200
+# the Hodge solve's share of one step, and its cost with k=1 bands / two passes:
+python mps/hodge_share.py 12,24,12 3 [bands [passes]]
 ```
 
 Every CPU comparison needs `JAX_PLATFORMS=cpu` explicitly, because installing
 the plugin makes `mps` the default backend for the whole environment.
+
+## The remaining speedups (2026-09-23)
+
+The tables are in `docs/source/mps.md`, "The remaining speedups". In short:
+
+- **Landed: one outer pass for the force's k=1 Hodge solve in plain
+  float32** (`TimeStepper.force_hodge_passes`, `--force-hodge-passes`).
+  The solve was 41-59% of the Metal step and 85% of the CPU one
+  (`mps/hodge_share.py`), and its second float32 pass cost as much as the
+  first. The solve is warm-started from the last step's potential, so one
+  pass takes the same energy steps. The compiled step is 1.6-1.8x faster at
+  `(12,24,12)`, `(16,32,16)` and `(16,32,32)` on both backends. Time to the
+  floor at `(12,24,12)`, best of three: Metal 108 s to 62.9 s, CPU 122 s
+  to 89.6 s, with more energy removed. A cold solve still needs two passes
+  (`test_poisson.py`), so the global cap is unchanged.
+- **Landed: the floor rule.** The production calibration, `(16,32,32)`
+  p=2, 2000 steps, descends monotonically for 800 steps on a tail the old
+  band called a floor at step 120 (92.4% of the best). The new rule counts
+  the steps that raise the energy. It fires at step 570 on that trace
+  (99.7%) and where the old one did on the benchmark meshes. The production
+  run with both changes stops at step 620, 599 s, 7.24e-5 removed (99.6%
+  of the 2000-step best, which took 3653 s).
+- **Landed: L-BFGS is the plain float32 default method.** Newton removes
+  half the energy in the same wall time at `(16,32,16)` on both backends
+  (Metal 5 steps, 204 s, 2.93e-5; CPU 10 steps, 478 s, 3.28e-5), and less
+  than L-BFGS after 30 minutes at `(12,24,12)`.
+- **Not taken:** a preconditioner and harmonic-form cache (setup plus
+  compile is 15-17% of a benchmark floor run; about 10% saved); radial bands
+  on the k=1 Dirichlet atom (Metal slower at `(12,24,12)`, 5% at
+  `(16,32,32)`, 15% on the CPU after the one pass); history 3, 5, 10, cfl
+  1.0, smoothing 0.5x and 2x (the best two 10-11% faster with less energy,
+  inside the spread); `--warm-from` coarse to fine (1.1% more energy, 956 s
+  to its floor against 599 s; at equal energy less than the spread ahead).
+  The warm start stays an option.

@@ -137,12 +137,16 @@ default), run through `relax`:
 
 ```python
 ts = TimeStepper(seq=seq, history_size=1, cfl=0.5, velocity_smoothing_order=1)
-res = relax(initial_state(B0, ts), ts, steps=500, chunk=50, floor_tol=1e-6)
+res = relax(initial_state(B0, ts), ts, steps=100, chunk=10, floor_tol=1e-6)
 ```
 
 On li383 gamma = 1 reaches a clean nested floor in ~1000 steps where the
 unsmoothed descent grinds for ~6000; the force residual need not fall
-monotonically, what is judged is the floor it settles at. The relaxation
+monotonically, what is judged is the floor it settles at. In plain float32
+on this mesh the energy itself stops descending near step 90: 6.7e-5
+removed, about 50 s on an M3 Pro, with the force still near 6e-3. That
+exit is the energy floor (`mrx.relaxation.energy_floor`), and 100 steps is
+the cap. The relaxation
 conserves helicity and lowers the magnetic energy until $J \times B = \nabla p$
 in the weak sense; $p$ is not prescribed, it is the multiplier the descent
 finds (`weak_pressure`). It runs in float32, the production precision.
@@ -208,9 +212,10 @@ The script warm-starts from Tutorial 3's run (or runs that descent itself),
 continues the smoothed descent and Newton from the same state, prints the
 step costs and draws $\|F\|_M$ against the step and the wall time for both,
 and writes the Newton run in `scripts/relax.py`'s layout for Tutorial 6 and
-`poincare_trace.py`. `scripts/relax.py` runs the same from the command line,
-Newton being its default method (the `--newton-*` flags in
-[Relaxation](relaxation.md)).
+`poincare_trace.py`. `scripts/relax.py` runs the same from the command line
+with `--method newton`, its default in mixed precision and float64; plain
+float32 defaults to the L-BFGS descent, which reaches the floor sooner (the
+`--newton-*` flags in [Relaxation](relaxation.md)).
 
 ## 5. Seed a magnetic island (`5_li383_island_seed.py`)
 
