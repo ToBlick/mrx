@@ -27,6 +27,10 @@ Options
     --sections S;...     per mesh ``path/trace.npz[:tag]`` (tag ``final`` by
                          default) or ``-`` for none; one entry serves every mesh
     --nfp N              override the file's nfp
+    --coefficients C;... per mesh ``path.npz[:start|end]`` or ``-``: the map from the raw ``R``, ``Z``
+                         coefficients of a record (``raw_R0``/``raw_Z0`` at the start, ``raw_R1``/``raw_Z1``
+                         at the end [end], on that mesh's spline space) instead of --geometry's; --geometry
+                         still gives nfp and the handedness. One entry serves every mesh
     --out DIR            figure directory
     --precision {float32,float64}
 """
@@ -44,6 +48,7 @@ def parse_args(argv=None):
     ap.add_argument("--planes", default="0,0.5")
     ap.add_argument("--sections", default="")
     ap.add_argument("--nfp", type=int, default=None)
+    ap.add_argument("--coefficients", default="")
     ap.add_argument("--out", required=True)
     ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
     return ap.parse_args(argv)
@@ -65,6 +70,7 @@ def main(cli):
     black, grey = LEFT["color"], "0.55"
     planes = [float(v) for v in cli.planes.split(",")]
     sections = [w for w in cli.sections.split(";") if w]
+    coefficients = [w for w in cli.coefficients.split(";") if w]
     meshes = []
     for spec in cli.meshes.split(";"):
         ns_spec, _, refine = spec.partition("|")
@@ -76,6 +82,17 @@ def main(cli):
         seq = DeRhamSequence(ns, (cli.p,) * 3, cli.p + 1, ("clamped", "periodic", "periodic"),
                              polar=True, knots=(T, None, None))
         F, info = build_gvec_map(read_equilibrium(cli.geometry), seq, nfp=cli.nfp)
+        entry = coefficients[min(len(meshes), len(coefficients) - 1)] if coefficients else "-"
+        if entry != "-":
+            path, _, when = entry.partition(":")
+            rec = np.load(path)
+            k = "0" if when == "start" else "1"
+            raw_R, raw_Z = jnp.asarray(rec[f"raw_R{k}"]), jnp.asarray(rec[f"raw_Z{k}"])
+            basis, a, sgn = seq.basis_0.bases[0], 2.0 * np.pi / info["nfp"], info["sign"]
+
+            def F(x, raw_R=raw_R, raw_Z=raw_Z, basis=basis, a=a, sgn=sgn):
+                r = basis.contract(raw_R, x)
+                return jnp.array([r * jnp.cos(a * x[2]), sgn * r * jnp.sin(a * x[2]), basis.contract(raw_Z, x)])
         label = f"({ns[0]}, {ns[1]}, {ns[2]})" + (" refined" if bp is not None else "")
         print(f"[mesh] {label}: nfp={info['nfp']} radial cells {ns[0] - cli.p}, "
               f"breakpoints {'given' if bp is not None else 'uniform'}", flush=True)

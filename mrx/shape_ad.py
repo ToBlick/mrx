@@ -171,7 +171,8 @@ class BoundaryShape(eqx.Module):
     extension of ``exp(2 pi i m theta)`` harmonic in the logical disc, which
     moves every ring, and the coordinate axis with them, by the ``m = 0``
     part of the change (ring 1 keeps only ``|m| <= 1``: it stays pure ``m =
-    1`` about the axis). One on the boundary in both.
+    1`` about the axis). One on the boundary in both; ``none`` is the
+    boundary ring alone.
 
     With ``free="all"`` every coefficient is a variable: ``beta`` is
     ``(2, n_r, n_theta, n_zeta)``, its outermost ring the boundary change,
@@ -200,8 +201,8 @@ class BoundaryShape(eqx.Module):
         :func:`cylindrical_geometry`). ``volume`` (of one field period) is
         the one kept, that map's by default; ``aspect`` the aspect ratio
         held (:func:`aspect_ratio`), none by default; ``extension`` the
-        interior extension of the boundary change, ``"ramp"`` or
-        ``"harmonic"``; ``free`` the variables, the boundary ring
+        interior extension of the boundary change, ``"ramp"``,
+        ``"harmonic"`` or ``"none"``; ``free`` the variables, the boundary ring
         (``"boundary"``) or every ring (``"all"``)."""
         if volume is None:
             volume = section_moments(seq, raw_R, raw_Z, nfp, sign)[0]
@@ -223,8 +224,10 @@ class BoundaryShape(eqx.Module):
         m = np.abs(np.fft.fftfreq(n_t, 1.0 / n_t))
         if extension == "ramp":
             return np.broadcast_to(((np.maximum(np.arange(n_r) - 1, 0) / (n_r - 2)) ** 2)[:, None], (n_r, n_t))
+        if extension == "none":
+            return np.concatenate([np.zeros((n_r - 1, n_t)), np.ones((1, n_t))])
         if extension != "harmonic":
-            raise ValueError(f"extension must be 'ramp' or 'harmonic', got {extension!r}")
+            raise ValueError(f"extension must be 'ramp', 'harmonic' or 'none', got {extension!r}")
         rho = np.asarray(basis_0.Λ[0].greville_points(), dtype=np.float64)
         weights = rho[:, None] ** m[None, :]
         weights[1, m >= 2] = 0.0
@@ -254,14 +257,22 @@ class BoundaryShape(eqx.Module):
 
     def change(self, beta):
         """``(2, n_r, n_theta, n_zeta)``: the change of the raw ``R`` and ``Z``
-        coefficients at ``beta``, before the scalings."""
+        coefficients at ``beta``, before the scalings: the extended boundary
+        change, plus with ``free="all"`` the :meth:`interior_change`."""
         b = jnp.stack(self.perturbation(beta))
         if self.interior is None:
             spectrum = jnp.fft.fft(b, axis=1)                                            # (2, n_t, n_z)
             return jnp.fft.ifft(self.extension[None, :, :, None] * spectrum[:, None], axis=2).real
-        spectrum = jnp.fft.fft(b, axis=2)                                                # (2, n_r, n_t, n_z)
+        boundary = jnp.fft.fft(b[:, -1:], axis=2)                                         # (2, 1, n_t, n_z)
+        return jnp.fft.ifft(self.extension[None, :, :, None] * boundary, axis=2).real + self.interior_change(beta)
+
+    def interior_change(self, beta):
+        """``(2, n_r, n_theta, n_zeta)``: the inner rings' own change at
+        ``beta`` (``free="all"``), the change less the extended boundary
+        change; zero on the boundary ring."""
+        spectrum = jnp.fft.fft(jnp.stack(self.perturbation(beta)), axis=2)              # (2, n_r, n_t, n_z)
         own = (self.interior[None, :, :, None] * spectrum).at[:, 1, 0].set(spectrum[:, 0, 0])
-        return jnp.fft.ifft(self.extension[None, :, :, None] * spectrum[:, -1:] + own, axis=2).real
+        return jnp.fft.ifft(own, axis=2).real
 
     def map_coefficients(self, seq, beta):
         """``(R, Z, mu, scale)``: the raw coefficients of the map at ``beta``
