@@ -296,8 +296,10 @@ def build_gvec_map(st, seq, nfp=None, stellarator_symmetric=False):
     the angular knots must be uniform). Returns ``(F, info)`` with ``info``
     the ``nfp``, the measured toroidal handedness ``sign`` (``Y = sign * R
     sin(2 pi zeta/nfp)``; a file that is degenerate under both signs
-    raises), the sampled ``det_range`` and the ``symmetry_defect`` of
-    :func:`mrx.mappings.stellarator_symmetry_defect` on the same sample.
+    raises), the sampled ``det_range``, the ``symmetry_defect`` of
+    :func:`mrx.mappings.stellarator_symmetry_defect` on the same sample,
+    and the raw ``(n_r, n_t, n_z)`` spline coefficients ``raw_R`` and
+    ``raw_Z`` that ``F`` evaluates (the variables of :mod:`mrx.shape_ad`).
     """
     from mrx.mappings import (stellarator_symmetric_scalar,  # noqa: PLC0415  (imports this module)
                               stellarator_symmetry_defect)
@@ -328,7 +330,8 @@ def build_gvec_map(st, seq, nfp=None, stellarator_symmetric=False):
         tried[s] = (float(d.min()), float(d.max()))
         if np.isfinite(d).all() and d.min() > 0:
             return F, {"nfp": nfp, "sign": s, "det_range": tried[s],
-                       "symmetry_defect": float(stellarator_symmetry_defect(F, _sample_points()))}
+                       "symmetry_defect": float(stellarator_symmetry_defect(F, _sample_points())),
+                       "raw_R": raw_R, "raw_Z": raw_Z}
     raise RuntimeError(f"{st['path']}: no handedness gives det DF > 0; "
                        f"sampled ranges {tried}")
 
