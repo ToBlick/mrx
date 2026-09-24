@@ -103,8 +103,10 @@ def main():
     print(f"[seed] {len(dB)} blocks, the joint optimum lowers the energy by {-0.5 * (a @ g) / energy * 1e6:.4f} ppm",
           flush=True)
 
-    # the harmonics on the grid: sqrt(g) B^i is the logical 2-form's value; theta* = theta + lambda weighs with
-    # 1 + d_theta lambda; the resonant angle takes the seed's sign of iota (parallel_seed's flux ratio)
+    # the harmonics on the grid: sqrt(g) B^i is the logical 2-form's value. The (m, n) coefficient of dr/dzeta =
+    # B^r / B^zeta in (theta*, zeta), theta* = theta + lambda: sqrt(g) B^zeta = Phi' (1 + d_theta lambda) in the wout's
+    # coordinates cancels the Jacobian of theta -> theta*, so the sum over the theta grid has uniform weights. The
+    # resonant angle takes the seed's sign of iota (parallel_seed's flux ratio)
     @jax.jit
     def two_form(dof, x):
         return jax.vmap(DiscreteFunction(dof, seq.basis_2, seq.E(2, True)))(x)
@@ -117,7 +119,6 @@ def main():
     x = jnp.asarray(np.stack([R.ravel(), TH.ravel(), ZE.ravel()], axis=1))
     shape = (N_R, N_THETA, N_ZETA)
     lam_x = on_grid(jax.jit(jax.vmap(lam))).reshape(shape)
-    dlam_x = on_grid(jax.jit(jax.vmap(jax.grad(lam))))[:, 1].reshape(shape)
     Bz = on_grid(two_form, B)[:, 2].reshape(shape).mean(axis=(1, 2))
     Bq, w = seq.evaluate_at_quadrature(B, 2, dirichlet=True), seq.quad.w
     s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))
@@ -127,7 +128,7 @@ def main():
         dBc = sum(float(a[i]) * dB[i] for i in np.nonzero(owner == c)[0])
         br = on_grid(two_form, dBc)[:, 0].reshape(shape)
         # twice the complex coefficient of A cos(m theta* - s n zeta) is its peak amplitude A
-        cr = 2.0 * (br * np.exp(-2j * np.pi * (m * (TH + lam_x) - s * n * ZE)) * (1.0 + dlam_x)).mean(axis=(1, 2))
+        cr = 2.0 * (br * np.exp(-2j * np.pi * (m * (TH + lam_x) - s * n * ZE))).mean(axis=(1, 2))
         dBr = abs(np.interp(r0, rg, cr.real) + 1j * np.interp(r0, rg, cr.imag)) / abs(np.interp(r0, rg, Bz))
         rows.append(dict(m=m, n=n, r=r0, diota=diota, dBr=float(dBr),
                          w=float(np.sqrt(8.0 * dBr * nfp / (np.pi * m * diota)))))
