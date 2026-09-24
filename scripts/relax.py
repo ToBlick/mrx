@@ -117,7 +117,7 @@ Flags, defaults in brackets:
     Budgets and output:
       --steps N [150 Newton, 3000 gradient]
                                    maximum number of steps
-      --chunk N [20 Newton, 500 gradient]
+      --chunk N [25 Newton, 500 gradient]
                                    steps per compiled chunk (one lax.scan):
                                    the trace comes back, the quantities of
                                    interest are sampled (helicity, the two
@@ -303,7 +303,7 @@ def parse_args(argv=None):
     if cli.steps is None:
         cli.steps = 150 if cli.newton else 3000
     if cli.chunk is None:
-        cli.chunk = 20 if cli.newton else 500
+        cli.chunk = 25 if cli.newton else 500
     cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
     if cli.chunk < 1 or cli.steps % cli.chunk:
         ap.error("--steps must be a positive multiple of --chunk")
