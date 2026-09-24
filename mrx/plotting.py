@@ -43,14 +43,13 @@ def get_2d_grids(
     nx: int = 64,
     ny: int = 64,
     nz: int = 64,
-    tol1: float = 1e-6,
     invert_z: bool = False,
 ):
     """Sample the map ``F`` on the logical plane ``x_{cut_axis} = cut_value``.
 
     The other two logical axes are ``linspace`` over ``[0, 1]``, the radial
-    one ``[tol1, 1 - tol1]`` (``1e-6`` keeps the sample off the polar axis
-    and off ``r = 1``, where the spline map's derivative is not defined);
+    one ``[1e-6, 1 - 1e-6]`` (off the polar axis and off ``r = 1``, where
+    the spline map's derivative is not defined);
     ``invert_z`` reverses the toroidal axis to orient a surface's normal.
 
     Returns ``(x, y, (Y1, Y2, Y3), (x1, x2, x3))``: the flat logical points
@@ -58,7 +57,7 @@ def get_2d_grids(
     to the ``(n1, n2)`` plane for ``plot_surface``/``contourf``, and the
     three 1-D logical axes.
     """
-    _x1 = jnp.linspace(tol1, 1.0 - tol1, nx)
+    _x1 = jnp.linspace(1e-6, 1.0 - 1e-6, nx)
     _x2 = jnp.linspace(0.0, 1.0, ny)
     _x3 = jnp.linspace(0.0, 1.0, nz)
     if invert_z:
@@ -182,17 +181,14 @@ def plot_crossections_separate(
     p_h: Callable,
     grids_pol: list,
     zeta_vals: list,
-    textsize: float = FS.label,
-    ticksize: float = FS.tick,
-    plot_centerline: bool = False,
 ):
     """The poloidal cuts of :func:`plot_torus` side by side in the ``(R, z)`` plane.
 
     One filled contour per cut, common axis limits, one shared colour bar,
     a boxed ``zeta`` label per panel and an ``(R, z)`` arrow pair on the
-    first. ``plot_centerline`` marks ``R = 1`` (the unit-major-radius
-    analytic geometries). Returns ``(fig, axes)``.
+    first. Returns ``(fig, axes)``.
     """
+    textsize, ticksize = FS.label, FS.tick
     vals = _values_on_cuts(p_h, grids_pol)
     R = [jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2) for grid in grids_pol]
     z = [grid[2][2] for grid in grids_pol]
@@ -203,8 +199,6 @@ def plot_crossections_separate(
     for ax, Ri, zi, vi, zeta in zip(axes, R, z, vals, zeta_vals):
         last_c = ax.contourf(Ri, zi, vi, 25, cmap=FIELD_CMAP, zorder=2)
         ax.set_axisbelow(False)
-        if plot_centerline:
-            ax.axvline(1.0, color="k", linestyle=":", linewidth=1.5, zorder=3)
         ax.set_aspect("equal")
         ax.set_xticks([])
         ax.set_yticks([])
@@ -224,10 +218,6 @@ def plot_crossections_separate(
     # (R, z) reference arrows at the bottom-left of the first panel.
     anchor = axes[0]
     x0, y0, arrow_len = -0.01, -0.01, 0.16
-    if plot_centerline:
-        anchor.text(0.5, 1.02, r"$R = 1$", transform=anchor.transAxes,
-                    fontsize=textsize, ha="center", va="bottom", zorder=12,
-                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=0.2))
     for tip in ((x0, y0 + arrow_len), (x0 + arrow_len, y0)):
         anchor.annotate("", xy=tip, xytext=(x0, y0), xycoords="axes fraction",
                         arrowprops=dict(arrowstyle="->", linewidth=1.5, color="k"))
@@ -248,8 +238,8 @@ def plot_crossections_separate(
 
 
 @house_style()
-def save_figure(fig, png_path, pgf=True, dpi=None):
-    """Save a figure as PNG and, with ``pgf``, as ``pgf/<stem>.pgf`` in a
+def save_figure(fig, png_path, dpi=None):
+    """Save a figure as PNG and as ``pgf/<stem>.pgf`` in a
     subfolder beside it: the same figure through matplotlib's pgf backend,
     vector LaTeX for lines and text, rasterized artists as a high-dpi PNG
     that the backend writes next to the .pgf. Needs ``xelatex`` on PATH;
@@ -259,8 +249,6 @@ def save_figure(fig, png_path, pgf=True, dpi=None):
     (log-axis tick labels); both are put in the pgf preamble so the file's
     own header lists them."""
     fig.savefig(png_path, dpi=dpi)
-    if not pgf:
-        return
     pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
     os.makedirs(pgf_dir, exist_ok=True)
     pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
@@ -282,12 +270,9 @@ def plot_twin_axis(
     right_label: str = "",
     left_log: bool = True,
     right_log: bool = False,
-    num_iters_inner: int = 1,
     x_label: str = "iteration",
     figsize: tuple = (8, 3),
     grid: bool = True,
-    grid_linestyle: str = "--",
-    grid_linewidth: float = 0.5,
     left_plot_kwargs: Optional[dict] = None,
     right_plot_kwargs: Optional[dict] = None,
     ax=None,
@@ -296,7 +281,7 @@ def plot_twin_axis(
 
     Each side is log (``semilogy``) or linear on its own; the y label and
     ticks take the series colour. Without ``x_*`` the abscissa is
-    ``arange(len(y)) * num_iters_inner``. The house styles ``LEFT`` and
+    ``arange(len(y))``. The house styles ``LEFT`` and
     ``RIGHT`` (colour, marker, line style, marker size) are the defaults
     that ``left_plot_kwargs``/``right_plot_kwargs`` override.
     With ``ax`` the pair is drawn into that existing axes (a panel of a
@@ -318,13 +303,13 @@ def plot_twin_axis(
     )
     for ax, y, x, log, label, kwargs in sides:
         y = np.asarray(y)
-        x = np.arange(len(y)) * int(num_iters_inner) if x is None else np.asarray(x)
+        x = np.arange(len(y)) if x is None else np.asarray(x)
         (ax.semilogy if log else ax.plot)(x, y, **kwargs)
         ax.set_ylabel(label, color=kwargs["color"])
         ax.tick_params(axis="y", labelcolor=kwargs["color"])
     ax1.set_xlabel(x_label)
     if grid:
-        ax1.grid(True, which="both", linestyle=grid_linestyle, linewidth=grid_linewidth)
+        ax1.grid(True, which="both", linestyle="--", linewidth=0.5)
     return fig, (ax1, ax2)
 
 
@@ -387,9 +372,9 @@ P_COLOR = "#6a3d9a"
 PROFILE_RAY_THETAS = (0.5, 1.0 / 3.0, 0.2, 1.0 / 6.0, 0.25, 0.75)
 
 
-def _scale_note(axis, scale, color=None, size=None):
-    """Write a smaller ``x scale`` after ``axis``'s label (``size`` pt; the annotation size by default, and
-    :func:`paper_fonts` keeps a ``size`` note at the tick size).
+def _scale_note(axis, scale, color=None, tick=False):
+    """Write a smaller ``x scale`` after ``axis``'s label (the annotation size, or with ``tick`` the
+    tick size, which :func:`paper_fonts` keeps).
 
     An x label (under a colour bar, narrower than one row of both) gets it
     as a second row below; a y label (rotated, reading upwards) gets it on
@@ -402,8 +387,8 @@ def _scale_note(axis, scale, color=None, size=None):
                        xycoords=axis.label, xytext=(0, -1) if below else (0, 2),
                        textcoords="offset points", ha="center",
                        va="top" if below else "bottom", rotation=0 if below else 90,
-                       fontsize=FS.annot if size is None else size, color=color,
-                       gid=None if size is None else "scale_note_tick")
+                       fontsize=FS.tick if tick else FS.annot, color=color,
+                       gid="scale_note_tick" if tick else None)
 
 
 def _profile_ray_thetas(n):
@@ -604,7 +589,8 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
         if aR.ndim and aR.size > 1:
             ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
         ax.plot(jnp.mean(aR), jnp.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
-    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.12)   # the outer (iota) bar: air between the two bars (Tobias 2026-09-22)
+    # the outer (iota) bar: air between the two bars when there is a pressure bar (Tobias 2026-09-22), tight otherwise
+    cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.12 if psc is not None else 0.02)
     # The label sits BELOW the bar: the Farey tick labels are wide, so a
     # side label was squeezed against the next panel, and above the bar the
     # section's title runs into it whenever the section is narrower than
@@ -724,14 +710,14 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                 px.errorbar(r_line[m], pmean[m], yerr=pstd[m], fmt=mk, ms=0.9,
                             color=P_COLOR, ecolor=P_COLOR, elinewidth=0.4, capsize=0)
             if lx is not None:
-                lx.axvline(th0, color="black", linestyle=":", lw=1.0,
-                           alpha=0.85, zorder=6)
+                lx.axvline(th0, color="black", linestyle=":" if th0 == 0.5 else "-", lw=1.0,
+                           alpha=0.85, zorder=6)      # the theta = 1/2 seam dotted, the other rays solid
         bx.set_xlabel(r"$r$")
         bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
         bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
         if px is not None:
             px.set_ylabel(pressure_label, color=P_COLOR)
-            _scale_note(px.yaxis, pressure_scale, color=P_COLOR, size=FS.tick)   # a little smaller than the label (Tobias 2026-09-22)
+            _scale_note(px.yaxis, pressure_scale, color=P_COLOR, tick=True)   # a little smaller than the label (Tobias 2026-09-22)
             px.tick_params(axis="y", labelcolor=P_COLOR)
             if lim.p is not None:
                 px.set_ylim(*lim.p)
@@ -772,7 +758,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
                 x_label=profile_xlabel, grid=False, ax=bx,
                 left_plot_kwargs=dict(left, lw=0.8),
                 right_plot_kwargs=dict(right, lw=0.8))
-            _scale_note(px.yaxis, pressure_scale, color=right["color"], size=FS.tick)
+            _scale_note(px.yaxis, pressure_scale, color=right["color"], tick=True)
             px.fill_between(xo, mo - so, mo + so, color=right["color"], alpha=0.2, lw=0,
                             label=r"$p \pm 1$ std over the line")
             if lim.p is not None:
@@ -814,7 +800,7 @@ def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=N
     return fig, axes
 
 
-def paper_fonts(fig, *, label_size=6.0, page_width=6.5):
+def paper_fonts(fig, *, label_size=9.0, page_width=6.5):
     """Rescale a :func:`render_section` figure for the paper.
 
     The figure is resized to ``page_width`` inches so that, included at

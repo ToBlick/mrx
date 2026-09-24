@@ -10,7 +10,7 @@ come from the same place. Use it three ways:
   ``mpl.rc_context`` so importing :mod:`mrx.plotting` never mutates a
   caller's global matplotlib state;
 * the named choices are here: the palette (:data:`BLACK`, :data:`TEAL`,
-  :data:`PURPLE`, :data:`GREY`; :data:`LEFT` / :data:`RIGHT` for twin axes,
+  :data:`PURPLE`; :data:`LEFT` / :data:`RIGHT` for twin axes,
   :data:`IOTA_COLOR` / :data:`P_COLOR` for the section pages), the
   colormaps (:data:`FIELD_CMAP`, :data:`SECTION_CMAP`, :data:`PRESSURE_CMAP`)
   and the figure widths (:func:`figsize`);
@@ -25,7 +25,7 @@ Conventions:
   reference or the second quantity (dashed), purple the pressure. The line
   cycle pairs each colour with its own dash (``-``, ``--``, ``-.``, ``:``) so
   a greyscale print still separates the arms. Two-factor comparisons encode
-  one factor in colour and the other in dash: :func:`arm_style`.
+  one factor in colour and the other in dash (:data:`DASHES`).
 * **Per-step traces** are 100-step block means with a +-1 sd band, in log
   space on log axes (``blocked`` / ``plot_trace`` in
   ``scripts/li383_pub_figures.py``); never raw per-step lines, never running
@@ -58,11 +58,10 @@ TEAL = "teal"
 PURPLE = "#6a3d9a"
 ORANGE = "#e69f00"
 PINK = "#cc79a7"
-GREY = "0.5"
 #: The line cycle of the style sheet: (colour, dash) pairs, in order
 #: (black, teal, purple, orange, pink since 2026-09-06; grey is for events).
 CYCLE = ((BLACK, "-"), (TEAL, "--"), (PURPLE, "-."), (ORANGE, ":"), (PINK, (0, (3, 1, 1, 1, 1, 1))))
-#: Dashes for a second factor in :func:`arm_style`.
+#: Dashes for a second factor of a two-factor comparison (paper/figures.py).
 DASHES = ("-", "--", "-.", ":", (0, (3, 1, 1, 1, 1, 1)))
 #: iota on a section page and its profile.
 IOTA_COLOR = BLACK
@@ -73,18 +72,6 @@ P_COLOR = PURPLE
 LEFT = dict(color=BLACK, marker="s", linestyle="-", markersize=4)
 #: Right trace (and the pressure profile).
 RIGHT = dict(color=TEAL, marker="d", linestyle="--", markersize=4)
-
-
-def arm_style(colour: int = 0, dash: int = 0, **kw) -> dict:
-    """Line keywords for arm ``(colour, dash)`` of a two-factor comparison.
-
-    ``colour`` indexes the palette (black, teal, purple, orange, pink),
-    ``dash`` the dashes (solid, dashed, dash-dot, dotted, dash-dot-dot); a
-    one-factor comparison passes
-    the same index to both and follows the style sheet's cycle. ``kw`` adds
-    or overrides (``label``, ``lw``, ...).
-    """
-    return dict(color=CYCLE[colour % len(CYCLE)][0], linestyle=DASHES[dash % len(DASHES)], **kw)
 
 
 # --- colormaps -------------------------------------------------------------
