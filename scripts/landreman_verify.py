@@ -184,9 +184,14 @@ def main(argv=None):
     ap.add_argument("--rungs", nargs="*", default=[])
     ap.add_argument("--out")
     ap.add_argument("--plot", default=None)
+    ap.add_argument("--map-batch", type=int, default=65536,
+                    help="points per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER): the lambda series has "
+                         "~2000 modes, evaluated at every histopolation point")
     cli = ap.parse_args(argv)
     if cli.plot:
         return plot(cli.plot)
+    import mrx
+    mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
     import landreman_check
     import landreman_equilibria as le
     os.makedirs(cli.out, exist_ok=True)

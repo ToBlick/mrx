@@ -26,18 +26,22 @@ def main(argv=None):
     ap.add_argument("--run", required=True)
     ap.add_argument("--case", required=True, choices=("iota2", "sheared"))
     ap.add_argument("--poincare", action="store_true")
+    ap.add_argument("--map-batch", type=int, default=65536, help="mrx.MAP_BATCH_SIZE_INNER (landreman_verify.py)")
     cli = ap.parse_args(argv)
 
     import h5py
     import jax.numpy as jnp
 
     import landreman_check
+    import mrx
     import landreman_equilibria as le
     from landreman_verify import _log, compare
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
     from mrx.precision import DTYPE
     from mrx.relaxation import compute_force, force_scale_jit, pressure_diagnostics, weak_pressure
+
+    mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
 
     run = json.load(open(os.path.join(cli.run, "relax.json")))
     prm = run["params"]
