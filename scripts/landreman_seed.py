@@ -125,6 +125,7 @@ def main():
     seq, _ = build_sequence(params["geometry_path"], ns, p, params["solve_maxiter"], tol=params["solve_tol"],
                             nfp=params["nfp"], knots=params["knots"], symmetry=params["symmetry"])
     compute_nullspaces(seq)
+    odd = seq.odd                        # B and every seed are odd under the stellarator rotation
     ts = TimeStepper(seq=seq)
     ckpt = (sorted(glob.glob(os.path.join(cli.run, "checkpoints", "state_*.h5")))[-1] if cli.step < 0
             else os.path.join(cli.run, "checkpoints", f"state_{cli.step:06d}.h5"))
@@ -164,11 +165,11 @@ def main():
             dB.append(parallel_seed_profile(seq, B, m, n, basis[i], r_fine)[0])
             owner.append(c)
     owner = np.array(owner)
-    MdB = [seq.apply_mass_matrix(d, 2, dirichlet=True) for d in dB]
+    MdB = [odd.apply_mass_matrix(d, 2, dirichlet=True) for d in dB]
     g = np.array([float(B @ Md) for Md in MdB])
     G = np.array([[float(d @ Md) for Md in MdB] for d in dB])
     a = -np.linalg.solve(0.5 * (G + G.T), g)
-    energy = 0.5 * float(seq.l2_norm(B, 2)) ** 2
+    energy = 0.5 * float(odd.l2_norm(B, 2)) ** 2
     print(f"[seed] {len(dB)} blocks, the joint optimum lowers the energy by {-0.5 * (a @ g) / energy * 1e6:.4f} ppm",
           flush=True)
 
@@ -178,7 +179,7 @@ def main():
     # resonant angle takes the seed's sign of iota (parallel_seed's flux ratio)
     @jax.jit
     def two_form(dof, x):
-        return jax.vmap(DiscreteFunction(dof, seq.basis_2, seq.E(2, True)))(x)
+        return jax.vmap(DiscreteFunction(dof, seq.basis_2, odd.E(2, True)))(x)
 
     def on_grid(f, *args):
         return np.concatenate([np.asarray(f(*args, x[k:k + BATCH])) for k in range(0, len(x), BATCH)])
@@ -189,7 +190,7 @@ def main():
     shape = (N_R, N_THETA, N_ZETA)
     lam_x = on_grid(jax.jit(jax.vmap(lam))).reshape(shape)
     Bz = on_grid(two_form, B)[:, 2].reshape(shape).mean(axis=(1, 2))
-    Bq, w = seq.evaluate_at_quadrature(B, 2, dirichlet=True), seq.quad.w
+    Bq, w = odd.evaluate_at_quadrature(B, 2, dirichlet=True), odd.quad.w
     s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))
 
     rows = []
@@ -223,7 +224,7 @@ def main():
         json.dump(dict(checkpoint=ckpt, step=step, ns=list(ns), p=p, nfp=nfp, h_r=h_r, chains=keep, scale=cli.scale,
                        resonances=rows), fh, indent=1)
     print(f"[seed] wrote {cli.out} ({len(blocks)} of {len(dB)} blocks x {cli.scale:g}, "
-          f"||dB|| / ||B|| = {float(seq.l2_norm(seeded - B, 2) / seq.l2_norm(B, 2)):.3e}) and its .json", flush=True)
+          f"||dB|| / ||B|| = {float(odd.l2_norm(seeded - B, 2) / odd.l2_norm(B, 2)):.3e}) and its .json", flush=True)
 
 
 if __name__ == "__main__":
