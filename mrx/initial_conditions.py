@@ -235,12 +235,15 @@ def potential_two_form(seq, A_ref):
     return B / norm, norm, wall
 
 
-def parallel_seed(seq, B, m, n, rho0, width, eps):
+def parallel_seed(seq, B, m, n, profile, r_grid):
     r"""SIESTA's island seed: ``dB = curl(A_par B / |B|)`` on an EXISTING field.
 
-    ``A_par = eps |B|_rms g(rho) cos(2 pi (m theta - s n zeta))`` with ``g = exp(-((rho - rho0) / width)^2)
-    (1 - rho^2) / (1 - rho0^2)`` and ``s`` the sign of the field's iota, as :func:`clebsch_potential_form`.
-    ``eps`` is SIGNED: the sign is the seed's only phase freedom, because a phase shift multiplies the seed by
+    ``A_par = profile(rho) cos(2 pi (m theta - s n zeta))`` with ``s`` the sign of the field's iota, as
+    :func:`clebsch_potential_form`. ``profile`` is the radial function sampled on ``r_grid``, amplitude included:
+    a Gaussian envelope, or one radial basis function when the profile is being solved for rather than prescribed
+    (the seed-selection solve expands it in the sequence's own radial basis). It needs no ``(1 - rho^2)`` factor --
+    the load and the solve are on the DIRICHLET 1-form space, whose tangential trace already vanishes on the wall.
+    The profile's SIGN is the seed's only phase freedom, because a phase shift multiplies the seed by
     ``cos(2 pi phase)`` and nothing else -- the quadrature part of the perturbation is ODD under ``(theta, zeta) ->
     (-theta, -zeta)`` and the stellarator parity projector removes it exactly (measured: ``||dB||^2`` at phase 1/4
     is 1e-25 of its phase-0 value).
@@ -262,13 +265,13 @@ def parallel_seed(seq, B, m, n, rho0, width, eps):
     discarded piece is exactly zero. With the tangential trace constrained, nothing is discarded and ``div dB`` is
     round-off.
 
-    ``eps`` is NOT the Clebsch seed's ``eps`` (there it is the resonant ``|dB^rho| / |B^zeta|`` at ``rho0``, so the
-    pendulum width follows from it in closed form; here it scales ``A_par`` itself). The two seed families are
-    therefore compared by the WELL DEPTH ``-<B, dB>^2 / (2 ||dB||^2)``, which is the best energy a family can buy
-    and does not depend on how the family is parametrised, not by ``eps`` or ``a*``.
+    The profile's scale is NOT the Clebsch seed's ``eps`` (there ``eps`` is the resonant ``|dB^rho| / |B^zeta|`` at
+    ``rho0``, so the pendulum width follows from it in closed form; here it scales ``A_par`` itself). The two seed
+    families are therefore compared by the WELL DEPTH ``-<B, dB>^2 / (2 ||dB||^2)``, which is the best energy a
+    family can buy and does not depend on how the family is parametrised.
 
-    Returns ``(dB, wall)``: the 2-form increment at amplitude ``eps`` and the relative wall-normal part the
-    Dirichlet restriction discarded.
+    Returns ``(dB, div)``: the 2-form increment and ``||d dB|| / ||dB||``, which is round-off when the construction
+    is right (it reached 0.8 when the 1-form went onto the FREE space instead).
     """
     seq = seq.odd
     Bq = seq.evaluate_at_quadrature(B, 2, dirichlet=True)                  # contravariant density, (n_q, 3)
@@ -276,8 +279,8 @@ def parallel_seed(seq, B, m, n, rho0, width, eps):
     Bhat_cov = g_B / jnp.sqrt(jnp.einsum('qi,qi->q', g_B, Bq))[:, None]    # B_i / |B|: the Jacobian cancels
     x, w = seq.quad.x, seq.quad.w
     s = float(jnp.sign(jnp.sum(w * Bq[:, 1]) / jnp.sum(w * Bq[:, 2])))     # sign of the flux-ratio iota
-    env = jnp.exp(-((x[:, 0] - rho0) / width) ** 2) * (1.0 - x[:, 0] ** 2) / (1.0 - rho0 ** 2)
-    A_par = eps * env * jnp.cos(2.0 * jnp.pi * (m * x[:, 1] - s * n * x[:, 2]))
+    A_par = (jnp.interp(x[:, 0], jnp.asarray(r_grid), jnp.asarray(profile))
+             * jnp.cos(2.0 * jnp.pi * (m * x[:, 1] - s * n * x[:, 2])))
     load = seq.vector_load_values(A_par[:, None] * Bhat_cov, 1, 1, dirichlet_n=True)
     dA = seq.apply_inverse_mass_matrix(load, 1, dirichlet=True)
     dB = seq.apply_incidence_matrix(dA, 1, dirichlet_in=True, dirichlet_out=True)
