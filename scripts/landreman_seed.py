@@ -7,7 +7,7 @@ of every resonance: ``d_r^2 iota``, the pendulum validity ``w |iota''| / |iota'|
 (:func:`shearless_width`) and the radial extent over which ``|iota - nfp n / m|`` stays below the island's
 resonance width (:func:`locking_extent`).
 
-    python scripts/landreman_seed.py --run RUN --step N --out SEEDED.h5 [--chain M,N ...] [--scale Q]
+    python landreman_seed.py --run RUN --step N --out SEEDED.h5 [--chain M,N ...] [--scale Q]
 
 Every resonance (m, n) with m <= n_theta / 2 and iota = nfp n / m inside the run's iota range gets SIESTA's
 parallel seed, dB = curl(A B / |B|) with A = a(r) cos(2 pi (m theta - n zeta)) (mrx.initial_conditions.

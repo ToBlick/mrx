@@ -1,6 +1,6 @@
 """Part A of the Landreman verification: the exact finite-beta equilibrium put into MRX, no relaxation.
 
-For each rung ``(n_r, n_theta, n_zeta, p)``: the sequence of the Landreman wout (scripts/landreman_wout.py; the map
+For each rung ``(n_r, n_theta, n_zeta, p)``: the sequence of the Landreman wout (landreman_wout.py; the map
 is the production L2 projection of its series, the field the production IC ``B = dA'`` of its Clebsch data,
 :func:`mrx.initial_conditions.initial_field`) and at the quadrature points
 
@@ -16,7 +16,7 @@ is the production L2 projection of its series, the field the production IC ``B =
 
 One GPU job runs all rungs of one family; ``--make-wout`` writes the wout first (numpy, a few minutes). Usage::
 
-    python -u scripts/landreman_verify.py --case iota2 --wout OUT/wout_landreman_iota2.nc --make-wout \
+    python -u landreman_verify.py --case iota2 --wout OUT/wout_landreman_iota2.nc --make-wout \
         --rungs 8,2 12,2 16,2 24,2 8,3 12,3 16,3 24,3 --out OUT
 
 A rung ``n,p`` means ``ns = (n, 2n, 2n)``. ``--plot OUT`` (login node, matplotlib only) merges ``OUT/rung_*/result.json``

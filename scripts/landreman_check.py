@@ -1,11 +1,11 @@
-"""Numpy checks of the transcribed Landreman equilibria (scripts/landreman_equilibria.py) before any MRX work.
+"""Numpy checks of the transcribed Landreman equilibria (landreman_equilibria.py) before any MRX work.
 
 At random points of Omega_delta (drawn through the logical parametrisation, so the map is exercised too):
 ``div B``, ``curl B x B - grad p`` and ``B . grad psi`` by fourth-order central differences of the closed forms,
 relative to ``|dB| |B|`` resp. ``|B| |grad psi|`` scales; ``psi(point(rho, .)) = rho^2 psi_edge``; the reference
 2-form's ``B_hat^rho`` (tangency in the logical frame), the zeta-independence of the toroidal flux density, the
 flux-ratio iota, ``beta_V = 2 <p>_V / <B^2>_V`` by Gauss quadrature over the logical cube, all against the paper's
-numbers. Cheap (login-node numpy). Usage: ``python scripts/landreman_check.py [iota2|sheared] [--lam L]``.
+numbers. Cheap (login-node numpy). Usage: ``python landreman_check.py [iota2|sheared] [--lam L]``.
 """
 from __future__ import annotations
 

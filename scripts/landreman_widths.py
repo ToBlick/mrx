@@ -4,7 +4,7 @@ For every resonance of the seed table (landreman_seed.py's .json) and every trac
 iota is within 2e-3 of ``nfp n / m`` are the locked ones, and the width is max(r) - min(r) over all their
 crossings on all planes (the paper's Tab. 4 measurement, outputs/seed_scan_2026-09-19/measure_widths.py).
 
-    python scripts/landreman_widths.py SEED.json NAME=trace.npz [NAME=trace.npz ...] [--out table.json]
+    python landreman_widths.py SEED.json NAME=trace.npz [NAME=trace.npz ...] [--out table.json]
 """
 import json
 import sys

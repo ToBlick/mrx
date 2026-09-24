@@ -7,8 +7,8 @@ closed form (:func:`landreman_verify.compare`: ``B_err``, the flux-ratio iota pe
 ``--poincare`` the same job then traces ``ic,final`` on 5 planes (scripts/poincare_trace.py, defaults).
 Usage (a GPU job)::
 
-    python -u scripts/landreman_relaxed.py --run OUT/partB_sheared_16 --case sheared --poincare
-    python scripts/landreman_relaxed.py --plot RUN1 RUN2 ... OUT.png      # login node, matplotlib
+    python -u landreman_relaxed.py --run OUT/partB_sheared_16 --case sheared --poincare
+    python landreman_relaxed.py --plot RUN1 RUN2 ... OUT.png      # login node, matplotlib
 """
 from __future__ import annotations
 
@@ -114,8 +114,8 @@ def main(argv=None):
     with open(os.path.join(cli.run, "landreman_relaxed.json"), "w") as fh:
         json.dump(dict(case=cli.case, exact=exact, rows=rows), fh, indent=1)
     if cli.poincare:
-        subprocess.run([sys.executable, "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                            "poincare_trace.py"),
+        from landreman_chain import resolve
+        subprocess.run([sys.executable, "-u", resolve("poincare_trace.py"),
                         "--run", cli.run, "--fields", "ic,final", "--planes", cli.planes], check=True)
 
 

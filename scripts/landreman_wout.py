@@ -1,4 +1,4 @@
-"""Write the VMEC wout of a Landreman equilibrium (scripts/landreman_equilibria.py) and check it.
+"""Write the VMEC wout of a Landreman equilibrium (landreman_equilibria.py) and check it.
 
 Checks, at random logical points (R, Z) and at random angles on the half-mesh surfaces (the field): the truncated
 series against the closed-form map, and the reference 2-form rebuilt from the series and the profiles in the VMEC
@@ -6,7 +6,7 @@ convention, ``B_hat^zeta = phi'(rho) (1 + d_theta lambda)``, ``B_hat^theta = phi
 (``phi' = d phi / d rho``, angles in radians), against ``J DF^-1 B`` of the exact field. Numpy only; run it inside
 the job that uses the file (``--ns 201`` is a few minutes on 4 cores). Usage::
 
-    python scripts/landreman_wout.py --case sheared --out outputs/.../wout_landreman_sheared.nc
+    python landreman_wout.py --case sheared --out outputs/.../wout_landreman_sheared.nc
 """
 from __future__ import annotations
 
