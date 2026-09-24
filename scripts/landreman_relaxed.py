@@ -21,6 +21,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+#: the five standing planes plus 1/128, which only sets the step: steps_for() takes the planes' common denominator,
+#: 128 steps per period. The Landreman fields wind 1.1 (sheared) to 2.9 (shearedA) poloidal turns per period, and
+#: the default 24 steps drift by 3e-2 of the minor radius over the drift check (shearedA: 37/160 lines lost from
+#: the EXACT field). poincare_plot.py --planes 0,0.125,0.25,0.375,0.5 renders the five.
+TRACE_PLANES = "0,0.125,0.25,0.375,0.5,0.0078125"
+
 
 def plot(runs, out):
     """Login-node figure of part B: the per-step squared force residual and energy change of every run, and the
@@ -60,6 +66,7 @@ def main(argv=None):
     ap.add_argument("--case", required=True, choices=("iota2", "sheared", "shearedA"))
     ap.add_argument("--poincare", action="store_true")
     ap.add_argument("--map-batch", type=int, default=8192, help="mrx.MAP_BATCH_SIZE_INNER (landreman_verify.py)")
+    ap.add_argument("--planes", default=TRACE_PLANES, help=f"poincare_trace.py --planes [{TRACE_PLANES}]")
     cli = ap.parse_args(argv)
 
     import h5py
@@ -109,7 +116,7 @@ def main(argv=None):
     if cli.poincare:
         subprocess.run([sys.executable, "-u", os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                             "poincare_trace.py"),
-                        "--run", cli.run, "--fields", "ic,final"], check=True)
+                        "--run", cli.run, "--fields", "ic,final", "--planes", cli.planes], check=True)
 
 
 if __name__ == "__main__":
