@@ -63,13 +63,13 @@ def main(argv=None):
         r = dict(step=step, resid=float((F_norm / force_scale_jit(seq, B)) ** 2),
                  E=0.5 * float(seq.odd.l2_norm_sq(B, 2)), beta_vol=float(diag["beta_vol"]),
                  JoverB=float(seq.odd.l2_norm(J, 1) / seq.odd.l2_norm(B, 2)))
-        r.update(compare(seq, B, norm, case, exact, p_w=p_w))
+        r.update(compare(seq, B, norm, case, exact, p_w=p_w, p_strong=pr))
         if not rows:
             B0 = B
         r["B_change"] = float(seq.odd.l2_norm(B - B0, 2) / seq.odd.l2_norm(B0, 2))
         rows.append(r)
         _log(f"step {step}: resid {r['resid']:.3e}  E {r['E']:.10f}  beta_vol {r['beta_vol']:.5e} "
-             f"(exact {exact['beta_V']:.5e})  B_err {r['B_err']:.3e}  |B-B0|/|B0| {r['B_change']:.3e}  p_err {r['p_err']:.3e}  "
+             f"(exact {exact['beta_V']:.5e})  B_err {r['B_err']:.3e}  |B-B0|/|B0| {r['B_change']:.3e}  p_err {r['p_err']:.3e} (centered {r['p_err_centered']:.2e}, strong {r['p_strong_err_centered']:.2e})  "
              f"iota {min(r['iota_h']):.6f}..{max(r['iota_h']):.6f}")
     with open(os.path.join(cli.run, "landreman_relaxed.json"), "w") as fh:
         json.dump(dict(case=cli.case, exact=exact, rows=rows), fh, indent=1)

@@ -38,10 +38,11 @@ def _log(msg):
     print(f"  [{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-def compare(seq, B, B_norm_raw, case, exact, p_w=None):
+def compare(seq, B, B_norm_raw, case, exact, p_w=None, p_strong=None):
     """The field ``B_norm_raw * B`` (2-form DoFs) against the closed form at the quadrature points: ``B_err``,
     ``B_err_max_rel``, ``map_err_l2``, ``map_err_max``, the flux-ratio iota per radial layer against the file's
-    and, with the weak pressure ``p_w`` of ``B``, ``p_err`` and ``beta_exact``."""
+    and, with the weak pressure ``p_w`` of ``B``, ``p_err`` and ``p_err_centered`` (volume means removed), with the
+    Leray multiplier ``p_strong`` its ``p_strong_err_centered``."""
     import jax
     import jax.numpy as jnp
     import numpy as np
@@ -73,6 +74,17 @@ def compare(seq, B, B_norm_raw, case, exact, p_w=None):
         pw_q = np.asarray(even.evaluate_at_quadrature(p_w, 0, True))[:, 0] * B_norm_raw ** 2
         pex = le.pressure(case, Xh)
         res["p_err"] = float(np.sqrt(np.sum(wJ * (pw_q - pex) ** 2) / np.sum(wJ * pex ** 2)))
+        # the same with the volume means removed: a wall-layer error of p_w shifts it by a constant
+        mean = lambda f: np.sum(wJ * f) / np.sum(wJ)        # noqa: E731
+        dpc, pc = (pw_q - mean(pw_q)) - (pex - mean(pex)), pex - mean(pex)
+        res["p_err_centered"] = float(np.sqrt(np.sum(wJ * dpc ** 2) / np.sum(wJ * pc ** 2)))
+    if p_strong is not None:
+        # the Leray multiplier, a 3-form: p / J at the points, defined up to a constant
+        ps_q = np.asarray(even.evaluate_at_quadrature(p_strong, 3, True))[:, 0] / Jq * B_norm_raw ** 2
+        pex = le.pressure(case, Xh)
+        mean = lambda f: np.sum(wJ * f) / np.sum(wJ)        # noqa: E731
+        dpc, pc = (ps_q - mean(ps_q)) - (pex - mean(pex)), pex - mean(pex)
+        res["p_strong_err_centered"] = float(np.sqrt(np.sum(wJ * dpc ** 2) / np.sum(wJ * pc ** 2)))
     res["beta_exact"] = exact["beta_V"]
 
     # --- flux-ratio iota per radial quadrature layer ----------------------
@@ -125,7 +137,7 @@ def run_rung(case_name, wout, n, p, out, exact):
     diag = pressure_diagnostics(B, pr, p_w, F_w, v, seq)
     res.update({k: float(val) for k, val in diag.items()})
 
-    res.update(compare(seq, B, ic["B_norm_raw"], case, exact, p_w=p_w))
+    res.update(compare(seq, B, ic["B_norm_raw"], case, exact, p_w=p_w, p_strong=pr))
     res["beta_vol_rel_err"] = res["beta_vol"] / exact["beta_V"] - 1.0
     iota_h = np.asarray(res["iota_h"])
     res["t_total"] = time.perf_counter() - t0
