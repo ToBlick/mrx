@@ -3,7 +3,7 @@
 #
 #   refined float32   MRX_DTYPE=float32                              (the production default, tol 1e-8)
 #   plain float64     MRX_DTYPE=float64                              (tol 1e-10)
-#   plain float32     MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float32   (the TPU configuration, tol sqrt(eps))
+#   plain float32     MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float32   (the TPU configuration, tol 1e-5)
 #
 # A change to the solvers, the precision module or the atoms is verified by
 # all three; report the count per configuration. Logs under
