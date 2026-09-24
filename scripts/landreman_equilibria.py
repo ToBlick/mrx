@@ -36,6 +36,9 @@ NFP = 2
 CASES = {
     "iota2": dict(family="iota2", eps=0.5, delta=1.0 / 64.0, p_edge=0.0),
     "sheared": dict(family="sheared", eps=2.0, S=1.0, k_b=0.1, lam=1.0, kappa=1.0, p_edge=0.0),
+    # the island test: Landreman's case A (eps = 1.08, S = 3) at k_b = 0.3, iota 5.689..5.762 with the (7,20) and
+    # (8,23) rationals inside; lam = 4 for beta_V ~ 3 % (the paper's sheared example has m in the hundreds)
+    "shearedA": dict(family="sheared", eps=1.08, S=3.0, k_b=0.3, lam=4.0, kappa=1.0, p_edge=0.0),
 }
 
 
