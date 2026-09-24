@@ -1288,7 +1288,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         ch = {k: np.asarray(v) for k, v in ch.items()}
         n_done += chunk
         it = it0 + n_done
-        with np.errstate(invalid="ignore"):   # a backward line-search step has no gain
+        with np.errstate(invalid="ignore", divide="ignore"):   # a backward line-search step has no gain, a zero velocity an infinite one
             cos = ch["Fu"] / (ch["F"] * ch["v"])
             trace["cos"].extend(cos.tolist())
             trace["gain"].extend(((ch["Fu"] / ch["dt"]) ** 0.5 / ch["v"]).tolist())

@@ -6,7 +6,7 @@ right products) and must not depend on which factor is the test function:
 that ties the dot, scalar and scalar-times-vector loads of every degree
 combination to each other without a solve. The constant 1 anchors them: as
 a 0-form it is the L2 projection of 1 onto the natural 0-forms, as a
-3-form the L2 projection of that through ``scalar_product_load`` and the
+3-form the L2 projection of that through ``scalar_product_load_values`` and the
 3-form mass; a product with either is a mass matrix or the ``P_12``
 pairing, and the dot product integrated against either is the inner
 product or the pairing. The cross-product loads are checked for
@@ -99,8 +99,8 @@ def test_products_with_one_are_the_mass_and_projection_matrices(seq, fields):
 def test_trilinear_forms_do_not_depend_on_the_test_factor(seq, fields):
     """``a^T load(b, c)`` over the three rotations of ``(a, b, c)``, every
     degree combination once: the vector triple (scalar, vector, vector)
-    through ``dot_product_load`` and ``scalar_vector_load``, the scalar
-    triples through ``scalar_product_load``. The parity of the product picks
+    through ``dot_product_load_values`` and ``scalar_vector_load_values``, the scalar
+    triples through ``scalar_product_load_values``. The parity of the product picks
     the view it is assembled on."""
     odd, even, q = seq.odd, seq.even, fields["q"]
     J, B, g, rho, tau = (fields[k] for k in ("J", "B", "g", "rho", "tau"))

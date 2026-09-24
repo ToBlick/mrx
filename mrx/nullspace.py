@@ -87,7 +87,7 @@ def _commit(seq, operators):
     -- and return the bundle unchanged.
     """
     seq.operators = operators
-    if getattr(seq, "_residual", None) is not None:
+    if seq._residual is not None:
         seq._residual.operators = operators
     return operators
 
@@ -236,7 +236,7 @@ def compute_nullspaces(seq, operators=None, betti_numbers=None, *,
     check for the console, ~17 s at W7-X (12,24,12) p=3 for 5 sweeps).
     The ratio of the two is the squared relative error of the form, i.e.
     ``O(seq.tol^2)`` when the solves converged -- measured 2e-4 / 4e-5 in
-    float32 (tol 3.5e-4) on W7-X, 1e-14-ish in float64; ``1e-1`` is a solve
+    float32 (tol 1e-5) on W7-X, 1e-14-ish in float64; ``1e-1`` is a solve
     that stopped early.
 
     Built on the float64 view of the sequence (:func:`_builder`), the

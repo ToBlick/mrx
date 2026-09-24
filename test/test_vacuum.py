@@ -187,7 +187,7 @@ def test_manufactured_scalar_solution(seq, k):
         # are sqrt(2) on every orbit pair, so reduce it rather than write ones
         psi_q = jax.vmap(lambda xi: psi(seq.map(xi)))(seq.quad.x)
         x = seq.reduction[(0, False)]       # X: reduced -> free, so X^T reduces the free all-ones vector
-        one = (x.T @ jnp.ones(x.shape[0], dtype=mrx.DTYPE)).astype(mrx.DTYPE)
+        one = x.T @ jnp.ones(x.shape[0], dtype=mrx.DTYPE)
         M1 = seq.apply_mass_matrix(one, 0, False)
         f = f + (_volume_integrals(seq, psi_q) - float(one @ seq.apply_mass_matrix(f, 0, False))) / float(one @ M1) * one
         load0 = seq.load(lambda xi: psi(seq.map(xi)), 0, dirichlet=False)

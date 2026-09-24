@@ -589,7 +589,7 @@ class DeRhamSequence():
 
     def _require_geometry(self):
         """Return the attached geometry or raise when none is installed."""
-        geometry = getattr(self, 'geometry', None)
+        geometry = self.geometry
         if geometry is None:
             raise ValueError(
                 'Set the geometry first, for example with seq.set_map(...) '
@@ -1278,31 +1278,12 @@ class DeRhamSequence():
             s_jk = jnp.sum(w_jk * u_jk, axis=1) / self.jacobian_j
         return self._scalar_load_values(s_jk, n, dirichlet_n, parity)
 
-    def dot_product_load(self, w, u, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
-        """The n-form dual DOF vector of ``w . u`` (``n`` 0 or 3; ``w`` an
-        m-form, ``u`` a k-form, both 1 or 2): :meth:`evaluate_at_quadrature`
-        on both inputs followed by :meth:`dot_product_load_values`."""
-        w_jk = self.evaluate_at_quadrature(w, m, dirichlet_m)
-        u_jk = self.evaluate_at_quadrature(u, k, dirichlet_k)
-        return self.dot_product_load_values(
-            w_jk, u_jk, n, m, k, dirichlet_n,
-            parity=self.dof_parity(w, m, dirichlet_m) * self.dof_parity(u, k, dirichlet_k))
-
     def scalar_product_load_values(self, f_jk, g_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i f g`` from quadrature values of the scalar
         m-form ``f`` and k-form ``g`` (m, k, n in {0, 3}): the pointwise
         product of the two values, a 3-form counting as its value ``rho / J``."""
         s_jk = self._physical_scalar(f_jk, m) * self._physical_scalar(g_jk, k)
         return self._scalar_load_values(s_jk, n, dirichlet_n, parity)
-
-    def scalar_product_load(self, f, g, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
-        """The n-form dual DOF vector of the product of two scalar forms
-        (``n``, ``m``, ``k`` in {0, 3}); see :meth:`scalar_product_load_values`."""
-        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
-        g_jk = self.evaluate_at_quadrature(g, k, dirichlet_k)
-        return self.scalar_product_load_values(
-            f_jk, g_jk, n, m, k, dirichlet_n,
-            parity=self.dof_parity(f, m, dirichlet_m) * self.dof_parity(g, k, dirichlet_k))
 
     def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, dirichlet_n=True, parity=None):
         """Integrate ``Λⁿ_i . (f v)`` from quadrature values of the scalar
@@ -1313,15 +1294,6 @@ class DeRhamSequence():
             raise ValueError("k must be 1 or 2")
         c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
         return self.vector_load_values(c_jk, k, n, dirichlet_n, parity)
-
-    def scalar_vector_load(self, f, v, n, m, k, dirichlet_n=True, dirichlet_m=True, dirichlet_k=True):
-        """The n-form dual DOF vector of a scalar m-form times a vector
-        k-form; see :meth:`scalar_vector_load_values`."""
-        f_jk = self.evaluate_at_quadrature(f, m, dirichlet_m)
-        v_jk = self.evaluate_at_quadrature(v, k, dirichlet_k)
-        return self.scalar_vector_load_values(
-            f_jk, v_jk, n, m, k, dirichlet_n,
-            parity=self.dof_parity(f, m, dirichlet_m) * self.dof_parity(v, k, dirichlet_k))
 
     def magnitude_squared_load(self, B, dirichlet=True):
         """The 0-form dual vector of ``|B|^2`` for a 2-form ``B``: ``v_i = ∫ Λ⁰_i |B|² det DF dx``.

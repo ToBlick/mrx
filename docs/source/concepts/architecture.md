@@ -90,12 +90,13 @@ forms, and MRX exposes each as an L2 load: the product is evaluated at the
 quadrature points from the reference components of its factors and
 integrated against the basis of the output space (`M_n^{-1}` of the load
 is the L2 projection). `DeRhamSequence.cross_product_load(w, u, n, m, k)`
-covers `w × u` for every `(n, m, k)` in `{1, 2}³`, `dot_product_load` the
-inner product of two vector forms onto the 0- or 3-forms,
-`scalar_product_load` the product of two scalar forms (0 or 3) onto either,
-and `scalar_vector_load` a scalar form times a vector form onto the 1- or
-2-forms; each has a `_values` twin that takes quadrature values, so a
-factor evaluated once can feed several loads.
+covers `w × u` for every `(n, m, k)` in `{1, 2}³` (its `_values` twin takes
+quadrature values, so a factor evaluated once can feed several loads);
+`dot_product_load_values` is the inner product of two vector forms onto the
+0- or 3-forms, `scalar_product_load_values` the product of two scalar forms
+(0 or 3) onto either, and `scalar_vector_load_values` a scalar form times a
+vector form onto the 1- or 2-forms, all from quadrature values
+(`evaluate_at_quadrature`).
 
 In reference components a 1-form is covariant (`a_i = DF^T a_phys`), a
 2-form a contravariant density (`b^i = J DF^{-1} b_phys`), a 0-form a value
