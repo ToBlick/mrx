@@ -6,8 +6,8 @@
 The crossings are coloured as in scripts/poincare_plot.py's logical panel: the rotational transform of their line for
 theta < 1/2, the pressure for theta >= 1/2, lost lines grey. The iota and pressure ranges are those of the plotter
 over every plane of the archive, so the colours match its pages. Unlike the three-panel page, the iota bar sits on the
-left and the (inverted) pressure bar on the right of the chart. The figure is authored at its printed width (--width
-inches, labels at --label-size pt) and is meant to be \\import-ed unscaled.
+left and the (inverted) pressure bar on the right of the chart. The figure is authored at its printed size (--side,
+the side of the square chart, labels at --label-size pt) and is meant to be \\import-ed unscaled.
 """
 import argparse
 import os
@@ -33,8 +33,7 @@ def main():
     ap.add_argument("--dot-size", type=float, default=0.4, help="marker area in pt^2")
     ap.add_argument("--denom-max", type=int, default=300)
     ap.add_argument("--min-sep", type=float, default=0.05, help="rational ticks: least spacing, in units of the range")
-    ap.add_argument("--width", type=float, default=5.0)
-    ap.add_argument("--height", type=float, default=3.6)
+    ap.add_argument("--side", type=float, default=3.4, help="side of the square chart, inches")
     ap.add_argument("--label-size", type=float, default=9.0)
     ap.add_argument("--dpi", type=int, default=600)
     ap.add_argument("--out", required=True)
@@ -58,10 +57,12 @@ def main():
 
     scale = cli.label_size / FS.label
     with house_style():
-        fig = plt.figure(figsize=(cli.width, cli.height))
-        gs = fig.add_gridspec(1, 3, width_ratios=[0.035, 1.0, 0.035], wspace=0.13,
-                              left=0.12, right=0.88, bottom=0.13, top=0.97)
-        cax_i, ax, cax_p = (fig.add_subplot(gs[0, k]) for k in range(3))
+        # a square chart of side --side inches, the two bars as tall as it, positions in inches
+        side, bar, gap_i, gap_p, x0, y0 = cli.side, 0.1, 0.45, 0.16, 0.55, 0.45
+        W, H = x0 + bar + gap_i + side + gap_p + bar + 0.45, y0 + side + 0.08
+        fig = plt.figure(figsize=(W, H))
+        box = lambda x, w: fig.add_axes((x / W, y0 / H, w / W, side / H))  # noqa: E731
+        cax_i, ax, cax_p = box(x0, bar), box(x0 + bar + gap_i, side), box(x0 + bar + gap_i + side + gap_p, bar)
         s = dict(s=cli.dot_size, linewidths=0, rasterized=True)
         sc = ax.scatter(lth[shown2 & left], lr[shown2 & left], c=colour[shown2 & left], vmin=lo, vmax=hi,
                         cmap=SECTION_CMAP, **s)
@@ -84,7 +85,8 @@ def main():
         cb_i.ax.set_xlabel(r"$\iota$")
         cb_p = fig.colorbar(psc, cax=cax_p)
         cb_p.ax.invert_yaxis()
-        cb_p.ax.set_xlabel(cli.pressure_label + r" $\times$ 100")
+        cb_p.ax.set_ylabel(cli.pressure_label + r" $\times$ 100")    # on the right, beside the bar
+        cb_p.ax.yaxis.set_label_position("right")
 
         for a in fig.axes:
             a.tick_params(labelsize=FS.tick * scale)
@@ -92,13 +94,13 @@ def main():
             a.yaxis.label.set_size(FS.label * scale)
         for cb in (cb_i, cb_p):
             cb.ax.tick_params(labelsize=FS.annot * scale)
-        cb_p.ax.xaxis.label.set_size(FS.annot * scale)
 
         os.makedirs(os.path.join(cli.out, "pgf"), exist_ok=True)
         stem = f"logical_zeta{cli.plane:g}"
-        fig.savefig(os.path.join(cli.out, stem + ".png"), dpi=cli.dpi)
+        fig.savefig(os.path.join(cli.out, stem + ".png"), dpi=cli.dpi, bbox_inches="tight", pad_inches=0.02)
         with matplotlib.rc_context(PGF):
-            fig.savefig(os.path.join(cli.out, "pgf", stem + ".pgf"), backend="pgf", dpi=cli.dpi)
+            fig.savefig(os.path.join(cli.out, "pgf", stem + ".pgf"), backend="pgf", dpi=cli.dpi, bbox_inches="tight",
+                        pad_inches=0.02)
         print(f"{len(ticks)} rational ticks: {', '.join(labels)}; iota {lo:.4f}..{hi:.4f}, p {p_lim[0]:.3g}..{p_lim[1]:.3g}")
         print("->", os.path.join(cli.out, "pgf", stem + ".pgf"))
 
