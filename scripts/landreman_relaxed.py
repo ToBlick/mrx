@@ -26,7 +26,7 @@ def main(argv=None):
     ap.add_argument("--run", required=True)
     ap.add_argument("--case", required=True, choices=("iota2", "sheared"))
     ap.add_argument("--poincare", action="store_true")
-    ap.add_argument("--map-batch", type=int, default=65536, help="mrx.MAP_BATCH_SIZE_INNER (landreman_verify.py)")
+    ap.add_argument("--map-batch", type=int, default=8192, help="mrx.MAP_BATCH_SIZE_INNER (landreman_verify.py)")
     cli = ap.parse_args(argv)
 
     import h5py

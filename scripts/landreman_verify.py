@@ -196,8 +196,8 @@ def main(argv=None):
     ap.add_argument("--rungs", nargs="*", default=[])
     ap.add_argument("--out")
     ap.add_argument("--plot", default=None)
-    ap.add_argument("--map-batch", type=int, default=65536,
-                    help="points per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER): the lambda series has "
+    ap.add_argument("--map-batch", type=int, default=8192,
+                    help="cells per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER): the lambda series has "
                          "~2000 modes, evaluated at every histopolation point")
     cli = ap.parse_args(argv)
     if cli.plot:
