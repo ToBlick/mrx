@@ -24,6 +24,7 @@ w = sqrt(8 dBr nfp / (pi m |d_r iota|)).
 The one script of paper/ on mrx internals: no command-line tool seeds a checkpoint.
 """
 import argparse
+import glob
 import json
 import os
 
@@ -97,7 +98,8 @@ def locking_extent(iota, r0, target, diota_res, rr):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--run", required=True, help="a scripts/relax.py run: its relax.json and checkpoints/")
-    ap.add_argument("--step", type=int, required=True, help="seed checkpoints/state_<step>.h5")
+    ap.add_argument("--step", type=int, required=True,
+                    help="seed checkpoints/state_<step>.h5; -1 the last one (a run stopped on its floor)")
     ap.add_argument("--out", required=True, help="the seeded checkpoint (.h5); the table goes to the .json beside it")
     ap.add_argument("--chain", action="append", default=None,
                     help="M,N: add only this chain's part of the joint optimum (repeatable) [every chain]")
@@ -124,7 +126,8 @@ def main():
                             nfp=params["nfp"], knots=params["knots"], symmetry=params["symmetry"])
     compute_nullspaces(seq)
     ts = TimeStepper(seq=seq)
-    ckpt = os.path.join(cli.run, "checkpoints", f"state_{cli.step:06d}.h5")
+    ckpt = (sorted(glob.glob(os.path.join(cli.run, "checkpoints", "state_*.h5")))[-1] if cli.step < 0
+            else os.path.join(cli.run, "checkpoints", f"state_{cli.step:06d}.h5"))
     state, step = read_checkpoint(ckpt, ts)
     B = state.B_n
     cb = load_clebsch(seq.equilibrium, nfp=seq.nfp)
