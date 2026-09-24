@@ -189,7 +189,7 @@ def plot(out):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--case", choices=("iota2", "sheared", "shearedA"))
+    ap.add_argument("--case", choices=("iota2", "sheared", "shearedA", "shearedB"))
     ap.add_argument("--wout")
     ap.add_argument("--make-wout", action="store_true")
     ap.add_argument("--wout-ns", type=int, default=201)

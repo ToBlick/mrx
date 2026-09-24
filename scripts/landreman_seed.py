@@ -29,7 +29,7 @@ import os
 
 import numpy as np
 
-N_R, N_THETA, N_ZETA = 320, 64, 32     # the grid of the harmonic analysis
+N_R, N_THETA, N_ZETA = 320, 64, 128    # the grid of the harmonic analysis (n <= n_zeta / 2 <= 32 per period)
 BATCH = 65536
 
 
@@ -52,6 +52,19 @@ def parallel_seed_profile(seq, B, m, n, profile, r_grid):
     div = float(seq.l2_norm(seq.apply_incidence_matrix(dB, 2, dirichlet_in=True, dirichlet_out=True), 3)
                 / seq.l2_norm(dB, 2))
     return dB, div
+
+
+def resonances(iota_lo, iota_hi, nfp, m_max, n_max):
+    """``(m, n)`` coprime, ``m <= m_max``, ``n <= n_max`` and ``iota_lo < nfp n / m < iota_hi``, by increasing
+    ``m``. :func:`mrx.experimental.islands.resonances` assumes ``n <= m`` (iota at most nfp); the Landreman fields
+    have iota / nfp up to 2.9. ``n_max = n_zeta / 2``: a chain's field varies as ``cos 2 pi (m theta - n zeta)``,
+    and its toroidal wavelength must be resolved as its poloidal one is (``m <= n_theta / 2``)."""
+    out = []
+    for m in range(1, int(m_max) + 1):
+        for n in range(1, int(n_max) + 1):
+            if np.gcd(m, n) == 1 and iota_lo < nfp * n / m < iota_hi:
+                out.append((m, n))
+    return out
 
 
 def shearless_width(a, m, nfp, d2iota):
@@ -99,7 +112,6 @@ def main():
 
     import mrx
     from mrx.differential_forms import DiscreteFunction
-    from mrx.experimental.islands import resonances
     from mrx.geometry import build_sequence
     from mrx.gvec import load_clebsch
     from mrx.nullspace import compute_nullspaces
@@ -134,13 +146,14 @@ def main():
     support = [(float(knots[i]), float(knots[i + rb.p + 1])) for i in range(rb.n)]
 
     chains = []                          # (m, n, r_mn, |d_r iota|, the block's basis functions)
-    for m, n in resonances(float(iota(rr).min()), float(iota(rr).max()), nfp, ns[1] // 2):
+    for m, n in resonances(float(iota(rr).min()), float(iota(rr).max()), nfp, ns[1] // 2, ns[2] // 2):
         r0 = float(rr[int(np.argmin(np.abs(iota(rr) - nfp * n / m)))])
         if abs(float(iota(r0)) - nfp * n / m) < 1e-4 and 0.02 < r0 < 0.99:
             funcs = [i for i in range(2, rb.n - 1) if support[i][1] > r0 - 1.0 / m and support[i][0] < r0 + 1.0 / m]
             if funcs:
                 chains.append((m, n, r0, abs(float(iota.derivative()(r0))), funcs))
-    print(f"[seed] {ckpt}: step {step}, {len(chains)} resonances with m <= {ns[1] // 2}, h_r {h_r:.4f}", flush=True)
+    print(f"[seed] {ckpt}: step {step}, {len(chains)} resonances with m <= {ns[1] // 2}, n <= {ns[2] // 2}, "
+          f"h_r {h_r:.4f}", flush=True)
 
     dB, owner = [], []
     for c, (m, n, _, _, funcs) in enumerate(chains):

@@ -39,6 +39,9 @@ CASES = {
     # the island test: Landreman's case A (eps = 1.08, S = 3) at k_b = 0.3, iota 5.689..5.762 with the (7,20) and
     # (8,23) rationals inside; lam = 4 for beta_V ~ 3 % (the paper's sheared example has m in the hundreds)
     "shearedA": dict(family="sheared", eps=1.08, S=3.0, k_b=0.3, lam=4.0, kappa=1.0, p_edge=0.0),
+    # the island test that is resolvable in zeta: iota 1.515..1.478, ONE chain with m <= 16, (4,3) at r = 0.64
+    # (iota' = -0.047); shearedA's (7,20) and (8,23) need n_zeta >= 40..46 per period; lam = 1.4 for beta_V ~ 3 %
+    "shearedB": dict(family="sheared", eps=0.25, S=0.75, k_b=0.2, lam=1.4, kappa=1.0, p_edge=0.0),
 }
 
 

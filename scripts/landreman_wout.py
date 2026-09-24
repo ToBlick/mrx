@@ -21,7 +21,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import landreman_equilibria as le  # noqa: E402
 
-GRIDS = {"iota2": (48, 48), "sheared": (32, 128), "shearedA": (32, 64)}     # (n_theta, n_zeta): series truncation < 1e-11 (tested)
+GRIDS = {"iota2": (48, 48), "sheared": (32, 128), "shearedA": (32, 64), "shearedB": (32, 48)}     # (n_theta, n_zeta): series truncation < 1e-11 (tested)
 
 
 def main(argv=None):
