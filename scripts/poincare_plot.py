@@ -50,7 +50,7 @@ Flags (defaults in brackets):
                            diagnostic look: titled PNG at 200 dpi plus a
                            presentation .pgf (see --no-pgf)
     --label-size F         (--paper) axis-label pt at --page-width; ticks and
-                           legends keep the house hierarchy [6]
+                           legends keep the house hierarchy [9]
     --page-width W         (--paper) authored width in inches, 'one page wide' [6.5]
     --dpi N                (--paper) rasterised crossing-scatter resolution [600]
     --no-pgf               skip the .pgf beside each PNG (needs xelatex on PATH)
