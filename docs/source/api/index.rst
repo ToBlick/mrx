@@ -16,6 +16,7 @@ documented in their source and in the concept pages.
    initial_conditions
    mappings
    nullspace
+   shape_ad
    relaxation
    solvers
    poincare
