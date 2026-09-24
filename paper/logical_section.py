@@ -52,7 +52,7 @@ def main():
     lr, lth = z[f"{f}_zeta{cli.plane:g}_logr"], z[f"{f}_zeta{cli.plane:g}_logth"]
     press = 100.0 * cli.pressure_factor * z[f"{f}_zeta{cli.plane:g}_pressure"]
     colour = np.broadcast_to(iota[:, None], lr.shape)
-    shown2 = np.broadcast_to(shown[:, None], lr.shape)
+    kept2 = np.broadcast_to(keep[:, None], lr.shape)   # every kept line is drawn, chaotic ones too; shown sets the range
     left = lth < 0.5
 
     scale = cli.label_size / FS.label
@@ -64,9 +64,9 @@ def main():
         box = lambda x, w: fig.add_axes((x / W, y0 / H, w / W, side / H))  # noqa: E731
         cax_i, ax, cax_p = box(x0, bar), box(x0 + bar + gap_i, side), box(x0 + bar + gap_i + side + gap_p, bar)
         s = dict(s=cli.dot_size, linewidths=0, rasterized=True)
-        sc = ax.scatter(lth[shown2 & left], lr[shown2 & left], c=colour[shown2 & left], vmin=lo, vmax=hi,
+        sc = ax.scatter(lth[kept2 & left], lr[kept2 & left], c=colour[kept2 & left], vmin=lo, vmax=hi,
                         cmap=SECTION_CMAP, **s)
-        psc = ax.scatter(lth[shown2 & ~left], lr[shown2 & ~left], c=press[shown2 & ~left], vmin=p_lim[0],
+        psc = ax.scatter(lth[kept2 & ~left], lr[kept2 & ~left], c=press[kept2 & ~left], vmin=p_lim[0],
                          vmax=p_lim[1], cmap=PRESSURE_CMAP, **s)
         lost = np.broadcast_to(~keep[:, None], lr.shape)
         if lost.any():
