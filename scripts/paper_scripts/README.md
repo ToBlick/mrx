@@ -33,7 +33,7 @@ needs updating when it changes.
 
 | item | launcher | records under `<root>` | generator |
 |---|---|---|---|
-| Fig. 1 `figure1_standalone.pdf` (`fig:ncsx_sections`) | -- | a `sections.npz` of the retired `poincare_relax.py` | `mesh_sections_3d.py` (illustration, see below) |
+| Fig. 1 `figure1_standalone.pdf` (`fig:ncsx_sections`) | `seeding.sh` | `seeding/relax32` (`relax.json`, `trace.npz`) | `figure1_mesh3d.py` (GPU: the run's map) |
 | Tab. 1 `mhs_codes_table` (`tab:codes`) | -- | -- | hand-written |
 | Fig. 2 `mesh_2d.pdf` (`fig:mesh_refinement`) | -- | -- | `scripts/plot_mesh.py` (command not recorded) |
 | Fig. 3 `vacuum_qa_Bmag.pdf` (`fig:vacuum_qa_bmag`) | `vacuum.sh` (`plot_vacuum_qa.py`) | `vacuum_vmec/bmag` | the job itself |
@@ -61,11 +61,11 @@ needs updating when it changes.
 | App. `newton_poincare_n{16,24,32}` (`fig:newton_sections`) | `newton_convergence.sh` | `newton_convergence/newton_{16,24,32}/cont` | `poincare_pages.py` |
 | App. `appendix_run_parameters_jcp` (`tab:runs`), `hyperparameters_table` (`tab:hyperparameters`) | -- | the `relax.json` of every run above | hand-written, checked against the records 2026-09-22 |
 
-Not rebuilt here: Fig. 1 is an illustration. `mesh_sections_3d.py` (collected from `outputs/figures_2026-09/`)
-drew `mesh_3d.pdf` and `figure1_standalone.pdf` from `scripts/plot_mesh.py`'s surface and a `sections.npz` of an
-earlier reconnection run in the format of the retired `poincare_relax.py`, with the colour bars of
-`figure1_standalone.tex`; `figs/graphical_abstract.pdf` is a copy of `mesh_3d.pdf`. The command behind Fig. 2 is
-not recorded. The Landreman appendix scripts (`landreman_*.py`) are the verification behind
+Fig. 1 is `figure1_mesh3d.py` (2026-09-24): the run's 3-D mesh cut open at two traced planes with the seeded
+32^3 sections on the cut faces, every kept line, the pressure on the Poincaré pages' scales
+(`--pressure-factor` as `poincare_pages.py`); the colour bars of `figure1_standalone.tex` frame it;
+`figs/graphical_abstract.pdf` is a copy of the earlier `mesh_3d.pdf`. The command behind Fig. 2 is not
+recorded. The Landreman appendix scripts (`landreman_*.py`) are the verification behind
 `tab:landreman_convergence` and the Landreman island runs; `landreman_chain.py` runs `<script> :: relax.py ... ::
 poincare_trace.py ...` groups as one job, resolving siblings here and the tools in `scripts/`.
 

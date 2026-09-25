@@ -1,0 +1,138 @@
+#!/usr/bin/env python
+"""Figure 1: the device's boundary mesh in 3-D, cut open at two toroidal planes that face the viewer, with the
+Poincare section of a relaxed run drawn on each cut face (GPU: it rebuilds the run's map).
+
+    python scripts/paper_scripts/figure1_mesh3d.py --run RUN --archive RUN/trace.npz --pressure-factor F --out DIR
+
+The camera looks along the toroidal unit vector at the front plane (logical zeta = 0), so the front face and the
+back face half a device further (the traced plane zeta = 0.5 of the next field period) are both seen face-on; the
+near half of the torus is removed. The front face is coloured by the rotational transform of each line, the back one
+by its normalised pressure p_norm = factor * p, on the scales of scripts/poincare_plot.py over every plane of the
+archive (iota over the shown lines, p over the kept lines), so the colours match the paper's Poincare pages. Every
+kept line is drawn, chaotic ones included, thinned by --line-stride. Writes the drawing alone (mesh_sections_3d.pdf)
+and one tick-only PDF per colour bar (cbar_iota.pdf, cbar_pnorm.pdf); figure1_standalone.tex composes them.
+"""
+import argparse
+import json
+import os
+
+import numpy as np
+
+
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--run", required=True, help="the run directory (relax.json: geometry, ns, p, symmetry)")
+    ap.add_argument("--archive", required=True, help="its trace.npz (one field)")
+    ap.add_argument("--pressure-factor", type=float, required=True, help="p_norm = factor * p (poincare_pages.py)")
+    ap.add_argument("--front", type=float, default=0.0, help="logical zeta of the front face (a traced plane)")
+    ap.add_argument("--back", type=float, default=0.5, help="logical zeta of the back face (a traced plane)")
+    ap.add_argument("--elev", type=float, default=18.0)
+    ap.add_argument("--line-stride", type=int, default=4, help="draw every k-th kept line")
+    ap.add_argument("--crossings", type=int, default=400, help="crossings drawn per line")
+    ap.add_argument("--knot-stride", type=int, default=2, help="draw every k-th knot line of the run's mesh")
+    ap.add_argument("--out", required=True)
+    return ap.parse_args(argv)
+
+
+def main(cli):
+    import jax
+    import jax.numpy as jnp
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mrx.geometry import build_sequence
+    from mrx.plotstyle import LEFT, PRESSURE_CMAP, SECTION_CMAP, house_style
+
+    attrs = json.load(open(os.path.join(cli.run, "relax.json")))["params"]
+    ns = tuple(int(v) for v in attrs["ns"])
+    seq, _ = build_sequence(str(attrs["geometry_path"]), ns, int(attrs["p"]), nfp=attrs.get("nfp"),
+                            knots=attrs.get("knots"), symmetry=attrs.get("symmetry", "stellarator"))
+    F = jax.jit(jax.vmap(seq.map))
+    nfp = int(seq.nfp)
+    print(f"[mesh] {os.path.basename(str(attrs['geometry_path']))} {ns} p={attrs['p']}, nfp={nfp}", flush=True)
+
+    def xyz(r, th, ze):
+        return np.asarray(F(jnp.stack([jnp.asarray(r), jnp.asarray(th), jnp.asarray(ze)], axis=-1)))
+
+    # The far half of the device, zeta in [front, front + nfp/2], is the half the front face's tangent points into;
+    # the camera sits opposite to it.
+    z_lo, z_hi = cli.front, cli.front + nfp / 2.0
+    probe = xyz(np.full(2, 1.0 - 1e-6), np.zeros(2), np.array([z_lo, z_lo + 0.05]))
+    t = probe[1, :2] - probe[0, :2]
+    t /= np.linalg.norm(t)
+    azim = float(np.degrees(np.arctan2(-t[1], -t[0])))
+
+    z = np.load(cli.archive)
+    (tag,) = [str(v) for v in z["fields"]]
+    keep, shown, iota_all = z[f"{tag}_keep"], z[f"{tag}_shown"], z[f"{tag}_iota"]
+    # the scales of scripts/poincare_plot.py over every plane: iota over the shown lines, the weak pressure (gauge 0)
+    # over the kept lines, x 100, padded 5 %
+    i_lo, i_hi = float(iota_all[shown].min()), float(iota_all[shown].max())
+    ps = [100.0 * cli.pressure_factor * z[f"{tag}_zeta{pl:g}_pressure"][keep] for pl in z["planes"]]
+    p0, p1 = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
+    scales = {"iota": (i_lo, i_hi, SECTION_CMAP), "p": (p0 - 0.05 * (p1 - p0), p1 + 0.05 * (p1 - p0), PRESSURE_CMAP)}
+    lines = np.nonzero(keep)[0][::cli.line_stride]
+    nc = cli.crossings
+    print(f"[lines] {len(lines)} of {int(keep.sum())} kept lines, {nc} crossings each; iota {i_lo:.4f}..{i_hi:.4f}, "
+          f"p_norm x 100 {scales['p'][0]:.3g}..{scales['p'][1]:.3g}", flush=True)
+
+    def face(plane, zeta_device, what):
+        key = f"{tag}_zeta{plane % 1.0:g}"
+        R, Z = z[f"{key}_R"][lines][:, :nc], z[f"{key}_Z"][lines][:, :nc]
+        a = xyz(np.full(1, 1e-3), np.zeros(1), np.array([zeta_device]))[0]      # the face's angle, from its axis point
+        phi = float(np.arctan2(a[1], a[0]))
+        col = (np.broadcast_to(iota_all[lines][:, None], R.shape) if what == "iota"
+               else 100.0 * cli.pressure_factor * z[f"{key}_pressure"][lines][:, :nc])
+        return R * np.cos(phi), R * np.sin(phi), Z, col, what
+
+    faces = [face(cli.front, z_lo, "iota"), face(cli.back, z_hi, "p")]
+    os.makedirs(cli.out, exist_ok=True)
+    black, grey = LEFT["color"], "0.55"
+    with house_style():
+        fig = plt.figure(figsize=(8.0, 6.0))
+        ax = fig.add_subplot(111, projection="3d")
+        n_line = 200
+        for j in range(0, ns[1], cli.knot_stride):                               # poloidal knot lines, far half
+            zz = np.linspace(z_lo, z_hi, n_line)
+            p = xyz(np.full(zz.size, 1.0 - 1e-6), np.full(zz.size, j / ns[1]), zz)
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=black, lw=0.35)
+        kn = np.arange(np.ceil(z_lo * ns[2]), np.floor(z_hi * ns[2]) + 1, cli.knot_stride) / ns[2]
+        for zk in kn:                                                             # toroidal knot lines, far half
+            tt = np.linspace(0.0, 1.0, n_line)
+            p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=grey, lw=0.3)
+        for zk in (z_lo, z_hi):                                                   # the two cut faces' outlines
+            tt = np.linspace(0.0, 1.0, 2 * n_line)
+            p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=black, lw=1.0)
+        bars = {}
+        for X, Y, Zc, col, what in faces:
+            vmin, vmax, cmap = scales[what]
+            bars[what] = ax.scatter(X.ravel(), Y.ravel(), Zc.ravel(), c=col.ravel(), s=0.8, vmin=vmin, vmax=vmax,
+                                    cmap=cmap, linewidths=0, rasterized=True, depthshade=False)
+        th = np.linspace(0.0, 1.0, 4 * ns[1] + 1)                                 # the whole device's extent
+        THf, ZEf = np.meshgrid(th, np.linspace(0.0, nfp, 4 * ns[2] * nfp + 1), indexing="ij")
+        yf = xyz(np.full(THf.size, 1.0 - 1e-6), THf.ravel(), ZEf.ravel())
+        lo, hi = yf.min(0), yf.max(0)
+        ax.set_xlim(lo[0], hi[0])
+        ax.set_ylim(lo[1], hi[1])
+        ax.set_zlim(lo[2], hi[2])
+        ax.set_box_aspect(hi - lo, zoom=1.12)
+        ax.view_init(elev=cli.elev, azim=azim)
+        ax.set_proj_type("ortho")
+        ax.set_axis_off()
+        ax.set_position([0.0, 0.0, 1.0, 1.0])
+        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.pdf"), dpi=300, bbox_inches="tight", pad_inches=0.02)
+        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.png"), dpi=200, bbox_inches="tight", pad_inches=0.02)
+        plt.close(fig)
+        for what, name in (("iota", "cbar_iota"), ("p", "cbar_pnorm")):          # tick-only bars, labels in LaTeX
+            fb = plt.figure(figsize=(0.5, 3.0))
+            cax = fb.add_axes([0.05, 0.03, 0.3, 0.94])
+            fb.colorbar(bars[what], cax=cax)
+            fb.savefig(os.path.join(cli.out, name + ".pdf"), bbox_inches="tight", pad_inches=0.02)
+            plt.close(fb)
+    print(f"  -> {cli.out}/mesh_sections_3d.{{pdf,png}}, cbar_iota.pdf, cbar_pnorm.pdf", flush=True)
+
+
+if __name__ == "__main__":
+    main(parse_args())
