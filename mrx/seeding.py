@@ -70,10 +70,11 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
     h_r = 1.0 / (rb.n - rb.p)
     lam = lambda x: cb["lam_h"](x) / (2.0 * jnp.pi)   # noqa: E731  (lambda in turns)
 
-    # the rotational transform, a spline in rho off the axis; |iota| as the seeds count it
+    # the rotational transform per full turn, |dchi / dPhi| as mrx.initial_conditions counts it, a spline in rho
+    # off the axis
     rho, dPhi, dchi = (np.asarray(cb[k], float) for k in ("rho", "dPhi", "dchi"))
     inside = dPhi != 0.0
-    iota = CubicSpline(rho[inside], np.abs(dchi[inside] / (nfp * dPhi[inside])))
+    iota = CubicSpline(rho[inside], np.abs(dchi[inside] / dPhi[inside]))
     rr = np.linspace(1e-3, 1.0, 40001)
 
     # the radial basis, sampled: the profile of one seed block is one of its functions
