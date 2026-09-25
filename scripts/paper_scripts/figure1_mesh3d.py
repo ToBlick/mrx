@@ -18,6 +18,8 @@ import os
 
 import numpy as np
 
+PGF = {"pgf.texsystem": "pdflatex", "pgf.rcfonts": False, "pgf.preamble": r"\providecommand{\mathdefault}[1]{#1}"}
+
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -27,11 +29,12 @@ def parse_args(argv=None):
     ap.add_argument("--front", type=float, default=0.0, help="logical zeta of the front face (a traced plane)")
     ap.add_argument("--back", type=float, default=0.5, help="logical zeta of the back face (a traced plane)")
     ap.add_argument("--elev", type=float, default=18.0)
-    ap.add_argument("--line-stride", type=int, default=5, help="draw every k-th kept line")
+    ap.add_argument("--line-stride", type=int, default=6, help="draw every k-th kept line")
     ap.add_argument("--crossings", type=int, default=400, help="crossings drawn per line")
     ap.add_argument("--dot-size", type=float, default=0.4, help="section marker area, pt^2")
     ap.add_argument("--opaque", action="store_true",
-                    help="a white, covering surface, and only the knot lines on its side facing the camera")
+                    help="a covering surface and caps on the cut faces, and only the knot lines facing the camera")
+    ap.add_argument("--surface-color", default="0.95", help="colour of the covering surface and the caps")
     ap.add_argument("--mesh-lw", type=float, default=0.25, help="width of every mesh line, pt")
     ap.add_argument("--knot-stride", type=int, default=2, help="draw every k-th knot line of the run's mesh")
     ap.add_argument("--out", required=True)
@@ -131,12 +134,17 @@ def main(cli):
         ax = fig.add_subplot(111, projection="3d")
         ax.computed_zorder = False                                                # surface, then lines, then sections
         n_line = 200
-        if cli.opaque:                                                            # the far half's boundary, white
+        if cli.opaque:                                                            # the far half's boundary, covering
             TH, ZE = np.meshgrid(np.linspace(0.0, 1.0, 4 * ns[1] + 1),
                                  np.linspace(z_lo, z_hi, int(2 * ns[2] * nfp) + 1), indexing="ij")
             S = xyz(np.full(TH.size, r1), TH.ravel(), ZE.ravel()).reshape(TH.shape + (3,))
-            ax.plot_surface(S[..., 0], S[..., 1], S[..., 2], color="white", shade=False, linewidth=0,
-                            antialiased=False, zorder=1)
+            ax.plot_surface(S[..., 0], S[..., 1], S[..., 2], color=cli.surface_color, shade=False, linewidth=0,
+                            antialiased=False, zorder=1, rasterized=True)
+            for zk in (z_lo, z_hi):                                               # caps on the cut faces: over the
+                RR, TT = np.meshgrid(np.linspace(1e-3, r1, 48), np.linspace(0.0, 1.0, 4 * ns[1] + 1), indexing="ij")
+                C = xyz(RR.ravel(), TT.ravel(), np.full(RR.size, zk)).reshape(RR.shape + (3,))
+                ax.plot_surface(C[..., 0], C[..., 1], C[..., 2], color=cli.surface_color, shade=False, linewidth=0,
+                                antialiased=False, zorder=2.5, rasterized=True)  # grid lines, under the sections
         for j in range(0, ns[1], cli.knot_stride):                               # poloidal knot lines, far half
             zz = np.linspace(z_lo, z_hi, n_line)
             line(np.full(zz.size, j / ns[1]), zz)
@@ -147,7 +155,7 @@ def main(cli):
         for zk in (z_lo, z_hi):                                                   # the two cut faces' outlines, whole
             tt = np.linspace(0.0, 1.0, 2 * n_line)
             p = xyz(np.full(tt.size, r1), tt, np.full(tt.size, zk))
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], **{**mesh, "zorder": 2.6})     # over the caps
         bars = {}
         for X, Y, Zc, col, what in faces:
             vmin, vmax, cmap = scales[what]
@@ -165,16 +173,47 @@ def main(cli):
         ax.set_proj_type("ortho")
         ax.set_axis_off()
         ax.set_position([0.0, 0.0, 1.0, 1.0])
-        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.pdf"), dpi=300, bbox_inches="tight", pad_inches=0.02)
-        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.png"), dpi=200, bbox_inches="tight", pad_inches=0.02)
+        tight = dict(bbox_inches="tight", pad_inches=0.02)
+        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.pdf"), dpi=300, **tight)
+        fig.savefig(os.path.join(cli.out, "mesh_sections_3d.png"), dpi=200, **tight)
+        pgf_dir = os.path.join(cli.out, "pgf")
+        os.makedirs(pgf_dir, exist_ok=True)
+        with matplotlib.rc_context(PGF):                                         # vector lines, rasterized fills and dots
+            fig.savefig(os.path.join(pgf_dir, "mesh_sections_3d.pgf"), backend="pgf", dpi=300, **tight)
         plt.close(fig)
+        crop_pgf(os.path.join(pgf_dir, "mesh_sections_3d.pgf"), os.path.join(cli.out, "mesh_sections_3d.png"), 200)
         for what, name in (("iota", "cbar_iota"), ("p", "cbar_pnorm")):          # tick-only bars, labels in LaTeX
-            fb = plt.figure(figsize=(0.5, 3.0))
-            cax = fb.add_axes([0.05, 0.03, 0.3, 0.94])
+            fb = plt.figure(figsize=(0.55, 1.75))                                 # at their printed size
+            cax = fb.add_axes([0.05, 0.03, 0.28, 0.94])
             fb.colorbar(bars[what], cax=cax)
-            fb.savefig(os.path.join(cli.out, name + ".pdf"), bbox_inches="tight", pad_inches=0.02)
+            cax.tick_params(labelsize=8.0)
+            fb.savefig(os.path.join(cli.out, name + ".pdf"), **tight)
+            with matplotlib.rc_context(PGF):
+                fb.savefig(os.path.join(pgf_dir, name + ".pgf"), backend="pgf", **tight)
             plt.close(fb)
-    print(f"  -> {cli.out}/mesh_sections_3d.{{pdf,png}}, cbar_iota.pdf, cbar_pnorm.pdf", flush=True)
+    print(f"  -> {cli.out}/mesh_sections_3d.{{pdf,png}}, cbar_iota.pdf, cbar_pnorm.pdf, and pgf/ of all three",
+          flush=True)
+
+
+def crop_pgf(pgf, png, dpi, pad=0.04):
+    """Set the PGF's bounding box to the drawn content, measured on the PNG of the same (tight) page: the square 3-D
+    axes box leaves white bands above and below the torus. pad in inches."""
+    import re
+
+    import matplotlib.image as mpimg
+    im = mpimg.imread(png)[..., :3]
+    ys, xs = np.nonzero(im.min(axis=2) < 245 / 255)
+    H, W = im.shape[:2]
+    x0, x1 = max(xs.min() / dpi - pad, 0.0), min((xs.max() + 1) / dpi + pad, W / dpi)
+    y0, y1 = max((H - ys.max() - 1) / dpi - pad, 0.0), min((H - ys.min()) / dpi + pad, H / dpi)
+    s = open(pgf).read()
+    box = re.compile(r"\\pgfpathrectangle\{\\pgfpointorigin\}\{\\pgfqpoint\{[\d.]+in\}\{[\d.]+in\}\}%\n"
+                     r"\\pgfusepath\{use as bounding box, clip\}")
+    new = ("\\pgfpathrectangle{\\pgfqpoint{%.6fin}{%.6fin}}{\\pgfqpoint{%.6fin}{%.6fin}}%%\n"
+           "\\pgfusepath{use as bounding box, clip}" % (x0, y0, x1 - x0, y1 - y0))
+    s, n = box.subn(lambda m: new, s, count=1)
+    assert n == 1, pgf
+    open(pgf, "w").write(s)
 
 
 if __name__ == "__main__":
