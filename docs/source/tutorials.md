@@ -12,8 +12,8 @@ numbered steps:
    (`4_li383_newton.py`),
 5. **seed magnetic islands** in step 4's floor by the energy criterion and relax
    them ideally (`5_li383_island_seed.py`),
-6. **drive** the seeded field back towards the unseeded equilibrium with the
-   resistive drive (`6_li383_drive.py`).
+6. **drive** the seeded field towards the resistive steady state of the
+   unseeded equilibrium's current (`6_li383_drive.py`).
 
 Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
@@ -242,16 +242,18 @@ with 5 Newton steps (the chains survive), and writes the run in
 `scripts/relax.py`'s layout plus `reference.h5`, the unseeded floor. On the
 command line the same is `scripts/relax.py --seed [--seed-iotas ... --seed-amplitudes ...]`.
 
-## 6. Drive the field back towards the unseeded equilibrium (`6_li383_drive.py`)
+## 6. Drive the field towards the unseeded equilibrium's current (`6_li383_drive.py`)
 
 The paper's last experiment (Sec. 7) breaks the frozen-in constraint with a
 **drive**: after every ideal step a backward-Euler resistive step
 $\partial_t B = -\eta\,\mathrm{curl}(J - J^*)$ with the dose
 $\varepsilon = C h_r^2$ pulls the current towards $J^*$, the current of a
 reference field $B^*$ -- here Tutorial 5's unseeded floor after one heat step
-that removes its rational-surface sheets. Field lines can now reconnect,
-helicity is no longer conserved, and the field goes to a resistive steady
-state: the islands close.
+that removes its rational-surface sheets. Field lines can now reconnect and
+helicity is no longer conserved: the field goes to the resistive steady state
+of the reference current, the same state from any start, seeded or not (the
+paper's three arms converge to it), with islands where the reference's sheets
+were -- the chains settle at that state's widths, they do not simply close.
 
 ```python
 cfg = RelaxConfig(geometry=geometry, budget=Budget(steps=20, chunk=5, floor_tol=0.0),

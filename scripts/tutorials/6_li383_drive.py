@@ -1,4 +1,4 @@
-"""Tutorial 6: drive a seeded field back towards the unseeded equilibrium, on li383.
+"""Tutorial 6: drive a seeded field towards the unseeded equilibrium's current, on li383.
 
 Tutorials 3 to 5 stayed ideal (eta = 0): a frozen-in flow that lowers the
 energy without ever changing the field's topology, so the islands Tutorial 5
@@ -8,9 +8,12 @@ resistive step ``dB/dt = -eta curl (J - J*)`` with the dose ``eps = C h_r^2``
 pulls the current towards ``J*``, the current of a reference field ``B*``
 -- here the unseeded nested floor of Tutorial 4, after one heat step that
 removes its rational-surface sheets (sustained, they would make the start
-a fixed point). Field lines can now reconnect, helicity is no longer
-conserved, and the field goes to a resistive steady state: the islands close
-(or, with a resonant drive of the reference, open and saturate). This is
+a fixed point). Field lines can now reconnect and helicity is no longer
+conserved: the field goes to the resistive steady state of the reference
+current, the same state from any start, seeded or not (the paper's three
+arms converge to it), with islands where the reference's rational-surface
+sheets were. The chains the seed opened move and change width on the way;
+what converges is the field, not the nested floor. This is
 ``scripts/relax.py --drive-resistivity C --drive-reference REF``.
 
 The run: the seeded, relaxed state of Tutorial 5 (``outputs/tutorials/li383_island_seed``,
@@ -153,8 +156,9 @@ def progress(res):
 
 # %%
 # Now we run: Newton steps, each followed by the resistive dose. The helicity
-# decays at the resistive rate, the distance to the reference shrinks, and
-# the islands close as the field heads for the resistive steady state.
+# decays at the resistive rate and the distance to the reference shrinks as
+# the field heads for the resistive steady state of the reference current;
+# the chains settle at that state's widths, not at zero.
 res = relax(initial_state(B_seeded, ts), ts, on_chunk=progress, **cfg.relax_kwargs())
 B = res.state.B_n
 F = np.asarray(res.trace["F"], dtype=float)
@@ -227,5 +231,6 @@ params = dict(cfg.params, geometry_path=os.path.abspath(cli.geometry), knots=geo
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, seed=rows, trace=res.trace, qoi=res.qoi), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/")
-print("[done] the drive closes the seeded chains: the locked lines and their width go, the helicity decays, "
-      "the field approaches the reference current.")
+print("[done] the drive takes the seeded field towards the resistive steady state of the reference current: the "
+      "helicity decays, the distance to the reference shrinks, and the chains settle at that state's widths -- the "
+      "state the unseeded floor is driven to as well.")
