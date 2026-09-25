@@ -89,7 +89,7 @@ PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32")
 def main(cfg):
     import equinox as eqx
     import mrx
-    from mrx.geometry import build_sequence, geometry_kind
+    from mrx.geometry import geometry_kind
     from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation import (initial_state, radial_cell_sq, read_checkpoint, relax, resistive_step,
@@ -111,8 +111,7 @@ def main(cfg):
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
-    seq, ops = build_sequence(g.path, g.ns, g.p, g.solve_maxiter, tol=g.solve_tol, nfp=g.nfp, knots=g.knots,
-                              symmetry=g.symmetry)
+    seq, ops = g.build()
     params.update(ns=list(seq.ns), knots=g.knots)
     compute_nullspaces(seq)
     print(f"[setup] {g.path} ns={seq.ns} p={g.p} tol={seq.tol:.1e}  n2_dbc={seq.odd.n(2, True)}  "

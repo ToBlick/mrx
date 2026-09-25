@@ -75,12 +75,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
-from mrx.geometry import build_sequence
-from mrx.initial_conditions import initial_field, parse_seed
+from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis, render_section
 from mrx.poincare import poincare, surface_label
-from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, resistive_step,
+from mrx.relax_config import Budget, Geometry, RelaxConfig, Seed, current_precision
+from mrx.relaxation import (compute_force, initial_state, radial_cell_sq, relax, resistive_step,
                             weak_pressure, write_checkpoint)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
@@ -88,7 +88,13 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # %%
 # Now we build the de Rham sequence on li383's geometry and its harmonic forms,
 # the operators every solve and the Poincare tracing lean on.
-seq, ops = build_sequence(cli.geometry, ns, cli.p)
+# scripts/relax.py's configuration (mrx.relax_config): the geometry builds the sequence, the seed group
+# parses the seed, the Newton configuration below makes the stepper of the ideal tail.
+seed_cfg = Seed(spec=cli.seed, eps=cli.seed_eps)
+cfg = RelaxConfig(geometry=Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision()),
+                  seed=seed_cfg, budget=Budget(steps=cli.newton_steps, chunk=5, floor_tol=0.0))
+seq, ops = cfg.geometry.build()
+h_r_sq = radial_cell_sq(seq)
 nfp = seq.nfp
 compute_nullspaces(seq)
 
@@ -114,8 +120,8 @@ for run in cli.warm_start.split(","):
     print(f"[ic] run {run} is ns={ws['ns']} p={ws['p']} (need {list(ns)} p={cli.p}); skipped")
 if B0 is None:
     seed = None
-    if cli.seed:
-        seed = parse_seed(cli.seed, cli.seed_eps)
+    if seed_cfg:
+        seed = seed_cfg.parsed()
         print(f"[ic] seed (m, n) = ({seed[0]}, {seed[1]}) at rho0 {seed[2]:g}, eps {cli.seed_eps:.2e}")
     B0, ic = initial_field(seq, seed)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
@@ -134,10 +140,9 @@ print(f"[reconnect] one resistive step at eps = {cli.eps:.1e}: "
 # the Newton-MR solve of the second variation, the line search capped at
 # the Newton step). The ideal tail conserves helicity and just settles the
 # reconnected field.
-ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True)
+ts_newton = cfg.stepper(seq, h_r_sq)
 print(f"[relax] {cli.newton_steps} Newton steps to a clean floor")
-res = relax(initial_state(B_reconnected, ts_newton), ts_newton, steps=cli.newton_steps,
-            chunk=5, floor_tol=0.0)
+res = relax(initial_state(B_reconnected, ts_newton), ts_newton, **cfg.relax_kwargs(h_r_sq))
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -223,10 +228,8 @@ print(f"  -> {path}")
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts_newton), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
-params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-              knots=None, precision=str(mrx.DTYPE), steps=res.steps,
-              auxiliary_B_field=False, ic="warmstart", eps=cli.eps, seed=cli.seed, seed_eps=cli.seed_eps,
-              newton=True)
+params = dict(cfg.params, geometry_path=os.path.abspath(cli.geometry), knots=cfg.geometry.knots, ic="warmstart",
+              h_r_sq=h_r_sq, start_step=0, eps=cli.eps)     # eps: the one resistive step, not a stepper option
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/")

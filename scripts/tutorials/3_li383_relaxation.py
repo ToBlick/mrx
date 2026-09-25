@@ -71,16 +71,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.differential_forms import DiscreteFunction
-from mrx.geometry import build_sequence
 from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import get_2d_grids, plot_torus, plot_twin_axis
-from mrx.relaxation import (TimeStepper, compute_force, initial_state, relax, weak_pressure,
+from mrx.relax_config import Budget, Descent, Geometry, RelaxConfig, current_precision
+from mrx.relaxation import (compute_force, initial_state, radial_cell_sq, relax, weak_pressure,
                             write_checkpoint)
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
-seq, ops = build_sequence(cli.geometry, ns, cli.p)
+# The run's configuration is the same object scripts/relax.py builds from its command line
+# (mrx.relax_config): the geometry group builds the sequence, the descent group the stepper, the
+# budget group the loop's arguments; every default is the production one.
+cfg = RelaxConfig(geometry=Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision()),
+                  descent=Descent(method="gradient"),
+                  budget=Budget(steps=cli.outer * cli.inner, chunk=cli.inner, floor_tol=cli.floor_tol))
+seq, ops = cfg.geometry.build()
 compute_nullspaces(seq)
 
 # %%
@@ -95,10 +101,10 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 # defaults plus velocity smoothing, run toward a nested floor (~500 steps).
 # gamma = 1 velocity smoothing: v = (I - scale L)^-1 F, the stepper's default
 # scale 0.075 h_r^2 (mrx.relaxation.SMOOTHING_C, h_r the physical radial cell).
-ts = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
+h_r_sq = radial_cell_sq(seq)
+ts = cfg.stepper(seq, h_r_sq)
 print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
-res = relax(initial_state(B0, ts), ts, steps=cli.outer * cli.inner, chunk=cli.inner,
-            floor_tol=cli.floor_tol)
+res = relax(initial_state(B0, ts), ts, **cfg.relax_kwargs(h_r_sq))
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -157,9 +163,8 @@ print(f"  -> {path}")
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
-params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-              knots=None, precision=str(mrx.DTYPE), steps=res.steps,
-              auxiliary_B_field=False, ic=ic["kind"])
+params = dict(cfg.params, geometry_path=os.path.abspath(cli.geometry), knots=cfg.geometry.knots, ic=ic["kind"],
+              h_r_sq=h_r_sq, start_step=0)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")

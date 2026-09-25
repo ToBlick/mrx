@@ -15,6 +15,18 @@ from typing import Literal, Optional
 
 from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL
 
+#: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE). scripts/relax.py carries the same table: it must set the
+#: environment BEFORE mrx is imported (mrx.precision fixes the dtypes at import), so it cannot read this one.
+PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32"),
+              "float64": ("float64", "float64")}
+
+
+def current_precision() -> str:
+    """The name of the precision mrx runs in (a tutorial's configuration records it)."""
+    import mrx
+    from mrx.precision import RESIDUAL_DTYPE
+    return {v: k for k, v in PRECISIONS.items()}[(str(mrx.DTYPE), str(RESIDUAL_DTYPE))]
+
 
 def _ints(s):
     return tuple(int(v) for v in s.split(","))
@@ -70,6 +82,12 @@ class Geometry:
     @property
     def analytic(self):
         return self.path.endswith(".json")
+
+    def build(self):
+        """The sequence and its operators, :func:`mrx.geometry.build_sequence` of this group."""
+        from mrx.geometry import build_sequence
+        return build_sequence(self.path, self.ns, self.p, self.solve_maxiter, tol=self.solve_tol, nfp=self.nfp,
+                              knots=self.knots, symmetry=self.symmetry)
 
 
 @dataclass(frozen=True)
@@ -209,8 +227,8 @@ class RelaxConfig:
         steps = b.steps if b.steps is not None else (150 if d.newton else 3000)
         chunk = b.chunk if b.chunk is not None else (25 if d.newton else 500)
         object.__setattr__(self, "budget", replace(b, steps=steps, chunk=chunk))
-        if d.potential_velocity is None:
-            object.__setattr__(self, "descent", replace(d, potential_velocity=not d.newton))
+        if d.potential_velocity is None:     # the stepper's rule: the potential route is the gradient descent's on B
+            object.__setattr__(self, "descent", replace(d, potential_velocity=not (d.newton or d.auxiliary_B_field)))
         if chunk < 1 or steps % chunk:
             raise ValueError("--steps must be a positive multiple of --chunk")
         if self.seed and self.geometry.analytic:

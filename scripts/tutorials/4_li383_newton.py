@@ -88,6 +88,7 @@ os.makedirs(cli.out, exist_ok=True)
 # relaxation time-stepper and loop; the Newton direction is a stepper option.
 import glob
 import json
+from dataclasses import replace
 
 import h5py
 import jax.numpy as jnp
@@ -97,22 +98,28 @@ if not _INTERACTIVE:
 import matplotlib.pyplot as plt
 import numpy as np
 import mrx
-from mrx.geometry import build_sequence
 from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
-from mrx.relaxation import TimeStepper, initial_state, relax, write_checkpoint
+from mrx.relax_config import Budget, Descent, Geometry, Newton, RelaxConfig, current_precision
+from mrx.relaxation import initial_state, radial_cell_sq, relax, write_checkpoint
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
-seq, ops = build_sequence(cli.geometry, ns, cli.p)
+geometry = Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision())
+seq, ops = geometry.build()
 compute_nullspaces(seq)
+h_r_sq = radial_cell_sq(seq)
 
 # %%
 # Now we get the starting field: Tutorial 3's relaxed B from the first run
 # directory whose checkpoint is on disk and matches this mesh (the user's run,
 # then the shipped state), otherwise the equilibrium initial condition taken
-# through the descent's fast phase here (Tutorial 3's run, 500 steps).
-ts_descent = TimeStepper(seq=seq, cfl=0.5, velocity_smoothing_order=1)
+# through the descent's fast phase here (Tutorial 3's run, 500 steps). The
+# configurations are scripts/relax.py's objects (mrx.relax_config): one
+# geometry, a descent stepper and a Newton stepper, a budget per run.
+descent = RelaxConfig(geometry=geometry, descent=Descent(method="gradient"),
+                      budget=Budget(steps=500, chunk=50, floor_tol=1e-6))
+ts_descent = descent.stepper(seq, h_r_sq)
 B_start = None
 for run in cli.warm_start.split(","):
     ws_json = os.path.join(run, "relax.json")
@@ -131,7 +138,7 @@ if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
-    fast = relax(initial_state(B0, ts_descent), ts_descent, steps=500, chunk=50, floor_tol=1e-6)
+    fast = relax(initial_state(B0, ts_descent), ts_descent, **descent.relax_kwargs(h_r_sq))
     B_start = fast.state.B_n
     print(f"[ic] the descent's fast phase: {fast.steps} steps ({fast.stop}), "
           f"||F|| {fast.trace['F'][0]:.3e} -> {fast.trace['F'][-1]:.3e}")
@@ -139,8 +146,8 @@ if B_start is None:
 # %%
 # Now we continue the smoothed descent from that state, for comparison: the
 # power-law tail of Tutorial 3, another 200 steps.
-res_d = relax(initial_state(B_start, ts_descent), ts_descent, steps=cli.descent_steps,
-              chunk=50, floor_tol=0.0)
+tail = replace(descent, budget=Budget(steps=cli.descent_steps, chunk=50, floor_tol=0.0))
+res_d = relax(initial_state(B_start, ts_descent), ts_descent, **tail.relax_kwargs(h_r_sq))
 F_d = np.asarray(res_d.trace["F"], dtype=float)
 H_d = np.asarray(res_d.qoi["helicity"], dtype=float)
 print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d.steps:.2f} s/step): "
@@ -151,12 +158,13 @@ print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d
 # Now we run Newton from the same state: the Newton direction replaces the
 # smoothed force, the Newton-MR solve with the harmonic atom, the line search
 # capped at the Newton step.
-# the Newton solve's tolerance and iteration budget: the stepper's defaults (mrx.hessian) unless set
-ts_newton = TimeStepper(seq=seq, cfl=0.5, newton=True,
-                        **{k: v for k, v in dict(newton_tol=cli.newton_tol, newton_maxiter=cli.newton_maxiter).items()
-                           if v is not None})
-res_n = relax(initial_state(B_start, ts_newton), ts_newton, steps=cli.newton_steps,
-              chunk=cli.newton_chunk, floor_tol=0.0)
+# the Newton solve's tolerance and iteration budget: the Newton group's defaults unless set
+newton = RelaxConfig(geometry=geometry,
+                     newton=Newton(**{k: v for k, v in dict(tol=cli.newton_tol, maxiter=cli.newton_maxiter).items()
+                                      if v is not None}),
+                     budget=Budget(steps=cli.newton_steps, chunk=cli.newton_chunk, floor_tol=0.0))
+ts_newton = newton.stepper(seq, h_r_sq)
+res_n = relax(initial_state(B_start, ts_newton), ts_newton, **newton.relax_kwargs(h_r_sq))
 F_n = np.asarray(res_n.trace["F"], dtype=float)
 H_n = np.asarray(res_n.qoi["helicity"], dtype=float)
 it_n = np.asarray(res_n.trace["newton_it"])
@@ -199,10 +207,8 @@ print(f"  -> {path}")
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
 write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_start, ts_newton), 0)
 write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.h5"), res_n.state, res_n.steps)
-params = dict(geometry_path=os.path.abspath(cli.geometry), ns=list(ns), p=cli.p, nfp=None,
-              knots=None, precision=str(mrx.DTYPE), steps=res_n.steps,
-              auxiliary_B_field=False, ic="warmstart", newton=True, newton_tol=ts_newton.newton_tol,
-              newton_maxiter=ts_newton.newton_maxiter)
+params = dict(newton.params, geometry_path=os.path.abspath(cli.geometry), knots=geometry.knots, ic="warmstart",
+              h_r_sq=h_r_sq, start_step=0)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
     json.dump(dict(params=params, trace=res_n.trace, qoi=res_n.qoi, reconnect=[]), fh, indent=1)
 print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")
