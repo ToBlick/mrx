@@ -1,41 +1,41 @@
-"""Tutorial 5: a seeded island under ideal relaxation, on li383.
+"""Tutorial 5: seed magnetic islands by the energy criterion, on li383.
 
 Tutorial 3 relaxed li383's equilibrium field to a nested state and Tutorial 4
-took it to the floor with Newton. Here we add a small **resonant
-perturbation** to the initial condition, look at the field it produces next
-to the unseeded one -- so the effect of the seed is unmistakable -- and then
-relax the seeded field ideally the same way, the descent through its fast
-phase and Newton to the floor. The ideal flow is frozen-in: it can move the
-island and change its shape, it cannot close it, so the chain is still there
-at the floor. Tutorial 6 turns on resistivity and lets it reconnect.
+took it to the floor with Newton. Here we open islands in that floor the way
+the paper does (Sec. 6.2): every resonance ``iota = nfp n / m`` inside the
+field's iota range gets SIESTA's parallel seed ``dB = curl(A B / |B|)``,
+``A = a(r) cos(2 pi (m theta - n zeta))``, with its radial profile free in the
+mesh's own spline basis near the resonant radius, and all chains are solved
+together for the amplitudes of least energy (``mrx.seeding.energy_seed``).
+There is no phase to choose: a phase shift only scales the seed, because the
+stellarator parity projector removes the odd part exactly, and the profile's
+sign is set by the criterion. What gets printed is the whole story of the
+seed: every chain in range, its rotational transform and radius, the
+amplitude the criterion chose (as the resonant normal field
+``|dB^r| / |B^zeta|`` at the chain), the pendulum width it implies, and how
+much energy the seed removes.
 
-The seed rides on the Clebsch potential (so ``B = dA'`` stays exactly
-divergence-free and wall-tangent): a term
-``eps |Phi'(rho0)| / m  g(rho) cos(2 pi (m theta - s n zeta))`` added to
-``A'_zeta``, a Gaussian ``g`` of the given width centred on ``rho0`` and
-tapered to zero at the wall. ``eps`` is the resonant normal field
-``|dB^rho| / |B^zeta|`` at ``rho0``; the chain sits where
-``|iota| = nfp n / m`` and the island it opens has full width about
-``1.6 sqrt(eps nfp / (m |iota'|))`` in ``rho`` (a pendulum estimate).
+The same criterion can be steered: name the chains by their rotational
+transforms (``--iotas 0.5``) and, optionally, their amplitudes
+(``--amplitudes 3e-3``), which then replace the criterion's. The tutorial
+seeds once automatically and once by hand, sections the unseeded floor and
+both seeded fields at five toroidal planes, then relaxes the automatic seed
+ideally with Newton (Tutorial 4's stepper): the ideal flow is frozen-in, it
+can move the islands and change their shape, it cannot close them, so the
+chains are still there at the floor. Tutorial 6 turns the drive on.
 
-The default seed ``(m, n) = (6, 1)`` lands on li383's ``iota = nfp n / m = 1/2``
-surface (``rho ~ 0.54``); ``(5, 1)`` would take the ``3/5`` surface near the
-edge. The run uses the high-resolution reference ``wout_li383_1.4m.nc``: on the
-coarse reference the field's reconstruction residual sits on top of the seeded
-signal, so the seed cannot be told from the noise. Vary ``--seed-eps``
-(1e-3, 3e-3, 1e-2) to watch the island width track ``sqrt(eps)``.
-
-The mesh is Tutorial 3's ``(10, 16, 16) p = 2`` in the default float32. The
-relaxation costs what Tutorials 3 and 4 cost together; ``--descent-steps 0
---newton-steps 0`` skips it and just sections the two initial fields.
+It **warm-starts from Tutorial 4's Newton floor** (``outputs/tutorials/li383_newton``
+or the shipped state in ``data/tutorials/``) on the same ``(10, 16, 16) p = 2``
+mesh; otherwise it takes the equilibrium initial condition through the descent's
+fast phase and 5 Newton steps itself. Runs in the default float32.
 
     python -u scripts/tutorials/5_li383_island_seed.py
 """
 
 # %%
-# Now we read the run's options. The defaults seed the (6,1) chain on li383's
-# iota=1/2 surface at (10, 16, 16) p=2 and relax it: 200 descent steps, then
-# 5 Newton steps.
+# Now we read the run's options. The defaults seed every chain in range at
+# (10, 16, 16) p=2, then hand-seed the iota = 1/2 chain, and relax the
+# automatic seed for 5 Newton steps.
 from __future__ import annotations
 
 import argparse
@@ -47,19 +47,19 @@ import sys
 _INTERACTIVE = "ipykernel" in sys.modules
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-ap.add_argument("--geometry", default="data/wout_li383_1.4m.nc",
-                help="a VMEC wout (.nc) or a GVEC state file (.dat); "
-                     "use the high-res reference so the seed clears the IC residual")
+ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
+                help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorials 3 and 4")
 ap.add_argument("--ns", default="10,16,16")
 ap.add_argument("--p", type=int, default=2)
-ap.add_argument("--seed", default="6,1,0.544,0.1",
-                help='resonant seed "m,n,rho0,width"; (6,1) is the iota=1/2 surface')
-ap.add_argument("--seed-eps", type=float, default=1e-2,
-                help="resonant normal field |dB^rho|/|B^zeta| at rho0; width ~ sqrt(eps)")
-ap.add_argument("--descent-steps", type=int, default=200,
-                help="the descent's fast phase on the seeded field (a multiple of 50)")
-ap.add_argument("--newton-steps", type=int, default=5,
-                help="Newton steps after it (a multiple of 5)")
+ap.add_argument("--warm-start", default="outputs/tutorials/li383_newton,data/tutorials/li383_newton",
+                help="run directories, first present wins: Tutorial 4's run, then its shipped state")
+ap.add_argument("--iotas", default="0.5",
+                help="the hand-seeded chains, by their rotational transforms nfp n / m (comma-separated)")
+ap.add_argument("--amplitudes", default="3e-3",
+                help="their amplitudes, the resonant normal field |dB^r| / |B^zeta| at the chain, signed; "
+                     "empty = the energy criterion's, restricted to those chains")
+ap.add_argument("--scale", type=float, default=1.0, help="multiply the automatic seed")
+ap.add_argument("--newton-steps", type=int, default=5, help="Newton steps on the seeded field (a multiple of 5)")
 ap.add_argument("--lines", type=int, default=24, help="Poincare field lines")
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
 ap.add_argument("--out", default="outputs/tutorials/li383_island_seed")
@@ -68,55 +68,102 @@ ns = tuple(int(v) for v in cli.ns.split(","))
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
-# Now we import MRX -- the sequence, the seeded Clebsch initial condition, the
-# relaxation time-stepper and loop, and the Poincare tracer.
+# Now we import MRX -- the sequence, the relaxation, the seeding and the
+# Poincare tracer.
+import glob
 import json
 
+import h5py
+import jax.numpy as jnp
 import matplotlib
 if not _INTERACTIVE:
     matplotlib.use("Agg")  # headless as a script; a notebook keeps its inline backend
 import matplotlib.pyplot as plt
 import numpy as np
 import mrx
-from mrx.gvec import load_clebsch
-from mrx.initial_conditions import clebsch_potential_form, parse_seed, potential_two_form, resonant_rho
+from mrx.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
 from mrx.poincare import poincare, surface_label
-from mrx.relax_config import Budget, Descent, Geometry, RelaxConfig, current_precision
-from mrx.relaxation import (compute_divergence_norm, initial_state, radial_cell_sq, relax,
-                            write_checkpoint)
+from mrx.relax_config import Budget, Descent, Geometry, RelaxConfig, Seed, current_precision
+from mrx.relaxation import initial_state, radial_cell_sq, relax, write_checkpoint
+from mrx.seeding import energy_seed
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
-# scripts/relax.py's configuration objects (mrx.relax_config): the geometry builds the sequence, the
-# seed group parses the seed, and below a descent and a Newton configuration make the steppers.
+# The configuration objects of scripts/relax.py (mrx.relax_config): the geometry builds the sequence, a
+# Seed group records what was seeded, a Budget and a Descent make the steppers.
 geometry = Geometry(path=cli.geometry, resolution=ns, spline_degree=cli.p, precision=current_precision())
 seq, ops = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
+nfp = seq.nfp
 
 # %%
-# Now we build two initial fields: the plain equilibrium, and the same field
-# with a resonant seed added on the Clebsch potential.
-seed = parse_seed(cli.seed, cli.seed_eps)      # the envelope seed of the potential (to be replaced by mrx.seeding)
-m, n, rho0, width = seed[:4]
-cb = load_clebsch(seq.equilibrium, nfp=seq.nfp)
-nfp = int(cb["nfp"])
-rho_res = resonant_rho(cb, int(m), int(n))
-print(f"[ic] seed (m, n) = ({int(m)}, {int(n)}) at rho0 {rho0:g}, width {width:g}, "
-      f"eps {cli.seed_eps:.2e}")
-print(f"[ic] the file's |iota| = nfp n / m = {nfp * n / m:.4f} chain sits at "
-      f"rho = {rho_res:.3f} (seed rho0 {rho0:g})")
-B_unseeded, _, _ = potential_two_form(seq, clebsch_potential_form(cb))
-B_seeded, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
-print(f"[ic] seeded field: ||B||_M {norm:.4e}, ||div B|| {compute_divergence_norm(B_seeded, seq):.2e}, "
-      f"wall-normal part {wall:.1e}")
+# Now we get the nested floor to seed: Tutorial 4's Newton floor from the first
+# run directory whose checkpoint is on disk and matches this mesh, otherwise
+# the equilibrium initial condition through the descent's fast phase and a
+# few Newton steps here.
+B_floor = None
+for run in cli.warm_start.split(","):
+    ws_json = os.path.join(run, "relax.json")
+    if not os.path.exists(ws_json):
+        continue
+    with open(ws_json) as fh:
+        ws = json.load(fh)["params"]
+    ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
+    if tuple(ws["resolution"]) == ns and int(ws["spline_degree"]) == cli.p and ckpts:
+        with h5py.File(ckpts[-1], "r") as fh:
+            B_floor = jnp.asarray(np.asarray(fh["B_n"]))
+        print(f"[floor] warm-started from {ckpts[-1]} (resolution {ws['resolution']} p={ws['spline_degree']})")
+        break
+    print(f"[floor] run {run} is resolution {ws['resolution']} p={ws['spline_degree']} "
+          f"(need {list(ns)} p={cli.p}); skipped")
+if B_floor is None:
+    B0, ic = initial_field(seq)
+    print(f"[floor] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}")
+    descent = RelaxConfig(geometry=geometry, descent=Descent(method="gradient"),
+                          budget=Budget(steps=500, chunk=50, floor_tol=1e-6))
+    ts = descent.stepper(seq, h_r_sq)
+    fast = relax(initial_state(B0, ts), ts, **descent.relax_kwargs(), verbose=False)
+    newton = RelaxConfig(geometry=geometry, budget=Budget(steps=5, chunk=5, floor_tol=0.0))
+    ts = newton.stepper(seq, h_r_sq)
+    res = relax(initial_state(fast.state.B_n, ts), ts, **newton.relax_kwargs(), verbose=False)
+    B_floor = res.state.B_n
+    print(f"[floor] the descent's fast phase ({fast.steps} steps) and {res.steps} Newton steps: "
+          f"||F|| {fast.trace['F'][0]:.3e} -> {res.trace['F'][-1]:.3e}")
 
 # %%
-# Now we take Poincare sections of BOTH initial fields at five planes: the
-# island at the resonant chain shows in the seeded sections, not the unseeded.
-# Trace once per field, cut five planes over half a field period.
+# Now we seed the floor by the energy criterion: every resonance in range, the
+# amplitudes of least energy. energy_seed prints the chains it finds and the
+# joint optimum; the table below is what a user wants to know about each one.
+def report(rows, what):
+    h_r = float(np.sqrt(h_r_sq))
+    print(f"[{what}] {len(rows)} chain(s) seeded:")
+    print(f"  {'chain':>7}  {'iota':>7}  {'r_mn':>6}  {'|diota/dr|':>10}  {'amplitude dBr':>13}  "
+          f"{'width w':>8}  {'w / h_r':>7}")
+    for r in rows:
+        print(f"  ({r['m']:>2},{r['n']:>2})  {nfp * r['n'] / r['m']:7.4f}  {r['r']:6.3f}  {r['diota']:10.3e}  "
+              f"{r['dBr']:+13.3e}  {r['w']:8.4f}  {r['w'] / h_r:7.2f}")
+
+B_auto, rows_auto = energy_seed(seq, B_floor, scale=cli.scale)
+report(rows_auto, "seed, energy criterion")
+
+# %%
+# Now we seed by hand: the chains named by their rotational transforms, at the
+# amplitudes given -- the same machinery, the criterion's amplitudes replaced.
+# (Amplitudes without chains would be ignored with a warning: the criterion
+# then decides.) The sign of an amplitude is the profile's sign, the one phase
+# freedom the seed has.
+iotas = [float(v) for v in cli.iotas.split(",")]
+amplitudes = [float(v) for v in cli.amplitudes.split(",")] if cli.amplitudes else None
+B_hand, rows_hand = energy_seed(seq, B_floor, iotas=iotas, amplitudes=amplitudes)
+report(rows_hand, f"seed by hand, iotas {iotas}" + (f" at {amplitudes}" if amplitudes else ", the criterion's amplitudes"))
+
+# %%
+# Now we section the floor and both seeded fields at five planes. Trace once
+# per field, cut five planes over half a field period; the chains show as
+# island chains at their rotational transforms.
 def sections(B_dof, tag, title):
     res = poincare(seq, B_dof, lines=cli.lines, periods=cli.periods, name=tag)
     for plane, sec in res["sections"].items():
@@ -137,55 +184,54 @@ def sections(B_dof, tag, title):
         print(f"  -> {path}")
     return res
 
-sections(B_unseeded, "unseeded", f"unseeded IC {ns} p={cli.p}")
-sections(B_seeded, f"seeded_eps{cli.seed_eps:g}",
-         f"seeded ({int(m)},{int(n)}) eps={cli.seed_eps:g} {ns} p={cli.p}")
+
+def chain_widths(res, rows, what):
+    """The island width of each seeded chain as the sections measure it: the radial extent of
+    the lines locked to its rotational transform (|iota - nfp n / m| < 2e-3)."""
+    iota, r, keep = np.asarray(res["iota"]), np.asarray(res["seed_r"]), np.asarray(res["keep"])
+    for row in rows:
+        target = nfp * row["n"] / row["m"]
+        locked = keep & (np.abs(np.abs(iota) - target) < 2e-3)
+        width = float(r[locked].max() - r[locked].min()) if locked.sum() > 1 else 0.0
+        print(f"[{what}] chain ({row['m']},{row['n']}) iota {target:.4f}: {int(locked.sum())} locked line(s), "
+              f"width {width:.4f} (pendulum estimate {row['w']:.4f})")
+
+res_floor = sections(B_floor, "floor", f"the nested floor {ns} p={cli.p}")
+res_auto = sections(B_auto, "seeded", f"seeded by the energy criterion {ns} p={cli.p}")
+chain_widths(res_auto, rows_auto, "seeded")
+res_hand = sections(B_hand, "seeded_by_hand", f"seeded by hand, iota {cli.iotas} {ns} p={cli.p}")
+chain_widths(res_hand, rows_hand, "seeded by hand")
 
 # %%
-# Now we relax the seeded field ideally: the descent through its fast phase
-# (Tutorial 3's stepper), then Newton to the floor (Tutorial 4's). Both are
-# frozen-in flows -- helicity and the topology are kept -- so the island can
-# only move and change shape.
-B = B_seeded
-if cli.descent_steps:
-    descent = RelaxConfig(geometry=geometry, descent=Descent(method="gradient"),
-                          budget=Budget(steps=cli.descent_steps, chunk=50, floor_tol=1e-6))
-    ts_descent = descent.stepper(seq, h_r_sq)
-    res_d = relax(initial_state(B, ts_descent), ts_descent, **descent.relax_kwargs())
-    F = np.asarray(res_d.trace["F"], dtype=float)
-    H = np.asarray(res_d.qoi["helicity"], dtype=float)
-    print(f"[descent] {res_d.steps} steps ({res_d.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
-          f"dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}")
-    B = res_d.state.B_n
-if cli.newton_steps:
-    newton = RelaxConfig(geometry=geometry,
-                         budget=Budget(steps=cli.newton_steps, chunk=5, floor_tol=0.0))
-    ts_newton = newton.stepper(seq, h_r_sq)
-    res_n = relax(initial_state(B, ts_newton), ts_newton, **newton.relax_kwargs())
-    F = np.asarray(res_n.trace["F"], dtype=float)
-    H = np.asarray(res_n.qoi["helicity"], dtype=float)
-    it_n = np.asarray(res_n.trace["newton_it"])
-    print(f"[newton] {res_n.steps} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e} "
-          f"(lowest {F.min():.3e} at step {F.argmin() + 1}), dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}; "
-          f"MINRES iterations mean {np.abs(it_n).mean():.0f}")
-    B = res_n.state.B_n
+# Now we relax the automatically seeded field ideally with Newton (Tutorial
+# 4's stepper). The flow is frozen-in -- helicity and the topology are kept
+# -- so the islands can only move and change shape.
+cfg = RelaxConfig(geometry=geometry, seed=Seed(seed=True, scale=cli.scale),
+                  budget=Budget(steps=cli.newton_steps, chunk=5, floor_tol=0.0))
+ts_newton = cfg.stepper(seq, h_r_sq)
+res = relax(initial_state(B_auto, ts_newton), ts_newton, **cfg.relax_kwargs())
+F = np.asarray(res.trace["F"], dtype=float)
+H = np.asarray(res.qoi["helicity"], dtype=float)
+it_n = np.asarray(res.trace["newton_it"])
+print(f"[newton] {res.steps} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e} (lowest {F.min():.3e} at step {F.argmin() + 1}), "
+      f"dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}; MINRES iterations mean {np.abs(it_n).mean():.0f}")
+B = res.state.B_n
+res_relaxed = sections(B, "seeded_relaxed", f"seeded and relaxed {ns} p={cli.p}")
+chain_widths(res_relaxed, rows_auto, "seeded, relaxed")
 
 # %%
-# Now we section the relaxed seeded field: the chain is still there.
-if cli.descent_steps or cli.newton_steps:
-    sections(B, f"relaxed_eps{cli.seed_eps:g}",
-             f"seeded ({int(m)},{int(n)}) eps={cli.seed_eps:g}, relaxed {ns} p={cli.p}")
-    os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-    last, ts_any = (newton, ts_newton) if cli.newton_steps else (descent, ts_descent)
-    steps = (res_d.steps if cli.descent_steps else 0) + (res_n.steps if cli.newton_steps else 0)
-    write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"),
-                     initial_state(B_seeded, ts_any), 0, seq)
-    write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{steps:06d}.h5"),
-                     initial_state(B, ts_any), steps, seq)
-    params = dict(last.params, geometry_path=os.path.abspath(cli.geometry), knots=geometry.knots, ic="clebsch",
-                  h_r_sq=h_r_sq, start_step=0)
-    with open(os.path.join(cli.out, "relax.json"), "w") as fh:
-        json.dump(dict(params=params, reconnect=[]), fh, indent=1)
-    print(f"  -> {cli.out}/relax.json and checkpoints/")
-print("[done] the island at the resonant chain appears in the seeded sections and survives the "
-      "ideal relaxation; Tutorial 6 (with resistivity) can reconnect it.")
+# Now we archive the run the way scripts/relax.py does: relax.json with the
+# seeded chains, the seeded start and the relaxed state as checkpoints, and
+# the unseeded floor as reference.h5 -- Tutorial 6 drives the seeded field
+# back towards it.
+os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_auto, ts_newton), 0, seq)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
+write_checkpoint(os.path.join(cli.out, "reference.h5"), initial_state(B_floor, ts_newton), 0, seq)
+params = dict(cfg.params, geometry_path=os.path.abspath(cli.geometry), knots=geometry.knots, ic="warmstart",
+              h_r_sq=h_r_sq, start_step=0)
+with open(os.path.join(cli.out, "relax.json"), "w") as fh:
+    json.dump(dict(params=params, seed=rows_auto, seed_by_hand=rows_hand, trace=res.trace, qoi=res.qoi), fh, indent=1)
+print(f"  -> {cli.out}/relax.json, checkpoints/ and reference.h5 (the unseeded floor)")
+print("[done] the chains the criterion found are island chains in the seeded sections and survive the ideal "
+      "relaxation; Tutorial 6 drives the field back towards the unseeded floor.")

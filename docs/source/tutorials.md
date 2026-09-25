@@ -10,10 +10,10 @@ numbered steps:
 3. **relax** an equilibrium field to a nested state (`3_li383_relaxation.py`),
 4. **Newton** on the second variation, from step 3's state to the floor
    (`4_li383_newton.py`),
-5. **seed a magnetic island** in the initial field and relax it ideally
-   (`5_li383_island_seed.py`),
-6. **reconnect** with a resistive step, warm-started from step 4
-   (`6_li383_resistive.py`).
+5. **seed magnetic islands** in step 4's floor by the energy criterion and relax
+   them ideally (`5_li383_island_seed.py`),
+6. **drive** the seeded field back towards the unseeded equilibrium with the
+   resistive drive (`6_li383_drive.py`).
 
 Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
@@ -213,68 +213,61 @@ and writes the Newton run in `scripts/relax.py`'s layout for Tutorial 6 and
 Newton being its default method (the `--newton-*` flags in
 [Relaxation](relaxation.md)).
 
-## 5. Seed a magnetic island (`5_li383_island_seed.py`)
+## 5. Seed magnetic islands by the energy criterion (`5_li383_island_seed.py`)
 
 The ideal (eta = 0) flow is frozen-in: it cannot change the field's topology,
 so a seeded island can only move and reshape, never reconnect (that is
-Tutorial 6's job). Here we look at the **initial field** the seed produces,
-next to the unseeded control, so the effect of the seed is unmistakable, and
-then relax it. The seed rides on the Clebsch potential, so $B = dA'$ stays
-exactly divergence-free and wall-tangent:
+Tutorial 6's job). Here we open islands in Tutorial 4's Newton floor the way
+the paper does (Sec. 6.2): every resonance $\iota = n_{fp} n / m$ inside the
+field's iota range gets SIESTA's parallel seed $dB = \mathrm{curl}(A B / |B|)$,
+$A = a(r) \cos(2\pi(m\theta - n\zeta))$, its radial profile free in the mesh's
+own spline basis near the resonant radius, and all chains are solved together
+for the amplitudes of least energy:
 
 ```python
-seed = (6, 1, 0.544, 0.1, 1e-2)                           # (m, n, rho0, width, eps)
-B_seeded, norm, wall = potential_two_form(seq, clebsch_potential_form(cb, seed))
+from mrx.seeding import energy_seed
+B_seeded, rows = energy_seed(seq, B_floor)                      # every chain in range, the criterion's amplitudes
+B_hand, rows = energy_seed(seq, B_floor, iotas=[0.5], amplitudes=[3e-3])   # one chain, by hand
 ```
 
-The seed adds $\varepsilon\,|\Phi'(\rho_0)|/m\;g(\rho)\cos(2\pi(m\theta - s n\zeta))$
-to $A'_\zeta$; $\varepsilon$ is the resonant normal field
-$|dB^\rho|/|B^\zeta|$ at $\rho_0$, the chain sits where
-$|\iota| = n_{fp}\,n/m$ (`resonant_rho`), and the island has full width about
-$1.6\sqrt{\varepsilon\,n_{fp}/(m|\iota'|)}$ in $\rho$. The default
-$(m, n) = (6, 1)$ lands on li383's $\iota = 1/2$ surface ($\rho \approx 0.54$).
+There is no phase to choose: a phase shift only scales the seed (the
+stellarator parity projector removes the odd part exactly), and the sign of
+the profile is the criterion's. The script prints, for every chain, its
+rotational transform and radius, the amplitude chosen (the resonant normal
+field $|dB^r| / |B^\zeta|$ at the chain), the pendulum width it implies and
+how much energy the seed removes; then it sections the floor and both seeded
+fields at five toroidal planes and measures each chain's island width from
+the lines locked to its rotational transform, relaxes the automatic seed
+with 5 Newton steps (the chains survive), and writes the run in
+`scripts/relax.py`'s layout plus `reference.h5`, the unseeded floor. On the
+command line the same is `scripts/relax.py --seed [--seed-iotas ... --seed-amplitudes ...]`.
 
-The script traces both initial fields once and draws Poincaré sections at five
-toroidal planes: the island at the resonant chain shows in the seeded section,
-not the unseeded one. It uses the **high-resolution reference**
-`data/wout_li383_1.4m.nc` -- on the coarse reference the field's reconstruction
-residual sits on top of the seeded signal, so the seed cannot be told from the
-noise. Sweep `--seed-eps` over `1e-3, 3e-3, 1e-2` to watch the width track
-$\sqrt{\varepsilon}$, and `--seed 5,1,0.794,0.1` to move to the $3/5$ surface.
+## 6. Drive the field back towards the unseeded equilibrium (`6_li383_drive.py`)
 
-Then the script relaxes the seeded field ideally -- 200 steps of Tutorial 3's
-descent through its fast phase, 5 Newton steps of Tutorial 4 --
-and sections it again: the chain is still there at the floor. The run is
-written in `scripts/relax.py`'s layout; `--descent-steps 0 --newton-steps 0`
-skips the relaxation and just sections the two initial fields.
-
-## 6. Reconnect with finite resistivity (`6_li383_resistive.py`)
-
-Turn on a small resistivity and the frozen-in constraint breaks. A step is now
-the ideal move followed by a backward-Euler diffusion of $B$ (an implicit
-resistive solve): field lines can **reconnect**, nested surfaces merge, a
-seeded island heals or grows, and helicity is no longer conserved -- it decays
-at the resistive rate.
-
-This tutorial is arranged to be cheap. It **warm-starts from Tutorial 4's
-Newton floor** (`outputs/tutorials/li383_newton`, or Tutorial 3's relaxed
-field) if the run is present on the same $(10, 16, 16)\ p = 2$ mesh, so the
-descent is not repeated; otherwise it builds the equilibrium initial condition
-itself. It then takes a **single resistive step** at `--eps` and relaxes
-ideally back to a floor with Newton -- the reconnected field is near its floor
-already, so the direction of the second variation is the right tool:
+The paper's last experiment (Sec. 7) breaks the frozen-in constraint with a
+**drive**: after every ideal step a backward-Euler resistive step
+$\partial_t B = -\eta\,\mathrm{curl}(J - J^*)$ with the dose
+$\varepsilon = C h_r^2$ pulls the current towards $J^*$, the current of a
+reference field $B^*$ -- here Tutorial 5's unseeded floor after one heat step
+that removes its rational-surface sheets. Field lines can now reconnect,
+helicity is no longer conserved, and the field goes to a resistive steady
+state: the islands close.
 
 ```python
-B_reconnected, _, rel = resistive_step(B0, seq, eps)                    # one reconnection step
-res = relax(initial_state(B_reconnected, ts_newton), ts_newton,
-            steps=5, chunk=5)                                           # Newton toward the floor
+cfg = RelaxConfig(geometry=geometry, budget=Budget(steps=20, chunk=5, floor_tol=0.0),
+                  drive=Drive(resistivity=0.064, reference="reference.h5", reference_smoothing=0.1))
+ts = cfg.stepper(seq, h_r_sq)                                       # the stepper with the resistivity
+B_star = resistive_step(B_floor, seq, 0.1 * h_r_sq)[0]              # the smoothed reference
+ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+res = relax(initial_state(B_seeded, ts), ts, on_chunk=progress, **cfg.relax_kwargs())
 ```
 
-The helicity drop across the resistive step is the reconnection; the ideal tail
-conserves it. The script draws $\|F\|_M$ against $E$ over the tail and the weak
-pressure on the torus, and writes the run for `poincare_trace.py`. Pass
-`--seed 6,1,0.544,0.1 --seed-eps 3e-3` (the Tutorial 5 syntax) when it falls
-back to building the IC, to watch a seeded island reconnect.
+The script starts from Tutorial 5's seeded, relaxed state (or makes it), and
+prints the dose, the reference's smoothing and, after every chunk, the force
+residual, the helicity and the distance to the reference; before and after
+it sections the field and measures every seeded chain's island width. On the
+command line the same is `scripts/relax.py --drive-resistivity 0.064
+--drive-reference reference.h5 --restart <seeded checkpoint>`.
 
 ---
 

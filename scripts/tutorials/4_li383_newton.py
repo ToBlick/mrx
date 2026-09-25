@@ -128,12 +128,12 @@ for run in cli.warm_start.split(","):
     with open(ws_json) as fh:
         ws = json.load(fh)["params"]
     ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
-    if tuple(ws["ns"]) == ns and int(ws["p"]) == cli.p and ckpts:
+    if tuple(ws["resolution"]) == ns and int(ws["spline_degree"]) == cli.p and ckpts:
         with h5py.File(ckpts[-1], "r") as fh:
             B_start = jnp.asarray(np.asarray(fh["B_n"]))
-        print(f"[ic] warm-started from Tutorial 3: {ckpts[-1]} (ns={ws['ns']} p={ws['p']})")
+        print(f"[ic] warm-started from Tutorial 3: {ckpts[-1]} (resolution {ws['resolution']} p={ws['spline_degree']})")
         break
-    print(f"[ic] run {run} is ns={ws['ns']} p={ws['p']} (need {list(ns)} p={cli.p}); skipped")
+    print(f"[ic] run {run} is resolution {ws['resolution']} p={ws['spline_degree']} (need {list(ns)} p={cli.p}); skipped")
 if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
