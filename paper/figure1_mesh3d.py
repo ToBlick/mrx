@@ -97,15 +97,23 @@ def main(cli):
     elev, az = np.radians(cli.elev), np.radians(azim)
     eye = np.array([np.cos(elev) * np.cos(az), np.cos(elev) * np.sin(az), np.sin(elev)])    # toward the viewer
 
-    def facing(th, ze):
-        """True where the boundary's outward normal faces the camera (orthographic, equal box aspect)."""
+    def normals(th, ze):
+        """The boundary's normal d_theta x d_zeta at (1, th, ze), and the vector from the axis to the point."""
         d = 1e-4
         pt, pz = xyz(np.full(th.size, r1), th + d, ze), xyz(np.full(th.size, r1), th - d, ze)
         qt, qz = xyz(np.full(th.size, r1), th, ze + d), xyz(np.full(th.size, r1), th, ze - d)
-        n = np.cross(pt - pz, qt - qz)
         out = xyz(np.full(th.size, r1), th, ze) - xyz(np.full(th.size, 1e-3), np.zeros(th.size), ze)
-        n *= np.sign(np.einsum("ij,ij->i", n, out))[:, None]                     # outward, away from the axis
-        return n @ eye > 0.0
+        return np.cross(pt - pz, qt - qz), out
+
+    # The parametrization orients every normal alike, so its sign is fixed once over the whole far half, from the
+    # majority pointing away from the axis (a per-point test flips them in the bean's concave dent).
+    gt, gz = (v.ravel() for v in np.meshgrid(np.linspace(0.0, 1.0, 64), np.linspace(z_lo, z_hi, 64), indexing="ij"))
+    n_g, out_g = normals(gt, gz)
+    orient = float(np.sign(np.median(np.einsum("ij,ij->i", n_g, out_g))))
+
+    def facing(th, ze):
+        """True where the boundary's outward normal faces the camera (orthographic, equal box aspect)."""
+        return orient * (normals(th, ze)[0] @ eye) > 0.0
 
     def line(th, ze):
         p = xyz(np.full(th.size, r1), th, ze)
