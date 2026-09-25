@@ -1131,6 +1131,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
     the sequence (:func:`checkpoint_attrs`). Not the geometry itself, and not
     the weak pressure, a diagnostic (:func:`make_sampler`), not state."""
     import h5py  # noqa: PLC0415
+    from mrx.relax_config import current_precision  # noqa: PLC0415  (imports this module lazily)
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     axes = seq.basis_0.bases[0].bases
     with h5py.File(path, "w") as fh:
@@ -1139,7 +1140,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(axes[0].p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
-        fh.attrs["precision"] = str(seq.dtype)
+        fh.attrs["precision"] = str(current_precision())     # mixed / float32 / float64, not the working dtype
         for name, basis in zip(("r", "theta", "zeta"), axes):
             T = np.asarray(basis.T, dtype=np.float64)
             fh.attrs[f"knots_{name}"] = np.unique(T[(T >= 0.0) & (T <= 1.0)])
