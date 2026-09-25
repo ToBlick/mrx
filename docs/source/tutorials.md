@@ -1,8 +1,8 @@
 # Tutorials
 
 The scripts in `scripts/tutorials/` take a stellarator equilibrium from the
-file all the way to a resistively relaxed field, one concept at a time. Six
-numbered steps:
+file all the way to a resistively relaxed field, one concept at a time, and
+end with a shape optimization. Seven numbered steps:
 
 1. **load and visualise a geometry** (`1_qa_geometry.py`),
 2. **solve a field** -- the vacuum (coil) field as a curl-curl problem
@@ -13,21 +13,22 @@ numbered steps:
 5. **seed magnetic islands** in step 4's floor by the energy criterion and relax
    them ideally (`5_li383_island_seed.py`),
 6. **drive** the seeded field towards the resistive steady state of the
-   unseeded equilibrium's current (`6_li383_drive.py`).
+   unseeded equilibrium's current (`6_li383_drive.py`),
+7. **optimize the shape** of the QA boundary for quasi-axisymmetry by
+   reverse-mode differentiation of the vacuum field
+   (`7_qa_shape_optimization.py`).
 
-Steps 1-2 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
+Steps 1, 2 and 7 run on **QA** (`data/wout_LandremanPaul2021_QA_lowres.nc`, the
 two-field-period quasi-axisymmetric *vacuum* equilibrium of Landreman & Paul
 2021). Steps 3-6 run on **li383** (three-field-period NCSX, the project's
-fruit-fly case): steps 3, 4 and 6 on the coarse reference
-(`data/wout_li383_low_res_reference.nc`, `ns = 16`), step 5 on the
-high-resolution reference (`data/wout_li383_1.4m.nc`, `ns = 49`) -- the seeded
-island must clear the coarse file's own reconstruction residual (see step 5). All are VMEC
+fruit-fly case), all four on the coarse reference
+(`data/wout_li383_low_res_reference.nc`, `ns = 16`). All are VMEC
 `wout_*.nc` files read in closed form by `mrx.vmec`; the same `build_sequence`
 call reads a GVEC `.dat` state instead (see the
 [interface](concepts/gvec_mrx_interface.md)).
 
-All six run in the package default, now **float32**, the production
-precision. Tutorial 2's harmonic-form ratio reaches round-off only in double
+All but step 7 run in the package default, now **float32**, the production
+precision; step 7 sets float64 itself (see step 7). Tutorial 2's harmonic-form ratio reaches round-off only in double
 precision -- run it with `MRX_DTYPE=float64` for that. On a cluster run them
 through `slurm/run.sh` like
 every other MRX script:
@@ -36,12 +37,13 @@ every other MRX script:
 SCRIPT=scripts/tutorials/1_qa_geometry.py JOB_NAME=qa_geometry bash slurm/run.sh
 ```
 
-Steps 1-2 default to `--ns 12,24,12 --p 3`; steps 3-6 to `--ns 10,16,16 --p 2`.
+All of them default to the mesh `--ns 12,16,16`, steps 1, 2 and 7 with
+`--p 3`, steps 3-6 with `--p 2`.
 They write their figures to `outputs/tutorials/<name>/`.
 
 The li383 tutorials can be run in any order: the end state of each ships in
 `data/tutorials/<name>/` (a `relax.json` with the parameters and the last
-checkpoint, from the runs at the shipped defaults). Steps 4 and 6 warm-start
+checkpoint, from the runs at the shipped defaults). Steps 4, 5 and 6 warm-start
 from the user's own run in `outputs/tutorials/` when it exists and from the
 shipped state otherwise, and `scripts/poincare_trace.py --run
 data/tutorials/li383_newton` sections a shipped state without running
@@ -60,7 +62,7 @@ MRX evaluates the series wherever it needs a value, there is no grid in between.
 
 ```python
 from mrx.geometry import build_sequence
-seq, ops = build_sequence("data/wout_LandremanPaul2021_QA_lowres.nc", (12, 24, 12), 3)
+seq, ops = build_sequence("data/wout_LandremanPaul2021_QA_lowres.nc", (12, 16, 16), 3)
 ```
 
 `build_sequence` is the import. It
@@ -199,11 +201,10 @@ depends on the route, which corner of the orbit the descent left it in, and
 neither method leaves a corner for a lower one; so the rule is descent
 through its fast phase, then Newton
 (`docs/research/newton_second_variation_2026-09-06.md`). The paper's floors
-are at sixteen radial cells and more; on the tutorial's ten the direction is
-good for a handful of steps -- the residual drops fivefold in the first five,
-then turns around and the helicity starts to leak (under-resolved radial
-structure at the surfaces, the study's section 10e) -- and that is the budget
-here: ten steps, a minute or two on a GPU.
+are at sixteen radial cells and more; on the tutorial's twelve, ten Newton
+steps take $\|F\|_M$ down 27-fold (14-fold in the first five) with the
+helicity held to $10^{-4}$, where 200 descent steps take it down threefold --
+ten steps, a minute or two on a GPU.
 
 The script warm-starts from Tutorial 3's run (or runs that descent itself),
 continues the smoothed descent and Newton from the same state, prints the
@@ -270,6 +271,48 @@ residual, the helicity and the distance to the reference; before and after
 it sections the field and measures every seeded chain's island width. On the
 command line the same is `scripts/relax.py --drive-resistivity 0.064
 --drive-reference reference.h5 --restart <seeded checkpoint>`.
+
+## 7. Optimize the QA boundary for quasi-axisymmetry (`7_qa_shape_optimization.py`)
+
+The paper's shape optimization (Sec. 3.4) in small. The vacuum field of
+Tutorial 2 is one linear solve on the map, $\mathfrak h_2 = \mathfrak s -
+\operatorname{curl} A$ with $\mathfrak s$ a geometry-free flux seed, wrapped in
+`jax.lax.custom_linear_solve`, so the reverse-mode gradient of any function of
+it with respect to every spline coefficient of the map costs one more (adjoint)
+solve:
+
+```python
+from mrx.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota, normal_field_fraction,
+                          quasisymmetry_residual, vacuum_two_form, with_geometry)
+shape = BoundaryShape.from_coefficients(seq, raw_R, raw_Z, nfp, sign, aspect=6.0, extension="harmonic", free="all")
+
+def terms(x, seq, shape, seed):
+    R, Z, _, _ = shape.map_coefficients(seq, 0.01 * x.reshape((2,) + shape.raw_R.shape))   # V and A held
+    sq = with_geometry(seq, cylindrical_geometry(seq, R, Z, nfp, sign))
+    h, _ = vacuum_two_form(sq, seed)
+    return quasisymmetry_residual(sq, h, R, Z, nfp, sign, h_r)[0], mean_iota(sq, h), normal_field_fraction(sq, h)
+```
+
+The problem is the paper's: minimize $\langle Q_{\mathrm{QA}}^2
+\rangle_{r \geq h_r}$ subject to $\langle \bar\iota \rangle_s$ at LP's own
+value and $P \leq 10^{-8}$ (the field normal to the logical surfaces, which
+keeps them close to flux surfaces), at the volume and aspect ratio of the
+device, by an augmented Lagrangian over `scipy.optimize`'s L-BFGS-B on
+`jax.value_and_grad`. The start is LP plus a smooth random normal displacement
+of its boundary, 10 mm RMS in modes $m, |n| \leq 4$ per field period, and the
+run stops when the criterion is back at $F_{\mathrm{LP}}$, LP's own value on
+this mesh, with both constraints met. At the defaults that takes 86 L-BFGS-B
+iterations, from $2.2 \times 10^3\,F_{\mathrm{LP}}$ to $0.67\,F_{\mathrm{LP}}$,
+about 5 min on a GPU and 11 min on four CPU cores, setup included; the boundary ends $3.0 \times 10^{-2}$ of
+the minor radius from LP's (from $5.5 \times 10^{-2}$ at the start): as in the
+paper, quasi-axisymmetry and the mean iota come back, the device does not.
+The script draws the criterion and the mean iota against the iteration and
+the three boundaries in three toroidal planes.
+
+It is the one tutorial in **float64** (the script sets `MRX_DTYPE=float64`):
+in float32 the criterion, a residual near $10^{-5}$, and its adjoint gradient
+carry the solves' round-off, and the run stalls near $50\,F_{\mathrm{LP}}$.
+The paper's driver is `scripts/paper_scripts/ad_recovery.py`.
 
 ---
 

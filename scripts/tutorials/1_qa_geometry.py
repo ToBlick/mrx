@@ -36,7 +36,7 @@ the vacuum field, the relaxation -- starts from this ``seq``.
 
 # %%
 # Now we read the run's options and make the output folder. The defaults load
-# the QA stellarator at (12, 24, 12) p=3; --geometry can point at any VMEC .nc
+# the QA stellarator at (12, 16, 16) p=3; --geometry can point at any VMEC .nc
 # or GVEC .dat state instead.
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat)")
-ap.add_argument("--ns", default="12,24,12", help="map and sequence resolution")
+ap.add_argument("--ns", default="12,16,16", help="map and sequence resolution")
 ap.add_argument("--p", type=int, default=3)
 ap.add_argument("--cuts", type=int, default=6, help="poloidal cuts per field period")
 ap.add_argument("--out", default="outputs/tutorials/qa_geometry")

@@ -25,7 +25,7 @@ can move the islands and change their shape, it cannot close them, so the
 chains are still there at the floor. Tutorial 6 turns the drive on.
 
 It **warm-starts from Tutorial 4's Newton floor** (``outputs/tutorials/li383_newton``
-or the shipped state in ``data/tutorials/``) on the same ``(10, 16, 16) p = 2``
+or the shipped state in ``data/tutorials/``) on the same ``(12, 16, 16) p = 2``
 mesh; otherwise it takes the equilibrium initial condition through the descent's
 fast phase and 5 Newton steps itself. Runs in the default float32.
 
@@ -34,7 +34,7 @@ fast phase and 5 Newton steps itself. Runs in the default float32.
 
 # %%
 # Now we read the run's options. The defaults seed every chain in range at
-# (10, 16, 16) p=2, then hand-seed the iota = 1/2 chain, and relax the
+# (12, 16, 16) p=2, then hand-seed the iota = 1/2 chain, and relax the
 # automatic seed for 5 Newton steps.
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorials 3 and 4")
-ap.add_argument("--ns", default="10,16,16")
+ap.add_argument("--ns", default="12,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--warm-start", default="outputs/tutorials/li383_newton,data/tutorials/li383_newton",
                 help="run directories, first present wins: Tutorial 4's run, then its shipped state")

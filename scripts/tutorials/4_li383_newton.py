@@ -31,11 +31,11 @@ fast phase it reaches the mesh's residual floor in tens of steps where the
 descent needs thousands, at 15-30 descent steps per Newton step. The floor it
 finds depends on the route -- which corner of the orbit the descent left it
 in -- so the rule is: descent through its fast phase, then Newton. The
-paper's floors are at sixteen radial cells and more; on the tutorial's ten the
-direction is good for a handful of steps -- the residual drops fivefold in the
-first five, then turns around and the helicity starts to leak (under-resolved
-radial structure at the surfaces, the study's section 10e) -- and that is the
-budget here: ten steps, a minute or two on a GPU.
+paper's floors are at sixteen radial cells and more; on the tutorial's twelve
+ten Newton steps take ``||F||`` down 27-fold (14-fold in the first five), the
+helicity held to 1e-4, where 200 descent steps take it down threefold
+(measured 2026-09-25 at the defaults, one Newton step for 37 descent steps):
+ten steps, a minute or two on a GPU.
 
 This tutorial warm-starts from Tutorial 3's floor -- the run in
 ``outputs/tutorials/li383_relaxation`` or the shipped state in
@@ -53,7 +53,7 @@ default method.
 
 # %%
 # Now we read the run's options. The defaults are Tutorial 3's mesh, li383 at
-# (10, 16, 16) p=2, 200 more descent steps against 10 Newton steps.
+# (12, 16, 16) p=2, 200 more descent steps against 10 Newton steps.
 from __future__ import annotations
 
 import argparse
@@ -67,7 +67,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorial 3")
-ap.add_argument("--ns", default="10,16,16")
+ap.add_argument("--ns", default="12,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--warm-start", default="outputs/tutorials/li383_relaxation,data/tutorials/li383_relaxation",
                 help="run directories, first present wins: Tutorial 3's run, then its shipped state")

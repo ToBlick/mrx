@@ -31,7 +31,7 @@ resistivity, seeds).
 
 # %%
 # Now we read the run's options and make the output folder. The defaults are
-# li383 at (10, 16, 16) p=2, 500 relaxation steps.
+# li383 at (12, 16, 16) p=2, 500 relaxation steps.
 from __future__ import annotations
 
 import argparse
@@ -45,7 +45,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat)")
-ap.add_argument("--ns", default="10,16,16")
+ap.add_argument("--ns", default="12,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--outer", type=int, default=10, help="outer (recorded) iterations")
 ap.add_argument("--inner", type=int, default=50, help="compiled steps per outer iteration")

@@ -23,7 +23,7 @@ printed: the reference and its smoothing, the dose, and after every chunk
 the force residual, the helicity and the distance to the reference; before
 and after, the island width of every seeded chain from the sections (the
 radial extent of the lines locked to its rotational transform). Runs in the
-default float32 at ``(10, 16, 16) p = 2``; ~2x Tutorial 4.
+default float32 at ``(12, 16, 16) p = 2``; ~2x Tutorial 4.
 
     python -u scripts/tutorials/6_li383_drive.py
 """
@@ -42,7 +42,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_li383_low_res_reference.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat); match Tutorials 3 to 5")
-ap.add_argument("--ns", default="10,16,16")
+ap.add_argument("--ns", default="12,16,16")
 ap.add_argument("--p", type=int, default=2)
 ap.add_argument("--seeded", default="outputs/tutorials/li383_island_seed,data/tutorials/li383_island_seed",
                 help="Tutorial 5's run directories (checkpoints/ and reference.h5), first present wins")

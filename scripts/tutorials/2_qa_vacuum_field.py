@@ -46,7 +46,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
 ap.add_argument("--geometry", default="data/wout_LandremanPaul2021_QA_lowres.nc",
                 help="a VMEC wout (.nc) or a GVEC state file (.dat)")
-ap.add_argument("--ns", default="12,24,12")
+ap.add_argument("--ns", default="12,16,16")
 ap.add_argument("--p", type=int, default=3)
 ap.add_argument("--cuts", type=int, default=6)
 ap.add_argument("--periods", type=int, default=200, help="field periods per traced line")
@@ -81,12 +81,15 @@ compute_nullspaces(seq)
 # Now we build the vacuum field: the harmonic 2-form of the Dirichlet complex,
 # from a direct Hodge decomposition of a seed field. We report its divergence,
 # curl and Rayleigh quotient (the docstring explains why these read large in
-# float32).
-B = get_nullspace(seq.get_operators(), 2, True)[0]
-B = B / float(seq.l2_norm(B, 2))
+# float32). On a stellarator-symmetric map the field lives on the odd parity
+# view seq.odd (half the DoFs, the half-period quadrature), where the force,
+# the divergence and the tracer read it.
+odd = seq.odd
+B = odd.nullspace(2, True)[0]
+B = B / float(odd.l2_norm(B, 2))
 _, _, J, _, _ = compute_force(B, seq)
-ratio = float(seq.l2_norm(J, 1))
-rayleigh = float(harmonic_rayleigh(seq, B, 2))
+ratio = float(odd.l2_norm(J, 1))
+rayleigh = float(harmonic_rayleigh(odd, B, 2))
 print(f"[vacuum] ||div B|| = {compute_divergence_norm(B, seq):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
       f"Rayleigh quotient of the Hodge Laplacian = {rayleigh:.2e}")
@@ -95,8 +98,11 @@ if ratio > 1e-4:
           "-- float64 gives ||curl B||/||B|| ~ 1e-6, Rayleigh ~ 1e-12 (see the docstring).")
 
 # %%
-# Now we push the 2-form forward by the Piola map and draw |B| on the torus.
-B_phys = Pushforward(DiscreteFunction(B, seq.basis_2, seq.E(2, True)), seq.map, 2)
+# Now we push the 2-form forward by the Piola map and draw |B| on the torus:
+# the same form on the full sequence, whose extraction spans the torus.
+B_full = get_nullspace(seq.get_operators(), 2, True)[0]
+B_full = B_full / float(seq.l2_norm(B_full, 2))
+B_phys = Pushforward(DiscreteFunction(B_full, seq.basis_2, seq.E(2, True)), seq.map, 2)
 
 def B_mag(x):
     return jnp.linalg.norm(B_phys(x))
