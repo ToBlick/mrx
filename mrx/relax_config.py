@@ -5,15 +5,19 @@ in ``__post_init__``; :mod:`mrx.cli` makes the command line of it and the
 flat ``params`` of ``relax.json``. :meth:`RelaxConfig.stepper` builds the
 :class:`~mrx.relaxation.TimeStepper` and :meth:`RelaxConfig.relax_kwargs`
 the arguments of :func:`~mrx.relaxation.relax`, so a tutorial and the
-command line configure the same objects the same way.
+command line configure the same objects the same way. The paper's driver
+(``scripts/paper_scripts/relax_paper.py``) extends :class:`Descent` with the
+options the paper compared and the default script no longer exposes.
 """
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field, replace
-from typing import Literal, Optional
+from enum import StrEnum
+from typing import Optional
 
-from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL
+from mrx.hessian import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 
 #: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE). scripts/relax.py carries the same table: it must set the
 #: environment BEFORE mrx is imported (mrx.precision fixes the dtypes at import), so it cannot read this one.
@@ -21,25 +25,47 @@ PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32")
               "float64": ("float64", "float64")}
 
 
-def current_precision() -> str:
-    """The name of the precision mrx runs in (a tutorial's configuration records it)."""
+class Symmetry(StrEnum):
+    """What the map satisfies (:data:`mrx.geometry.SYMMETRIES`)."""
+    STELLARATOR = "stellarator"     # nfp field periods and stellarator symmetry: half-period quadrature, parity views
+    FIELD_PERIOD = "field-period"   # nfp field periods only
+    NONE = "none"                   # zeta in [0, 1] is the whole torus, nfp = 1
+
+
+class Precision(StrEnum):
+    MIXED = "mixed"                 # float32 fields and solves, float64 residual (tol 1e-8)
+    FLOAT32 = "float32"             # plain float32 (tol 1e-5): a machine without float64
+    FLOAT64 = "float64"             # plain float64 (tol 1e-10)
+
+
+class Method(StrEnum):
+    NEWTON = "newton"               # Newton-MR on the second variation
+    GRADIENT = "gradient"           # gradient descent on the smoothed force
+
+
+class Scheme(StrEnum):
+    EXPLICIT = "explicit"           # forward Euler induction
+    MIDPOINT = "midpoint"           # midpoint-implicit induction at the predictor's velocity (Picard)
+
+
+def current_precision() -> Precision:
+    """The precision mrx runs in (a tutorial's configuration records it)."""
     import mrx
     from mrx.precision import RESIDUAL_DTYPE
-    return {v: k for k, v in PRECISIONS.items()}[(str(mrx.DTYPE), str(RESIDUAL_DTYPE))]
+    return Precision({v: k for k, v in PRECISIONS.items()}[(str(mrx.DTYPE), str(RESIDUAL_DTYPE))])
 
 
 def _ints(s):
     return tuple(int(v) for v in s.split(","))
 
 
+def _floats(s):
+    return tuple(float(v) for v in s.split(","))
+
+
 def _knots(s):
     from mrx.geometry import parse_knots
     return parse_knots(s)
-
-
-def _window(s):
-    a, b = s.split(":")
-    return int(a), int(b)
 
 
 @dataclass(frozen=True)
@@ -48,30 +74,28 @@ class Geometry:
     path: str = field(metadata=dict(
         flag="--geometry",
         help="the geometry AND the initial condition: a VMEC wout (.nc) or GVEC state (.dat) gives the map and the "
-             "equilibrium's own field B = dA'; an analytic geometry (.json: a map of mrx.mappings with its parameters "
-             "and the profiles of the logical-grid field) gives the map and that field"))
-    nfp: Optional[int] = field(default=None, metadata=dict(help="field periods; overrides the file's nfp attribute"))
-    symmetry: Literal["stellarator", "field-period", "none"] = field(
-        default="stellarator", metadata=dict(help="what the map satisfies (mrx.geometry.SYMMETRIES)"))
-    ns: tuple[int, int, int] = field(default=(32, 64, 64), metadata=dict(
+             "equilibrium's own field B = dA'; an analytic geometry (.json: a map of mrx.mappings with its parameters, "
+             "nfp, and the profiles of the logical-grid field) gives the map and that field"))
+    symmetry: Symmetry = field(default=Symmetry.STELLARATOR, metadata=dict(
+        help="what the map satisfies: nfp field periods and stellarator symmetry, field periods only, or nothing"))
+    resolution: tuple[int, int, int] = field(default=(32, 64, 64), metadata=dict(
         parse=_ints, help="spline resolution (r, theta, zeta), also the map's"))
+    spline_degree: int = field(default=2, metadata=dict(help="spline degree; p+1 Gauss points per span"))
     knots_r: Optional[tuple] = field(default=None, metadata=dict(
         parse=_knots, help="breakpoints of the r axis, comma-separated from 0 to 1, instead of the uniform grid"))
     knots_theta: Optional[tuple] = field(default=None, metadata=dict(parse=_knots, help="the theta axis's"))
     knots_zeta: Optional[tuple] = field(default=None, metadata=dict(parse=_knots, help="the zeta axis's"))
-    p: int = field(default=2, metadata=dict(help="spline degree; p+1 Gauss points per span"))
-    solve_maxiter: int = field(default=2000, metadata=dict(help="iteration budget of every inner solve"))
+    precision: Precision = field(default=Precision.MIXED, metadata=dict(
+        help="mixed: float32 fields and solves with a float64 residual; float32 / float64: both"))
     solve_tol: Optional[float] = field(default=None, metadata=dict(
-        help="residual tolerance of every solve [the precision's: 1e-8 refined float32, 1e-10 float64]"))
-    precision: Literal["mixed", "float32", "float64"] = field(default="mixed", metadata=dict(
-        help="mixed: float32 fields and solves with a float64 residual; float32, float64: both"))
-    map_batch: int = field(default=0, metadata=dict(
-        help="cells per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER); 0 = all points in one vmap; "
-             "bound it at high resolution"))
+        help="residual tolerance of every solve [the precision's: mixed 1e-8, float32 1e-5, float64 1e-10]"))
+    solve_maxiter: int = field(default=2000, metadata=dict(help="iteration budget of every inner solve"))
+    max_batch: int = field(default=0, metadata=dict(
+        help="cells per batch of the quadrature loops; 0 = all points in one vmap; bound it at high resolution"))
 
     def __post_init__(self):
-        if self.map_batch < 0:
-            raise ValueError("--map-batch must be non-negative (0 is one vmap over all points)")
+        if self.max_batch < 0:
+            raise ValueError("--max-batch must be non-negative (0 is one vmap over all points)")
         if not os.path.isfile(self.path):
             raise ValueError(f"--geometry {self.path!r} is not a file (a .nc, .dat or .json)")
 
@@ -86,71 +110,49 @@ class Geometry:
     def build(self):
         """The sequence and its operators, :func:`mrx.geometry.build_sequence` of this group."""
         from mrx.geometry import build_sequence
-        return build_sequence(self.path, self.ns, self.p, self.solve_maxiter, tol=self.solve_tol, nfp=self.nfp,
-                              knots=self.knots, symmetry=self.symmetry)
+        return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
+                              tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry))
 
 
 @dataclass(frozen=True)
 class Seed:
-    """Island seed in the initial field (equilibrium files only)."""
-    spec: str = field(default="", metadata=dict(
-        flag="--seed", help='resonant seed "m,n,rho0,width" added to the potential'))
-    eps: float = field(default=0.0, metadata=dict(
-        help="its amplitude |dB^rho| / |B^zeta| at rho0 (island width ~ sqrt of it)"))
-    phase: float = field(default=0.0, metadata=dict(
-        help="the seed's phase in turns of the resonant angle (m theta - s n zeta)"))
+    """Island seeds in the start field by the energy criterion (mrx.seeding; equilibrium files only)."""
+    seed: bool = field(default=False, metadata=dict(
+        flag="--seed", help="seed the start field (the initial condition or the --restart checkpoint)"))
+    iotas: Optional[tuple[float, ...]] = field(default=None, metadata=dict(
+        parse=_floats, help="the chains to seed, by their rotational transforms nfp n / m [every resonance in range]"))
+    amplitudes: Optional[tuple[float, ...]] = field(default=None, metadata=dict(
+        parse=_floats, help="one per iota: the resonant normal field |dB^r| / |B^zeta| at r_mn, signed, instead "
+                            "of the energy criterion's"))
+    scale: float = field(default=1.0, metadata=dict(help="multiply the added perturbation"))
+
+    def __post_init__(self):
+        if self.amplitudes is not None and self.iotas is None:
+            warnings.warn("--seed-amplitudes without --seed-iotas is ignored: the energy criterion sets them",
+                          stacklevel=2)
+            object.__setattr__(self, "amplitudes", None)
+        if self.amplitudes is not None and len(self.amplitudes) != len(self.iotas):
+            raise ValueError("--seed-amplitudes needs one value per --seed-iotas")
 
     def __bool__(self):
-        return bool(self.spec)
-
-    def parsed(self):
-        from mrx.initial_conditions import parse_seed
-        return parse_seed(self.spec, self.eps, self.phase)
-
-
-@dataclass(frozen=True)
-class Drive:
-    """Resonant drive of the resistive source (with --resistivity)."""
-    spec: str = field(default="", metadata=dict(
-        flag="--drive", help='a resonant drive "m,n,rho0,width" (the --seed perturbation of the potential) added to '
-                             'the source B* only, not to the field'))
-    eps: float = field(default=0.0, metadata=dict(help="the drive's amplitude, as --seed-eps"))
-    phase: float = field(default=0.0, metadata=dict(help="the drive's phase, as --seed-phase"))
-
-    def __bool__(self):
-        return bool(self.spec)
-
-    def parsed(self):
-        from mrx.initial_conditions import parse_seed
-        return parse_seed(self.spec, self.eps, self.phase)
+        return self.seed
 
 
 @dataclass(frozen=True)
 class Descent:
     """The descent direction and the induction step."""
-    method: Literal["newton", "gradient"] = field(default="newton", metadata=dict(
+    method: Method = field(default=Method.NEWTON, metadata=dict(
         help="the direction: Newton on the second variation, or gradient descent on the smoothed force"))
-    auxiliary_B_field: bool = field(default=False, metadata=dict(
-        flag="--auxiliary-B-field",
-        help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B"))
-    midpoint: bool = field(default=False, metadata=dict(
-        help="midpoint-implicit induction at the predictor's velocity (Picard on the increment)"))
-    helicity_correction: bool = field(default=False, metadata=dict(
-        help="zero the step's discrete helicity change by one scalar correction of E"))
-    velocity_smoothing_order: int = field(default=1, metadata=dict(
-        help="descent direction v = (I - scale L)^-order F; 0 is off and fragile (the unsmoothed descent stops "
-             "conserving helicity after ~1e4 steps)"))
-    velocity_smoothing_scale: Optional[float] = field(default=None, metadata=dict(
-        help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C h_r^2, h_r the physical radial cell]"))
-    cfl: float = field(default=0.5, metadata=dict(
-        help="cap the line-search step at cfl / (largest logical CFL number of the velocity); inf disables it"))
-    potential_velocity: Optional[bool] = field(default=None, metadata=dict(
-        help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve [on for the gradient "
-             "descent; Newton and the auxiliary field have their own routes]"))
+    scheme: Scheme = field(default=Scheme.EXPLICIT, metadata=dict(
+        help="the induction step: forward Euler, or midpoint-implicit at the predictor's velocity"))
 
     @property
     def newton(self):
-        return self.method == "newton"
+        return self.method == Method.NEWTON
+
+    def stepper_kwargs(self) -> dict:
+        """The :class:`~mrx.relaxation.TimeStepper` options of this group (the paper driver extends them)."""
+        return dict(newton=self.newton, midpoint=self.scheme == Scheme.MIDPOINT)
 
 
 @dataclass(frozen=True)
@@ -160,44 +162,43 @@ class Newton:
         help="kappa of the parallel-flow penalty, kappa times the strain along the field"))
     tol: float = field(default=NEWTON_TOL, metadata=dict(
         help="the forcing term: the residual of the Newton system below tol of the right-hand side ends the solve"))
-    maxiter: int = field(default=NEWTON_MAXITER, metadata=dict(help="MINRES iterations per pass"))
-    passes: int = field(default=NEWTON_PASSES, metadata=dict(help="passes of the Newton solve at most"))
+    maxiter: int = field(default=NEWTON_MAXITER, metadata=dict(help="MINRES iterations of the Newton solve at most"))
 
 
 @dataclass(frozen=True)
 class Budget:
     """Step budget and stopping."""
-    steps: Optional[int] = field(default=None, metadata=dict(help="maximum steps [150 Newton, 3000 gradient]"))
+    steps: Optional[int] = field(default=None, metadata=dict(help="maximum steps [100 Newton, 2000 gradient]"))
     chunk: Optional[int] = field(default=None, metadata=dict(
-        help="steps per compiled chunk: trace, qoi sample, checkpoint, outputs and the floor / reconnect tests once "
-             "per chunk; steps is a multiple of it [25 Newton, 500 gradient]"))
-    floor_tol: float = field(default=1e-8, metadata=dict(
+        help="steps per compiled chunk: trace, qoi sample, checkpoint, outputs and the floor test once per chunk; "
+             "steps is a multiple of it [10 Newton, 200 gradient]"))
+    floor_tol: float = field(default=1e-10, metadata=dict(
         help="stop when the last chunk's mean squared normalised force residual is below this"))
 
 
 @dataclass(frozen=True)
-class Reconnection:
-    """Reconnection series: one resistive solve every K steps of the ideal descent."""
-    every: int = field(default=0, metadata=dict(
-        help="reconnect the field with one resistive solve every K steps, rounded to whole chunks; 0 = off"))
-    helicity: float = field(default=0.01, metadata=dict(help="the helicity each reconnection spends, |dH| / |H|"))
-    eps: Optional[float] = field(default=None, metadata=dict(
-        help="a constant dose eps = C h_r^2 per resistive solve (h_r the physical radial cell) instead of the "
-             "helicity target"))
-    window: Optional[tuple[int, int]] = field(default=None, metadata=dict(
-        parse=_window, help="A:B, the resistive solves only at steps A..B"))
-
-
-@dataclass(frozen=True)
-class Resistive:
-    """Resistive steady state: a resistive dose in every step towards a reference current."""
+class Drive:
+    """Resistive steady state: a resistive dose in every step towards a reference current, optionally driven."""
     resistivity: float = field(default=0.0, metadata=dict(
-        help="a resistive dose C h_r^2 in every step, E = eta (J - J*)"))
-    reference_smoothing: float = field(default=0.1, metadata=dict(
-        help="B* = the start field after one heat step of c h_r^2"))
+        help="a resistive dose C h_r^2 in every step, E = eta (J - J*), J* the current of the reference field B*"))
     reference: Optional[str] = field(default=None, metadata=dict(
-        help="B* from this checkpoint's field instead of the start field (one common reference for differently "
-             "seeded arms, e.g. the nested equilibrium); smoothed as above"))
+        help="the checkpoint of B* (required with --drive-resistivity): a converged nested equilibrium, one common "
+             "reference for differently seeded arms"))
+    reference_smoothing: float = field(default=0.1, metadata=dict(
+        help="B* after one heat step of c h_r^2, which removes its rational-surface sheets"))
+    chain: Optional[float] = field(default=None, metadata=dict(
+        help="drive the reference with the resonant seed of the chain at this rotational transform nfp n / m"))
+    eps: float = field(default=0.0, metadata=dict(
+        help="the drive's amplitude, the resonant normal field |dB^r| / |B^zeta| at r_mn, signed"))
+
+    def __post_init__(self):
+        if self.resistivity and self.reference is None:
+            raise ValueError("--drive-resistivity needs --drive-reference, the checkpoint of B*")
+        if self.chain is not None and not self.resistivity:
+            raise ValueError("--drive-chain needs --drive-resistivity (the drive is the source's, not the field's)")
+
+    def __bool__(self):
+        return bool(self.resistivity)
 
 
 @dataclass(frozen=True)
@@ -213,46 +214,34 @@ class RelaxConfig:
     """A relaxation run. Groups in the order of the command line; every field's default is the production one."""
     geometry: Geometry
     seed: Seed = field(default=Seed(), metadata=dict(prefix="seed"))
-    drive: Drive = field(default=Drive(), metadata=dict(prefix="drive"))
     descent: Descent = Descent()
     newton: Newton = field(default=Newton(), metadata=dict(prefix="newton"))
     budget: Budget = Budget()
-    reconnect: Reconnection = field(default=Reconnection(), metadata=dict(prefix="reconnect"))
-    resistive: Resistive = Resistive()
+    drive: Drive = field(default=Drive(), metadata=dict(prefix="drive"))
     output: Output = Output()
 
     def __post_init__(self):
         d, b = self.descent, self.budget
         # the budget's defaults depend on the method: resolved here, once, into the frozen config
-        steps = b.steps if b.steps is not None else (150 if d.newton else 3000)
-        chunk = b.chunk if b.chunk is not None else (25 if d.newton else 500)
+        steps = b.steps if b.steps is not None else (100 if d.newton else 2000)
+        chunk = b.chunk if b.chunk is not None else (10 if d.newton else 200)
         object.__setattr__(self, "budget", replace(b, steps=steps, chunk=chunk))
-        if d.potential_velocity is None:     # the stepper's rule: the potential route is the gradient descent's on B
-            object.__setattr__(self, "descent", replace(d, potential_velocity=not (d.newton or d.auxiliary_B_field)))
         if chunk < 1 or steps % chunk:
             raise ValueError("--steps must be a positive multiple of --chunk")
         if self.seed and self.geometry.analytic:
             raise ValueError("--seed needs an equilibrium file (.nc or .dat)")
-        if self.drive and (self.seed or not self.resistive.resistivity):
-            raise ValueError("--drive needs --resistivity and no --seed (the drive is the source's, not the field's)")
 
     def stepper(self, seq, h_r_sq):
         """The :class:`~mrx.relaxation.TimeStepper` of this configuration on ``seq``."""
         from mrx.relaxation import TimeStepper
-        d, n = self.descent, self.newton
-        return TimeStepper(
-            seq=seq, auxiliary_B_field=d.auxiliary_B_field, cfl=d.cfl, midpoint=d.midpoint,
-            helicity_correction=d.helicity_correction, velocity_smoothing_order=d.velocity_smoothing_order,
-            velocity_smoothing_scale=d.velocity_smoothing_scale, potential_velocity=d.potential_velocity,
-            newton=d.newton, newton_penalty=n.penalty, newton_tol=n.tol, newton_maxiter=n.maxiter,
-            newton_passes=n.passes, resistivity=self.resistive.resistivity * h_r_sq)
+        n = self.newton
+        return TimeStepper(seq=seq, newton_penalty=n.penalty, newton_tol=n.tol, newton_maxiter=n.maxiter,
+                           resistivity=self.drive.resistivity * h_r_sq, **self.descent.stepper_kwargs())
 
-    def relax_kwargs(self, h_r_sq):
+    def relax_kwargs(self):
         """The keyword arguments of :func:`~mrx.relaxation.relax` beyond the state and the stepper."""
-        b, r = self.budget, self.reconnect
-        return dict(steps=b.steps, chunk=b.chunk, floor_tol=b.floor_tol, reconnect_every=r.every,
-                    reconnect_helicity=r.helicity, reconnect_eps=None if r.eps is None else r.eps * h_r_sq,
-                    reconnect_window=r.window)
+        b = self.budget
+        return dict(steps=b.steps, chunk=b.chunk, floor_tol=b.floor_tol)
 
     @property
     def params(self) -> dict:

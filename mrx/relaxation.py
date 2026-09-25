@@ -22,7 +22,7 @@ from mrx.derham_sequence import DeRhamSequence
 # curl a``, ``F = curl a``). ``d`` keeps a parity, a product multiplies them:
 # ``J x B`` even, ``u x B`` odd. A product load is formed from each factor
 # evaluated on ITS view and assembled on the view of the product.
-from mrx.hessian import NEWTON_MAXITER, NEWTON_PASSES, NEWTON_PENALTY, NEWTON_TOL, newton_direction
+from mrx.hessian import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, newton_direction
 from mrx.precision import DTYPE, RESIDUAL_DTYPE, eps
 
 
@@ -281,9 +281,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     float32 (the solution is ``B`` plus something small, not something that
     happens to be close to ``B``). Returns ``(B + delta, info, ||delta||_M
     / ||B||_M)`` with ``info`` the solver's signed iteration count.
-    :func:`relax` applies this solve between chunks (``reconnect_every``),
-    a dose ``eps`` per reconnection; a :class:`TimeStepper` with
-    ``resistivity`` after every step."""
+    A :class:`TimeStepper` with ``resistivity`` applies it after every step."""
     seq = seq.odd
     rhs = -eps * seq.apply_laplacian(B if B_ref is None else B - B_ref, 2, dirichlet=True)
     delta, info = seq.apply_inverse_mass_plus_eps_laplace_matrix(
@@ -505,8 +503,7 @@ class TimeStepper(eqx.Module):
     smoothing, the analytic line search with its CFL cap, and the
     induction, forward Euler or midpoint-implicit (``midpoint``). The step
     is ideal unless ``resistivity``
-    adds a :func:`resistive_step` after it; reconnection between chunks is
-    :func:`relax`'s (``reconnect_every``).
+    adds a :func:`resistive_step` after it.
 
     Attributes:
         seq: The de Rham sequence.
@@ -568,10 +565,9 @@ class TimeStepper(eqx.Module):
         newton_tol: The forcing term of the Newton solve: the residual of the
             Newton system, in the residual precision and the mass-atom norm,
             below ``newton_tol`` of the right-hand side ends it.
-        newton_maxiter: MINRES iterations per pass of the Newton solve.
-        newton_passes: Passes of ``newton_maxiter`` iterations at most; the
-            solve is inexact by design (one pass of 200 gives the same
-            relaxation as any tighter solve, 2026-09-18).
+        newton_maxiter: MINRES iterations of the Newton solve at most; the
+            solve is inexact by design (200 give the same relaxation as any
+            tighter solve, 2026-09-18).
         helicity_correction: Remove from the induction field ``E`` the
             one component that changes the discrete helicity. Over one
             step ``B_{n+1} = B_n + dt curl E`` the helicity ``<A, B +
@@ -625,7 +621,6 @@ class TimeStepper(eqx.Module):
     newton_penalty: float = NEWTON_PENALTY
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
-    newton_passes: int = NEWTON_PASSES
     helicity_correction: bool = False
     midpoint: bool = False
     resistivity: float = 0.0
@@ -762,7 +757,7 @@ class TimeStepper(eqx.Module):
             MF = even.apply_mass_matrix(F, 2)
             if self.newton:
                 u, a, newton_it = newton_direction(seq, B, J, MF, state.warm.a, self.newton_penalty,
-                                                   self.newton_tol, self.newton_maxiter, self.newton_passes)
+                                                   self.newton_tol, self.newton_maxiter)
             else:
                 # gradient descent on the smoothed force
                 u, a = self.smooth_velocity(F), state.warm.a
@@ -1127,18 +1122,42 @@ def make_sampler(seq: DeRhamSequence, ts: TimeStepper):
     return sample
 
 
-def write_checkpoint(path: str, state: State, step: int) -> None:
+def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """The state at a step as one HDF5 file: every leaf of the pytree as a
     dataset named by its key path (``B_n``, ``warm.p``, ``last.F``, ...), the step
-    as an attribute. Nothing else: the run's parameters are the driver's
-    ``relax.json``, and the weak pressure is a diagnostic
-    (:func:`make_sampler`), not state."""
+    and the discretisation of ``seq`` as attributes (``resolution``, ``degree``,
+    ``nfp``, ``symmetry``, ``precision``, the breakpoints ``knots_r`` /
+    ``knots_theta`` / ``knots_zeta``): with the geometry file, that rebuilds
+    the sequence (:func:`checkpoint_attrs`). Not the geometry itself, and not
+    the weak pressure, a diagnostic (:func:`make_sampler`), not state."""
     import h5py  # noqa: PLC0415
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
+    axes = seq.basis_0.bases[0].bases
     with h5py.File(path, "w") as fh:
         fh.attrs["step"] = int(step)
+        fh.attrs["resolution"] = np.asarray(seq.ns, dtype=np.int64)
+        fh.attrs["degree"] = int(axes[0].p)
+        fh.attrs["nfp"] = int(seq.nfp)
+        fh.attrs["symmetry"] = str(seq.symmetry)
+        fh.attrs["precision"] = str(seq.dtype)
+        for name, basis in zip(("r", "theta", "zeta"), axes):
+            T = np.asarray(basis.T, dtype=np.float64)
+            fh.attrs[f"knots_{name}"] = np.unique(T[(T >= 0.0) & (T <= 1.0)])
         for keypath, leaf in leaves:
             fh.create_dataset(jax.tree_util.keystr(keypath).lstrip("."), data=np.asarray(leaf))
+
+
+def checkpoint_attrs(path: str) -> dict:
+    """The discretisation a checkpoint was written with, the keyword arguments
+    of :func:`mrx.geometry.build_sequence` after the geometry file: ``ns``,
+    ``p``, ``knots``, ``symmetry``, plus ``nfp``, ``precision`` and ``step``."""
+    import h5py  # noqa: PLC0415
+    with h5py.File(path, "r") as fh:
+        a = dict(fh.attrs)
+    return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
+                knots=[list(map(float, a[f"knots_{name}"])) for name in ("r", "theta", "zeta")],
+                symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), precision=str(a["precision"]),
+                step=int(a["step"]))
 
 
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
@@ -1182,10 +1201,8 @@ class RelaxResult(NamedTuple):
     per-chunk samples (``it``, ``wall``, ``E`` the energy of the stored
     field in the residual precision, ``F``, ``resid``, ``helicity``,
     ``JoverB``, ``JB`` and the pressure
-    diagnostics; the first entry is the start of the run, a reconnection
-    adds a second sample at its step), ``reconnect`` one record per
-    reconnection, ``reconnect_every`` the interval actually used (rounded to
-    whole chunks), ``chunk`` the chunk length.
+    diagnostics; the first entry is the start of the run), ``chunk`` the
+    chunk length.
     """
     state: State
     steps: int
@@ -1193,8 +1210,6 @@ class RelaxResult(NamedTuple):
     wall: float
     trace: dict
     qoi: dict
-    reconnect: list
-    reconnect_every: int
     chunk: int
     E0: float
 
@@ -1209,50 +1224,31 @@ def pressure_line(d: dict) -> str:
 
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
           floor_tol: float = 0.0,
-          reconnect_every: int = 0, reconnect_helicity: float = 0.01,
-          reconnect_eps: Optional[float] = None, reconnect_window: Optional[tuple] = None,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
           verbose: bool = True) -> RelaxResult:
     """The relaxation run: ``steps`` steps in compiled chunks of ``chunk``
     (:func:`chunk_runner`), the diagnostics sampled once per chunk
-    (:func:`make_sampler`), the stop tests and the reconnection series.
+    (:func:`make_sampler`) and the stop tests.
 
     Stops on the step count, on ``floor_tol`` (the last chunk's mean of
     the squared normalised force residual ``||F||_M^2 / ||grad(B^2/2)||^2``
     below it; the residual is not monotone, the window mean is the
     quantity); a job's
     time limit is no stop, the checkpoint of every chunk restarts it.
-    ``reconnect_every`` (rounded to
-    whole chunks, never on the last one) applies one :func:`resistive_step`
-    to the field whose dose spends the fraction ``reconnect_helicity`` of
-    its helicity, ``eps = X |H| / (2 |int J . B|)`` from ``dH = -2 eps int J
-    . B``, or with ``reconnect_eps`` a constant dose ``eps`` per solve (a
-    constant resistivity: the ideal relaxation is fast and the diffusion slow,
-    so the solves go between blocks of ideal steps and the field is back in
-    equilibrium before the next one; the helicity spent is then an outcome),
-    only at steps inside ``reconnect_window = (start, stop)`` when given,
-    then restarts the optimiser on the diffused field
-    (:func:`initial_state`) and samples it again; ``on_chunk`` runs after
-    every chunk's sample and BEFORE a reconnection at that step, so what it
-    saves is the field the solve starts from. ``it0`` is the absolute step
-    the run starts at (a restart); the trace and samples are this run's.
+    ``on_chunk`` runs after every chunk's sample. ``it0`` is the absolute
+    step the run starts at (a restart); the trace and samples are this run's.
     """
     if chunk < 1 or steps % chunk:
         raise ValueError("steps must be a positive multiple of chunk")
-    if reconnect_every:
-        reconnect_every = max(1, round(reconnect_every / chunk)) * chunk
     seq = ts.seq
     run = chunk_runner(ts, chunk)
     sample = make_sampler(seq, ts)
-    reconnect_jit = eqx.filter_jit(lambda sq, B, eps: resistive_step(B, sq, eps))
-    reconnect_fn = lambda B, eps: reconnect_jit(seq, B, jnp.asarray(eps))      # noqa: E731
 
     trace: dict = {k: [] for k in ("dE_ls", "cos", "gain")}    # the body's scalars join at the first chunk
     qoi: dict = {}
-    events: list = []
 
     def result(n_done, stop, wall):
-        return RelaxResult(state, n_done, stop, wall, trace, qoi, events, reconnect_every, chunk, E0)
+        return RelaxResult(state, n_done, stop, wall, trace, qoi, chunk, E0)
 
     def record(it, wall, scalars):
         row = dict(it=it, wall=wall, F=float(state.last.F_norm),
@@ -1327,29 +1323,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}", flush=True)
             t_out += time.perf_counter() - tq
             break
-        in_window = reconnect_window is None or reconnect_window[0] <= it <= reconnect_window[1]
-        if reconnect_every and n_done % reconnect_every == 0 and in_window:
-            k = len(events) + 1
-            eps = (reconnect_eps if reconnect_eps is not None
-                   else reconnect_helicity * abs(scalars["helicity"]) / (2.0 * abs(scalars["JB"])))
-            ev = dict(k=k, it=it, resid=resid_now, eps=eps,
-                      helicity_target=None if reconnect_eps is not None else reconnect_helicity,
-                      F_before=float(state.last.F_norm), **{f"{kk}_before": v for kk, v in scalars.items()})
-            B_new, info, rel = reconnect_fn(state.B_n, eps)
-            state = initial_state(B_new, ts, dt=float(state.dt), step=it)
-            state, pw, scalars = sample(state, pw)
-            record(it, wall, scalars)
-            ev.update(solve_it=int(info), moved=float(rel), F_after=float(state.last.F_norm),
-                      helicity_spent=(scalars["helicity"] - ev["helicity_before"]) / abs(ev["helicity_before"]),
-                      **{f"{kk}_after": v for kk, v in scalars.items()})
-            events.append(ev)
-            if verbose:
-                dose = "constant" if reconnect_eps is not None else f"for {reconnect_helicity:.2%} of H"
-                print(f"  [reconnect {k}] at it={it}: eps={eps:.3e} {dose} "
-                      f"({int(info)} it, moved {float(rel):.2e}); |F| {ev['F_before']:.3e} -> "
-                      f"{ev['F_after']:.3e}, H {ev['helicity_before']:+.6e} -> {ev['helicity_after']:+.6e} "
-                      f"({ev['helicity_spent']:+.2%}), J/B {ev['JoverB_before']:.3f} -> "
-                      f"{ev['JoverB_after']:.3f}", flush=True)
         t_out += time.perf_counter() - tq
 
     res = result(n_done, stop, time.perf_counter() - t_arm - t_out)

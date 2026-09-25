@@ -83,7 +83,7 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 # The run's configuration is the same object scripts/relax.py builds from its command line
 # (mrx.relax_config): the geometry group builds the sequence, the descent group the stepper, the
 # budget group the loop's arguments; every default is the production one.
-cfg = RelaxConfig(geometry=Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision()),
+cfg = RelaxConfig(geometry=Geometry(path=cli.geometry, resolution=ns, spline_degree=cli.p, precision=current_precision()),
                   descent=Descent(method="gradient"),
                   budget=Budget(steps=cli.outer * cli.inner, chunk=cli.inner, floor_tol=cli.floor_tol))
 seq, ops = cfg.geometry.build()
@@ -104,7 +104,7 @@ print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic[
 h_r_sq = radial_cell_sq(seq)
 ts = cfg.stepper(seq, h_r_sq)
 print(f"[relax] velocity smoothing order 1, scale {ts.velocity_smoothing_scale:.3e}")
-res = relax(initial_state(B0, ts), ts, **cfg.relax_kwargs(h_r_sq))
+res = relax(initial_state(B0, ts), ts, **cfg.relax_kwargs())
 F = np.asarray(res.trace["F"], dtype=float)
 dE = np.asarray(res.trace["dE"], dtype=float)
 H = np.asarray(res.qoi["helicity"], dtype=float)
@@ -161,8 +161,8 @@ print(f"  -> {path}")
 # parameters and the traces, and the initial and final state as checkpoints --
 # so scripts/poincare_trace.py + poincare_plot.py can draw the Poincare sections of both states.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, ts), 0, seq)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
 params = dict(cfg.params, geometry_path=os.path.abspath(cli.geometry), knots=cfg.geometry.knots, ic=ic["kind"],
               h_r_sq=h_r_sq, start_step=0)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:

@@ -79,11 +79,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import mrx
 from mrx.gvec import load_clebsch
-from mrx.initial_conditions import clebsch_potential_form, potential_two_form, resonant_rho
+from mrx.initial_conditions import clebsch_potential_form, parse_seed, potential_two_form, resonant_rho
 from mrx.nullspace import compute_nullspaces
 from mrx.plotting import render_section
 from mrx.poincare import poincare, surface_label
-from mrx.relax_config import Budget, Descent, Geometry, RelaxConfig, Seed, current_precision
+from mrx.relax_config import Budget, Descent, Geometry, RelaxConfig, current_precision
 from mrx.relaxation import (compute_divergence_norm, initial_state, radial_cell_sq, relax,
                             write_checkpoint)
 
@@ -91,7 +91,7 @@ print(f"[env] mrx precision {mrx.DTYPE}")
 
 # scripts/relax.py's configuration objects (mrx.relax_config): the geometry builds the sequence, the
 # seed group parses the seed, and below a descent and a Newton configuration make the steppers.
-geometry = Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision())
+geometry = Geometry(path=cli.geometry, resolution=ns, spline_degree=cli.p, precision=current_precision())
 seq, ops = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
@@ -99,8 +99,7 @@ h_r_sq = radial_cell_sq(seq)
 # %%
 # Now we build two initial fields: the plain equilibrium, and the same field
 # with a resonant seed added on the Clebsch potential.
-seed_cfg = Seed(spec=cli.seed, eps=cli.seed_eps)
-seed = seed_cfg.parsed()
+seed = parse_seed(cli.seed, cli.seed_eps)      # the envelope seed of the potential (to be replaced by mrx.seeding)
 m, n, rho0, width = seed[:4]
 cb = load_clebsch(seq.equilibrium, nfp=seq.nfp)
 nfp = int(cb["nfp"])
@@ -149,20 +148,20 @@ sections(B_seeded, f"seeded_eps{cli.seed_eps:g}",
 # only move and change shape.
 B = B_seeded
 if cli.descent_steps:
-    descent = RelaxConfig(geometry=geometry, seed=seed_cfg, descent=Descent(method="gradient"),
+    descent = RelaxConfig(geometry=geometry, descent=Descent(method="gradient"),
                           budget=Budget(steps=cli.descent_steps, chunk=50, floor_tol=1e-6))
     ts_descent = descent.stepper(seq, h_r_sq)
-    res_d = relax(initial_state(B, ts_descent), ts_descent, **descent.relax_kwargs(h_r_sq))
+    res_d = relax(initial_state(B, ts_descent), ts_descent, **descent.relax_kwargs())
     F = np.asarray(res_d.trace["F"], dtype=float)
     H = np.asarray(res_d.qoi["helicity"], dtype=float)
     print(f"[descent] {res_d.steps} steps ({res_d.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e}, "
           f"dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}")
     B = res_d.state.B_n
 if cli.newton_steps:
-    newton = RelaxConfig(geometry=geometry, seed=seed_cfg,
+    newton = RelaxConfig(geometry=geometry,
                          budget=Budget(steps=cli.newton_steps, chunk=5, floor_tol=0.0))
     ts_newton = newton.stepper(seq, h_r_sq)
-    res_n = relax(initial_state(B, ts_newton), ts_newton, **newton.relax_kwargs(h_r_sq))
+    res_n = relax(initial_state(B, ts_newton), ts_newton, **newton.relax_kwargs())
     F = np.asarray(res_n.trace["F"], dtype=float)
     H = np.asarray(res_n.qoi["helicity"], dtype=float)
     it_n = np.asarray(res_n.trace["newton_it"])
@@ -180,9 +179,9 @@ if cli.descent_steps or cli.newton_steps:
     last, ts_any = (newton, ts_newton) if cli.newton_steps else (descent, ts_descent)
     steps = (res_d.steps if cli.descent_steps else 0) + (res_n.steps if cli.newton_steps else 0)
     write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"),
-                     initial_state(B_seeded, ts_any), 0)
+                     initial_state(B_seeded, ts_any), 0, seq)
     write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{steps:06d}.h5"),
-                     initial_state(B, ts_any), steps)
+                     initial_state(B, ts_any), steps, seq)
     params = dict(last.params, geometry_path=os.path.abspath(cli.geometry), knots=geometry.knots, ic="clebsch",
                   h_r_sq=h_r_sq, start_step=0)
     with open(os.path.join(cli.out, "relax.json"), "w") as fh:

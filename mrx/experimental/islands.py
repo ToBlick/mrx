@@ -16,12 +16,12 @@ island studies, kept here so :mod:`mrx.poincare` stays the section-tracing modul
 """
 import numpy as np
 from functools import partial
-from math import gcd
 
 import diffrax as dfx
 import jax
 import jax.numpy as jnp
 
+from mrx.seeding import resonances
 from mrx.poincare import (MIN_STEPS_PER_PERIOD, R_AXIS, R_EDGE, cross_section_rhs, logical_field, poincare,
                           rotational_transform, to_polar, to_uv, trace)
 
@@ -122,19 +122,6 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     return {"r": np.asarray(r), "theta": np.asarray(theta),
             "uv": np.asarray(ys), "residue": np.asarray(residue),
             "det": np.asarray(jnp.linalg.det(S)), "defect": np.asarray(defect), "kind": kind}
-
-
-def resonances(iota_lo, iota_hi, nfp, m_max):
-    """The chains that can sit between two rotational transforms: ``(m, n)``
-    coprime with ``m <= m_max`` and ``iota_lo < nfp n / m < iota_hi``, by
-    increasing ``m`` -- a chain at ``iota = nfp n / m`` closes after ``m``
-    field periods (the seeds' convention, ``mrx.initial_conditions``)."""
-    out = []
-    for m in range(1, int(m_max) + 1):
-        for n in range(1, m + 1):
-            if gcd(m, n) == 1 and iota_lo < nfp * n / m < iota_hi:
-                out.append((m, n))
-    return out
 
 
 def _chain_radii(r, iota, target, tol):

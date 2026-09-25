@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import enum
 import typing
 from dataclasses import dataclass
 
@@ -57,6 +58,8 @@ def _unwrap(t):
     if origin is typing.Literal:
         choices = typing.get_args(t)
         return type(choices[0]), False, choices
+    if isinstance(t, type) and issubclass(t, enum.Enum):
+        return t, False, tuple(t)
     return t, False, None
 
 
@@ -78,6 +81,8 @@ def leaves(cls, path=(), prefix=""):
 def _default_text(leaf, default):
     if default is None or default == "" or default is dataclasses.MISSING:
         return ""
+    if isinstance(default, enum.Enum):
+        return f" [{default.value}]"
     if isinstance(default, bool):
         return f" [{str(default).lower()}]"
     if isinstance(default, (tuple, list)):
@@ -121,6 +126,8 @@ def _add(target, leaf):
                   type=meta.get("parse", leaf.type))
         if leaf.choices:
             kw["choices"] = leaf.choices
+            if isinstance(leaf.choices[0], enum.Enum):     # an enum's members, spelled by their values
+                kw["metavar"] = "{" + ",".join(c.value for c in leaf.choices) + "}"
         if default is dataclasses.MISSING:
             kw["required"] = True
             del kw["default"]
@@ -137,7 +144,8 @@ def _build(cls, values, path=(), prefix=""):
         if dataclasses.is_dataclass(inner):
             kw[f.name] = _build(inner, values, path + (f.name,), f.metadata.get("prefix", ""))
         elif dests[path + (f.name,)] in values:
-            kw[f.name] = values[dests[path + (f.name,)]]
+            v = values[dests[path + (f.name,)]]
+            kw[f.name] = inner(v) if isinstance(inner, type) and issubclass(inner, enum.Enum) and v is not None else v
     return cls(**kw)
 
 
@@ -152,7 +160,7 @@ def flatten(cfg) -> dict:
         v = cfg
         for name in leaf.path:
             v = getattr(v, name)
-        out[leaf.dest] = list(v) if isinstance(v, tuple) else v
+        out[leaf.dest] = list(v) if isinstance(v, tuple) else (v.value if isinstance(v, enum.Enum) else v)
     return out
 
 

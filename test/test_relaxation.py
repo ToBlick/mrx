@@ -68,7 +68,7 @@ def _check_run(seq, ts, res, steps, chunk, saved, force_drop, helicity_band, tmp
 
     # A checkpoint round-trips leaf for leaf, and a restart continues the count.
     path = os.path.join(tmp_path, "state.h5")
-    write_checkpoint(path, res.state, steps)
+    write_checkpoint(path, res.state, steps, seq)
     state, step = read_checkpoint(path, ts)
     assert step == steps
     assert np.array_equal(np.asarray(state.last.F), np.asarray(res.state.last.F))

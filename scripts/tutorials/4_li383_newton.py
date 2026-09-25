@@ -105,7 +105,7 @@ from mrx.relaxation import initial_state, radial_cell_sq, relax, write_checkpoin
 
 print(f"[env] mrx precision {mrx.DTYPE}")
 
-geometry = Geometry(path=cli.geometry, ns=ns, p=cli.p, precision=current_precision())
+geometry = Geometry(path=cli.geometry, resolution=ns, spline_degree=cli.p, precision=current_precision())
 seq, ops = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
@@ -138,7 +138,7 @@ if B_start is None:
     B0, ic = initial_field(seq)
     print(f"[ic] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, "
           f"||div B|| {ic['div']:.2e}, wall-normal {ic['wall_discarded']:.1e}")
-    fast = relax(initial_state(B0, ts_descent), ts_descent, **descent.relax_kwargs(h_r_sq))
+    fast = relax(initial_state(B0, ts_descent), ts_descent, **descent.relax_kwargs())
     B_start = fast.state.B_n
     print(f"[ic] the descent's fast phase: {fast.steps} steps ({fast.stop}), "
           f"||F|| {fast.trace['F'][0]:.3e} -> {fast.trace['F'][-1]:.3e}")
@@ -147,7 +147,7 @@ if B_start is None:
 # Now we continue the smoothed descent from that state, for comparison: the
 # power-law tail of Tutorial 3, another 200 steps.
 tail = replace(descent, budget=Budget(steps=cli.descent_steps, chunk=50, floor_tol=0.0))
-res_d = relax(initial_state(B_start, ts_descent), ts_descent, **tail.relax_kwargs(h_r_sq))
+res_d = relax(initial_state(B_start, ts_descent), ts_descent, **tail.relax_kwargs())
 F_d = np.asarray(res_d.trace["F"], dtype=float)
 H_d = np.asarray(res_d.qoi["helicity"], dtype=float)
 print(f"[descent] {res_d.steps} steps in {res_d.wall:.0f} s ({res_d.wall / res_d.steps:.2f} s/step): "
@@ -164,7 +164,7 @@ newton = RelaxConfig(geometry=geometry,
                                       if v is not None}),
                      budget=Budget(steps=cli.newton_steps, chunk=cli.newton_chunk, floor_tol=0.0))
 ts_newton = newton.stepper(seq, h_r_sq)
-res_n = relax(initial_state(B_start, ts_newton), ts_newton, **newton.relax_kwargs(h_r_sq))
+res_n = relax(initial_state(B_start, ts_newton), ts_newton, **newton.relax_kwargs())
 F_n = np.asarray(res_n.trace["F"], dtype=float)
 H_n = np.asarray(res_n.qoi["helicity"], dtype=float)
 it_n = np.asarray(res_n.trace["newton_it"])
@@ -205,8 +205,8 @@ print(f"  -> {path}")
 # the checkpoints of the start and the end -- so Tutorial 6 can warm-start from
 # the Newton floor and scripts/poincare_trace.py can section it.
 os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_start, ts_newton), 0)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.h5"), res_n.state, res_n.steps)
+write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_start, ts_newton), 0, seq)
+write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res_n.steps:06d}.h5"), res_n.state, res_n.steps, seq)
 params = dict(newton.params, geometry_path=os.path.abspath(cli.geometry), knots=geometry.knots, ic="warmstart",
               h_r_sq=h_r_sq, start_step=0)
 with open(os.path.join(cli.out, "relax.json"), "w") as fh:
