@@ -315,10 +315,9 @@ def spline_map(seq, raw_R, raw_Z, nfp, sign):
 
 def own_sequence(S, raw_R, raw_Z):
     """A copy of the setup's sequence on the map of the raw coefficients with its own preconditioners and harmonic
-    forms (the production solve, not the AD one). The copy shares the parity views of the setup's sequence, which
-    carry LP's geometry, so they are dropped before the map is set and rebuilt from the new one."""
+    forms (the production solve, not the AD one); set_map drops the copy's parity views, which carried LP's
+    geometry, and they are rebuilt from the new map."""
     seq1 = copy.copy(S["seq"])
-    seq1._parity_views = {}
     seq1.set_map(spline_map(seq1, raw_R, raw_Z, seq1.nfp, S["lp_shape"].sign))
     seq1.build_preconditioners()
     compute_nullspaces(seq1, verbose=False)
