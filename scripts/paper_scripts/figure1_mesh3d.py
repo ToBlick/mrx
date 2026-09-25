@@ -2,7 +2,7 @@
 """Figure 1: the device's boundary mesh in 3-D, cut open at two toroidal planes that face the viewer, with the
 Poincare section of a relaxed run drawn on each cut face (GPU: it rebuilds the run's map).
 
-    python paper/figure1_mesh3d.py --run RUN --archive RUN/trace.npz --pressure-factor F --out DIR
+    python scripts/paper_scripts/figure1_mesh3d.py --run RUN --archive RUN/trace.npz --pressure-factor F --out DIR
 
 The camera looks along the toroidal unit vector at the front plane (logical zeta = 0), so the front face and the
 back face half a device further (the traced plane zeta = 0.5 of the next field period) are both seen face-on; the
