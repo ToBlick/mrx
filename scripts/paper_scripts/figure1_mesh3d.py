@@ -28,8 +28,10 @@ def parse_args(argv=None):
     ap.add_argument("--back", type=float, default=0.5, help="logical zeta of the back face (a traced plane)")
     ap.add_argument("--elev", type=float, default=18.0)
     ap.add_argument("--line-stride", type=int, default=5, help="draw every k-th kept line")
-    ap.add_argument("--crossings", type=int, default=250, help="crossings drawn per line")
-    ap.add_argument("--dot-size", type=float, default=0.8, help="section marker area, pt^2")
+    ap.add_argument("--crossings", type=int, default=400, help="crossings drawn per line")
+    ap.add_argument("--dot-size", type=float, default=0.4, help="section marker area, pt^2")
+    ap.add_argument("--opaque", action="store_true",
+                    help="a white, covering surface, and only the knot lines on its side facing the camera")
     ap.add_argument("--mesh-lw", type=float, default=0.25, help="width of every mesh line, pt")
     ap.add_argument("--knot-stride", type=int, default=2, help="draw every k-th knot line of the run's mesh")
     ap.add_argument("--out", required=True)
@@ -89,29 +91,68 @@ def main(cli):
 
     faces = [face(cli.front, z_lo, "iota"), face(cli.back, z_hi, "p")]
     os.makedirs(cli.out, exist_ok=True)
-    mesh = dict(color=LEFT["color"], lw=cli.mesh_lw)                          # one thin style for every mesh line
+    # one thin solid style for every mesh line (the house property cycle would dash them)
+    mesh = dict(color=LEFT["color"], lw=cli.mesh_lw, ls="-", zorder=2)
+    r1 = 1.0 - 1e-6
+    elev, az = np.radians(cli.elev), np.radians(azim)
+    eye = np.array([np.cos(elev) * np.cos(az), np.cos(elev) * np.sin(az), np.sin(elev)])    # toward the viewer
+
+    def normals(th, ze):
+        """The boundary's normal d_theta x d_zeta at (1, th, ze), and the vector from the axis to the point."""
+        d = 1e-4
+        pt, pz = xyz(np.full(th.size, r1), th + d, ze), xyz(np.full(th.size, r1), th - d, ze)
+        qt, qz = xyz(np.full(th.size, r1), th, ze + d), xyz(np.full(th.size, r1), th, ze - d)
+        out = xyz(np.full(th.size, r1), th, ze) - xyz(np.full(th.size, 1e-3), np.zeros(th.size), ze)
+        return np.cross(pt - pz, qt - qz), out
+
+    # The parametrization orients every normal alike, so its sign is fixed once over the whole far half, from the
+    # majority pointing away from the axis (a per-point test flips them in the bean's concave dent).
+    gt, gz = (v.ravel() for v in np.meshgrid(np.linspace(0.0, 1.0, 64), np.linspace(z_lo, z_hi, 64), indexing="ij"))
+    n_g, out_g = normals(gt, gz)
+    orient = float(np.sign(np.median(np.einsum("ij,ij->i", n_g, out_g))))
+
+    def facing(th, ze):
+        """True where the boundary's outward normal faces the camera (orthographic, equal box aspect)."""
+        return orient * (normals(th, ze)[0] @ eye) > 0.0
+
+    def line(th, ze):
+        p = xyz(np.full(th.size, r1), th, ze)
+        if not cli.opaque:
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
+            return
+        vis = facing(th, ze)                                                      # the visible runs only
+        edges = np.flatnonzero(np.diff(np.r_[0, vis.astype(int), 0]))
+        for a, b in zip(edges[::2], edges[1::2]):
+            if b - a > 1:
+                ax.plot(p[a:b, 0], p[a:b, 1], p[a:b, 2], **mesh)
+
     with house_style():
         fig = plt.figure(figsize=(8.0, 6.0))
         ax = fig.add_subplot(111, projection="3d")
+        ax.computed_zorder = False                                                # surface, then lines, then sections
         n_line = 200
+        if cli.opaque:                                                            # the far half's boundary, white
+            TH, ZE = np.meshgrid(np.linspace(0.0, 1.0, 4 * ns[1] + 1),
+                                 np.linspace(z_lo, z_hi, int(2 * ns[2] * nfp) + 1), indexing="ij")
+            S = xyz(np.full(TH.size, r1), TH.ravel(), ZE.ravel()).reshape(TH.shape + (3,))
+            ax.plot_surface(S[..., 0], S[..., 1], S[..., 2], color="white", shade=False, linewidth=0,
+                            antialiased=False, zorder=1)
         for j in range(0, ns[1], cli.knot_stride):                               # poloidal knot lines, far half
             zz = np.linspace(z_lo, z_hi, n_line)
-            p = xyz(np.full(zz.size, 1.0 - 1e-6), np.full(zz.size, j / ns[1]), zz)
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
+            line(np.full(zz.size, j / ns[1]), zz)
         kn = np.arange(np.ceil(z_lo * ns[2]), np.floor(z_hi * ns[2]) + 1, cli.knot_stride) / ns[2]
         for zk in kn:                                                             # toroidal knot lines, far half
             tt = np.linspace(0.0, 1.0, n_line)
-            p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
-        for zk in (z_lo, z_hi):                                                   # the two cut faces' outlines
+            line(tt, np.full(tt.size, zk))
+        for zk in (z_lo, z_hi):                                                   # the two cut faces' outlines, whole
             tt = np.linspace(0.0, 1.0, 2 * n_line)
-            p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
+            p = xyz(np.full(tt.size, r1), tt, np.full(tt.size, zk))
             ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
         bars = {}
         for X, Y, Zc, col, what in faces:
             vmin, vmax, cmap = scales[what]
             bars[what] = ax.scatter(X.ravel(), Y.ravel(), Zc.ravel(), c=col.ravel(), s=cli.dot_size, vmin=vmin, vmax=vmax,
-                                    cmap=cmap, linewidths=0, rasterized=True, depthshade=False)
+                                    cmap=cmap, linewidths=0, rasterized=True, depthshade=False, zorder=3)
         th = np.linspace(0.0, 1.0, 4 * ns[1] + 1)                                 # the whole device's extent
         THf, ZEf = np.meshgrid(th, np.linspace(0.0, nfp, 4 * ns[2] * nfp + 1), indexing="ij")
         yf = xyz(np.full(THf.size, 1.0 - 1e-6), THf.ravel(), ZEf.ravel())
