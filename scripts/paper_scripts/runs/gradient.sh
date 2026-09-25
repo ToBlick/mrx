@@ -1,7 +1,7 @@
 #!/bin/bash
 # Fig. 8, Tabs. C.6, C.7 and the smoothing constant of Sec. 5.3: gradient descent at (16, 32, 32). The gamma = 1,
 # potential-velocity, c = 0.0737 arm of all four is newton_convergence/gradient_16.
-#   bash paper/runs/gradient.sh
+#   bash scripts/paper_scripts/runs/gradient.sh
 . "$(dirname "$0")/common.sh"
 O=$RECORDS/gradient
 G="$LI383 --method gradient --ns 16,32,32"

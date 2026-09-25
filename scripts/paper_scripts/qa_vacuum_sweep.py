@@ -1,11 +1,11 @@
 """Sweep :func:`scripts.vacuum_convergence.run_rung` over a resolution list at
 one degree p, so a whole p-column is one SLURM job instead of one job per rung.
 
-    python -u scripts/qa_vacuum_sweep.py --geometry data/wout_..._highres.nc \
+    python -u scripts/paper_scripts/qa_vacuum_sweep.py --geometry data/wout_..._highres.nc \
         --p 3 --ns 8,16,8:12,24,12:16,32,16 --out outputs/qa_vacuum_highres
 
 Then merge and plot the whole directory with
-``python scripts/vacuum_convergence.py --plot outputs/qa_vacuum_highres``.
+``python scripts/paper_scripts/vacuum_convergence.py --plot outputs/qa_vacuum_highres``.
 """
 import argparse
 import os

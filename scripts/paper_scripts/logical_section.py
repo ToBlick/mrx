@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """The logical chart (theta, r) of one plane of a trace archive as a figure of its own (login node, matplotlib only).
 
-    python paper/logical_section.py ARCHIVE --plane 0.5 --pressure-factor F --out DIR
+    python scripts/paper_scripts/logical_section.py ARCHIVE --plane 0.5 --pressure-factor F --out DIR
 
 The crossings are coloured as in scripts/poincare_plot.py's logical panel: the rotational transform of their line for
 theta < 1/2, the pressure for theta >= 1/2, lost lines grey. The iota and pressure ranges are those of the plotter

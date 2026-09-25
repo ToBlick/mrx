@@ -3,10 +3,10 @@
 isoclines become sheet-shaped, and on the helicity isocline there is a line that is the actual topology
 constraint"). Plain matplotlib, no data.
 
-    python paper/energy_landscape.py [--out DIR]
+    python scripts/paper_scripts/energy_landscape.py [--out DIR]
 
 Writes figs/energy_landscape.{pdf,png} and figs/pgf/energy_landscape/energy_landscape.pgf under --out
-[paper/build]; the PGF needs pdflatex on PATH.
+[scripts/paper_scripts/build]; the PGF needs pdflatex on PATH.
 
 Each helicity isocline is a bowl, parabolic at its bottom and deformed further out: the Taylor state at the bottom of
 the isocline of B_0, the vacuum at the bottom of the zero-helicity one underneath. The ideal orbit of B_0 is a line
@@ -80,7 +80,7 @@ def orbit(s):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--out", default="paper/build", help="figs/ in the paper's layout [paper/build]")
+    ap.add_argument("--out", default="scripts/paper_scripts/build", help="figs/ in the paper's layout [scripts/paper_scripts/build]")
     cli = ap.parse_args()
 
     s = np.linspace(-0.85, 1.65, 6001)                     # the orbit runs from the right around the far wall

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Fig. 7's inset (Sec. 3.4): how far LP's boundary represented on the spline mesh lies from the VMEC boundary (numpy).
 
-    python paper/ad_baselines.py [--records DIR]
+    python scripts/paper_scripts/ad_baselines.py [--records DIR]
 
 Reads data/wout_LandremanPaul2021_QA_lowres.nc; writes <records>/shape_optimization/qa_boundary_baselines.json, per
 mesh (n, 2n, n), n = 16, 24, 32: d_RMS / a and e_R, e_Z of the boundary (2n, n) spline fit against the VMEC boundary.
@@ -11,7 +11,7 @@ The fit is a least-squares proxy of the interpolated map's boundary: periodic cu
 (n_theta, n_zeta) = (2n, n) boundary grid of one field period, fitted to the VMEC boundary (its Fourier series) on
 a dense grid of midpoints, GRID. d_RMS is the area-weighted RMS over the fitted surface of the distance of its
 points to the VMEC surface, along the VMEC normal at the closest point (Gauss-Newton from the same angles, as
-surface_distance in paper/ad_recovery.py), over the minor radius a (the wout's Aminor_p); e_R and e_Z are the
+surface_distance in scripts/paper_scripts/ad_recovery.py), over the minor radius a (the wout's Aminor_p); e_R and e_Z are the
 relative L2 differences of R and Z at equal angles on GRID.
 """
 import argparse
@@ -21,7 +21,7 @@ import os
 import numpy as np
 from scipy.io import netcdf_file
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # scripts/paper_scripts/<this file>
 WOUT = os.path.join(REPO, "data", "wout_LandremanPaul2021_QA_lowres.nc")
 MESHES = (16, 24, 32)
 #: the fit and evaluation grid over (theta, one field period of zeta): midpoints

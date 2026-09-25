@@ -4,7 +4,7 @@
 # to about two hours each (cont/, at their measured s/step). Traces: the n_r = 48 state (Fig. 11), the reference
 # run's state at step 150 (Fig. 14 top, the width baseline of Tabs. 4 and 5), the best states of the three
 # continuations (Fig. C.18).
-#   bash paper/runs/newton_convergence.sh
+#   bash scripts/paper_scripts/runs/newton_convergence.sh
 . "$(dirname "$0")/common.sh"
 O=$RECORDS/newton_convergence
 N="$LI383 --method newton"

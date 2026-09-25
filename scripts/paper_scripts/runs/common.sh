@@ -1,4 +1,4 @@
-# Read by every launcher (bash paper/runs/<experiment>.sh, from the repository root): the records root, the li383
+# Read by every launcher (bash scripts/paper_scripts/runs/<experiment>.sh, from the repository root): the records root, the li383
 # case, and sub, one GPU job through slurm/run.sh (site settings as there).
 #   RECORDS   the records root, <RECORDS>/<experiment>/<arm>, relative to the repository root [outputs]
 set -euo pipefail

@@ -1,10 +1,10 @@
 #!/bin/bash
 # Tab. 5, Figs. 14, 15: three converged states at (32, 64, 64), the reference run's state at step 150 unseeded, with
-# the (5, 1) chain at a*/4 and with the (6, 1) chain at a* (each its part of the joint optimum of paper/seed.py,
+# the (5, 1) chain at a*/4 and with the (6, 1) chain at a* (each its part of the joint optimum of scripts/paper_scripts/seed.py,
 # relaxed 200 Newton steps); each gets 200 resistive steps, eta dt = 0.064 <g_rr> h_r^2 against ONE reference, the
 # nested state smoothed by c = 0.03, then 100 ideal steps. Needs newton_convergence/newton_32 (whose trace is the
 # unseeded state's before).
-#   bash paper/runs/reconnection.sh
+#   bash scripts/paper_scripts/runs/reconnection.sh
 . "$(dirname "$0")/common.sh"
 O=$RECORDS/reconnection
 N32=$RECORDS/newton_convergence/newton_32
@@ -23,10 +23,10 @@ phases() {  # arm, start checkpoint, its step, dependency: the resistive and the
   sub rc_${arm}_tr_after 60 afterok:$after scripts/poincare_trace.py --run $O/$arm/ideal_after $TRACE
 }
 
-seeded() {  # arm, paper/seed.py's selection: seed, relax, trace, then the two phases
+seeded() {  # arm, scripts/paper_scripts/seed.py's selection: seed, relax, trace, then the two phases
   local arm=$1 seed ideal
   shift
-  seed=$(sub rc_${arm}_seed 120 "" paper/seed.py --run $N32 --step 150 "$@" --out $O/$arm/seeded.h5)
+  seed=$(sub rc_${arm}_seed 120 "" scripts/paper_scripts/seed.py --run $N32 --step 150 "$@" --out $O/$arm/seeded.h5)
   ideal=$(sub rc_${arm}_ideal 240 afterok:$seed scripts/relax.py $N --restart $O/$arm/seeded.h5 --steps 200 \
     --chunk 20 --out $O/$arm/ideal)
   sub rc_${arm}_tr_ideal 60 afterok:$ideal scripts/poincare_trace.py --run $O/$arm/ideal $TRACE

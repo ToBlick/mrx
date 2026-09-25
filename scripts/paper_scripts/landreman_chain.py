@@ -9,8 +9,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-#: the production tools (relax.py, poincare_trace.py) when this file is not next to them
-TOOLS = os.path.join(os.path.dirname(HERE), "scripts")
+#: the production tools (relax.py, poincare_trace.py): scripts/, the parent of scripts/paper_scripts/
+TOOLS = os.path.dirname(HERE)
 
 
 def resolve(name):

@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 """Figs. 6 and 7 of Sec. 3.4 (qa_paper_qa, qa_paper_shape) from the shape-optimization records (login node, matplotlib).
 
-    python paper/ad_figures.py [--records DIR] [--out DIR]
+    python scripts/paper_scripts/ad_figures.py [--records DIR] [--out DIR]
 
 Reads <records>/shape_optimization/: qa_constrained<tag>.json and qa_recover<tag>.json of the pilot and the four draws
-(paper/runs/ad_constrained.sh), qa_baseline_{16,24,32}.json (ad_baseline.sh), qa_boundary_baselines.json (ad_baselines.py).
-Writes <out>/figs/<stem>.{pdf,png} and <out>/figs/pgf/<stem>/<stem>.pgf through paper/figures.py's writer [paper/build].
+(scripts/paper_scripts/runs/ad_constrained.sh), qa_baseline_{16,24,32}.json (ad_baseline.sh), qa_boundary_baselines.json (ad_baselines.py).
+Writes <out>/figs/<stem>.{pdf,png} and <out>/figs/pgf/<stem>/<stem>.pgf through scripts/paper_scripts/figures.py's writer [scripts/paper_scripts/build].
 
 Fig. 6: <Q_QA^2>_{r >= h_r} at every L-BFGS-B iteration (the constrained record's F_path, in units of LP's value),
 log-log, with LP's criterion on its interpolated map at 16x32x16, 24x48x24 and 32x64x32 in grey. Fig. 7: the
@@ -24,10 +24,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from figures import save  # noqa: E402  (paper/figures.py, next to this file)
+from figures import save  # noqa: E402  (scripts/paper_scripts/figures.py, next to this file)
 from mrx.plotstyle import CYCLE, FS, figsize, house_style  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # scripts/paper_scripts/<this file>
 #: the pilot from the device and the four 10 mm draws (draw 3 fails the fold guard and is not run), in the house
 #: (colour, dash) cycle, one marker each on top
 RUNS = [("_M0", "device")] + [(f"_M10s{k}", f"draw {k}") for k in (0, 1, 2, 4)]
@@ -58,7 +58,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--records", default=os.environ.get("MRX_RECORDS", os.path.join(REPO, "outputs")),
                     help="the records root, <records>/shape_optimization [MRX_RECORDS or outputs]")
-    ap.add_argument("--out", default=os.path.join(REPO, "paper", "build"), help="figs/ in the paper's layout")
+    ap.add_argument("--out", default=os.path.join(REPO, "scripts", "paper_scripts", "build"), help="figs/ in the paper's layout")
     cli = ap.parse_args()
     folder = os.path.join(cli.records, "shape_optimization")
     data = {tag: load(folder, tag) for tag, _ in RUNS}

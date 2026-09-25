@@ -2,7 +2,7 @@
 # Tabs. C.8, C.9 and Figs. C.16, C.17: Newton at (16, 32, 32) away from the defaults (kappa 3, one pass of 200
 # MINRES iterations, forcing term 0.1, p = 2, mixed precision, solver tolerance 1e-8). The kappa = 3 arm is also the
 # 200-iteration row of Tab. C.9; the reference arm of Figs. C.16, C.17 is newton_convergence/newton_16.
-#   bash paper/runs/newton_sweeps.sh
+#   bash scripts/paper_scripts/runs/newton_sweeps.sh
 . "$(dirname "$0")/common.sh"
 O=$RECORDS/newton_sweeps
 T="$LI383 --method newton --ns 16,32,32 --steps 200 --chunk 20"

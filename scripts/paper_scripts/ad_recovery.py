@@ -1,10 +1,10 @@
 r"""Sec. 3.4, App. D and Figs. 6-8: quasi-axisymmetric shape optimization of the Landreman-Paul (LP) vacuum field.
 
-    MRX_DTYPE=float64 python paper/ad_recovery.py --stage constrained|trace|baseline [--records DIR] [--tag T] ...
+    MRX_DTYPE=float64 python scripts/paper_scripts/ad_recovery.py --stage constrained|trace|baseline [--records DIR] [--tag T] ...
 
 Records in <records>/shape_optimization [--records, MRX_RECORDS or outputs]: constrained -> qa_constrained<tag>.json/.npz,
 qa_recover<tag>.json/.npz, qa_guard<tag>.json; trace (reads qa_recover<tag>.npz) -> qa_trace<tag>[_remesh].npz/.json;
-baseline -> qa_baseline<tag>.json. GPU, float64; the launchers are paper/runs/ad_{constrained,trace,baseline}.sh.
+baseline -> qa_baseline<tag>.json. GPU, float64; the launchers are scripts/paper_scripts/runs/ad_{constrained,trace,baseline}.sh.
 
 The map is LP's VMEC map interpolated on the (n_r, n_theta, n_zeta) splines, p = 3; every coefficient is a variable
 (:class:`mrx.shape_ad.BoundaryShape` ``free="all"``: the boundary ring's change extended harmonically, plus a change
@@ -46,7 +46,7 @@ from mrx.shape_ad import (BoundaryShape, _cylindrical_derivatives, _tables, aspe
                           quasisymmetry_residual, section_moments, vacuum_two_form, with_geometry)
 from mrx.spline_bases import basis_derivative_table, basis_table
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # scripts/paper_scripts/<this file>
 GEOMETRY = os.path.join(REPO, "data", "wout_LandremanPaul2021_QA_lowres.nc")
 #: the edge terms (F_edge, the edge iota, the fold rule's edge points) are taken at r = 1 - EPS
 EPS = 1e-6

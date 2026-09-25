@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """A stored vacuum field as a run of zero steps, so that scripts/poincare_trace.py traces it (Fig. 6).
 
-    python paper/vacuum_run.py RUNG
+    python scripts/paper_scripts/vacuum_run.py RUNG
 
-RUNG is a scripts/qa_vacuum_sweep.py rung (result.json, fields.npz). Writes RUNG/run/relax.json and
+RUNG is a scripts/paper_scripts/qa_vacuum_sweep.py rung (result.json, fields.npz). Writes RUNG/run/relax.json and
 RUNG/run/checkpoints/state_000000.h5 with the rung's discrete harmonic 2-form h_dof as the field, in the layout
 scripts/relax.py writes. No GPU.
 """

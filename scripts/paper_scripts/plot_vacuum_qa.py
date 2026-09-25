@@ -2,13 +2,13 @@
 
 ``LandremanPaul2021_QA`` is a vacuum equilibrium, so its field is the harmonic
 2-form of the Dirichlet de Rham complex (curl-free, div-free, ``B . n = 0``) --
-the same field ``scripts/analytic_vacuum.py`` / ``scripts/vacuum_convergence.py``
+the same field ``scripts/paper_scripts/analytic_vacuum.py`` / ``scripts/paper_scripts/vacuum_convergence.py``
 converge to. This builds that field once (a Hodge decomposition, no eigen-
 iteration) and draws its magnitude on the boundary surface of the whole device,
 one colour scale, styled like the ``mesh_3d`` boundary render: full torus, no
 axes, ``plasma`` by ``|B|``. Writes ``vacuum_qa_Bmag.pdf`` (+ a ``.png`` for viewing).
 
-    python scripts/plot_vacuum_qa.py --geometry data/wout_LandremanPaul2021_QA_lowres.nc --out DIR
+    python scripts/paper_scripts/plot_vacuum_qa.py --geometry data/wout_LandremanPaul2021_QA_lowres.nc --out DIR
 
 Options
     --geometry PATH      VMEC wout .nc or GVEC .dat (``mrx.geometry`` names)

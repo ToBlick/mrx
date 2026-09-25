@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Every Poincare page of the paper from the trace archives (login node, matplotlib only).
 
-    python paper/poincare_pages.py [--records DIR] [--out DIR] [--only PAGE,...]
+    python scripts/paper_scripts/poincare_pages.py [--records DIR] [--out DIR] [--only PAGE,...]
 
 Renders each archive with scripts/poincare_plot.py --paper into <out>/poincare/<page>/ and copies the page the
 paper shows, its .pgf and the -img*.png rasters it references, into <out>/figs/pgf/<page>/, the paper's layout.
@@ -20,7 +20,7 @@ import sys
 import numpy as np
 import scipy.io
 
-PLOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "scripts", "poincare_plot.py")
+PLOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "poincare_plot.py")   # scripts/poincare_plot.py
 
 C18 = ["--planes", "0.5", "--dot-scale", "0.4"]
 #: page -> (archive under the records root, the plane the paper shows, poincare_plot.py flags)
@@ -66,7 +66,7 @@ def limits(archives, factor):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--records", default="outputs", help="the records root, <records>/<experiment>/<arm> [outputs]")
-    ap.add_argument("--out", default="paper/build", help="poincare/ renders and figs/pgf/ pages [paper/build]")
+    ap.add_argument("--out", default="scripts/paper_scripts/build", help="poincare/ renders and figs/pgf/ pages [scripts/paper_scripts/build]")
     ap.add_argument("--only", default=",".join(PAGES), help="comma-separated subset of the pages")
     cli = ap.parse_args()
     archive = {page: os.path.join(cli.records, PAGES[page][0]) for page in PAGES}
