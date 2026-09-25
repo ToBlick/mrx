@@ -24,7 +24,7 @@ def test_defaults_resolve_by_method():
     cfg = parse()
     assert (cfg.budget.steps, cfg.budget.chunk, cfg.budget.floor_tol) == (100, 10, 1e-10)
     assert cfg.geometry.resolution == (32, 64, 64) and cfg.newton.penalty == 3.0
-    assert cfg.geometry.symmetry is Symmetry.STELLARATOR and cfg.geometry.precision is Precision.MIXED
+    assert cfg.geometry.symmetry is Symmetry.STELLARATOR and cfg.geometry.precision is Precision.FLOAT32
     cfg = parse("--method", "gradient")
     assert cfg.descent.method is Method.GRADIENT and (cfg.budget.steps, cfg.budget.chunk) == (2000, 200)
 

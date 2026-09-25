@@ -32,8 +32,8 @@ STEPS, CHUNK = 10, 5
 # 1.25x the measured drop once the suite has run.
 NEWTON_FORCE_DROP = 0.5
 # |H_end - H_0| / (2 E_0) under gradient descent: the helicity drifts by the
-# rounding of the stored field, not by a solve (the solves are refined to 1e-8
-# in float64 whatever the working dtype), so the band is a multiple of
+# rounding of the stored field, not by a solve (in the mixed configuration the solves are refined to 1e-8
+# in float64), so the band is a multiple of
 # sqrt(eps) of the working dtype: 3.5e-4 in float32, 1.5e-8 in float64.
 HELICITY_DRIFT_TOL = 25.0
 # Under Newton the steps are O(1) (dt capped at the Newton length) and the

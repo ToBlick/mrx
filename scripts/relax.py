@@ -170,7 +170,7 @@ def main(cfg):
 if __name__ == "__main__":
     # the precision must be in the environment before mrx is imported; the full parse then follows
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
+    pre.add_argument("--precision", default="float32", choices=tuple(PRECISIONS))
     os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[pre.parse_known_args()[0].precision]
     from mrx.cli import parse
     from mrx.relax_config import RelaxConfig

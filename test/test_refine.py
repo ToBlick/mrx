@@ -1,13 +1,15 @@
 """The refined solves meet the residual tolerance in the residual precision,
 and nothing leaks out of the working dtype.
 
-A float32 working dtype runs every Krylov solve as iterative refinement
-against the float64 view of the sequence (``mrx.precision``,
-``mrx.solvers.refine``). Checked on the session field: a mass solve's
-float64 residual is below the tolerance, the Leray projection's result is
+With ``MRX_RESIDUAL_DTYPE=float64`` at a float32 working dtype (the suite's
+mixed configuration) every Krylov solve runs as iterative refinement against
+the float64 view of the sequence (``mrx.precision``, ``mrx.solvers.refine``).
+Checked on the session field: a mass solve's residual in the residual
+precision is below the tolerance, the Leray projection's result is
 divergence-free to it (the saddle solve's upper residual), and the results
-come back in the working dtype unless asked for otherwise. At a float64
-working dtype the solves are plain and the same statements hold.
+come back in the working dtype unless asked for otherwise. In the plain
+configurations (float32, the default, and float64) the solves are plain and
+the same statements hold.
 """
 import jax.numpy as jnp
 import numpy as np

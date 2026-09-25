@@ -33,8 +33,8 @@ class Symmetry(StrEnum):
 
 
 class Precision(StrEnum):
-    MIXED = "mixed"                 # float32 fields and solves, float64 residual (tol 1e-8)
-    FLOAT32 = "float32"             # plain float32 (tol 1e-5): a machine without float64
+    FLOAT32 = "float32"             # plain float32 (tol 1e-5): the default, runs without float64
+    MIXED = "mixed"                 # float32 fields and solves, float64 residual (tol 1e-8): the paper's runs
     FLOAT64 = "float64"             # plain float64 (tol 1e-10)
 
 
@@ -85,8 +85,9 @@ class Geometry:
         parse=_knots, help="breakpoints of the r axis, comma-separated from 0 to 1, instead of the uniform grid"))
     knots_theta: Optional[tuple] = field(default=None, metadata=dict(parse=_knots, help="the theta axis's"))
     knots_zeta: Optional[tuple] = field(default=None, metadata=dict(parse=_knots, help="the zeta axis's"))
-    precision: Precision = field(default=Precision.MIXED, metadata=dict(
-        help="mixed: float32 fields and solves with a float64 residual; float32 / float64: both"))
+    precision: Precision = field(default=Precision.FLOAT32, metadata=dict(
+        help="float32 / float64: fields, solves and residuals; mixed: float32 fields and solves with a float64 "
+             "residual (the paper's runs)"))
     solve_tol: Optional[float] = field(default=None, metadata=dict(
         help="residual tolerance of every solve [the precision's: mixed 1e-8, float32 1e-5, float64 1e-10]"))
     solve_maxiter: int = field(default=2000, metadata=dict(help="iteration budget of every inner solve"))

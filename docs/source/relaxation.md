@@ -313,10 +313,14 @@ the runtime (relaxation time reached per wall hour, seconds per step).
 
 ## float32
 
-The default. `--precision float64` exports `MRX_DTYPE` before `mrx` is
-imported. In float32 the fields and the Krylov iterations are float32
-and every solve is refined against a float64 residual to `--solve-tol`,
-so the force is accurate beyond float32's own tolerance and the residual
-floor is set by the storage of `B`, not by the solver (until 2026-09-04
-it floored at the solve tolerance, $\sim 2 \times 10^{-3}$). See
+The default: fields, Krylov iterations and residuals in float32, every solve
+to `--solve-tol` (1e-5), which runs on a machine without float64 and
+reproduces the seeding and the islands of the mixed configuration at two
+thirds of the cost per step, with a residual floor about three times higher
+(the paper, Sec. 6.2). `--precision mixed` (the paper's runs) keeps float32
+fields and solves but refines every solve against a float64 residual to
+1e-8, so the force is accurate beyond float32's own tolerance and the
+residual floor is set by the storage of `B`, not by the solver; `--precision
+float64` is plain float64 at 1e-10. The scripts export `MRX_DTYPE` and
+`MRX_RESIDUAL_DTYPE` before `mrx` is imported. See
 [Precision](concepts/precision.md).
