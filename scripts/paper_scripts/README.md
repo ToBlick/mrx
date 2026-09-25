@@ -11,7 +11,10 @@ needs updating when it changes.
 
 1. GPU runs. From the repository root, `bash scripts/paper_scripts/runs/<experiment>.sh`, one slurm job per run
    through `slurm/run.sh` (site settings as there), each launcher chaining its restarts and traces by slurm
-   dependencies. `RECORDS=<root>` puts the records under `<root>/<experiment>/<arm>` [outputs]. `vacuum`,
+   dependencies. The arms that use options `scripts/relax.py` no longer exposes (the velocity smoothing
+   order and scale, the helicity correction, the potential velocity, the auxiliary B field: `gradient.sh`
+   and `newton_convergence.sh`'s gradient arm) run `relax_paper.py`, the same run on an extended
+   configuration; every other arm runs `scripts/relax.py`. `RECORDS=<root>` puts the records under `<root>/<experiment>/<arm>` [outputs]. `vacuum`,
    `newton_convergence`, `gradient`, `newton_sweeps` and the `ad_*` launchers are independent; `seeding` and
    `reconnection` start from `newton_convergence/newton_32`; `ad_trace` needs `ad_constrained`'s draw 0.
 2. Traces: part of the launchers, a `poincare_trace.py` job after the run it traces.
@@ -35,7 +38,7 @@ needs updating when it changes.
 |---|---|---|---|
 | Fig. 1 `figure1_standalone.pdf` (`fig:ncsx_sections`) | `seeding.sh` | `seeding/relax32` (`relax.json`, `trace.npz`) | `figure1_mesh3d.py` (GPU: the run's map) |
 | Tab. 1 `mhs_codes_table` (`tab:codes`) | -- | -- | hand-written |
-| Fig. 2 `mesh_2d.pdf` (`fig:mesh_refinement`) | -- | -- | `scripts/plot_mesh.py` (command not recorded) |
+| Fig. 2 `mesh_2d.pdf` (`fig:mesh_refinement`) | -- | -- | `plot_mesh_paper.py` (several meshes side by side, with sections and optimized boundaries; command not recorded) |
 | Fig. 3 `vacuum_qa_Bmag.pdf` (`fig:vacuum_qa_bmag`) | `vacuum.sh` (`plot_vacuum_qa.py`) | `vacuum_vmec/bmag` | the job itself |
 | Fig. 4 `vacuum_convergence_analytic` (`fig:analytic_vacuum`) | `vacuum.sh` (`analytic_vacuum.py`) | `vacuum_analytic/p*` | `figures.py vacuum_convergence` |
 | Fig. 5 `vacuum_convergence_vmec` (`fig:vmec_vacuum`) | `vacuum.sh` (`qa_vacuum_sweep.py`) | `vacuum_vmec/{lowres,highres}/rung_*` | `figures.py vacuum_convergence` |

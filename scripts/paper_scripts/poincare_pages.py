@@ -78,15 +78,22 @@ def main():
         if missing:                                 # a queued trace
             print(f"{page}: skipped, no {', '.join(missing)}")
             continue
+        render = os.path.join(cli.out, "poincare", page)
+        os.makedirs(render, exist_ok=True)
         if "--no-pressure" not in flags:
+            # the paper's archives predate the plotter's automatic normalisation p / <B^2 / 2> (they lack the
+            # field's mean |B|^2): the run's fields are normalised so that <B^2> = 1 / |Omega|, hence the copy
             factor = pressure_factor(archive[page])
-            flags = flags + ["--pressure-factor", f"{factor:.6g}", "--pressure-label", r"$p_{\mathrm{norm}}$"]
+            z = np.load(archive[page])
+            traced = os.path.join(render, "trace.npz")
+            np.savez(traced, **{k: z[k] for k in z.files}, **{f"{f}_bsq": 2.0 / factor for f in z["fields"]})
+        else:
+            traced = archive[page]
         if page in SHARED:
             shared = shared or limits(needed, factor)
             flags = flags + [f"--iota-lim={shared[0]}", f"--p-lim={shared[1]}"]
-        render = os.path.join(cli.out, "poincare", page)
         print(f"=== {page}: {archive[page]} {' '.join(flags)}", flush=True)
-        subprocess.run([sys.executable, PLOT, archive[page], "--paper", *flags, "--out", render], check=True)
+        subprocess.run([sys.executable, PLOT, traced, *flags, "--pgf", "--out", render], check=True)
         stem = f"poincare_zeta{plane:g}"            # the archives hold one field each
         dst = os.path.join(cli.out, "figs", "pgf", page)
         os.makedirs(dst, exist_ok=True)

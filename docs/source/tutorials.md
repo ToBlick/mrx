@@ -155,7 +155,7 @@ initial and relaxed fields at the standing five planes $\zeta = 0, 0.125, 0.25, 
 `trace.npz`, and `scripts/poincare_plot.py` draws the sections from it (no GPU):
 
 ```bash
-python -u scripts/poincare_trace.py --run outputs/tutorials/li383_relaxation
+python -u scripts/poincare_trace.py --geometry data/wout_li383_low_res_reference.nc outputs/tutorials/li383_relaxation/checkpoints/state_*.h5
 python scripts/poincare_plot.py outputs/tutorials/li383_relaxation
 ```
 
@@ -280,6 +280,5 @@ back to building the IC, to watch a seeded island reconnect.
 
 The production driver `scripts/relax.py` is the command line of the same
 `mrx.relaxation.relax`: the checkpoints at every chunk (movies, restarts),
-the reconnection series and the island seeds as flags;
-`scripts/poincare_trace.py` + `scripts/poincare_plot.py` and
-`scripts/plot_relaxation.py` draw from its run directory.
+the drive and the island seeds as flags;
+`scripts/poincare_trace.py` + `scripts/poincare_plot.py` draw its checkpoints.

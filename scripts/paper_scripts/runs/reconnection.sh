@@ -9,18 +9,18 @@
 O=$RECORDS/reconnection
 N32=$RECORDS/newton_convergence/newton_32
 REF=$N32/checkpoints/state_000150.h5
-N="$LI383 --method newton --ns 32,64,64"
-TRACE="--fields final --lines 320 --periods 600"
+N="$LI383 --method newton --resolution 32,64,64"
+TRACE="--lines 320 --periods 600"
 
 phases() {  # arm, start checkpoint, its step, dependency: the resistive and the final ideal phase, traced
   local arm=$1 start=$2 step=$3 dependency=$4 res after
   res=$(sub rc_${arm}_res 400 "$dependency" scripts/relax.py $N --restart $start --steps 200 --chunk 20 \
-    --resistivity 0.064 --reference-smoothing 0.03 --reference $REF --out $O/$arm/resistive)
+    --drive-resistivity 0.064 --drive-reference-smoothing 0.03 --drive-reference $REF --out $O/$arm/resistive)
   after=$(sub rc_${arm}_after 150 afterok:$res scripts/relax.py $N \
     --restart $O/$arm/resistive/checkpoints/state_$(printf %06d $((step + 200))).h5 --steps 100 --chunk 20 \
     --out $O/$arm/ideal_after)
-  sub rc_${arm}_tr_res 60 afterok:$res scripts/poincare_trace.py --run $O/$arm/resistive $TRACE
-  sub rc_${arm}_tr_after 60 afterok:$after scripts/poincare_trace.py --run $O/$arm/ideal_after $TRACE
+  sub rc_${arm}_tr_res 60 afterok:$res scripts/poincare_trace.py --geometry $GEOMETRY $O/$arm/resistive/checkpoints/state_$(printf %06d $((step + 200))).h5 $TRACE
+  sub rc_${arm}_tr_after 60 afterok:$after scripts/poincare_trace.py --geometry $GEOMETRY $O/$arm/ideal_after/checkpoints/state_$(printf %06d $((step + 300))).h5 $TRACE
 }
 
 seeded() {  # arm, scripts/paper_scripts/seed.py's selection: seed, relax, trace, then the two phases
@@ -29,7 +29,7 @@ seeded() {  # arm, scripts/paper_scripts/seed.py's selection: seed, relax, trace
   seed=$(sub rc_${arm}_seed 120 "" scripts/paper_scripts/seed.py --run $N32 --step 150 "$@" --out $O/$arm/seeded.h5)
   ideal=$(sub rc_${arm}_ideal 240 afterok:$seed scripts/relax.py $N --restart $O/$arm/seeded.h5 --steps 200 \
     --chunk 20 --out $O/$arm/ideal)
-  sub rc_${arm}_tr_ideal 60 afterok:$ideal scripts/poincare_trace.py --run $O/$arm/ideal $TRACE
+  sub rc_${arm}_tr_ideal 60 afterok:$ideal scripts/poincare_trace.py --geometry $GEOMETRY $O/$arm/ideal/checkpoints/state_000350.h5 $TRACE
   phases $arm $O/$arm/ideal/checkpoints/state_000350.h5 350 afterok:$ideal
 }
 

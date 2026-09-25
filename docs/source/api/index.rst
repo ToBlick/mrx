@@ -18,6 +18,9 @@ documented in their source and in the concept pages.
    nullspace
    shape_ad
    relaxation
+   relax_config
+   cli
+   seeding
    solvers
    poincare
    plotting

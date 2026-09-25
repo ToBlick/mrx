@@ -91,7 +91,7 @@ SCRIPT=scripts/relax.py JOB_NAME=relax_li383 TIMEOUT_MIN=60 \
   ARGS="--geometry data/wout_li383_1.4m.nc" bash slurm/run.sh
 
 SCRIPT=scripts/relax.py JOB_NAME=relax_smoke TIMEOUT_MIN=30 \
-  ARGS="--geometry data/torus.json --ns 6,12,6 --steps 50 --chunk 25" \
+  ARGS="--geometry data/torus.json --resolution 6,12,6 --steps 50" \
   bash slurm/run.sh
 ```
 
@@ -99,32 +99,28 @@ Flags, defaults in brackets:
 
 | flag | meaning |
 |---|---|
-| `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`); the geometry and the initial condition |
-| `--nfp N [file attribute]` | field periods, for a file that declares them wrong, or `1` for the whole torus: the map is then the file's full series (every period of it, projected over `zeta` in `[0, 1]`), so the `zeta` resolution grows by the file's `nfp`; needs `--symmetry none` or `field-period` |
-| `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): `nfp` field periods and stellarator symmetry `(R, phi, Z) -> (R, -phi, -Z)`, onto which the spline map is projected (`R` even, `Z` odd under `(theta, zeta) -> (-theta, -zeta)`; the `[geom]` line prints the defect) and which the run then keeps: the quadrature covers half the period (`mrx.symmetry`, an even number of `zeta` cells on uniform knots), every field stays of definite parity (`B`, `A`, `J` odd, velocities and pressures even), island chains keep their O-points on the symmetry planes, and a step costs about half; field periods only (the full period, no restriction), or none (`zeta` in `[0, 1]` is the whole torus, `nfp = 1`); recorded in `relax.json`, read by the tracer, which sections half a period or the whole one accordingly |
-| `--ns R,T,Z [32,64,64]`, `--p P [2]` | resolution (also the map's) and degree |
-| `--knots-r LIST [""]`, `--knots-theta LIST [""]`, `--knots-zeta LIST [""]` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them, cells + `p` on the clamped radial axis, cells on the periodic angles (`mrx.geometry.knot_vector`) |
-| `--solve-maxiter N [2000]`, `--solve-tol TOL [1e-8 float32, 1e-10 float64]` | budget and residual tolerance of every solve, in the float64 residual (`concepts/precision.md`) |
-| `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual, `float32` and `float64` are both; exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
-| `--seed m,n,rho0,width [""]`, `--seed-eps EPS [0]` | equilibrium files only: a resonant `cos(2π(mθ − s nζ))` term in `A'_ζ` at `rho0` (`EPS` = `|δB^ρ|/|B^ζ|` there) that opens an island of width ~`sqrt(EPS)` at the `|iota| = nfp n/m` surface -- a tearing-stability probe |
-| `--auxiliary-B-field` / `--no-auxiliary-B-field` [off] | `false` reads the 2-form $B$ itself in both cross products, $J \times B$ and $u \times B$; `true` routes them through the auxiliary Dirichlet 1-form $H = M_1^{-1} P B$ ($H_t = 0$ on the wall) |
-| `--helicity-correction` / `--no-helicity-correction` [off] | remove from the induction field $E$ the one component, a multiple $\lambda$ of the Dirichlet proxy $H_D = M_1^{-1} P B$, that changes the discrete helicity over the step: exact conservation with $H$ natural (`TimeStepper.helicity_correction`); the trace records $\lambda$ as `hcorr` |
-| `--method {newton,gradient} [newton]` | the direction: Newton on the second variation (the rows below), or gradient descent on the smoothed force |
-| Newton (`--method newton`) | the direction of the second variation by Newton-MR, `mrx.hessian.newton_direction`: MINRES with the harmonic atom of the current field as preconditioner, the parallel-flow penalty in the operator, the nonpositive-curvature exit; the line search along the direction is capped at the Newton length `dt = 1` |
-| `--newton-penalty KAPPA [3]` | the parallel-flow penalty, `KAPPA` times the strain along the field (`mrx.hessian.parallel_penalty_profile`): the one number of the Newton configuration; the Hessian is exactly null on the field-aligned flows and the penalty lifts them |
-| `--newton-maxiter N [200]`, `--newton-passes P [1]`, `--newton-tol TOL [0.1]` | the MINRES iterations per pass, the passes at most, and the forcing term that ends the solve early (the residual of the Newton system, in double precision and the mass-atom norm, below `TOL` of the right-hand side); the solve is inexact by design: 200 iterations give the same relaxation as any tighter solve |
-| `--velocity-smoothing-order G [1]`, `--velocity-smoothing-scale MU [0.075 h_r^2]` | smoothed direction $v = (I - \mu L)^{-G} F$ |
-| `--potential-velocity` / `--no-potential-velocity` [on for the gradient descent] | the projected force as `curl a + c h` from the k=1 Hodge solve of `curlᵀ load(J × B)` instead of the Leray saddle solve: divergence-free to round-off, the same iterates 20-30% cheaper; Newton and the auxiliary field have their own routes |
-| `--cfl C [0.5]` | cap on the line-search step, `C /` the velocity's largest logical CFL number; `inf` disables it |
-| `--steps N [150 Newton, 3000 gradient]` | the step budget; a job's time limit is no stop, the checkpoint of every chunk restarts it (`--restart`) |
-| `--chunk N [25 Newton, 500 gradient]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled (helicity, the two pressures and beta, below), a snapshot, the checkpoint and the outputs are written, and the floor, reconnect and wall-time tests run once per chunk; `--steps` is a multiple of it |
-| `--floor-tol TOL [1e-8]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it |
-| `--reconnect-every K [0]`, `--reconnect-helicity X [0.01]` | the reconnection series: every `K` steps (rounded to whole chunks) the field (its checkpoint at that step is the one before the solve) is reconnected by one backward-Euler solve `(M_2 + eps L_2) delta = -eps L_2 B`, after which the descent restarts on the diffused field; the dose spends the fraction `X` of the helicity, `eps = X |H| / (2 |∫ J·B|)` from `dH = -2 eps ∫ J·B`; the ideal descent is a power law in the step, not a plateau, so the interval is a choice (`scripts/relax.py` docstring); `results["reconnect"]` records each solve with the helicity actually spent, `scripts/poincare_trace.py --fields ic,final,reconnect` traces the series in one call, so `scripts/poincare_plot.py` draws it on one colour scale |
-| `--reconnect-eps C`, `--reconnect-window A:B` | a constant dose $\varepsilon = C h_r^2$ ($h_r$ the physical radial cell) per resistive solve instead of the helicity target (a constant resistivity, the solves between blocks of ideal steps; the helicity spent is an outcome), and the steps the solves are restricted to |
-| `--resistivity C [0]`, `--reference-smoothing c [0.1]` | a backward-Euler resistive step of dose $C h_r^2$ in every step, $E = \eta (J - J^*)$, $J^*$ the current of the start field after one heat step of $c h_r^2$ (its rational-surface sheets removed): the run goes to the resistive steady state, whose islands a restart without resistivity then relaxes ideally |
+| `--geometry PATH` (required) | a VMEC wout (`.nc`), a GVEC state (`.dat`) or an analytic geometry (`.json`, which carries its `nfp`); the geometry and the initial condition |
+| `--symmetry {stellarator,field-period,none} [stellarator]` | what the map satisfies (`mrx.geometry.SYMMETRIES`): `nfp` field periods and stellarator symmetry (the spline map is projected onto it, the quadrature covers half the period and the fields keep their parity), field periods only, or nothing (`zeta` in `[0, 1]` is the whole torus, `nfp = 1`) |
+| `--resolution R,T,Z [32,64,64]`, `--spline-degree P [2]` | spline resolution (also the map's) and degree |
+| `--knots-r LIST`, `--knots-theta LIST`, `--knots-zeta LIST` | the breakpoints of that axis, comma-separated from 0 to 1, instead of the uniform grid; the axis takes its `n` from them (`mrx.geometry.knot_vector`) |
+| `--precision {mixed,float32,float64} [mixed]` | `mixed` is float32 fields and solves with a float64 residual (tolerance 1e-8), `float32` and `float64` are both (1e-5, 1e-10); exported as `MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` before `mrx` is imported |
+| `--solve-tol TOL [the precision's]`, `--solve-maxiter N [2000]` | residual tolerance and budget of every solve (`concepts/precision.md`) |
+| `--max-batch N [0]` | cells per batch of the quadrature loops; 0 evaluates all points in one `vmap`; bound it at high resolution (8192 at (64,128,128)) |
+| `--seed` / `--no-seed` [off] | equilibrium files only: the energy-criterion seed of `mrx.seeding` on the start field (the initial condition or the `--restart` checkpoint): every resonance `nfp n / m` in the field's iota range gets SIESTA's parallel seed at the amplitudes of least energy; no phase (the stellarator parity fixes it) |
+| `--seed-iotas I,...`, `--seed-amplitudes A,...`, `--seed-scale Q [1]` | the chains to seed by their rotational transforms [all in range]; their amplitudes, the resonant normal field `|dB^r| / |B^zeta|` at `r_mn`, signed, instead of the criterion's (one per iota; amplitudes without iotas are ignored with a warning); a multiplier of the added perturbation |
+| `--method {newton,gradient} [newton]` | the direction: Newton on the second variation (`mrx.hessian.newton_direction`, the rows below), or gradient descent on the smoothed force |
+| `--scheme {explicit,midpoint} [explicit]` | the induction step: forward Euler, or midpoint-implicit at the predictor's velocity (Picard on the increment) |
+| `--newton-penalty KAPPA [3]` | the parallel-flow penalty, `KAPPA` times the strain along the field: the one number of the Newton configuration |
+| `--newton-tol TOL [0.1]`, `--newton-maxiter N [200]` | the forcing term that ends the Newton solve (its residual below `TOL` of the right-hand side) and the MINRES iterations at most |
+| `--steps N [100 Newton, 2000 gradient]` | the step budget; a job's time limit is no stop, the checkpoint of every chunk restarts it (`--restart`) |
+| `--chunk N [10 Newton, 200 gradient]` | steps per compiled chunk (one `lax.scan`, `mrx.relaxation.chunk_runner`): the per-step trace comes back, the qoi are sampled, a checkpoint and the outputs are written, and the floor test runs once per chunk; `--steps` is a multiple of it |
+| `--floor-tol TOL [1e-10]` | stopping criterion: the last chunk's mean squared normalised force residual `‖F‖²_M / ‖grad(B²/2)‖²` below it |
+| `--drive-resistivity C [0]`, `--drive-reference PATH`, `--drive-reference-smoothing c [0.1]` | the resistive steady state: a backward-Euler resistive step of dose $C h_r^2$ in every step, $E = \eta (J - J^*)$, $J^*$ the current of the reference checkpoint's field (required: a converged nested equilibrium) after one heat step of $c h_r^2$ |
+| `--drive-chain I`, `--drive-eps A` | a resonant seed of the reference at the chain of rotational transform `I`, amplitude `A` as `--seed-amplitudes`: a drive that stays |
 | `--out DIR [outputs/relax/<date>/<time>]` | output directory |
 | `--restart PATH` | continue from a `checkpoints/state_<step>.h5` of the same geometry, mesh, degree and precision |
-| `--map-batch N [0]` | cells per batch of the quadrature loops (`mrx.MAP_BATCH_SIZE_INNER`); 0 evaluates all points in one `vmap`. Bound it at high resolution: the initial field's Greville histopolation asks for 17 GiB at (64,128,128) p=2 unbounded, 8192 runs it in 7 s |
+
+The CFL cap (0.5), the velocity smoothing (order 1, scale 0.075 $h_r^2$) and the Newton solve's passes (one) are constants of the library; the paper's variants of them (the auxiliary B field, the helicity correction, the potential velocity, other smoothings) are `scripts/paper_scripts/relax_paper.py`'s flags, the same run on an extended configuration.
 
 `python scripts/relax.py --help` prints the same list. The script is the
 command line of `mrx.relaxation.relax`, the chunked loop with the floor,
@@ -252,24 +248,23 @@ a period; the step count follows from the planes
 `logical_field`, `seed_from_axis`, `trace`, `rotational_transform` and
 `to_RZ`; the module docstring explains the three design choices. Two
 drivers split the work by cost. `scripts/poincare_trace.py` (a GPU job)
-reads a run directory, traces the initial and the final checkpoint
-(`--fields ic,final,reconnect` adds the field before every reconnection;
-`--fields snapshots` every checkpoint) at the five standing planes, and
-archives the crossings in the run's `trace.npz`; `scripts/poincare_plot.py`
-(plain matplotlib, the login node) renders that archive, every field and
-plane on one iota and one pressure colour scale, and is the only thing to
-rerun when the figure changes:
+traces the checkpoints named on its command line on the sequence their
+attributes describe over the run's geometry file, evaluates the weak
+pressure at every crossing, and archives them in one `trace.npz` next to
+the run; `scripts/poincare_plot.py` (plain matplotlib, the login node)
+renders that archive, every field and plane on one iota and one pressure
+colour scale (the pressure normalised to $p / \langle B^2/2 \rangle$), as
+PDF + PNG pages in the publication layout, and is the only thing to rerun
+when the figure changes:
 
 ```bash
-python -u scripts/poincare_trace.py --run outputs/run --periods 400
+python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc outputs/run/checkpoints/state_000000.h5 outputs/run/checkpoints/best.h5
 python scripts/poincare_plot.py outputs/run            # -> outputs/run/poincare/
-python scripts/poincare_plot.py outputs/run --paper    # publication layout, PDF
 ```
 
-The module docstrings list the flags.
-
-A relaxation run stores a checkpoint at every chunk boundary (`--chunk`); `scripts/poincare_trace.py --fields snapshots --planes 0.5` traces every
-checkpoint, and the plotter then renders one frame per checkpoint with every axis held fixed, ready for `ffmpeg`.
+`--help` lists the flags of both. A movie is the same two calls on every
+checkpoint of a run (`checkpoints/state_*.h5`), the plotter's `--window`,
+`--iota-lim` and `--p-lim` holding the axes fixed across the frames.
 
 The island chains of a state are found, not read off the picture:
 `mrx.poincare.islands(seq, B, res=None)` returns every chain and its width.
@@ -308,14 +303,8 @@ looked for (`docs/research/island_diagnostic_2026-09-18.md`).
 boundary surface as a wireframe with poloidal cuts coloured by the field,
 `plot_crossections_separate` the same cuts side by side in the $(R, z)$
 plane, and `plot_twin_axis` two traces against a shared abscissa with
-separate y axes (a force residual next to an energy or a helicity).
-`scripts/plot_relaxation.py` makes all three from a run -- the weak pressure
-$p_w$ on the torus and in the cuts, and $\|F\|_M$ against $E$ from
-`relax.json`:
-
-```bash
-python -u scripts/plot_relaxation.py outputs/run --cuts 6 --fields ic,final
-```
+separate y axes (a force residual next to an energy or a helicity); the
+tutorials draw all three from their runs.
 
 `scripts/compare_relaxations.py OUT label=run ...` overlays the traces of
 several runs (force, energy, $-dE/dt$, helicity, $dt$, CFL, $\|J\|/\|B\|$,
