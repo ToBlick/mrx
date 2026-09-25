@@ -27,8 +27,10 @@ def parse_args(argv=None):
     ap.add_argument("--front", type=float, default=0.0, help="logical zeta of the front face (a traced plane)")
     ap.add_argument("--back", type=float, default=0.5, help="logical zeta of the back face (a traced plane)")
     ap.add_argument("--elev", type=float, default=18.0)
-    ap.add_argument("--line-stride", type=int, default=4, help="draw every k-th kept line")
-    ap.add_argument("--crossings", type=int, default=400, help="crossings drawn per line")
+    ap.add_argument("--line-stride", type=int, default=5, help="draw every k-th kept line")
+    ap.add_argument("--crossings", type=int, default=250, help="crossings drawn per line")
+    ap.add_argument("--dot-size", type=float, default=0.8, help="section marker area, pt^2")
+    ap.add_argument("--mesh-lw", type=float, default=0.25, help="width of every mesh line, pt")
     ap.add_argument("--knot-stride", type=int, default=2, help="draw every k-th knot line of the run's mesh")
     ap.add_argument("--out", required=True)
     return ap.parse_args(argv)
@@ -87,7 +89,7 @@ def main(cli):
 
     faces = [face(cli.front, z_lo, "iota"), face(cli.back, z_hi, "p")]
     os.makedirs(cli.out, exist_ok=True)
-    black, grey = LEFT["color"], "0.55"
+    mesh = dict(color=LEFT["color"], lw=cli.mesh_lw)                          # one thin style for every mesh line
     with house_style():
         fig = plt.figure(figsize=(8.0, 6.0))
         ax = fig.add_subplot(111, projection="3d")
@@ -95,20 +97,20 @@ def main(cli):
         for j in range(0, ns[1], cli.knot_stride):                               # poloidal knot lines, far half
             zz = np.linspace(z_lo, z_hi, n_line)
             p = xyz(np.full(zz.size, 1.0 - 1e-6), np.full(zz.size, j / ns[1]), zz)
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=black, lw=0.35)
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
         kn = np.arange(np.ceil(z_lo * ns[2]), np.floor(z_hi * ns[2]) + 1, cli.knot_stride) / ns[2]
         for zk in kn:                                                             # toroidal knot lines, far half
             tt = np.linspace(0.0, 1.0, n_line)
             p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=grey, lw=0.3)
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
         for zk in (z_lo, z_hi):                                                   # the two cut faces' outlines
             tt = np.linspace(0.0, 1.0, 2 * n_line)
             p = xyz(np.full(tt.size, 1.0 - 1e-6), tt, np.full(tt.size, zk))
-            ax.plot(p[:, 0], p[:, 1], p[:, 2], color=black, lw=1.0)
+            ax.plot(p[:, 0], p[:, 1], p[:, 2], **mesh)
         bars = {}
         for X, Y, Zc, col, what in faces:
             vmin, vmax, cmap = scales[what]
-            bars[what] = ax.scatter(X.ravel(), Y.ravel(), Zc.ravel(), c=col.ravel(), s=0.8, vmin=vmin, vmax=vmax,
+            bars[what] = ax.scatter(X.ravel(), Y.ravel(), Zc.ravel(), c=col.ravel(), s=cli.dot_size, vmin=vmin, vmax=vmax,
                                     cmap=cmap, linewidths=0, rasterized=True, depthshade=False)
         th = np.linspace(0.0, 1.0, 4 * ns[1] + 1)                                 # the whole device's extent
         THf, ZEf = np.meshgrid(th, np.linspace(0.0, nfp, 4 * ns[2] * nfp + 1), indexing="ij")
