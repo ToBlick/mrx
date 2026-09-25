@@ -424,7 +424,7 @@ def _ray_line(lr, lth, th0):
 @house_style()
 def render_section(R, Z, iota, iota_err, seed_r, keep, *, title=None, subtitle=None,
                    axis_RZ=None, profile_x=None,
-                   profile_xlabel="seed radius $r$", nfp=None, denom_max=30, min_sep=0.06,
+                   profile_xlabel="seed radius $r$", nfp=None, denom_max=300, min_sep=0.12,
                    logical=None, pressure=None,
                    pressure_label=r"$p$", split_iota_p=None, pressure_scale=100.0,
                    cmap=SECTION_CMAP, limits=None, iota_scatter=None,

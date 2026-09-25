@@ -1,147 +1,27 @@
 r"""Render the Poincare sections of a trace archive -- the cheap half, no GPU.
 
-Reads the ``trace.npz`` written by ``scripts/poincare_trace.py`` (next to its run
-or field file), renders every field and plane it holds -- or ``--fields``, a
-subset -- with ONE iota and ONE pressure scale (per call, or per field with
-``--scales step``), and writes the pages to
-``--out`` [``<archive dir>/poincare``]. Plain matplotlib: it runs on the login
-node in seconds per page, so the trace is never repeated for a change to the
-figure. Every rendering choice is made here, from the archived trace results:
-which lines are drawn, the surface label, the pressure gauge, the rational
-ticks, the layout.
+Reads the ``trace.npz`` written by ``scripts/poincare_trace.py`` and renders every field and plane it
+holds -- or ``--fields`` / ``--planes``, subsets -- with ONE iota and ONE pressure scale over the call
+(or the ``--iota-lim`` / ``--p-lim`` given, so separate calls match), each section in the box that
+fits it (or ``--window``), as PDF + PNG pages ``poincare[_<field>]_zeta<plane>`` in ``--out``
+[``<archive dir>/poincare``], in the publication layout: no title, the house font hierarchy at
+``--label-size`` for a ``--page-width`` figure, the crossings rasterised at ``--dpi``; ``--pgf`` adds
+the same figure through the pgf backend for ``\input`` (needs a TeX Live on PATH). Plain matplotlib, on
+the login node in seconds per page. The pressure is the archived weak pressure normalised by the
+field's mean magnetic pressure, ``p_norm = p / <B^2 / 2>`` (``--no-pressure`` leaves it out); the
+resonant iota ticks are picked from the iota range shown.
 
-    python scripts/poincare_plot.py outputs/run                     # diagnostic look
-    python scripts/poincare_plot.py outputs/run/trace.npz --paper   # for the paper
-
-Flags (defaults in brackets):
-    archive                the trace.npz, or the directory holding it (positional)
-    --fields F             comma-separated subset of the archive's fields [all]
-    --out DIR              [<archive dir>/poincare]
-    --no-pressure          do not draw the archived pressure (below the axis in
-                           the section and the chart, and as the profile's right
-                           axis); it is drawn whenever the archive holds one
-    --inner-cells C        lines seeded closer to the axis than C radial cells
-    --pressure-factor F    multiply the pressure before drawing, e.g. 2 / <|B|^2>_Omega
-                           for the local beta against the mean magnetic pressure [1]
-    --pressure-label L     label of the pressure axis and colour bar [p]
-                           (r < C / n_r) are not drawn; 0 draws every line
-                           (the inner lines are regular; Tobias 2026-09-12).
-                           The iota fit of a line inside the polar patch is
-                           biased high (QA 32x64x32 p3: +1.6e-3 at r = 0.019,
-                           on trend from r ~ 1.5 h). They stay in the
-                           archive either way. [0]
-    --min-sep F            resonant-rational iota ticks: a rational is labelled
-                           only if it is at least this fraction of the iota
-                           range from every lower-order label already placed --
-                           the spacing decides, not the denominator [0.12]
-    --denom-max N          candidate pool for the rational ticks, large enough
-                           that --min-sep is the rule that stops them [300]
-    --profile-coord C      profile abscissa: logical r on golden-spaced rays
-                           [logical], or physical R on the midplane through the axis
-    --profile-rays N       poloidal rays on the logical profile (theta = 0.5,
-                           then 1/3, 0.2, ...), one marker style each, drawn
-                           on the logical chart [1]
-    --dot-scale F          crossing-marker size relative to the house rule (which
-                           sets it from the point count); 0.15, for a dense
-                           section on a page [0.15]
-    --paper                publication layout: no title/subtitle, no axis marker,
-                           the house font hierarchy at --label-size for a
-                           --page-width figure, PDF + PNG at --dpi. Default is the
-                           diagnostic look: titled PNG at 200 dpi plus a
-                           presentation .pgf (see --no-pgf)
-    --label-size F         (--paper) axis-label pt at --page-width; ticks and
-                           legends keep the house hierarchy [9]
-    --page-width W         (--paper) authored width in inches, 'one page wide' [6.5]
-    --dpi N                (--paper) rasterised crossing-scatter resolution [600]
-    --no-pgf               skip the .pgf beside each PNG (needs xelatex on PATH)
-    --planes LIST          comma-separated subset of the archive's planes [all]
-    --frame-offset N       number a movie's frames from N (an archive split into
-                           parts; pin the scales, the window and the rationals) [0]
-    --fly                  a movie along zeta: one frame per plane of each field,
-                           numbered in plane order (trace with --saves N
-                           --planes k/N, k = 0..N-1)
-    --window R0,R1,Z0,Z1   pin the section box to this window on every page;
-                           give a time movie and the fly through its final
-                           state the same one so the two cut together
-    --scales {run,step}    the iota and p scales: run = one range over every field
-                           of the call (a video along the relaxation); step = each
-                           field (time step) its own range. Either way one range
-                           across the planes of a field [run]
-    --iota-lim LO,HI       fix the iota colour scale / profile axis across calls
-    --p-lim LO,HI          fix the pressure scale / profile axis (units of the
-                           colour bar, p x 100)
-    --rationals n/m,...    fix the resonant iota ticks so a movie's frames all
-                           carry the same labels (out-of-range ones are not shown)
-
-Pages: ``poincare_<field>_zeta<plane>`` per field and plane --
-``poincare_zeta<plane>`` when the archive holds one field -- each section in
-the box that fits it, the iota and p colour scales shared across the call.
-Movies hold the R/Z window and the profile abscissa fixed across their frames
-too, from the union over all fields and planes, for ``ffmpeg -framerate 4 -i
-<pattern> -c:v mpeg4 -q:v 2 movie.mp4``: a snapshots archive writes
-``frame_zeta<plane>_<i>.png`` (along time, the split line pinned to the first
-frame's axis), ``--fly`` writes ``fly_<field>_<k>.png`` (along zeta, the split
-following the axis). The ``.pgf`` is the same figure through the pgf
-backend (vector LaTeX labels, the scatter as a high-dpi ``-img*.png`` beside it)
-under ``pgf/``; the including document needs ``\usepackage[strings]{underscore}``
-and ``\providecommand{\mathdefault}[1]{#1}``.
+    python scripts/poincare_plot.py outputs/run/trace.npz
 """
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 
-#: Panel labels. Both read plain $p$: the weak pressure is zero on the wall by
-#: construction; the strong (Leray) multiplier is defined up to a constant and
-#: is drawn shifted so its lowest kept line reads zero, but a constant offset
-#: is not worth a label (Tobias, 2026-09-09: "I do not want p - min p").
-PRESSURE_LABELS = {"strong": r"$p$", "weak": r"$p$"}
-
-#: Resolution of the raster layers embedded in the presentation ``.pgf`` (the
-#: scatter of ~10^4 crossings). Higher than the PNG's screen dpi: the .pgf goes
-#: into slides where the section is enlarged.
-PGF_DPI = 300
-
-
-def save_section(fig, png_path, *, want_pgf):
-    """Save the section as a PNG and, when ``want_pgf``, a presentation PGF.
-
-    The PGF keeps every line, axis and label as vector LaTeX -- editable in the
-    ``.pgf`` without re-tracing -- while the rasterized scatter is written as a
-    high-dpi PNG beside it. Both go under ``pgf/`` next to the PNG pages. It
-    needs ``xelatex`` on PATH; without one the PNG is still written and the PGF
-    is skipped with a message rather than aborting (the trace is the expensive
-    half, and it is not this script's).
-    """
-    fig.savefig(png_path, dpi=200)
-    print(f"  -> {png_path}", flush=True)
-    if not want_pgf:
-        return
-    import matplotlib as mpl
-    pgf_dir = os.path.join(os.path.dirname(png_path), "pgf")
-    os.makedirs(pgf_dir, exist_ok=True)
-    pgf_path = os.path.join(pgf_dir, os.path.splitext(os.path.basename(png_path))[0] + ".pgf")
-    try:
-        with mpl.rc_context({"pgf.preamble": r"\usepackage[strings]{underscore}\providecommand{\mathdefault}[1]{#1}"}):
-            fig.savefig(pgf_path, backend="pgf", dpi=PGF_DPI)
-        print(f"  -> {pgf_path}", flush=True)
-    except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
-        if os.path.exists(pgf_path):
-            os.remove(pgf_path)   # a half-written .pgf is not a usable file
-        print(f"  (pgf skipped -- needs xelatex on PATH: "
-              f"{type(exc).__name__}: {exc})", flush=True)
-
-
-def pressure_gauge(kind, presses, keep):
-    """The shift subtracted from the drawn pressure: ``min p`` over the kept
-    lines' crossings on every plane for the strong pressure, 0 for the weak
-    one; None without a pressure."""
-    vals = [pv[keep] for pv in presses.values() if pv is not None]
-    if not vals:
-        return None
-    return 0.0 if kind == "weak" else float(min(np.min(v) for v in vals))
+#: The pressure panel's label: the weak pressure over the field's mean magnetic pressure.
+PRESSURE_LABEL = r"$p_{\mathrm{norm}}$"
 
 
 @dataclass(frozen=True)
@@ -149,52 +29,28 @@ class Plot:
     """Render the Poincare sections of a trace archive."""
     archive: str = field(metadata=dict(positional=True, help="trace.npz, or the directory holding it"))
     fields: Optional[str] = field(default=None, metadata=dict(help="comma-separated subset of the archive's fields [all]"))
+    planes: Optional[str] = field(default=None, metadata=dict(help="comma-separated subset of the archive's planes [all]"))
     out: Optional[str] = field(default=None, metadata=dict(help="page directory [<archive dir>/poincare]"))
     pressure: bool = field(default=True, metadata=dict(
-        help="draw the archived pressure (below the axis in the section and the chart, the profile's right axis)"))
-    inner_cells: float = field(default=0.0, metadata=dict(
-        help="lines seeded closer to the axis than this many radial cells are not drawn; 0 draws every line"))
-    min_sep: float = field(default=0.12, metadata=dict(
-        help="resonant-rational ticks: a rational is labelled only this fraction of the iota range from every "
-             "lower-order label"))
-    denom_max: int = field(default=300, metadata=dict(help="candidate pool of the rational ticks"))
-    profile_coord: Literal["logical", "physical"] = field(default="logical", metadata=dict(
-        help="profile abscissa: logical r on golden-spaced rays, or physical R on the midplane"))
+        help="draw the normalised weak pressure (below the axis in the section and the chart, the profile's right axis)"))
     profile_rays: int = field(default=1, metadata=dict(
         help="poloidal rays on the logical profile (theta = 0.5, then 1/3, 0.2, ...), one marker each"))
     dot_scale: float = field(default=0.15, metadata=dict(
         help="crossing-marker size relative to the house rule; 0.15 for a dense section on a page"))
-    paper: bool = field(default=False, metadata=dict(
-        help="publication layout: no title, the house font hierarchy at --label-size for a --page-width figure, "
-             "PDF + PNG at --dpi; otherwise the diagnostic look, a titled PNG at 200 dpi plus a .pgf"))
-    pressure_factor: float = field(default=1.0, metadata=dict(
-        help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta)"))
-    pressure_label: Optional[str] = field(default=None, metadata=dict(help="label of the pressure axis and colour bar [p]"))
     label_size: float = field(default=9.0, metadata=dict(
-        help="(--paper) axis-label pt at --page-width, the paper's body size; ticks and legends keep the hierarchy"))
-    page_width: float = field(default=6.5, metadata=dict(help="(--paper) authored width in inches"))
-    dpi: int = field(default=600, metadata=dict(help="(--paper) rasterised crossing-scatter resolution"))
-    pgf: bool = field(default=True, metadata=dict(help="the .pgf beside each PNG (needs xelatex on PATH)"))
-    planes: Optional[str] = field(default=None, metadata=dict(help="comma-separated subset of the archive's planes [all]"))
-    frame_offset: int = field(default=0, metadata=dict(
-        help="number a movie's frames from here (an archive split into parts: each part's call continues the "
-             "count, with --iota-lim, --p-lim, --window and --rationals pinned)"))
-    fly: bool = field(default=False, metadata=dict(
-        help="a movie along zeta: one frame per plane of each field, numbered in plane order"))
+        help="axis-label pt at --page-width, the paper's body size; ticks and legends keep the house hierarchy"))
+    page_width: float = field(default=6.5, metadata=dict(help="authored width in inches"))
+    dpi: int = field(default=600, metadata=dict(help="resolution of the rasterised crossings"))
+    pgf: bool = field(default=False, metadata=dict(help="also the .pgf of each page, under pgf/ (needs a TeX Live)"))
     window: Optional[str] = field(default=None, metadata=dict(
         help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page"))
-    scales: Literal["run", "step"] = field(default="run", metadata=dict(
-        help="iota and p scales: one range over every field of the call (run) or per field (step)"))
     iota_lim: Optional[str] = field(default=None, metadata=dict(
-        help="LO,HI: fix the iota colour scale and profile axis across calls"))
+        help="LO,HI: fix the iota colour scale and profile axis instead of the call's own range"))
     p_lim: Optional[str] = field(default=None, metadata=dict(
-        help="LO,HI: fix the pressure colour scale and profile axis (units of the colour bar, p x 100)"))
-    rationals: Optional[str] = field(default=None, metadata=dict(
-        help="n/m,n/m,...: fix the resonant iota ticks so a movie's frames all carry the same labels"))
+        help="LO,HI: fix the pressure colour scale and profile axis (units of the colour bar, p_norm x 100)"))
 
 
 def main(cli):
-
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -214,140 +70,67 @@ def main(cli):
     planes = [float(v) for v in sec["planes"]]
     if cli.planes:
         planes = [pl for pl in planes if any(abs(pl - float(v)) < 1e-9 for v in cli.planes.split(","))]
-    ns, nfp = tuple(int(v) for v in sec["ns"]), int(sec["nfp"])
-    # A snapshots archive of ONE checkpoint is a section, not a movie: its own box and name
-    source, movie = str(sec["source"]), bool(sec["movie"]) and len(sec["fields"]) > 1
-    kind = str(sec["pressure_kind"]) if cli.pressure else "none"
-    print(f"[plot] {path}: {source}; fields {which}, planes {planes}, pressure {kind}"
-          + (", movie" if movie else ""), flush=True)
+    nfp = int(sec["nfp"])
+    print(f"[plot] {path}: {str(sec['source'])}; fields {which}, planes {planes}"
+          + ("" if cli.pressure else ", no pressure"), flush=True)
 
-    # Lines seeded within --inner-cells radial cells of the axis are archived but
-    # not DRAWN: dropped from every per-line array and from both scales, so they
-    # never appear -- not marked "lost".
-    r_min = cli.inner_cells / ns[0]
-    drawn = {n: np.asarray(sec[f"{n}_seed_r"]) >= r_min for n in which}
-    per = {n: {k: np.asarray(sec[f"{n}_{k}"])[drawn[n]]
+    per = {n: {k: np.asarray(sec[f"{n}_{k}"])
                for k in ("iota", "iota_err", "iota_scatter", "seed_r", "keep", "chaotic", "shown")}
            for n in which}
     for n in which:
-        print(f"[{n}] drawing r >= {r_min:.4f} ({cli.inner_cells:g} radial cells): "
-              f"{int((~drawn[n]).sum())} inner line(s) not drawn; "
-              f"{int((~per[n]['keep']).sum())}/{per[n]['keep'].size} lost, "
+        print(f"[{n}] {int((~per[n]['keep']).sum())}/{per[n]['keep'].size} lost, "
               f"{int((per[n]['keep'] & per[n]['chaotic']).sum())} chaotic", flush=True)
-    # ONE iota scale and ONE p scale per group of fields, across every plane:
-    # --scales run groups every field of the call (ic, final, a reconnection
-    # series or a movie's frames are then comparable at a glance), step gives
-    # each field its own group (each state resolved in its own range).
-    group = {n: which if cli.scales == "run" else [n] for n in which}
-    iota_lims = {n: (min(float(per[m]["iota"][per[m]["shown"]].min()) for m in group[n] if per[m]["shown"].any()),
-                     max(float(per[m]["iota"][per[m]["shown"]].max()) for m in group[n] if per[m]["shown"].any()))
-                 for n in which}
+    # ONE iota scale and ONE p scale over every field and plane of the call
+    iota_lim = (min(float(per[m]["iota"][per[m]["shown"]].min()) for m in which if per[m]["shown"].any()),
+                max(float(per[m]["iota"][per[m]["shown"]].max()) for m in which if per[m]["shown"].any()))
     if cli.iota_lim:
-        iota_lims = {n: tuple(float(v) for v in cli.iota_lim.split(",")) for n in which}
+        iota_lim = tuple(float(v) for v in cli.iota_lim.split(","))
     cuts = {(n, pl): tuple(np.asarray(sec[f"{n}_zeta{pl:g}_{k}"])
                            for k in ("R", "Z", "axisR", "axisZ", "logr", "logth"))
             for n in which for pl in planes}
-    # The archive holds the raw pressure at every crossing: gauge it here (min
-    # over the drawn kept lines on every plane for the strong multiplier, 0 for
-    # the weak pressure) and pin the p range of each group.
-    presses = {n: {pl: (np.asarray(sec[f"{n}_zeta{pl:g}_pressure"])[drawn[n]]
-                        if kind != "none" else None) for pl in planes} for n in which}
-    p_min = {n: pressure_gauge(kind, presses[n], per[n]["keep"]) for n in which}
-
-    def p_range(names):
-        ps = [100.0 * cli.pressure_factor * (presses[m][pl] - p_min[m])[per[m]["keep"]]
-              for m in names for pl in planes if presses[m][pl] is not None]
-        if not ps:
-            return None
+    # the archive holds the weak pressure at every crossing: normalised here by the field's mean magnetic pressure
+    presses = {n: {pl: (np.asarray(sec[f"{n}_zeta{pl:g}_pressure"]) / (0.5 * float(sec[f"{n}_bsq"]))
+                        if cli.pressure else None) for pl in planes} for n in which}
+    ps = [100.0 * presses[m][pl][per[m]["keep"]] for m in which for pl in planes if presses[m][pl] is not None]
+    p_lim = None
+    if ps:
         lo_p, hi_p = min(float(np.nanmin(v)) for v in ps), max(float(np.nanmax(v)) for v in ps)
-        return (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))
-
-    p_lims = {n: p_range(group[n]) for n in which}
+        p_lim = (lo_p - 0.05 * (hi_p - lo_p), hi_p + 0.05 * (hi_p - lo_p))
     if cli.p_lim:
-        p_lims = {n: tuple(float(v) for v in cli.p_lim.split(",")) for n in which}
+        p_lim = tuple(float(v) for v in cli.p_lim.split(","))
     limits = {}
-    # Pages stand alone: each section gets the box that fits it (equal aspect).
-    # A MOVIE holds every axis fixed across its frames instead -- the section
-    # window and the profile abscissa from the union over every field AND plane
-    # of the call (the iota and p limits already are) -- so the eye can follow
-    # a surface from frame to frame: along time at one plane (a snapshots
-    # archive), or along zeta for one state (--fly). The split line is pinned
-    # to the FIRST field's axis only along time: along zeta the axis moves with
-    # the plane, and the split follows it.
-    if movie or cli.fly:
-        def kept(n, pl, i):
-            return cuts[n, pl][i][drawn[n]][per[n]["keep"]]
-        Rs = np.concatenate([kept(n, pl, 0).ravel() for n in which for pl in planes])
-        Zs = np.concatenate([kept(n, pl, 1).ravel() for n in which for pl in planes])
-        span = np.ptp(Rs)
-        for pl in planes:
-            limits.setdefault(pl, {}).update({
-                "RZ": ((Rs.min() - 0.06 * span, Rs.max() + 0.06 * span),
-                       (Zs.min() - 0.06 * span, Zs.max() + 0.06 * span))})
-            if movie:
-                limits[pl]["z_split"] = float(np.mean(cuts[which[0], pl][3]))
-        if cli.profile_coord == "physical":
-            # The logical profile's abscissa is r in [0, 1] on every frame already;
-            # only the physical one (R on the midplane) varies with the plane.
-            xs = np.concatenate([
-                surface_label(cuts[n, pl][0][drawn[n]], cuts[n, pl][1][drawn[n]],
-                              cuts[n, pl][2], cuts[n, pl][3])[0][per[n]["keep"]].ravel()
-                for n in which for pl in planes])
-            for pl in planes:
-                limits[pl]["x"] = (np.nanmin(xs), np.nanmax(xs))
     if cli.window:
-        # An explicit box beats the union: two calls (a time movie, then the fly
-        # through its final state) cut together only if they are given the SAME
-        # window; each call's own union differs.
         r0, r1, z0, z1 = (float(v) for v in cli.window.split(","))
+        limits["RZ"] = ((r0, r1), (z0, z1))
+    for n in which:
         for pl in planes:
-            limits.setdefault(pl, {})["RZ"] = ((r0, r1), (z0, z1))
-    for frame, n in enumerate(which):
-        for k, pl in enumerate(planes):
             R, Z, aR, aZ, lr, lth = cuts[n, pl]
-            R, Z, lr, lth = R[drawn[n]], Z[drawn[n]], lr[drawn[n]], lth[drawn[n]]
             a_eff, xlabel = surface_label(R, Z, aR, aZ)
-            press = None if presses[n][pl] is None else cli.pressure_factor * (presses[n][pl] - p_min[n])
             fig, _ = render_section(
                 R, Z, per[n]["iota"], per[n]["iota_err"], per[n]["seed_r"], per[n]["keep"],
-                pressure=press, pressure_label=cli.pressure_label or PRESSURE_LABELS.get(kind),
-                title=None if cli.paper else
-                      f"{source}  |  {n}  |  $\\zeta = {pl:g}$\n"
-                      f"{str(sec[f'{n}_label'])} -- {R.shape[1]} crossings/line",
-                subtitle=None if cli.paper else
-                         f"nfp = {nfp}   |   h/2 drift {float(sec[f'{n}_drift']):.1e}   |   "
-                         f"traced in {str(sec['trace_precision'])}",
-                axis_RZ=(aR, aZ), axis_marker=not cli.paper, dot_scale=cli.dot_scale,
+                pressure=presses[n][pl], pressure_label=PRESSURE_LABEL,
+                axis_RZ=(aR, aZ), axis_marker=False, dot_scale=cli.dot_scale,
                 profile_x=a_eff, profile_xlabel=xlabel, nfp=nfp, logical=(lr, lth),
-                denom_max=cli.denom_max, min_sep=cli.min_sep,
-                rationals=cli.rationals.split(",") if cli.rationals else None,
-                limits=SectionLimits(iota=iota_lims[n], p=p_lims[n], **limits.get(pl, {})),
-                iota_scatter=per[n]["iota_scatter"],
-                profile_coord=cli.profile_coord, profile_rays=cli.profile_rays)
+                limits=SectionLimits(iota=iota_lim, p=p_lim, **limits),
+                iota_scatter=per[n]["iota_scatter"], profile_rays=cli.profile_rays)
             infix = "" if len(all_fields) == 1 else f"_{n}"
-            stem = os.path.join(out, f"frame_zeta{pl:g}_{frame + cli.frame_offset:04d}" if movie      # along time
-                                else f"fly{infix}_{k:04d}" if cli.fly              # along zeta
-                                else f"poincare{infix}_zeta{pl:g}")
-            if cli.paper:
-                paper_fonts(fig, label_size=cli.label_size, page_width=cli.page_width)
-                # tight: the layout's left margin (colour bars) is cropped here, not by the including document
-                tight = dict(bbox_inches="tight", pad_inches=0.02)
-                fig.savefig(stem + ".pdf", dpi=cli.dpi, **tight)     # dpi sets the rasterised scatter
-                fig.savefig(stem + ".png", dpi=cli.dpi, **tight)     # for viewing
-                print(f"  -> {stem}.pdf", flush=True)
-                if cli.pgf:
-                    # The same figure for \input into the paper: typeset by pdflatex in the document's own fonts
-                    # (rcfonts off), the scatter a raster -img*.png beside it, under pgf/.
-                    pgf_dir = os.path.join(out, "pgf")
-                    os.makedirs(pgf_dir, exist_ok=True)
-                    with matplotlib.rc_context({"pgf.texsystem": "pdflatex", "pgf.rcfonts": False,
-                                         "pgf.preamble": r"\providecommand{\mathdefault}[1]{#1}"}):
-                        fig.savefig(os.path.join(pgf_dir, os.path.basename(stem) + ".pgf"), backend="pgf",
-                                    dpi=cli.dpi, **tight)
-                    print(f"  -> {pgf_dir}/{os.path.basename(stem)}.pgf", flush=True)
-            else:
-                # A movie's frames are for ffmpeg, not slides: no .pgf per frame.
-                save_section(fig, stem + ".png", want_pgf=cli.pgf and not (movie or cli.fly))
+            stem = os.path.join(out, f"poincare{infix}_zeta{pl:g}")
+            paper_fonts(fig, label_size=cli.label_size, page_width=cli.page_width)
+            # tight: the layout's left margin (colour bars) is cropped here, not by the including document
+            tight = dict(bbox_inches="tight", pad_inches=0.02)
+            fig.savefig(stem + ".pdf", dpi=cli.dpi, **tight)     # dpi sets the rasterised scatter
+            fig.savefig(stem + ".png", dpi=cli.dpi, **tight)     # for viewing
+            print(f"  -> {stem}.pdf", flush=True)
+            if cli.pgf:
+                # The same figure for \input into a document: typeset by pdflatex in the document's own fonts
+                # (rcfonts off), the scatter a raster -img*.png beside it, under pgf/.
+                pgf_dir = os.path.join(out, "pgf")
+                os.makedirs(pgf_dir, exist_ok=True)
+                with matplotlib.rc_context({"pgf.texsystem": "pdflatex", "pgf.rcfonts": False,
+                                            "pgf.preamble": r"\providecommand{\mathdefault}[1]{#1}"}):
+                    fig.savefig(os.path.join(pgf_dir, os.path.basename(stem) + ".pgf"), backend="pgf",
+                                dpi=cli.dpi, **tight)
+                print(f"  -> {pgf_dir}/{os.path.basename(stem)}.pgf", flush=True)
             plt.close(fig)
 
 

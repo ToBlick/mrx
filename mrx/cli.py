@@ -20,7 +20,8 @@ Field conventions (``dataclasses.field(metadata=...)``):
               prefix keeps the field names
 ``parse``     ``str -> value`` for a structured value (``"32,64,64"`` to a
               tuple); such a field's default is shown as the string
-``positional``  a positional argument (the plotters' run directory)
+``positional``  a positional argument (the plotter's archive); with ``nargs``
+              several of them, a tuple on the dataclass (the tracer's checkpoints)
 
 Types: ``int``, ``float``, ``str``; ``bool`` is ``--x`` / ``--no-x``
 (``argparse.BooleanOptionalAction``); ``Optional[T]`` is ``T`` with the
@@ -117,7 +118,10 @@ def _add(target, leaf):
         f.default_factory() if f.default_factory is not dataclasses.MISSING else dataclasses.MISSING)
     help_ = meta.get("help", "") + _default_text(leaf, default)
     if meta.get("positional"):
-        target.add_argument(leaf.dest, help=help_)
+        kw = dict(help=help_, type=meta.get("parse", leaf.type))
+        if meta.get("nargs"):          # several values, a tuple on the dataclass
+            kw.update(nargs=meta["nargs"], type=str)
+        target.add_argument(leaf.dest, **kw)
     elif leaf.type is bool:
         target.add_argument(leaf.flag, dest=leaf.dest, action=argparse.BooleanOptionalAction,
                             default=default, help=help_)

@@ -1,68 +1,28 @@
-r"""Trace field lines and archive their Poincare sections -- the expensive half.
+r"""Trace field lines of relaxation checkpoints and archive their Poincare sections -- the expensive half.
 
-Reads a scripts/relax.py run (relax.json + checkpoints/state_<step>.h5), traces
-the chosen states with ``mrx.poincare.poincare`` and evaluates the selected
-pressure at every crossing. The archive ``trace.npz`` is written NEXT TO the
-run -- the trace is a result of that run and lives with it.
-``scripts/poincare_plot.py`` renders it: plain matplotlib, no GPU, on the login
-node, so a change to the figure never repeats the trace. Every state of one
-run is traced in ONE call so the plotter can put them on one iota and one
-pressure scale.
+Every checkpoint named on the command line (``checkpoints/state_<step>.h5``, ``best.h5``, a seeded
+checkpoint, ...) is traced with ``mrx.poincare.poincare`` on the sequence its attributes describe
+(:func:`mrx.relaxation.checkpoint_attrs`: resolution, degree, knots, symmetry) over the geometry file
+``--geometry`` (the run's wout / GVEC state / analytic .json), and the weak pressure of the field
+(``mrx.relaxation.weak_pressure``, zero on the wall) is evaluated at every crossing. The archive
+``trace.npz`` is written next to the first checkpoint's run directory; ``scripts/poincare_plot.py``
+renders it on the login node, so a change to the figure never repeats the trace. Every checkpoint of
+one call is traced in ONE archive so the plotter can put them on one iota and one pressure scale.
 
-    python -u scripts/poincare_trace.py --run outputs/run --fields ic,final
+    python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc outputs/run/checkpoints/state_*.h5
 
-Flags (defaults in brackets):
-    --run DIR              the run directory
-    --fields F             comma-separated subset of ic,final,best [ic,final]: ic is
-                           checkpoints/state_000000.h5, final the highest step;
-                           `reconnect` expands to one field reconnect<k> per
-                           record of relax.json's ``reconnect`` list (the
-                           checkpoint at its step, the field before the solve);
-                           `snapshots`: one field per checkpoint (relax.py
-                           --chunk), rendered by the plotter as movie frames
-    --snapshot-steps S     with snapshots: subset of the stored steps, ranges
-                           start:stop:stride separated by commas [all]
-    --pressure {weak,strong}  which pressure to evaluate at the crossings [weak]:
-                           weak is mrx.relaxation.weak_pressure of each field (a
-                           0-form, two solves per field), strong the checkpoint's
-                           Leray multiplier ``p`` (a 3-form, ``p / det DF``,
-                           defined up to a constant -- the plotter gauges it)
-    --geometry PATH        overrides the run's recorded geometry path (a run
-                           relaxed in a since-deleted worktree)
-    --lines N              field lines per field, each at its own radius from
-                           the magnetic axis to the edge, at a random poloidal
-                           angle [160]
-    --periods N            toroidal periods per line [400]
-    --planes N|LIST        N zeta planes equispaced over what the map's
-                           symmetry leaves distinct (half a period for a
-                           stellarator-symmetric map, the whole period
-                           otherwise), or the planes themselves as fractions
-                           of a period; the steps per period follow from them
-                           (every plane a step endpoint, at least 24; a
-                           fly-along-zeta movie wants --planes 64 on a
-                           field-period-symmetric run) [5]
-    --seed N               the random seed of the poloidal angles [0]
-    --precision P          tracing precision float64|float32 [float64]
-    --out PATH             the archive path [<run>/trace.npz]
+Archive (numpy .npz): ``fields`` (the checkpoints' names, in order), ``planes``, ``resolution``, ``p``,
+``nfp``, ``symmetry``, ``steps`` (per period), ``source``, ``trace_precision``; per field ``<f>_label``,
+``<f>_step``, ``<f>_bsq`` (the volume mean of |B|^2, the plotter's pressure normalisation),
+``<f>_iota``, ``<f>_iota_err``, ``<f>_iota_scatter``, ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``,
+``<f>_shown``, ``<f>_drift``; per field and plane ``<f>_zeta<plane>_{R,Z,axisR,axisZ,logr,logth}`` and
+``<f>_zeta<plane>_pressure``, the weak pressure at every crossing. Trace RESULTS only -- every rendering
+choice is the plotter's.
 
-Archive (numpy .npz): ``fields`` (names, in order), ``planes``, ``ns``, ``p``,
-``nfp``, ``symmetry``, ``steps`` (per period), ``source`` (one line naming the run),
-``pressure_kind`` (weak|strong), ``trace_precision``, ``movie``; per field
-``<f>_label``, ``<f>_iota``, ``<f>_iota_err``, ``<f>_iota_scatter`` (the window
-std, the profile ribbon), ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``,
-``<f>_shown``, ``<f>_drift``; per field and plane
-``<f>_zeta<plane>_{R,Z,axisR,axisZ,logr,logth}`` and ``<f>_zeta<plane>_pressure``:
-the RAW value at every crossing (weak: the 0-form's value; strong:
-``p / det DF``). Trace RESULTS only -- every rendering choice is the plotter's.
-A movie archive is rewritten every 25 fields, so a time-out keeps the frames
-traced so far.
-Runtime: sequence build 1-3 min, then ~40 s per traced field at (16,32,32) on
-one H100 (the weak pressure adds two solves per field). The integrator is
-compiled once per mesh and schedule (the field's coefficients are an input),
-so a movie pays the compile on its first frame only.
+Runtime: sequence build 1-3 min, then ~40 s per traced field at (16,32,32) on one H100 (the weak
+pressure adds two solves per field). The integrator is compiled once per mesh and schedule.
 """
 import argparse
-import glob
 import os
 import sys
 from dataclasses import dataclass, field
@@ -73,150 +33,88 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Trace:
-    """Trace the field lines of a run's states and archive their Poincare sections."""
-    run: str = field(metadata=dict(help="a scripts/relax.py run directory"))
-    fields: str = field(default="ic,final", metadata=dict(
-        help="comma-separated subset of ic, final, best, reconnect, snapshots"))
-    snapshot_steps: Optional[str] = field(default=None, metadata=dict(
-        help="with snapshots: subset of the stored steps, ranges start:stop:stride separated by commas [all]"))
-    pressure: Literal["weak", "strong"] = field(default="weak", metadata=dict(
-        help="the pressure evaluated at the crossings: weak (a 0-form, two solves per field) or the checkpoint's "
-             "Leray multiplier"))
-    geometry: Optional[str] = field(default=None, metadata=dict(
-        help="overrides the run's recorded geometry path (a run relaxed in a since-deleted worktree)"))
-    lines: int = field(default=160, metadata=dict(help="field lines per field, from the axis to the edge"))
+    """Trace the field lines of relaxation checkpoints and archive their Poincare sections."""
+    checkpoints: tuple[str, ...] = field(metadata=dict(
+        positional=True, nargs="+", help="relaxation checkpoints (.h5), traced in this order into one archive"))
+    geometry: str = field(metadata=dict(help="the geometry file the checkpoints were relaxed on"))
+    lines: int = field(default=100, metadata=dict(help="field lines per field, from the axis to the edge"))
     periods: int = field(default=400, metadata=dict(help="toroidal periods per line"))
     planes: str = field(default="5", metadata=dict(
         help="a count of zeta planes over what the symmetry leaves distinct, or the planes as fractions of a period"))
     seed: int = field(default=0, metadata=dict(help="the random seed of the poloidal angles"))
-    precision: Literal["float64", "float32"] = field(default="float64", metadata=dict(help="tracing precision"))
-    out: Optional[str] = field(default=None, metadata=dict(help="archive path [<run>/trace.npz]"))
+    precision: Literal["float32", "float64"] = field(default="float32", metadata=dict(help="tracing precision"))
+    out: Optional[str] = field(default=None, metadata=dict(
+        help="archive path [trace.npz in the parent of the first checkpoint's directory]"))
 
 
 def main(cli):
+    import time
 
     import h5py
-    import json
-    import time
     import jax
     import jax.numpy as jnp
+
     from mrx.differential_forms import DiscreteFunction
-    from mrx.geometry import build_sequence, map_jacobian_at
+    from mrx.geometry import build_sequence
     from mrx.poincare import planes_for, poincare, steps_for
+    from mrx.relaxation import checkpoint_attrs, compute_force, weak_pressure
 
     planes = int(cli.planes) if cli.planes.isdigit() else [float(v) for v in cli.planes.split(",")]
-    run_dir = os.path.abspath(cli.run)
-    with open(os.path.join(run_dir, "relax.json")) as fh:
-        results = json.load(fh)
-    attrs = results["params"]
-    ckpts = {int(os.path.basename(f)[6:12]): f
-             for f in glob.glob(os.path.join(run_dir, "checkpoints", "state_[0-9]*.h5"))}
-    fields = [w.strip() for w in cli.fields.split(",")]
-    labels = {"ic": f"initial condition ({attrs.get('ic', '?')})", "final": "relaxed field"}
-    steps_of = {"ic": min(ckpts), "final": max(ckpts)}
-    best = os.path.join(run_dir, "checkpoints", "best.h5")
-    if os.path.exists(best):
-        # the run's answer: the field of lowest per-step residual (relax.py, State.B_best)
-        with h5py.File(best, "r") as fh:
-            best_step = int(fh.attrs["step"])
-        ckpts["best"], steps_of["best"] = best, "best"
-        labels["best"] = f"best state (step {best_step})"
-    if "reconnect" in fields:
-        # The field before each reconnection: the checkpoint at the record's step.
-        ks = []
-        for ev in results.get("reconnect", []):
-            k = int(ev["k"])
-            ks.append(k)
-            steps_of[f"reconnect{k}"] = int(ev["it"])
-            labels[f"reconnect{k}"] = f"before reconnection {k} (step {int(ev['it'])})"
-        fields = [n for w in fields for n in ([f"reconnect{k}" for k in ks] if w == "reconnect" else [w])]
-    movie = fields == ["snapshots"]
-    if movie:
-        # One frame per checkpoint (relax.py --chunk), named by step; the
-        # best state's entry is keyed "best", not by a step.
-        steps = sorted(k for k in ckpts if isinstance(k, int))
-        if cli.snapshot_steps:
-            wanted = set()
-            for rng in cli.snapshot_steps.split(","):
-                a, b, c = (int(v) for v in rng.split(":"))
-                wanted.update(range(a, b, c))
-            keep_steps = [k for k in steps if k in wanted or k == steps[-1]]
-        else:
-            keep_steps = steps
-        fields = [f"step{k:05d}" for k in keep_steps]
-        for k in keep_steps:
-            steps_of[f"step{k:05d}"] = k
-            labels[f"step{k:05d}"] = f"step {k}"
-    dofs = {}
-    for name in fields:
-        with h5py.File(ckpts[steps_of[name]], "r") as fh:
-            dofs["B_" + name] = np.asarray(fh["B_n"], dtype=np.float64)
-            dofs["p_" + name] = np.asarray(fh["warm.p"], dtype=np.float64)
-    geometry = cli.geometry or str(attrs["geometry_path"])
-    ns = tuple(int(v) for v in attrs["ns"])
-    p = int(attrs["p"])
-    nfp_override = None if attrs.get("nfp") is None else int(attrs["nfp"])
-    symmetry = attrs.get("symmetry", "stellarator")
-    knots = attrs.get("knots")
-    aux = bool(attrs.get("auxiliary_B_field", False))
-    source = (f"{os.path.basename(geometry)} {ns} p={p}, relaxed in {attrs.get('precision')} "
-              f"for {attrs.get('steps')} steps")
-    archive = cli.out or os.path.join(run_dir, "trace.npz")
-    print(f"[trace] {source}: fields {fields}, pressure {cli.pressure}, tracing in {cli.precision}",
-          flush=True)
+    attrs = checkpoint_attrs(cli.checkpoints[0])
+    fields, steps_of, dofs = [], {}, {}
+    for path in cli.checkpoints:
+        name = os.path.splitext(os.path.basename(path))[0]
+        with h5py.File(path, "r") as fh:
+            dofs[name] = np.asarray(fh["B_n"], dtype=np.float64)
+            steps_of[name] = int(fh.attrs["step"])
+        fields.append(name)
+    archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
+                                      "trace.npz")
+    source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}, relaxed in {attrs['precision']}"
+    print(f"[trace] {source}: fields {fields}, tracing in {cli.precision}", flush=True)
 
-    seq, _ = build_sequence(geometry, ns, p, nfp=nfp_override, knots=knots, symmetry=symmetry)
+    seq, _ = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
     planes = planes_for(seq, planes)
     print(f"[trace] nfp={seq.nfp}, symmetry {seq.symmetry}, planes {[f'{v:g}' for v in planes]} "
           f"({steps_for(planes)} steps per period)", flush=True)
-    if cli.pressure == "weak":
-        # The weak pressure is a diagnostic of the field, not state: two solves per field.
-        from mrx.relaxation import compute_force, weak_pressure
-        for name in fields:
-            _, _, J, X, _ = compute_force(jnp.asarray(dofs["B_" + name]), seq, aux)
-            dofs["pw_" + name] = np.asarray(weak_pressure(J, X, seq, aux)[0], dtype=np.float64)
+    volume = float(jnp.sum(seq.quad.w * seq.jacobian_j))
+    # The weak pressure is a diagnostic of the field, not state: two solves per field.
+    pw, bsq = {}, {}
+    for name in fields:
+        B = jnp.asarray(dofs[name])
+        _, _, J, X, _ = compute_force(B, seq)
+        pw[name] = np.asarray(weak_pressure(J, X, seq)[0], dtype=np.float64)
+        bsq[name] = float(seq.odd.l2_norm_sq(B, 2)) / volume
 
     @jax.jit
     def weak_at(pd, x):
         return jax.vmap(DiscreteFunction(pd, seq.basis_0, seq.even.E(0, True)))(x)[:, 0]
 
-    @jax.jit
-    def strong_at(pd, x):
-        e3 = seq.even.E(3, True) if pd.shape[0] == int(seq.even.n(3, True)) else seq.even.E(3)
-        val = jax.vmap(DiscreteFunction(pd, seq.basis_3, e3))(x)[:, 0]
-        return val / jnp.linalg.det(map_jacobian_at(seq.map, x))
-
-    def physical_pressure(name, lr, lth, zeta):
-        """The selected pressure at logical ``(lr, lth, zeta)``.
-
-        Weak: the 0-form's value. Strong: the 3-form's ``p / det DF``.
-        """
-        key = ("pw_" if cli.pressure == "weak" else "p_") + name
-        pd = jnp.asarray(dofs[key])
+    def pressure_at(name, lr, lth, zeta):
+        """The weak pressure at logical ``(lr, lth, zeta)``."""
         x = jnp.stack([jnp.asarray(lr).ravel(), jnp.asarray(lth).ravel(),
                        jnp.broadcast_to(jnp.asarray(zeta), lr.shape).ravel()], axis=1)
-        val = weak_at(pd, x) if cli.pressure == "weak" else strong_at(pd, x)
-        return np.asarray(val).reshape(lr.shape)
+        return np.asarray(weak_at(jnp.asarray(pw[name]), x)).reshape(lr.shape)
 
-    sections = {"fields": np.array(fields), "planes": np.array(planes), "ns": np.array(ns),
-                "p": p, "nfp": seq.nfp, "symmetry": np.array(seq.symmetry),
+    sections = {"fields": np.array(fields), "planes": np.array(planes), "resolution": np.array(seq.ns),
+                "p": attrs["p"], "nfp": seq.nfp, "symmetry": np.array(seq.symmetry),
                 "steps": steps_for(planes), "source": np.array(source),
-                "pressure_kind": np.array(cli.pressure),
-                "trace_precision": np.array(cli.precision), "movie": movie}
-    for i, name in enumerate(fields):
+                "trace_precision": np.array(cli.precision)}
+    for name in fields:
         t_field = time.perf_counter()
-        B = dofs["B_" + name]
+        B = dofs[name]
         assert B.shape == (seq.odd.n(2, True),), (B.shape, seq.odd.n(2, True))
-        res = poincare(seq, B, lines=cli.lines, periods=cli.periods, planes=planes,
-                       seed=cli.seed, name=name)
-        sections[f"{name}_label"] = np.array(labels[name])
+        res = poincare(seq, B, lines=cli.lines, periods=cli.periods, planes=planes, seed=cli.seed, name=name)
+        sections[f"{name}_label"] = np.array(f"{name} (step {steps_of[name]})")
+        sections[f"{name}_step"] = steps_of[name]
+        sections[f"{name}_bsq"] = bsq[name]
         for key in ("iota", "iota_err", "iota_scatter", "seed_r", "keep", "chaotic", "shown", "drift"):
             sections[f"{name}_{key}"] = np.asarray(res[key])
         for plane, sec in res["sections"].items():
             tag = f"{name}_zeta{plane:g}"
             for key, arr in sec.items():
                 sections[f"{tag}_{key}"] = arr
-            sections[f"{tag}_pressure"] = physical_pressure(name, sec["logr"], sec["logth"], plane)
+            sections[f"{tag}_pressure"] = pressure_at(name, sec["logr"], sec["logth"], plane)
         shown = res["shown"]
         span = (f"iota {float(res['iota'][shown].min()):.4f}..{float(res['iota'][shown].max()):.4f}"
                 if shown.any() else "no line converged")
@@ -225,10 +123,6 @@ def main(cli):
               f"{int((~res['keep']).sum())}/{res['keep'].size} lost, "
               f"{int((res['keep'] & res['chaotic']).sum())} chaotic, drift {res['drift']:.2e}, {span}",
               flush=True)
-        if movie and (i + 1) % 25 == 0 and i + 1 < len(fields):
-            os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)
-            np.savez_compressed(archive, **dict(sections, fields=np.array(fields[:i + 1])))
-            print(f"  -> {archive} (partial, {i + 1} of {len(fields)} fields)", flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)
     np.savez_compressed(archive, **sections)
     print(f"  -> {archive}", flush=True)
@@ -237,7 +131,7 @@ def main(cli):
 if __name__ == "__main__":
     # the precision must be in the environment before mrx is imported; the full parse then follows
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--precision", default="float64", choices=("float64", "float32"))
+    pre.add_argument("--precision", default="float32", choices=("float32", "float64"))
     os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
     from mrx.cli import parse
     sys.exit(main(parse(Trace, description=__doc__)))
