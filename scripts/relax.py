@@ -16,132 +16,9 @@ Canonical invocation (one GPU; see slurm/README.md)::
 
     python -u scripts/relax.py --geometry data/wout_li383_1.4m.nc
 
-Flags, defaults in brackets:
-    Geometry, initial condition, discretisation:
-      --geometry PATH (required)   the geometry AND the initial condition:
-                                   a VMEC wout (.nc) or a GVEC state (.dat)
-                                   gives the map and the equilibrium's own
-                                   field B = dA' from its Clebsch data; an
-                                   analytic geometry file (.json: a map of
-                                   mrx.mappings with its parameters and the
-                                   profiles iota, Phi', lambda of the
-                                   logical-grid field; data/torus.json,
-                                   cylinder.json, rot_ellipse.json) gives the
-                                   map and that field. Always Leray-projected.
-      --nfp N [file value]         field periods of a file that declares
-                                   them wrong
-      --symmetry {stellarator,field-period,none} [stellarator]
-                                   what the map satisfies: nfp field periods
-                                   and stellarator symmetry (the map is
-                                   projected onto it, the quadrature covers
-                                   half the period and the fields keep their
-                                   parity: mrx.symmetry), field periods only,
-                                   or nothing (zeta in [0, 1] is the whole
-                                   torus, nfp = 1); mrx.geometry.SYMMETRIES
-      --ns R,T,Z [32,64,64]        spline resolution (also the map's)
-      --knots-r LIST [""], --knots-theta LIST [""], --knots-zeta LIST [""]
-                                   the breakpoints of that axis, comma-
-                                   separated from 0 to 1, instead of the
-                                   uniform grid; the axis takes its n from
-                                   them (cells + p clamped, cells periodic;
-                                   mrx.geometry.knot_vector)
-      --p P [2]                    spline degree; p+1 Gauss points per span
-      --solve-maxiter N [2000]     iteration budget of every inner solve
-      --solve-tol TOL [1e-8 float32, 1e-10 float64]  residual tolerance of every solve (float64 residual)
-      --precision {mixed,float32,float64} [mixed]
-                                   mixed: float32 fields and solves with a
-                                   float64 residual; float32, float64: both
-                                   (MRX_DTYPE and MRX_RESIDUAL_DTYPE, exported
-                                   before mrx is imported)
-      --seed m,n,rho0,width [""], --seed-eps EPS [0], --seed-phase P [0]
-                                   equilibrium files only: a resonant term in
-                                   A'_zeta that opens an island at the
-                                   |iota| = nfp n / m surface; the phase is in
-                                   turns of the resonant angle
-    Descent:
-      --auxiliary-B-field {false,true} [false]
-                                   true routes both cross products through
-                                   the Dirichlet 1-form H = M_1^-1 P B
-                                   (H_t = 0 on the wall); false reads the
-                                   2-form B itself
-      --midpoint {false,true} [false]  the induction midpoint-implicit at the
-                                   predictor's velocity and step (Picard on
-                                   the increment, dt halved on a blow-up;
-                                   mrx.relaxation.PICARD_*); with the
-                                   auxiliary field it conserves the discrete
-                                   helicity exactly
-      --helicity-correction {false,true} [false]
-                                   remove from the induction field E the one
-                                   component (a multiple of the Dirichlet
-                                   proxy of B) that changes the discrete
-                                   helicity: exact conservation with H
-                                   natural, either scheme
-                                   (TimeStepper.helicity_correction); the
-                                   trace records the multiple as hcorr
-      --method {newton,gradient} [newton]
-                                   the direction: Newton on the second
-                                   variation (the Newton flags below) or
-                                   gradient descent on the smoothed force
-      --velocity-smoothing-order G [1], --velocity-smoothing-scale MU [0.075 h_r^2]
-                                   descent direction v = (I - MU L)^-G F
-      --cfl C [0.5]                cap the line-search step at C / (largest
-                                   logical CFL number of the velocity); inf
-                                   disables it
-      --potential-velocity {false,true} [true for the gradient descent]
-                                   the projected force as curl a + c h from
-                                   the k=1 Hodge solve of curl^T load(J x B)
-                                   instead of the Leray saddle solve
-                                   (divergence-free to roundoff), the
-                                   smoothing on the potential; Newton and the
-                                   auxiliary field have their own routes
-    Newton (--method newton): the direction u = curl a with
-    curl^T H curl a = curl^T M F solved by Newton-MR (mrx.hessian): MINRES
-    with the harmonic atom of the current field, the parallel-flow penalty
-    in the operator, the nonpositive-curvature exit; the line search along
-    the direction is capped at the Newton length dt = 1.
-      --newton-penalty KAPPA [3]   the parallel-flow penalty, kappa times the
-                                   strain along the field: the one number of
-                                   the Newton configuration (3 on every case
-                                   measured; 1 is 2x worse, 0.03 lets the
-                                   Hessian's null space through)
-      --newton-tol TOL [0.1]       the forcing term: the residual of the
-                                   Newton system (double precision, the
-                                   mass-atom norm) below TOL of the
-                                   right-hand side ends the solve
-      --newton-maxiter N [200]     MINRES iterations per pass
-      --newton-passes N [1]        passes at most: the solve is inexact by
-                                   design (200 iterations give the same
-                                   relaxation as any tighter solve; with
-                                   the strain penalty the 0.1 forcing term
-                                   is met late, so more passes only cost)
-    Budgets and output:
-      --steps N [150 Newton, 3000 gradient]
-                                   maximum number of steps
-      --chunk N [25 Newton, 500 gradient]
-                                   steps per compiled chunk (one lax.scan):
-                                   the trace comes back, the quantities of
-                                   interest are sampled (helicity, the two
-                                   pressures, beta), a checkpoint and the
-                                   outputs are written, and the floor,
-                                   reconnect tests run, once
-                                   per chunk; --steps is a multiple of it
-      --reconnect-every K [0]      see "Reconnection series"; 0 = off
-      --reconnect-helicity X [0.01] the helicity each reconnection spends,
-                                   |dH| / |H|
-      --floor-tol TOL [1e-8]       stop when the last chunk's mean squared
-                                   normalised force residual
-                                   ||F||^2_M / ||grad(B^2/2)||^2 is below
-                                   this (the residual is not monotone; the
-                                   window mean is the quantity)
-      --out DIR [outputs/relax/<date>/<time>]
-      --restart PATH               continue from a checkpoint of the same
-                                   geometry, mesh, degree and precision
-      --map-batch N [0]            cells per batch of the quadrature loops
-                                   (mrx.MAP_BATCH_SIZE_INNER); 0 evaluates
-                                   all points in one vmap. Bound it at high
-                                   resolution: the initial field's Greville
-                                   histopolation asks for 17 GiB at
-                                   (64,128,128) p=2 unbounded (8192 there)
+
+Every flag, grouped, with its default: ``--help`` (the dataclasses of mrx.relax_config, which a
+tutorial builds in Python); the run's record ``relax.json`` ``params`` is the same configuration flat.
 
 Output (``--out``):
     relax.json           ``params`` (every flag, ``geometry_path`` resolved,
@@ -203,159 +80,47 @@ import json
 import os
 import time
 
-
-
-#: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE)
+#: --precision -> (MRX_DTYPE, MRX_RESIDUAL_DTYPE); read before mrx is imported (mrx.precision fixes the
+#: dtypes at import), hence here and not on the configuration
 PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32"),
               "float64": ("float64", "float64")}
 
 
-def parse_args(argv=None):
-    ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--geometry", required=True,
-                    help="a VMEC wout (.nc), a GVEC state (.dat) or an analytic geometry (.json)")
-    ap.add_argument("--nfp", type=int, default=None,
-                    help="field periods; overrides the file's nfp attribute")
-    ap.add_argument("--symmetry", default="stellarator", choices=("stellarator", "field-period", "none"),
-                    help="what the map satisfies (mrx.geometry.SYMMETRIES)")
-    ap.add_argument("--ns", default="32,64,64")   # the paper's reference run (Tobias 2026-09-22)
-    for axis in ("r", "theta", "zeta"):
-        ap.add_argument(f"--knots-{axis}", default="",
-                        help=f'breakpoints of the {axis} axis, comma-separated from 0 to 1; "" = uniform')
-    ap.add_argument("--p", type=int, default=2)
-    ap.add_argument("--solve-maxiter", type=int, default=2000)
-    ap.add_argument("--solve-tol", type=float, default=None)
-    ap.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
-    ap.add_argument("--seed", default="",
-                    help='resonant seed "m,n,rho0,width" added to the potential (equilibrium files only)')
-    ap.add_argument("--seed-phase", type=float, default=0.0,
-                    help="the seed's phase in turns of the resonant angle (m theta - s n zeta)")
-    ap.add_argument("--seed-eps", type=float, default=0.0,
-                    help="its amplitude |dB^rho| / |B^zeta| at rho0 (island width ~ sqrt of it)")
-    ap.add_argument("--drive", default="",
-                    help='with --resistivity: a resonant drive "m,n,rho0,width" (the --seed perturbation of the '
-                         'potential) added to the source B* only, not to the field')
-    ap.add_argument("--drive-eps", type=float, default=0.0, help="the drive's amplitude, as --seed-eps")
-    ap.add_argument("--drive-phase", type=float, default=0.0, help="the drive's phase, as --seed-phase")
-    ap.add_argument("--auxiliary-B-field", default="false", choices=("false", "true"),
-                    help="route the cross products through the Dirichlet 1-form H = M_1^-1 P B")
-    ap.add_argument("--midpoint", default="false", choices=("false", "true"),
-                    help="midpoint-implicit induction at the predictor's velocity (Picard on the increment)")
-    ap.add_argument("--helicity-correction", default="false", choices=("false", "true"),
-                    help="zero the step's discrete helicity change by one scalar correction of E")
-    ap.add_argument("--velocity-smoothing-order", type=int, default=1,
-                    help="descent direction v = (I - scale L)^-order F; 0 is off and fragile: the "
-                         "unsmoothed descent stops conserving helicity after ~1e4 steps (numerical "
-                         "reconnection)")
-    ap.add_argument("--velocity-smoothing-scale", type=float, default=None,
-                    help="length scale of the velocity smoothing [mrx.relaxation.SMOOTHING_C h_r^2, h_r the physical radial cell]")
-    ap.add_argument("--cfl", type=float, default=0.5)
-    ap.add_argument("--potential-velocity", default=None, choices=("false", "true"),
-                    help="the projected force as curl a + c h (k=1 Hodge solve) instead of the Leray solve "
-                         "[true for the gradient descent; Newton and the auxiliary field have their own routes]")
-    ap.add_argument("--method", default="newton", choices=("newton", "gradient"),
-                    help="the direction: Newton on the second variation, or gradient descent on the smoothed force")
-    ap.add_argument("--newton-penalty", type=float, default=None,
-                    help="kappa of the parallel-flow penalty, kappa times the strain along the field [mrx.hessian.NEWTON_PENALTY]")
-    ap.add_argument("--newton-tol", type=float, default=None,
-                    help="the forcing term of the Newton solve: the residual below TOL of the right-hand side [mrx.hessian.NEWTON_TOL]")
-    ap.add_argument("--newton-maxiter", type=int, default=None,
-                    help="MINRES iterations per pass of the Newton solve [mrx.hessian.NEWTON_MAXITER]")
-    ap.add_argument("--newton-passes", type=int, default=None, help="passes of the Newton solve at most [mrx.hessian.NEWTON_PASSES]")
-    ap.add_argument("--steps", type=int, default=None, help="maximum steps [150 Newton, 3000 gradient]")
-    ap.add_argument("--chunk", type=int, default=None,
-                    help="steps per compiled chunk; trace, qoi sample, checkpoint, outputs and the "
-                         "floor / reconnect tests once per chunk")
-    ap.add_argument("--floor-tol", type=float, default=1e-8,
-                    help="stop when the last chunk's mean squared normalised force residual is below this")
-    ap.add_argument("--reconnect-every", type=int, default=0,
-                    help="reconnect the field with one resistive solve every K steps, rounded "
-                         "to whole chunks; 0 = off (see the docstring)")
-    ap.add_argument("--reconnect-helicity", type=float, default=0.01,
-                    help="the helicity each reconnection spends, |dH| / |H|")
-    ap.add_argument("--reconnect-eps", type=float, default=None,
-                    help="a constant dose eps = C h_r^2 per resistive solve (h_r the physical radial cell) "
-                         "instead of the helicity target")
-    ap.add_argument("--reconnect-window", default=None,
-                    help="A:B, the resistive solves only at steps A..B")
-    ap.add_argument("--resistivity", type=float, default=0.0,
-                    help="a resistive dose C h_r^2 in every step, E = eta (J - J*): see 'Resistive steady state'")
-    ap.add_argument("--reference-smoothing", type=float, default=0.1,
-                    help="B* = the start field after one heat step of c h_r^2 (with --resistivity)")
-    ap.add_argument("--reference", default=None,
-                    help="with --resistivity: B* from this checkpoint's field instead of the start field (one "
-                         "common reference for differently seeded arms, e.g. the nested equilibrium); smoothed as above")
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--restart", default=None,
-                    help="continue from a checkpoints/state_<step>.h5 of the same geometry, "
-                         "mesh, degree and precision")
-    ap.add_argument("--map-batch", type=int, default=0,
-                    help="cells per batch of the quadrature loops (mrx.MAP_BATCH_SIZE_INNER); "
-                         "0 = all points in one vmap; bound it at high resolution")
-    cli = ap.parse_args(argv)
-    if cli.map_batch < 0:
-        ap.error("--map-batch must be non-negative (0 is one vmap over all points)")
-    cli.auxiliary_B_field = cli.auxiliary_B_field == "true"
-    cli.helicity_correction = cli.helicity_correction == "true"
-    cli.midpoint = cli.midpoint == "true"
-    cli.newton = cli.method == "newton"
-    if cli.steps is None:
-        cli.steps = 150 if cli.newton else 3000
-    if cli.chunk is None:
-        cli.chunk = 25 if cli.newton else 500
-    cli.potential_velocity = None if cli.potential_velocity is None else cli.potential_velocity == "true"
-    if cli.chunk < 1 or cli.steps % cli.chunk:
-        ap.error("--steps must be a positive multiple of --chunk")
-    if not os.path.isfile(cli.geometry):
-        ap.error(f"--geometry {cli.geometry!r} is not a file (a .nc, .dat or .json)")
-    if cli.seed and cli.geometry.endswith(".json"):
-        ap.error("--seed needs an equilibrium file (.nc or .dat)")
-    if cli.drive and (cli.seed or not cli.resistivity):
-        ap.error("--drive needs --resistivity and no --seed (the drive is the source's, not the field's)")
-    return cli
-
-
-def main(cli):
+def main(cfg):
     import equinox as eqx
     import mrx
-    from mrx.geometry import build_sequence, geometry_kind, parse_knots
-    from mrx.initial_conditions import initial_field, parse_seed
+    from mrx.geometry import build_sequence, geometry_kind
+    from mrx.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation import (TimeStepper, initial_state, read_checkpoint, radial_cell_sq, relax,
-                                resistive_step, write_checkpoint)
+    from mrx.relaxation import (initial_state, radial_cell_sq, read_checkpoint, relax, resistive_step,
+                                write_checkpoint)
 
-    if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[cli.precision]:
-        raise ValueError(f"--precision {cli.precision} but mrx runs in {mrx.DTYPE} "
+    g, d, n, b, rc, rs = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.reconnect, cfg.resistive
+    if (str(mrx.DTYPE), str(mrx.precision.RESIDUAL_DTYPE)) != PRECISIONS[g.precision]:
+        raise ValueError(f"--precision {g.precision} but mrx runs in {mrx.DTYPE} "
                          f"with {mrx.precision.RESIDUAL_DTYPE} residuals")
-    mrx.MAP_BATCH_SIZE_INNER = cli.map_batch
-    print(f"[env] mrx from {mrx.__file__}  precision {cli.precision} ({mrx.DTYPE} solves, "
-          f"{mrx.precision.RESIDUAL_DTYPE} residual)  map batch {cli.map_batch or 'all'}", flush=True)
-    ns = tuple(int(v) for v in cli.ns.split(","))
-    out = cli.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"),
-                                  time.strftime("%H-%M-%S"))
+    mrx.MAP_BATCH_SIZE_INNER = g.map_batch
+    print(f"[env] mrx from {mrx.__file__}  precision {g.precision} ({mrx.DTYPE} solves, "
+          f"{mrx.precision.RESIDUAL_DTYPE} residual)  map batch {g.map_batch or 'all'}", flush=True)
+    out = cfg.output.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
-    params = dict(vars(cli), ns=list(ns), out=out, geometry_path=os.path.abspath(cli.geometry),
-                  ic=geometry_kind(cli.geometry))
+    # the record: the configuration, flat, plus the facts of the run
+    params = dict(cfg.params, out=out, geometry_path=os.path.abspath(g.path), ic=geometry_kind(g.path))
     results = {"params": params}
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
-    knots = [parse_knots(s) for s in (cli.knots_r, cli.knots_theta, cli.knots_zeta)]
-    seq, ops = build_sequence(cli.geometry, ns, cli.p, cli.solve_maxiter, tol=cli.solve_tol,
-                              nfp=cli.nfp, knots=knots, symmetry=cli.symmetry)
-    ns = seq.ns
-    params.update(ns=list(ns), knots=knots)
+    seq, ops = build_sequence(g.path, g.ns, g.p, g.solve_maxiter, tol=g.solve_tol, nfp=g.nfp, knots=g.knots,
+                              symmetry=g.symmetry)
+    params.update(ns=list(seq.ns), knots=g.knots)
     compute_nullspaces(seq)
-    print(f"[setup] {cli.geometry} ns={ns} p={cli.p} tol={seq.tol:.1e}  "
-          f"n2_dbc={seq.odd.n(2, True)}  operators+nullspaces "
-          f"{time.perf_counter() - t0:.1f}s", flush=True)
+    print(f"[setup] {g.path} ns={seq.ns} p={g.p} tol={seq.tol:.1e}  n2_dbc={seq.odd.n(2, True)}  "
+          f"operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
 
     # --- initial condition -----------------------------------------------
     t1 = time.perf_counter()
-    seed = parse_seed(cli.seed, cli.seed_eps, cli.seed_phase) if cli.seed else None
-    B0, ic = initial_field(seq, seed)
+    B0, ic = initial_field(seq, cfg.seed.parsed() if cfg.seed else None)
     results["ic"] = ic
     print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
           + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
@@ -364,67 +129,54 @@ def main(cli):
     # --- the descent -------------------------------------------------------
     h_r_sq = radial_cell_sq(seq)
     params["h_r_sq"] = h_r_sq
-    ts = TimeStepper(
-        seq=seq, auxiliary_B_field=cli.auxiliary_B_field, cfl=cli.cfl, midpoint=cli.midpoint,
-        helicity_correction=cli.helicity_correction,
-        velocity_smoothing_order=cli.velocity_smoothing_order,
-        velocity_smoothing_scale=cli.velocity_smoothing_scale,
-        potential_velocity=cli.potential_velocity,
-        newton=cli.newton, resistivity=cli.resistivity * h_r_sq,
-        # the Newton knobs left unset take the stepper's defaults (mrx.hessian)
-        **{k: v for k, v in dict(newton_penalty=cli.newton_penalty, newton_tol=cli.newton_tol,
-                                 newton_maxiter=cli.newton_maxiter, newton_passes=cli.newton_passes).items()
-           if v is not None})
-    if cli.restart:
-        state, it0 = read_checkpoint(cli.restart, ts)
-        print(f"[restart] {cli.restart}: descent state at step {it0}", flush=True)
+    ts = cfg.stepper(seq, h_r_sq)
+    if cfg.output.restart:
+        state, it0 = read_checkpoint(cfg.output.restart, ts)
+        print(f"[restart] {cfg.output.restart}: descent state at step {it0}", flush=True)
     else:
         state, it0 = initial_state(B0, ts), 0
         write_checkpoint(os.path.join(ckpt_dir, "state_000000.h5"), state, 0)
-    if cli.resistivity:
+    if rs.resistivity:
         # B*: the start field, its rational-surface sheets removed by the heat step (c = 0 keeps them: only the
         # drive then moves the steady state)
         B_star = state.B_n
-        if cli.reference:
+        if rs.reference:
             import h5py  # noqa: PLC0415
             import jax.numpy as jnp  # noqa: PLC0415
-            with h5py.File(cli.reference, "r") as fh:
+            with h5py.File(rs.reference, "r") as fh:
                 B_star = jnp.asarray(fh["B_n"][()], dtype=state.B_n.dtype)
                 ref_step = int(fh.attrs["step"])
-            print(f"[reference] B* from {cli.reference} (step {ref_step})", flush=True)
-        if cli.reference_smoothing:
-            B_star = resistive_step(B_star, seq, cli.reference_smoothing * h_r_sq)[0]
-        if cli.drive:
+            print(f"[reference] B* from {rs.reference} (step {ref_step})", flush=True)
+        if rs.reference_smoothing:
+            B_star = resistive_step(B_star, seq, rs.reference_smoothing * h_r_sq)[0]
+        if cfg.drive:
             # the drive dA of the seed, as the difference of the two histopolated fields at the unseeded field's
             # normalisation: d is linear, so the histopolation error of the unperturbed field cancels exactly
-            drive = parse_seed(cli.drive, cli.drive_eps, cli.drive_phase)
+            drive = cfg.drive.parsed()
             B_d, ic_d = initial_field(seq, drive)
             dB_drive = B_d * (ic_d["B_norm_raw"] / ic["B_norm_raw"]) - B0
             B_star = B_star + dB_drive
-            print(f"[drive] ({drive[0]},{drive[1]}) at rho {ic_d['seed_rho']:.3f}, eps {cli.drive_eps:g}: "
-                  f"||dB_drive|| / ||B|| = {float(seq.odd.l2_norm(dB_drive, 2) / seq.odd.l2_norm(B0, 2)):.3e}", flush=True)
+            print(f"[drive] ({drive[0]},{drive[1]}) at rho {ic_d['seed_rho']:.3f}, eps {cfg.drive.eps:g}: "
+                  f"||dB_drive|| / ||B|| = {float(seq.odd.l2_norm(dB_drive, 2) / seq.odd.l2_norm(B0, 2)):.3e}",
+                  flush=True)
         ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
-        print(f"[resistivity] eps {cli.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the "
-              f"{'reference' if cli.reference else 'start'} field "
-              f"after a heat step of {cli.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
+        print(f"[resistivity] eps {rs.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step; B* = the "
+              f"{'reference' if rs.reference else 'start'} field "
+              f"after a heat step of {rs.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
-    params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)
-    params["potential_velocity"] = bool(ts.potential_velocity)
-    params.update(newton_penalty=ts.newton_penalty, newton_tol=ts.newton_tol,   # the effective Newton knobs
-                  newton_maxiter=ts.newton_maxiter, newton_passes=ts.newton_passes)
-    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (ts.newton_penalty, ts.newton_tol, ts.newton_maxiter, ts.newton_passes) if cli.newton else 'gradient descent'}{'  potential-velocity' if ts.potential_velocity else ''}  auxiliary-B-field={str(cli.auxiliary_B_field).lower()}  "
-          f"{'midpoint  ' if cli.midpoint else ''}{'helicity-correction  ' if cli.helicity_correction else ''}"
-          f"smoothing={cli.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
-          f"cfl={cli.cfl}  steps<={cli.steps} chunk={cli.chunk} floor-tol={cli.floor_tol:.1e} "
-          f"reconnect-every={cli.reconnect_every}"
-          + ((f" (eps {cli.reconnect_eps:g} h_r^2 each" if cli.reconnect_eps is not None
-              else f" ({cli.reconnect_helicity:.2%} of H each")
-             + (f", steps {cli.reconnect_window})" if cli.reconnect_window else ")") if cli.reconnect_every else "")
-          + (f" resistivity={cli.resistivity:g} h_r^2 (B* smoothed {cli.reference_smoothing:g} h_r^2)"
-             if cli.resistivity else "")
-          + " ===",
-          flush=True)
+    params["velocity_smoothing_scale"] = float(ts.velocity_smoothing_scale)    # the effective scale
+    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d passes=%d' % (n.penalty, n.tol, n.maxiter, n.passes) if d.newton else 'gradient descent'}"
+          f"{'  potential-velocity' if d.potential_velocity else ''}  auxiliary-B-field={str(d.auxiliary_B_field).lower()}  "
+          f"{'midpoint  ' if d.midpoint else ''}{'helicity-correction  ' if d.helicity_correction else ''}"
+          f"smoothing={d.velocity_smoothing_order}@{ts.velocity_smoothing_scale:.3e} "
+          f"cfl={d.cfl}  steps<={b.steps} chunk={b.chunk} floor-tol={b.floor_tol:.1e} "
+          f"reconnect-every={rc.every}"
+          + ((f" (eps {rc.eps:g} h_r^2 each" if rc.eps is not None else f" ({rc.helicity:.2%} of H each")
+             + (f", steps {rc.window[0]}:{rc.window[1]})" if rc.window else ")") if rc.every else "")
+          + (f" resistivity={rs.resistivity:g} h_r^2 (B* smoothed {rs.reference_smoothing:g} h_r^2)"
+             if rs.resistivity else "")
+          + " ===", flush=True)
 
     def save(res):
         """The run so far: the checkpoint of this step, then relax.json."""
@@ -443,12 +195,7 @@ def main(cli):
         with open(os.path.join(out, "relax.json"), "w") as fh:
             json.dump(results, fh, indent=1)
 
-    res = relax(state, ts, steps=cli.steps, chunk=cli.chunk, it0=it0, floor_tol=cli.floor_tol,
-          reconnect_every=cli.reconnect_every,
-          reconnect_helicity=cli.reconnect_helicity,
-          reconnect_eps=None if cli.reconnect_eps is None else cli.reconnect_eps * h_r_sq,
-          reconnect_window=None if cli.reconnect_window is None
-          else tuple(int(v) for v in cli.reconnect_window.split(":")), on_chunk=save)
+    res = relax(state, ts, it0=it0, on_chunk=save, **cfg.relax_kwargs(h_r_sq))
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
                      initial_state(res.state.best.B, ts, step=int(res.state.best.step)), int(res.state.best.step))
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.best.step)}, "
@@ -456,6 +203,10 @@ def main(cli):
 
 
 if __name__ == "__main__":
-    cli = parse_args()
-    os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[cli.precision]
-    main(cli)
+    # the precision must be in the environment before mrx is imported; the full parse then follows
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--precision", default="mixed", choices=tuple(PRECISIONS))
+    os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[pre.parse_known_args()[0].precision]
+    from mrx.cli import parse
+    from mrx.relax_config import RelaxConfig
+    main(parse(RelaxConfig, description=__doc__))
