@@ -1154,8 +1154,15 @@ def checkpoint_attrs(path: str) -> dict:
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
+
+    def breakpoints(name):
+        # the uniform grid is ``None`` to build_sequence: given angular knots would switch the half-period
+        # exploitation off, and the field of a half-period checkpoint lives on its parity view
+        bp = np.asarray(a[f"knots_{name}"], dtype=np.float64)
+        return None if np.allclose(bp, np.linspace(0.0, 1.0, bp.size)) else [float(v) for v in bp]
+
     return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
-                knots=[list(map(float, a[f"knots_{name}"])) for name in ("r", "theta", "zeta")],
+                knots=[breakpoints(name) for name in ("r", "theta", "zeta")],
                 symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), precision=str(a["precision"]),
                 step=int(a["step"]))
 
