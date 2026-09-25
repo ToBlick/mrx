@@ -399,6 +399,8 @@ class DeRhamSequence():
         self.geometry = attach_weights(self, cast_arrays(geometry))
         self.operators = None
         self._residual = None
+        if self._parity_views is not None:      # a base sequence: its views hold the previous geometry
+            self._parity_views = {}
 
     @property
     def odd(self):
