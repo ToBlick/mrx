@@ -65,24 +65,35 @@ import argparse
 import glob
 import os
 import sys
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+
 import numpy as np
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--run", required=True, help="a scripts/relax.py run directory")
-    ap.add_argument("--fields", default="ic,final")
-    ap.add_argument("--snapshot-steps", default=None)
-    ap.add_argument("--pressure", default="weak", choices=("weak", "strong"))
-    ap.add_argument("--geometry", default=None)
-    ap.add_argument("--lines", type=int, default=160)
-    ap.add_argument("--periods", type=int, default=400)
-    ap.add_argument("--planes", default="5", help="a count, or a comma-separated list")
-    ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--precision", default="float64", choices=("float64", "float32"))
-    ap.add_argument("--out", default=None, help="archive path [<run>/trace.npz]")
-    cli = ap.parse_args()
-    os.environ["MRX_DTYPE"] = cli.precision
+@dataclass(frozen=True)
+class Trace:
+    """Trace the field lines of a run's states and archive their Poincare sections."""
+    run: str = field(metadata=dict(help="a scripts/relax.py run directory"))
+    fields: str = field(default="ic,final", metadata=dict(
+        help="comma-separated subset of ic, final, best, reconnect, snapshots"))
+    snapshot_steps: Optional[str] = field(default=None, metadata=dict(
+        help="with snapshots: subset of the stored steps, ranges start:stop:stride separated by commas [all]"))
+    pressure: Literal["weak", "strong"] = field(default="weak", metadata=dict(
+        help="the pressure evaluated at the crossings: weak (a 0-form, two solves per field) or the checkpoint's "
+             "Leray multiplier"))
+    geometry: Optional[str] = field(default=None, metadata=dict(
+        help="overrides the run's recorded geometry path (a run relaxed in a since-deleted worktree)"))
+    lines: int = field(default=160, metadata=dict(help="field lines per field, from the axis to the edge"))
+    periods: int = field(default=400, metadata=dict(help="toroidal periods per line"))
+    planes: str = field(default="5", metadata=dict(
+        help="a count of zeta planes over what the symmetry leaves distinct, or the planes as fractions of a period"))
+    seed: int = field(default=0, metadata=dict(help="the random seed of the poloidal angles"))
+    precision: Literal["float64", "float32"] = field(default="float64", metadata=dict(help="tracing precision"))
+    out: Optional[str] = field(default=None, metadata=dict(help="archive path [<run>/trace.npz]"))
+
+
+def main(cli):
 
     import h5py
     import json
@@ -224,4 +235,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # the precision must be in the environment before mrx is imported; the full parse then follows
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--precision", default="float64", choices=("float64", "float32"))
+    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
+    from mrx.cli import parse
+    sys.exit(main(parse(Trace, description=__doc__)))

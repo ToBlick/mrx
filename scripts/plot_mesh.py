@@ -38,20 +38,27 @@ from __future__ import annotations
 
 import argparse
 import os
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
 
-def parse_args(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--geometry", required=True)
-    ap.add_argument("--meshes", required=True)
-    ap.add_argument("--p", type=int, default=2)
-    ap.add_argument("--planes", default="0,0.5")
-    ap.add_argument("--sections", default="")
-    ap.add_argument("--nfp", type=int, default=None)
-    ap.add_argument("--coefficients", default="")
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--precision", default="float32", choices=("float32", "float64"))
-    return ap.parse_args(argv)
+@dataclass(frozen=True)
+class PlotMesh:
+    """The spline meshes in the mapped geometry."""
+    geometry: str = field(metadata=dict(help="GVEC .dat or VMEC wout .nc (mrx.geometry.build_sequence names)"))
+    meshes: str = field(metadata=dict(
+        help="n_r,n_t,n_z[|breakpoints] per mesh, ;-separated; radial breakpoints (comma list, 0 to 1) replace "
+             "the uniform grid and set n_r (cells + p)"))
+    out: str = field(metadata=dict(help="figure directory"))
+    p: int = field(default=2, metadata=dict(help="spline degree"))
+    planes: str = field(default="0,0.5", metadata=dict(help="logical toroidal planes of the cross-sections"))
+    sections: str = field(default="", metadata=dict(
+        help="per mesh path/trace.npz[:tag] (tag final by default) or - for none; one entry serves every mesh"))
+    nfp: Optional[int] = field(default=None, metadata=dict(help="override the file's nfp"))
+    coefficients: str = field(default="", metadata=dict(
+        help="per mesh path.npz[:start|end] or -: the map from the raw R, Z coefficients of a record instead of "
+             "--geometry's; one entry serves every mesh"))
+    precision: Literal["float32", "float64"] = field(default="float32", metadata=dict(help="the map's precision"))
 
 
 def main(cli):
@@ -202,4 +209,9 @@ def main(cli):
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    # the precision must be in the environment before mrx is imported; the full parse then follows
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--precision", default="float32", choices=("float32", "float64"))
+    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
+    from mrx.cli import parse
+    main(parse(PlotMesh, description=__doc__))

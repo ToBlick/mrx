@@ -86,9 +86,11 @@ backend (vector LaTeX labels, the scatter as a high-dpi ``-img*.png`` beside it)
 under ``pgf/``; the including document needs ``\usepackage[strings]{underscore}``
 and ``\providecommand{\mathdefault}[1]{#1}``.
 """
-import argparse
 import os
 import sys
+from dataclasses import dataclass, field
+from typing import Literal, Optional
+
 import numpy as np
 
 #: Panel labels. Both read plain $p$: the weak pressure is zero on the wall by
@@ -142,49 +144,56 @@ def pressure_gauge(kind, presses, keep):
     return 0.0 if kind == "weak" else float(min(np.min(v) for v in vals))
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("archive", help="trace.npz, or the directory holding it")
-    ap.add_argument("--fields", default=None)
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--no-pressure", dest="pressure", action="store_false")
-    ap.add_argument("--inner-cells", type=float, default=0.0)
-    ap.add_argument("--min-sep", type=float, default=0.12)
-    ap.add_argument("--denom-max", type=int, default=300)
-    ap.add_argument("--profile-coord", default="logical", choices=("logical", "physical"))
-    ap.add_argument("--profile-rays", type=int, default=1)
-    ap.add_argument("--dot-scale", type=float, default=0.15)
-    ap.add_argument("--paper", action="store_true")
-    ap.add_argument("--pressure-factor", type=float, default=1.0,
-                    help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta) [1]")
-    ap.add_argument("--pressure-label", default=None, help="label of the pressure axis and colour bar [p]")
-    ap.add_argument("--label-size", type=float, default=9.0)   # the paper's body size: import the PGF at its authored width, not through a resizebox (Tobias 2026-09-22)
-    ap.add_argument("--page-width", type=float, default=6.5)
-    ap.add_argument("--dpi", type=int, default=600)
-    ap.add_argument("--no-pgf", dest="pgf", action="store_false")
-    ap.add_argument("--planes", default=None,
-                    help="comma-separated subset of the archive's planes [all]")
-    ap.add_argument("--frame-offset", type=int, default=0,
-                    help="number a movie's frames from here (an archive split into parts: each part's call "
-                         "continues the count, with --iota-lim, --p-lim, --window and --rationals pinned)")
-    ap.add_argument("--fly", action="store_true")
-    ap.add_argument("--window", default=None,
-                    help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page "
-                         "(e.g. the same window for a time movie and the fly that follows it)")
-    ap.add_argument("--scales", choices=("run", "step"), default="run",
-                    help="iota and p scales: one range over every field of the call (run) or "
-                         "per field (step); constant across the planes either way [run]")
-    ap.add_argument("--iota-lim", default=None,
-                    help="LO,HI: fix the iota colour scale and profile axis instead of the "
-                         "call's own range, so separate calls (time frames, then the fly) match")
-    ap.add_argument("--p-lim", default=None,
-                    help="LO,HI: fix the pressure colour scale and profile axis, in the units "
-                         "the colour bar shows (p x 100)")
-    ap.add_argument("--rationals", default=None,
-                    help="n/m,n/m,...: fix the resonant iota ticks (colour bar and profile "
-                         "lines) instead of picking them from the range; a movie's frames then "
-                         "all carry the same labels")
-    cli = ap.parse_args()
+@dataclass(frozen=True)
+class Plot:
+    """Render the Poincare sections of a trace archive."""
+    archive: str = field(metadata=dict(positional=True, help="trace.npz, or the directory holding it"))
+    fields: Optional[str] = field(default=None, metadata=dict(help="comma-separated subset of the archive's fields [all]"))
+    out: Optional[str] = field(default=None, metadata=dict(help="page directory [<archive dir>/poincare]"))
+    pressure: bool = field(default=True, metadata=dict(
+        help="draw the archived pressure (below the axis in the section and the chart, the profile's right axis)"))
+    inner_cells: float = field(default=0.0, metadata=dict(
+        help="lines seeded closer to the axis than this many radial cells are not drawn; 0 draws every line"))
+    min_sep: float = field(default=0.12, metadata=dict(
+        help="resonant-rational ticks: a rational is labelled only this fraction of the iota range from every "
+             "lower-order label"))
+    denom_max: int = field(default=300, metadata=dict(help="candidate pool of the rational ticks"))
+    profile_coord: Literal["logical", "physical"] = field(default="logical", metadata=dict(
+        help="profile abscissa: logical r on golden-spaced rays, or physical R on the midplane"))
+    profile_rays: int = field(default=1, metadata=dict(
+        help="poloidal rays on the logical profile (theta = 0.5, then 1/3, 0.2, ...), one marker each"))
+    dot_scale: float = field(default=0.15, metadata=dict(
+        help="crossing-marker size relative to the house rule; 0.15 for a dense section on a page"))
+    paper: bool = field(default=False, metadata=dict(
+        help="publication layout: no title, the house font hierarchy at --label-size for a --page-width figure, "
+             "PDF + PNG at --dpi; otherwise the diagnostic look, a titled PNG at 200 dpi plus a .pgf"))
+    pressure_factor: float = field(default=1.0, metadata=dict(
+        help="multiply the pressure before drawing (e.g. 2 / <|B|^2> for the local beta)"))
+    pressure_label: Optional[str] = field(default=None, metadata=dict(help="label of the pressure axis and colour bar [p]"))
+    label_size: float = field(default=9.0, metadata=dict(
+        help="(--paper) axis-label pt at --page-width, the paper's body size; ticks and legends keep the hierarchy"))
+    page_width: float = field(default=6.5, metadata=dict(help="(--paper) authored width in inches"))
+    dpi: int = field(default=600, metadata=dict(help="(--paper) rasterised crossing-scatter resolution"))
+    pgf: bool = field(default=True, metadata=dict(help="the .pgf beside each PNG (needs xelatex on PATH)"))
+    planes: Optional[str] = field(default=None, metadata=dict(help="comma-separated subset of the archive's planes [all]"))
+    frame_offset: int = field(default=0, metadata=dict(
+        help="number a movie's frames from here (an archive split into parts: each part's call continues the "
+             "count, with --iota-lim, --p-lim, --window and --rationals pinned)"))
+    fly: bool = field(default=False, metadata=dict(
+        help="a movie along zeta: one frame per plane of each field, numbered in plane order"))
+    window: Optional[str] = field(default=None, metadata=dict(
+        help="Rmin,Rmax,Zmin,Zmax: pin the section box to this window on every page"))
+    scales: Literal["run", "step"] = field(default="run", metadata=dict(
+        help="iota and p scales: one range over every field of the call (run) or per field (step)"))
+    iota_lim: Optional[str] = field(default=None, metadata=dict(
+        help="LO,HI: fix the iota colour scale and profile axis across calls"))
+    p_lim: Optional[str] = field(default=None, metadata=dict(
+        help="LO,HI: fix the pressure colour scale and profile axis (units of the colour bar, p x 100)"))
+    rationals: Optional[str] = field(default=None, metadata=dict(
+        help="n/m,n/m,...: fix the resonant iota ticks so a movie's frames all carry the same labels"))
+
+
+def main(cli):
 
     import matplotlib
     matplotlib.use("Agg")
@@ -343,4 +352,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from mrx.cli import parse
+    sys.exit(main(parse(Plot, description=__doc__)))

@@ -25,22 +25,25 @@ import argparse
 import glob
 import json
 import os
+from dataclasses import dataclass, field
+from typing import Literal, Optional
 
 import numpy as np
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("run", help="a scripts/relax.py run directory (relax.json + checkpoints/)")
-    ap.add_argument("--out", default=None)
-    ap.add_argument("--fields", default="final")
-    ap.add_argument("--cuts", type=int, default=6)
-    ap.add_argument("--n", type=int, default=48)
-    ap.add_argument("--geometry", default=None)
-    ap.add_argument("--precision", default="float64", choices=("float32", "float64"))
-    cli = ap.parse_args()
+@dataclass(frozen=True)
+class PlotRelaxation:
+    """Figures of a relaxation run: the weak pressure on the torus and in cuts, the force against the energy."""
+    run: str = field(metadata=dict(positional=True, help="a scripts/relax.py run directory (relax.json + checkpoints/)"))
+    out: Optional[str] = field(default=None, metadata=dict(help="figure directory [<run>/figures]"))
+    fields: str = field(default="final", metadata=dict(help="which pressures to draw, of ic, final"))
+    cuts: int = field(default=6, metadata=dict(help="poloidal cuts per field period"))
+    n: int = field(default=48, metadata=dict(help="points per cut side"))
+    geometry: Optional[str] = field(default=None, metadata=dict(help="override the run's geometry_path (after a move)"))
+    precision: Literal["float32", "float64"] = field(default="float64", metadata=dict(help="the sequence's precision"))
 
-    os.environ["MRX_DTYPE"] = cli.precision
+
+def main(cli):
     import h5py
     import jax.numpy as jnp
     import matplotlib
@@ -114,4 +117,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # the precision must be in the environment before mrx is imported; the full parse then follows
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--precision", default="float64", choices=("float32", "float64"))
+    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
+    from mrx.cli import parse
+    main(parse(PlotRelaxation, description=__doc__))
