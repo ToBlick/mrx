@@ -53,6 +53,6 @@ done
 # Figs. 3 and 6: the (32, 64, 32) p = 3 rung of the high-resolution reference, |B| on the boundary and its sections
 R=$O/highres/rung_32x64x32_p3
 RUN=$(sub vq_run 10 afterok:$VH3 scripts/paper_scripts/vacuum_run.py $R)
-sub vq_trace 60 afterok:$RUN scripts/poincare_trace.py --run $R/run --fields ic --lines 160 --periods 400
+sub vq_trace 60 afterok:$RUN scripts/poincare_trace.py --geometry $HIGHRES $R/run/checkpoints/state_000000.h5 --lines 160 --periods 400
 sub vq_bmag 40 afterok:$VH3 scripts/paper_scripts/plot_vacuum_qa.py --geometry $HIGHRES --ns 32,64,32 --p 3 \
   --field-npz $R/fields.npz --out $O/bmag

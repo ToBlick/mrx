@@ -42,7 +42,7 @@ G1="--velocity-smoothing-order 1"   # mu = 0.075 h_r^2, the driver's default (SM
 G1_12=$G1
 G1_16=$G1
 G1_32=$G1
-AUX="--auxiliary-B-field true"
+AUX="--auxiliary-B-field"
 
 submit() {  # submit KIND NAME SCRIPT ARGS TIMEOUT_MIN
     local kind=$1 name=$2 script=$3 args=$4 tmin=$5

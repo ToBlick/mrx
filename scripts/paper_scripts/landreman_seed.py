@@ -219,7 +219,7 @@ def main():
     blocks = [i for i in range(len(dB)) if keep is None or chains[owner[i]][:2] in keep]
     seeded = B + cli.scale * sum(float(a[i]) * dB[i] for i in blocks)
     os.makedirs(os.path.dirname(os.path.abspath(cli.out)), exist_ok=True)
-    write_checkpoint(cli.out, initial_state(seeded, ts, step=step), step)
+    write_checkpoint(cli.out, initial_state(seeded, ts, step=step), step, seq)
     with open(os.path.splitext(cli.out)[0] + ".json", "w") as fh:
         json.dump(dict(checkpoint=ckpt, step=step, ns=list(ns), p=p, nfp=nfp, h_r=h_r, chains=keep, scale=cli.scale,
                        resonances=rows), fh, indent=1)

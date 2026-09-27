@@ -115,8 +115,10 @@ def main(argv=None):
         json.dump(dict(case=cli.case, exact=exact, rows=rows), fh, indent=1)
     if cli.poincare:
         from landreman_chain import resolve
-        subprocess.run([sys.executable, "-u", resolve("poincare_trace.py"),
-                        "--run", cli.run, "--fields", "ic,final", "--planes", cli.planes], check=True)
+        ckpts = sorted(glob.glob(os.path.join(cli.run, "checkpoints", "state_*.h5")))
+        geometry = json.load(open(os.path.join(cli.run, "relax.json")))["params"]["geometry_path"]
+        subprocess.run([sys.executable, "-u", resolve("poincare_trace.py"), "--geometry", geometry,
+                        ckpts[0], ckpts[-1], "--planes", cli.planes], check=True)
 
 
 if __name__ == "__main__":

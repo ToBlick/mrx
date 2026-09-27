@@ -45,12 +45,11 @@ from mrx.solvers import minres
 
 #: The Newton configuration (:func:`newton_direction`, the defaults of
 #: :class:`mrx.relaxation.TimeStepper` and of ``scripts/relax.py``): the
-#: parallel-flow penalty in units of the strain, the forcing term, the MINRES
-#: iterations per pass and the passes (measured 2026-09-18).
+#: parallel-flow penalty in units of the strain, the forcing term and the
+#: MINRES iterations (measured 2026-09-18).
 NEWTON_PENALTY = 3.0
 NEWTON_TOL = 0.1
 NEWTON_MAXITER = 200
-NEWTON_PASSES = 1
 
 def _ddx(f, x, axis, periodic):
     """Central difference of ``f`` along ``axis`` on the non-uniform grid ``x``
@@ -233,8 +232,7 @@ def second_variation(seq, B, J, kappa=0.0):
     return apply
 
 
-def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
-                     passes=NEWTON_PASSES):
+def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER):
     """The Newton direction ``u = curl a`` at the field ``B``: Newton-MR.
 
     ``J`` the weak curl of ``B``, ``MF = M_2 F`` the mass times the
@@ -242,20 +240,19 @@ def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TO
     exactly: the gradient part is a ``D_2^T``, and ``D_2 D_1 = 0``),
     ``a_guess`` the previous direction's potential (the warm start),
     ``kappa`` the parallel-flow penalty of :func:`second_variation` and of
-    the atom, ``tol`` the forcing term, ``maxiter`` the MINRES iterations
-    per pass, ``passes`` the passes; the Hessian's mass solves run at the
-    sequence's tolerance.
+    the atom, ``tol`` the forcing term, ``maxiter`` the MINRES iterations at
+    most; the Hessian's mass solves run at the sequence's tolerance.
 
     The system ``curl^T H curl a = curl^T M_2 F`` is solved by :func:`newton_mr`
     with the harmonic atom of the current field as the preconditioner
     (:func:`harmonic_preconditioner`, rebuilt every step): MINRES from the
-    warm start in passes of ``maxiter`` iterations until the residual,
+    warm start for ``maxiter`` iterations at most, until the residual,
     measured in the residual precision and the mass-atom norm of the dual
     1-forms like every solve in the code, is below ``tol`` of the right-hand
-    side (the forcing term of Dembo, Eisenstat & Steihaug). The defaults, one
-    pass of ``200`` iterations, give the same relaxation as any tighter solve
-    (measured 2026-09-18); with the strain penalty the 0.1 forcing term is met
-    only after ~275 iterations on li383, so extra passes cost without gain,
+    side (the forcing term of Dembo, Eisenstat & Steihaug). The default of
+    ``200`` iterations gives the same relaxation as any tighter solve
+    (measured 2026-09-18; with the strain penalty the 0.1 forcing term is met
+    only after ~275 iterations on li383, so more iterations cost without gain),
     with the nonpositive-curvature exit of Newton-MR (Liu & Roosta 2022):
     MINRES's iterate is a descent direction as long as no direction of
     nonpositive curvature has appeared in its Krylov space, and when one
@@ -276,7 +273,7 @@ def newton_direction(seq, B, J, MF, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TO
     # an unreduced half-period sequence: the residual loses the round-off of the other parity
     parity = _parity(even, 1, True, rhs)
     project_dual = None if parity is None else parity[1]
-    a, info, _ = newton_mr(A_res, A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, passes,
+    a, info, _ = newton_mr(A_res, A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter,
                            _dual_norm(ops, 1, True), inner_dtype=seq.dtype, project_dual=project_dual)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
@@ -298,16 +295,16 @@ def _newton_system(seq, B, J, kappa):
     return curl, curl_t, A
 
 
-def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, project_dual=None):
-    """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): MINRES on the float64 residual
-    in passes of ``maxiter`` iterations from the warm start ``x0``, until ``norm(b - A x) <=
-    tol norm(b)`` (the forcing term, in the residual's norm and precision) or ``passes`` are
-    spent, with the nonpositive-curvature exit. Each pass solves for the correction from
+def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=None):
+    """The Newton-MR solve of ``A x = b`` (Liu & Roosta 2022): one MINRES solve of ``maxiter``
+    iterations at most on the float64 residual from the warm start ``x0``, skipped when
+    ``norm(b - A x0) <= tol norm(b)`` already (the forcing term, in the residual's norm and
+    precision), with the nonpositive-curvature exit. The solve is for the correction from
     zero on the residual at unit norm, as :func:`mrx.solvers.refine` does; Liu & Roosta's
     descent guarantee for an NPC direction holds against the right-hand side that solve
-    started from, which is the pass's residual, not ``b`` (measured: with the warm start,
+    started from, which is the residual, not ``b`` (measured: with the warm start,
     the NPC direction of the correction solve failed the energy's sign test on every W7-X
-    step). So a pass that meets NPC discards its answer and solves ``A x = b`` from zero
+    step). So a solve that meets NPC discards its answer and solves ``A x = b`` from zero
     with the exit once more: what that returns -- the NPC direction, or the iterate when
     the curvature was an artefact of the warm start's residual -- is descent-guaranteed
     for ``b`` and is the answer, alone. ``project_dual`` removes the other parity's
@@ -323,7 +320,7 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, passes, norm, inner_dtype, proje
 
     def cond(carry):
         _, r, k, _, npc = carry
-        return jnp.logical_and(jnp.logical_and(norm(r) > tol * bnorm_safe, k < passes), ~npc)
+        return jnp.logical_and(jnp.logical_and(norm(r) > tol * bnorm_safe, k < 1), ~npc)
 
     def body(carry):
         x, r, k, its, _ = carry

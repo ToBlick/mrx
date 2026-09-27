@@ -7,22 +7,25 @@ preconditioner bundle is in it (:func:`cast_arrays` pins them at build
 time), and so is every field of the relaxation. Importing :mod:`mrx`
 applies it; scripts and tests do not touch ``jax_enable_x64`` themselves.
 
-The RESIDUAL precision is float64 whatever the working one: a Krylov solve
-in float32 runs as iterative refinement, the residual of the outer
-equation evaluated in float64 on a float64 view of the operator
-(:attr:`mrx.derham_sequence.DeRhamSequence.residual`), the correction by
-the float32 solve to the square root of the tolerance (:func:`inner_tol`,
-two passes), the solution accumulated in
-float64 (:func:`mrx.solvers.refine`). That is what makes a float32 run's
-forces accurate beyond the float32 tolerance: the Leray projection's
-gradient part is the size of ``J x B`` while the force is a thousandth of
-it, so a tolerance relative to ``J x B`` leaves an O(1) error in the
-force (``docs/research/velocity_leray_ab_2026-09-04.md``). With a float64
-residual the float32 solve reaches :data:`SOLVE_TOL` in a few passes, and
-the force is formed in float64 before it is stored. 64-bit mode is
-therefore always on; Python scalars stay weakly typed and do not promote.
-``MRX_RESIDUAL_DTYPE=float32`` is the configuration of a machine without
-float64 (a TPU): plain float32 solves, default tolerance 1e-5.
+The RESIDUAL precision is the working one by default (Tobias 2026-09-25):
+plain float32 solves at the tolerance 1e-5, which runs on a machine without
+float64 (a TPU) and reproduces the seeding and the islands of the mixed
+configuration at two thirds of the cost per step (the paper, Sec. 6.2).
+``MRX_RESIDUAL_DTYPE=float64`` with a float32 working dtype is the MIXED
+configuration: a Krylov solve in float32 runs as iterative refinement, the
+residual of the outer equation evaluated in float64 on a float64 view of
+the operator (:attr:`mrx.derham_sequence.DeRhamSequence.residual`), the
+correction by the float32 solve to the square root of the tolerance
+(:func:`inner_tol`, two passes), the solution accumulated in float64
+(:func:`mrx.solvers.refine`). That makes a float32 run's forces accurate
+beyond the float32 tolerance: the Leray projection's gradient part is the
+size of ``J x B`` while the force is a thousandth of it, so a tolerance
+relative to ``J x B`` leaves an O(1) error in the force
+(``docs/research/velocity_leray_ab_2026-09-04.md``); with a float64 residual
+the float32 solve reaches :data:`SOLVE_TOL` = 1e-8 in a few passes, and the
+force is formed in float64 before it is stored. 64-bit mode is always on
+(the float64 view needs it); Python scalars stay weakly typed and do not
+promote.
 
 Every tolerance in the package that depends on roundoff is expressed
 through :func:`eps` so it scales with the working precision. Tolerances
@@ -59,15 +62,14 @@ jax.config.update("jax_default_matmul_precision", "highest")
 #: The working floating-point dtype.
 DTYPE = jnp.dtype(_NAME)
 
-_RES_NAME = os.environ.get("MRX_RESIDUAL_DTYPE", "float64")
+_RES_NAME = os.environ.get("MRX_RESIDUAL_DTYPE", _NAME)
 if _RES_NAME not in ("float32", "float64"):
     raise ValueError(
         f"MRX_RESIDUAL_DTYPE={_RES_NAME!r}; expected 'float32' or 'float64'")
 
-#: The dtype of every solve's residual and accumulated solution: float64
-#: unless ``MRX_RESIDUAL_DTYPE=float32`` asks for the float32-only
-#: configuration of a machine without float64 (a TPU), where the solves
-#: are plain float32 Krylov iterations.
+#: The dtype of every solve's residual and accumulated solution: the working
+#: dtype (plain Krylov solves) unless ``MRX_RESIDUAL_DTYPE=float64`` asks for
+#: the mixed configuration, float32 solves refined against a float64 residual.
 RESIDUAL_DTYPE = jnp.dtype(_RES_NAME)
 if np.finfo(RESIDUAL_DTYPE).eps > np.finfo(DTYPE).eps:
     raise ValueError(

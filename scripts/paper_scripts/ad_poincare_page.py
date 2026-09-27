@@ -24,7 +24,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 PLOT = os.path.join(REPO, "scripts", "poincare_plot.py")
 PAGE = "qa_poincare_optimized"
 ARCHIVE = "qa_trace_M10s0_remesh.npz"
-FLAGS = ["--paper", "--no-pressure", "--planes", "0.25", "--dot-scale", "0.4"]
+FLAGS = ["--no-pressure", "--planes", "0.25", "--dot-scale", "0.4", "--pgf"]
 
 
 def main():

@@ -26,9 +26,9 @@ The module exports:
 | name | value |
 |---|---|
 | `DTYPE` | the working dtype (`mrx.DTYPE`) |
-| `RESIDUAL_DTYPE` | float64, or float32 with `MRX_RESIDUAL_DTYPE=float32`: the float32-only configuration of a machine without float64 (a TPU), plain float32 solves |
+| `RESIDUAL_DTYPE` | the working dtype (plain solves, the default), or float64 with `MRX_RESIDUAL_DTYPE=float64` at a float32 working dtype: the mixed configuration, float32 solves refined against a float64 residual (the paper's runs) |
 | `REFINE` | `DTYPE != RESIDUAL_DTYPE`: the solves refine |
-| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-8 at float32 refined, 1e-10 at float64, sqrt(eps) = 3.5e-4 for plain float32 |
+| `SOLVE_TOL` | default relative residual of a solve, in the residual precision: 1e-5 for plain float32 (the default), 1e-8 at float32 refined (mixed), 1e-10 at float64 |
 | `inner_tol(tol)` | the relative tolerance of one working-precision pass: the square root of the tolerance, two passes per solve; derived, not a second hyperparameter |
 | `MAX_PASSES` | 6 |
 | `EPS`, `eps(c)`, `sqrt_eps(c)`, `solve_tol(c)` | the machine epsilon of the working dtype and its multiples |
@@ -164,8 +164,8 @@ chunk (`--chunk` steps) of the relative force residual drops below
 importing `mrx`.
 
 The tolerance is the one number of a solve: its defaults follow the
-configuration (1e-8 refined float32, where the returned float32 vector
-rounds at 6e-8 anyway; 1e-10 float64; sqrt(eps) = 3.5e-4 plain float32,
+configuration (1e-5 plain float32, the default; 1e-8 refined float32, where the returned float32 vector
+rounds at 6e-8 anyway; 1e-10 float64,
 the true residual float32 arithmetic attains on the composite solves: the
 k=2 Hodge split 2.4e-4 and the k=3 saddle 4.2e-4 on the test mesh, while
 the scalar solves reach 1e-6 to 1e-5 and stop early; at 1e-6 five of the
