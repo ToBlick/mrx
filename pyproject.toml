@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mrx"
+version = "0.1.0"
+license = {text = "MIT License"}
+description="Differentiable 3D MHD equilibria without nested flux surfaces"
+readme = "README.md"
+# long_description = file: README.md
+# long_description_content_type = text/markdown
+requires-python = ">=3.11"
+authors = [
+  {name = "Tobias Blickhan", email = "tobias.blickhan@nyu.edu"},
+]
+keywords = [
+    "plasma physics",
+    "plasma",
+    "magnetohydrodynamics",
+    "force_balance",
+    "mhd",
+    "nuclear fusion reactor",
+    "fusion",
+    "stellarator",
+    "vmec",
+    "spec",
+    "optimization",
+    "Biot-Savart",
+    "magnetostatics"
+]
+dependencies = [
+    "numpy",
+    "jax",
+    "jaxlib",
+    "scipy",
+    "matplotlib",
+    "ruff",
+    "autopep8",
+    "diffrax",
+    "equinox",
+    "h5py",
+    "tyro",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# Three mathematical statements (de Rham complex, manufactured Poisson solutions on
+# three representations of the li383 domain, Newton descent) and the readers
+# (docs/source/concepts/testing_strategy.md). Every file it reads
+# is in the repository. The slowest tests are reported, so the cost of the suite is
+# measured rather than guessed.
+addopts = "--durations=10"
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["*.ipynb"]
+
+[tool.ruff.lint.per-file-ignores]
+# The package namespace is assembled from star imports on purpose.
+"mrx/__init__.py" = ["F403"]
+# The tutorials are VS Code cell scripts: imports follow the argument-parsing
+# cell, and MRX_DTYPE must be set before mrx is imported, so E402 is expected.
+"scripts/tutorials/*.py" = ["E402"]
+
+[tool.setuptools.packages.find]
+include = ["mrx*"]
+
+[tool.setuptools.package-data]
+"mrx.diagnostics" = ["*.mplstyle"]
+
+[project.optional-dependencies]
+DOCS = ["sphinx", "myst-parser", "sphinx-rtd-theme"]
+
+[project.urls]
+Homepage = "https://github.com/ToBlick/mrx"
+Download = "https://github.com/ToBlick/mrx"
+Issues = "https://github.com/ToBlick/mrx/issues"
+Repository = "https://github.com/ToBlick/mrx"

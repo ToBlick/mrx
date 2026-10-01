@@ -1,0 +1,49 @@
+# Editors / OS
+.DS_Store
+.vscode
+.idea
+.claude
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.ipynb_checkpoints
+
+# Runs and data
+data/*
+!data/wout_li383_low_res_reference.nc
+!data/wout_li383_1.4m.nc
+!data/wout_LandremanPaul2021_QA_lowres.nc
+!data/desc_li383_low_res_reference.h5
+!data/desc_LandremanPaul2021_QA.h5
+outputs
+out
+logs
+*.log
+.hydra
+multirun*
+jax-caches/
+.jax_cache
+slurm/job_*
+experimental/tpu/script_outputs/
+experimental/tpu/tpu_access_kit.zip
+# Runtime scratch of the acquisition daemon: the single-instance lock and the
+# quota cache it rebuilds on a TTL. Both appear the moment the daemon runs.
+experimental/tpu/.acquire.lock
+experimental/tpu/.quota_cache.json
+
+# Site-specific slurm settings (account, partition, paths)
+slurm/site.env
+
+# Documentation build
+docs/build/
+docs/*.pdf
