@@ -50,6 +50,7 @@ the pair `--seed` / `--no-seed`:
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter` |
+| pressure | `--pressure.advected`, `--pressure.beta`, `--pressure.smoothing` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | output | `--output.out`, `--output.restart` |
@@ -106,6 +107,14 @@ B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)
 The run carries two pressures: the strong `p` of the descent (state,
 `warm.p` in every checkpoint) and the weak `p_w`, zero on the wall, from
 which `beta_vol` is computed ([Relaxation](concepts/relaxation.md)).
+
+With `--pressure.advected` the pressure is prescribed instead: the geometry
+file's pressure profile as a function of `r`, scaled to the volume beta
+`--pressure.beta`, moves with a compressible flow and the run lowers
+`int |B|^2/2 - p dV`. Every checkpoint stores it as `p_n`, `qoi` adds
+`p_int` (`int p dV`) and `beta_p`, and `E` is the energy with the pressure
+term. The strong and weak pressures are still sampled, and at the fixed
+point `p_w` should match `p_n`.
 
 ## Poincare sections
 

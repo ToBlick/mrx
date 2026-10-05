@@ -71,6 +71,63 @@ nonpositive curvature. `H` vanishes on field-aligned flows `u = f B`, and a
 penalty of `newton_penalty` times the strain along the field lifts that
 null space.
 
+### Compressible relaxation with an advected pressure
+
+With `TimeStepper(..., compressible=True)` the pressure is prescribed rather
+than a multiplier. A divergence-free flow cannot do work against a pressure
+(`int u . grad p = 0`), so a prescribed pressure needs a compressible flow.
+The state carries `p_n`, a free 0-form on `seq.even.free`, frozen into the
+flow at `gamma = 0`:
+
+1. **Force** `F = M_2^{-1} load(J x B - grad p)`, not projected, one k = 2
+   mass solve. `load(grad p)` is metric-free.
+2. **Direction** `u`, a Dirichlet 2-form with divergence. Without Newton,
+   the smoothed force `(M_2 + mu L_2)^{-1} load(J x B - grad p)`.
+3. **Pressure** `dp = -M_0^{-1} load(u . grad p)` on the free 0-forms, one
+   k = 0 mass solve, and `p_{n+1} = p_n + dt dp` with the step of `B`.
+4. **Parallel smoothing** `(M_0 + eps K_par) delta = -eps K_par p`, with
+   `K_par` the form `int (b . grad p)(b . grad w)` and
+   `eps = PRESSURE_SMOOTHING h_zeta^2` (10 toroidal cells squared,
+   `--pressure.smoothing`). The Galerkin advection creates variation of `p`
+   along the field, which no equilibrium can balance. The smoothing removes
+   it and keeps `int p dV` (the constant is in the kernel of `K_par`), so it
+   leaves `L` unchanged.
+
+The step lowers `L = int |B|^2/2 - p dV`, which is quadratic in `dt` (its
+pressure part is linear), so `dt_star` keeps its form and `dE`, `dE_ls` are
+the changes of `L`. The constant is in the free 0-forms, so
+`int dp dV = -int u . grad p dV` holds exactly. The fixed point is
+`J x B = grad p` with `p` conserved per flux tube as a function of the
+enclosed toroidal flux (the ideal flow freezes both). `int p dV` and beta
+are not conserved, since the flow compresses. A pressure that varies along
+field lines (in islands or chaos) has no fixed point.
+
+The Hessian of `L` adds to `H` the pressure term
+`(u, H_p v) = [l(u)^T M_0^{-1} d(v) + l(v)^T M_0^{-1} d(u)] / 2`, with `l(u)`
+the load of `u . grad p` and `d(u)` that of `div u` on the free 0-forms, the
+discrete form of `int (u . grad p) div v` (`second_variation(..., p=p)`).
+`compressible_newton_direction` solves `H u = load(J x B - grad p)` for `u`
+itself by the same Newton-MR, preconditioned by `CompressibleAtom`: the
+harmonic atom on the divergence-free part and `(beta S_2)^+`, the cost of
+compressing the field, on the rest.
+
+`initial_pressure(seq, B, beta)` gives the start pressure: the equilibrium
+file's pressure profile as a function of `r`, scaled to the volume beta
+`int p dV / int |B|^2/2 dV`.
+
+### Prescribed pressure by a volume outer loop
+
+`mrx.relaxation.pressure_loop.prescribe_pressure` keeps the incompressible
+relaxation and prescribes `p*(s)` from outside. Incompressible flow keeps
+the volume `V'(s)` of every flux shell, and the relaxed pressure is the
+multiplier of that constraint, so the loop controls `V'(s)` per bin of the
+flux label `s` (`mrx.flux_label`). Each iteration relaxes for a few steps,
+bins the weak pressure `p_w`, and moves volume with one compressible ideal
+step `u = M_2^{-1} D_2^T L_3^{-1} load(g)` (`div u = g`, `u . n = 0`) with
+`g = -gain (p_w - p*) / <|B|^2>`. The sign matters: at fixed flux a
+compressed shell carries a stronger field, and since `p + B^2/2` is nearly
+constant across the surfaces its pressure measured from the wall drops.
+
 ### Resistive step and drive
 
 `resistive_step(B, seq, eps, B_ref)` is one backward-Euler step of
@@ -111,7 +168,7 @@ sampler at every chunk and by `scripts/poincare_trace.py` at the crossings.
 
 ## 4. The loop
 
-`State` holds `B_n`, `B_nplus1`, `dt`, `dt_star`, `cfl_max` and three
+`State` holds `B_n`, `B_nplus1`, `p_n`, `p_nplus1` (the advected pressure, zero unless compressible), `dt`, `dt_star`, `cfl_max` and three
 subtrees: `warm` (the warm starts), `last` (the last step's force,
 velocity and iteration counts) and `best` (the field of lowest residual,
 its residual and step). `initial_state(B, ts)` evaluates the force once, so

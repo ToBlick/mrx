@@ -34,6 +34,8 @@ documented in their source and in the concept pages.
    relaxation.initial_conditions
    relaxation.seeding
    relaxation.config
+   relaxation.pressure_loop
+   flux_label
 
 .. toctree::
    :maxdepth: 1

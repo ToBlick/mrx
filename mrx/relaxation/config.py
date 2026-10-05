@@ -20,6 +20,7 @@ from typing import Annotated, Optional
 
 import tyro
 
+from mrx.relaxation.loop import PRESSURE_SMOOTHING
 from mrx.relaxation.newton import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 
 
@@ -135,6 +136,20 @@ class Newton:
 
 
 @dataclass(frozen=True)
+class Pressure:
+    """Advected pressure: a prescribed pressure that moves with a compressible flow (see mrx.relaxation.loop)."""
+    advected: bool = False
+    """Carry a prescribed pressure p with the flow and let the velocity compress, so that the fixed point is J x B = grad p with that pressure. Off, the flow is divergence-free and the pressure is its multiplier."""
+    beta: float = 0.01
+    """The volume beta int p dV / int B^2/2 dV of the prescribed pressure at the start. Its shape is the geometry file's pressure profile as a function of r."""
+    smoothing: float = PRESSURE_SMOOTHING
+    """After every step, diffuse the advected pressure along the field by eps = C h_zeta^2 (h_zeta the toroidal cell size). It removes the variation along field lines that the discrete advection creates and keeps int p dV. 0 turns it off."""
+
+    def __bool__(self):
+        return self.advected
+
+
+@dataclass(frozen=True)
 class Budget:
     """Step budget and stopping."""
     steps: Optional[int] = None
@@ -190,6 +205,7 @@ class RelaxConfig:
     seed: Seed = field(default=Seed(), metadata=dict(record_prefix="seed_"))
     descent: Descent = Descent()
     newton: Newton = field(default=Newton(), metadata=dict(record_prefix="newton_"))
+    pressure: Pressure = field(default=Pressure(), metadata=dict(record_prefix="pressure_"))
     budget: Budget = Budget()
     drive: Drive = field(default=Drive(), metadata=dict(record_prefix="drive_"))
     output: Output = Output()
@@ -208,7 +224,8 @@ class RelaxConfig:
         from mrx.relaxation.loop import TimeStepper, radial_cell_sq
         n = self.newton
         return TimeStepper(seq=seq, newton=self.descent.newton, newton_penalty=n.penalty, newton_tol=n.tol,
-                           newton_maxiter=n.maxiter, resistivity=self.drive.resistivity * radial_cell_sq(seq))
+                           newton_maxiter=n.maxiter, compressible=self.pressure.advected,
+                           pressure_smoothing=self.pressure.smoothing, resistivity=self.drive.resistivity * radial_cell_sq(seq))
 
     def relax_kwargs(self):
         """Return the keyword arguments ``steps``, ``chunk`` and ``floor_tol`` for

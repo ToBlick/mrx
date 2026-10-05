@@ -7,7 +7,11 @@ A typical run builds a :class:`TimeStepper` for a sequence, makes the start stat
 and calls :func:`relax`, which runs the steps in compiled chunks and prints diagnostics after every chunk.
 :func:`write_checkpoint` and :func:`read_checkpoint` save and restore the state for a restart.
 
-The sequence and the stepper's switches (Newton or not, resistive or not) are compiled in. Changing them
+With ``compressible=True`` the velocity is not projected onto divergence-free fields. A prescribed pressure ``p``
+then moves with the flow, ``p <- p - dt u . grad p``, and the step lowers ``int B^2/2 - p dV`` instead of the
+magnetic energy (see :mod:`mrx.relaxation.newton`). Its fixed point is ``J x B = grad p`` with that pressure.
+
+The sequence and the stepper's switches (Newton or not, compressible or not, resistive or not) are compiled in. Changing them
 recompiles. A new geometry or a new field on the same sequence does not.
 """
 from typing import Callable, NamedTuple, Optional
@@ -20,8 +24,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation.newton import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, newton_direction
-from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
+from mrx.relaxation.newton import (NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, compressible_newton_direction,
+                                   newton_direction)
+from mrx.relaxation.physics import (advection, compute_divergence_norm, compute_force, compute_helicity,
+                                   parallel_smoothing, pressure_gradient, pressure_integral, resistive_step,
                                    weak_pressure, beta_vol)
 from mrx.precision import DTYPE, RESIDUAL_DTYPE
 
@@ -46,6 +52,13 @@ def radial_cell_sq(seq: DeRhamSequence) -> jnp.ndarray:
     return knot_spacing(seq)[0] ** 2 * jnp.sum(wJ * seq.metric_jkl[:, 0, 0]) / jnp.sum(wJ)
 
 
+def toroidal_cell_sq(seq: DeRhamSequence) -> jnp.ndarray:
+    """Return the squared physical size of a toroidal cell, ``h_zeta^2 = <g_zz>_V dzeta^2``, the length unit of
+    the parallel smoothing of an advected pressure (field lines run mostly along ``zeta``)."""
+    wJ = seq.quad.w * seq.jacobian_j
+    return knot_spacing(seq)[2] ** 2 * jnp.sum(wJ * seq.metric_jkl[:, 2, 2]) / jnp.sum(wJ)
+
+
 def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     """Return the weights ``1 / (J h_i)``, shape ``(n_q, 3)``, with ``J`` the Jacobian determinant and ``h_i``
     the knot spacing of direction ``i``.
@@ -65,7 +78,8 @@ class WarmStarts(eqx.Module):
     ``p`` is the pressure, ``JxB`` the Lorentz force before projection, ``J`` the current, ``E = u x B`` the
     electric field, ``a`` the vector potential of the step's direction, ``a_F`` the vector potential of the
     force (the same as ``a`` for gradient descent), ``A`` the vector potential of the helicity (updated only
-    when diagnostics are sampled) and ``resistive_delta`` the last resistive increment.
+    when diagnostics are sampled), ``resistive_delta`` the last resistive increment and ``dp`` the last rate of
+    change of the advected pressure.
     """
     p: jnp.ndarray
     JxB: jnp.ndarray
@@ -75,12 +89,14 @@ class WarmStarts(eqx.Module):
     a_F: jnp.ndarray
     A: jnp.ndarray
     resistive_delta: jnp.ndarray
+    dp: jnp.ndarray
 
 
 class LastStep(eqx.Module):
     """What the last step computed: the force ``F`` at the start of the step and its norm, the velocity ``v``
     and its norm, the iteration counts of the Newton and resistive solves (positive when converged, negative
-    when not) and the relative size ``||delta|| / ||B||`` of the resistive increment."""
+    when not), the relative size ``||delta|| / ||B||`` of the resistive increment and the iteration count of the
+    parallel smoothing of the advected pressure."""
     F: jnp.ndarray
     F_norm: jnp.ndarray
     v: jnp.ndarray
@@ -88,11 +104,14 @@ class LastStep(eqx.Module):
     newton_it: jnp.ndarray
     resistive_it: jnp.ndarray
     resistive_moved: jnp.ndarray
+    smoothing_it: jnp.ndarray
 
 
 class BestState(eqx.Module):
-    """The field with the lowest force residual seen so far, that residual and the step it was reached at."""
+    """The field (and advected pressure) with the lowest force residual seen so far, that residual and the step
+    it was reached at."""
     B: jnp.ndarray
+    p: jnp.ndarray
     resid: jnp.ndarray
     step: jnp.ndarray
 
@@ -100,12 +119,15 @@ class BestState(eqx.Module):
 class State(eqx.Module):
     """Everything the relaxation carries from one step to the next. Make one with :func:`initial_state`.
 
-    ``B_n`` is the current field. ``dt`` is the step length taken, ``min(dt_star, CFL / cfl_max)``, where
+    ``B_n`` is the current field and ``p_n`` the advected pressure (a free 0-form, zero and unused unless the
+    stepper is compressible). ``dt`` is the step length taken, ``min(dt_star, CFL / cfl_max)``, where
     ``dt_star`` minimises the energy along the step and ``cfl_max`` is the largest CFL number of the velocity.
     All leaves are arrays, so the state can be passed through compiled code.
     """
     B_n: jnp.ndarray
     B_nplus1: jnp.ndarray
+    p_n: jnp.ndarray
+    p_nplus1: jnp.ndarray
     dt: jnp.ndarray
     dt_star: jnp.ndarray
     cfl_max: jnp.ndarray
@@ -115,8 +137,10 @@ class State(eqx.Module):
 
 
 class Increment(NamedTuple):
-    """The ideal increment ``dB = curl(u x B)`` at one field, with the intermediate results of the step."""
+    """The ideal increment ``dB = curl(u x B)`` at one field and ``dp = -u . grad p`` of the advected pressure,
+    with the intermediate results of the step."""
     dB: jnp.ndarray
+    dp: jnp.ndarray
     u: jnp.ndarray
     Mu: jnp.ndarray
     F: jnp.ndarray
@@ -136,6 +160,9 @@ CFL = 0.5
 #: The velocity smoothing scale in squared radial cells, ``mu = SMOOTHING_C h_r^2`` (:func:`radial_cell_sq`).
 #: It damps the shortest radial mode (two cells) by ``1 / (1 + SMOOTHING_C pi^2)`` on any mesh.
 SMOOTHING_C = 0.075
+#: The parallel smoothing of an advected pressure in squared toroidal cells, ``eps = PRESSURE_SMOOTHING h_zeta^2``
+#: (:func:`toroidal_cell_sq`). At 1 the variation of p along the field still grows on li383 and W7-X, at 10 it holds.
+PRESSURE_SMOOTHING = 10.0
 
 
 class TimeStepper(eqx.Module):
@@ -149,6 +176,14 @@ class TimeStepper(eqx.Module):
     ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the 2-form mass matrix and ``L_2`` the 2-form Laplacian. The
     step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
 
+    With ``compressible=True`` the force is ``F = M_2^-1 load(J x B - grad p)`` with the advected pressure ``p``,
+    not projected, and the velocity is its smoothed version or the Newton direction of
+    :func:`mrx.relaxation.newton.compressible_newton_direction`. ``p`` moves with the same step,
+    ``p_{n+1} = p_n - dt u . grad p_n``. A nonzero ``pressure_smoothing`` ``C`` then diffuses ``p`` along the new
+    field by :func:`~mrx.relaxation.physics.parallel_smoothing` with ``eps = C h_zeta^2``
+    (:func:`toroidal_cell_sq`), which removes the variation along field lines that the discrete advection creates
+    and keeps ``int p dV``.
+
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
     :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
     The remaining fields are computed from the sequence at construction and should not be passed.
@@ -158,6 +193,8 @@ class TimeStepper(eqx.Module):
     newton_penalty: float = NEWTON_PENALTY
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
+    compressible: bool = False
+    pressure_smoothing: float = PRESSURE_SMOOTHING
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
     velocity_smoothing_scale: float = None
@@ -165,6 +202,7 @@ class TimeStepper(eqx.Module):
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
     resistive: bool = eqx.field(static=True, default=False)
+    smooth_pressure: bool = eqx.field(static=True, default=False)
 
     def __post_init__(self):
         # with stellarator symmetry the harmonic form is odd and the force even, so this is empty
@@ -176,6 +214,8 @@ class TimeStepper(eqx.Module):
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
         self.resistive = bool(self.resistivity != 0)
         self.resistivity = jnp.asarray(self.resistivity, dtype=DTYPE)
+        self.smooth_pressure = bool(self.compressible and self.pressure_smoothing != 0)
+        self.pressure_smoothing = jnp.asarray(self.pressure_smoothing * toroidal_cell_sq(self.seq), dtype=DTYPE)
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def _lorentz(self, B: jnp.ndarray, J_guess: jnp.ndarray):
@@ -204,14 +244,33 @@ class TimeStepper(eqx.Module):
         Fs = seq.G[1] @ a_s + ch
         return F, seq.M[2] @ F, Fs, J, a
 
-    def _ideal_increment(self, B: jnp.ndarray, state: State) -> Increment:
-        """The ideal increment at ``B``, every Krylov solve warm-started from ``state``."""
+    def _compressible_force(self, B: jnp.ndarray, p_adv: jnp.ndarray, J_guess: jnp.ndarray,
+                            F_guess: jnp.ndarray):
+        """Return ``(F, M F, J, grad p)``: the force ``J x B - grad p`` of the advected pressure ``p_adv``, not
+        projected, as a 2-form and as a dual 2-form, the current and the quadrature values of ``grad p``."""
+        even = self.seq.even
+        J, JxB_dual = self._lorentz(B, J_guess)
+        grad_p = pressure_gradient(p_adv, self.seq)
+        MF = JxB_dual - even.vector_load_values(grad_p, 1, 2)
+        return even.M[2].solve(MF, guess=F_guess), MF, J, grad_p
+
+    def _ideal_increment(self, B: jnp.ndarray, p_adv: jnp.ndarray, state: State) -> Increment:
+        """The ideal increment at ``(B, p_adv)``, every Krylov solve warm-started from ``state``."""
         seq = self.seq
         odd, even = seq.odd, seq.even
         w = state.warm
         newton_it = jnp.int32(0)
         p, JxB = w.p, w.JxB                                           # no pressure solve on either route
-        if self.newton:
+        if self.compressible:
+            F, MF, J, grad_p = self._compressible_force(B, p_adv, w.J, state.last.F)
+            if self.newton:
+                u, newton_it = compressible_newton_direction(seq, B, J, p_adv, MF, state.last.v,
+                                                             self.newton_penalty, self.newton_tol,
+                                                             self.newton_maxiter)
+            else:
+                u = even.shifted(2, self.velocity_smoothing_scale).solve(MF, guess=state.last.v)
+            a, a_F = w.a, w.a_F
+        elif self.newton:
             # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
             J, JxB_dual = self._lorentz(B, w.J)
@@ -228,10 +287,12 @@ class TimeStepper(eqx.Module):
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
         # the topological curl: div B is conserved exactly, no mass solve
         dB = odd.G[1] @ E
-        return Increment(dB, u, Mu, F, MF, p, JxB, J, E, cfl_max, a, a_F, newton_it)
+        dp = advection(grad_p, u_jk, seq, guess=w.dp) if self.compressible else w.dp
+        return Increment(dB, dp, u, Mu, F, MF, p, JxB, J, E, cfl_max, a, a_F, newton_it)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """Return ``(dt, dt_star)``. ``dt_star = <F, u> / ||dB||^2`` minimises the energy along the increment and
+        """Return ``(dt, dt_star)``. ``dt_star = <F, u> / ||dB||^2`` minimises the energy along the increment (in
+        the compressible case ``int B^2/2 - p dV``, whose pressure part is linear in ``dt``) and
         ``dt`` is ``dt_star`` after the caps."""
         dt_star = (inc.F @ inc.Mu) / self.seq.odd.l2_norm_sq(inc.dB, 2)
         # a non-positive dt* is no step: a negative one would climb the energy
@@ -243,9 +304,13 @@ class TimeStepper(eqx.Module):
     def relaxation_step(self, state: State) -> State:
         """Advance ``state.B_n`` by one step into ``state.B_nplus1``."""
         B_n = state.B_n
-        inc = self._ideal_increment(B_n, state)
+        inc = self._ideal_increment(B_n, state.p_n, state)
         dt, dt_star = self._step_size(inc)
         B_nplus1 = B_n + dt * inc.dB
+        p_nplus1 = state.p_n + dt * inc.dp if self.compressible else state.p_n
+        smoothing_it = state.last.smoothing_it
+        if self.smooth_pressure:
+            p_nplus1, smoothing_it = parallel_smoothing(p_nplus1, B_nplus1, self.seq, self.pressure_smoothing)
 
         res_delta, res_it, res_moved = state.warm.resistive_delta, state.last.resistive_it, state.last.resistive_moved
         if self.resistive:
@@ -256,32 +321,40 @@ class TimeStepper(eqx.Module):
             res_moved = res_moved.astype(state.last.resistive_moved.dtype)
 
         warm = WarmStarts(p=inc.p, JxB=inc.JxB, J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=state.warm.A,
-                          resistive_delta=res_delta)
+                          resistive_delta=res_delta, dp=inc.dp)
         last = LastStep(F=inc.F, F_norm=jnp.sqrt(inc.F @ inc.MF), v=inc.u, v_norm=jnp.sqrt(inc.u @ inc.Mu),
-                        newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved)
-        return eqx.tree_at(lambda s: (s.B_nplus1, s.dt, s.dt_star, s.cfl_max, s.warm, s.last), state,
-                           (B_nplus1, dt, dt_star, inc.cfl_max, warm, last))
+                        newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved,
+                        smoothing_it=jnp.asarray(smoothing_it, jnp.int32))
+        return eqx.tree_at(lambda s: (s.B_nplus1, s.p_nplus1, s.dt, s.dt_star, s.cfl_max, s.warm, s.last), state,
+                           (B_nplus1, p_nplus1, dt, dt_star, inc.cfl_max, warm, last))
 
 
-def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
-    """Return the start state for the field ``B_dof``. ``step`` is the step number the field is at (nonzero for
-    a restart). This evaluates the force once."""
+def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0, p: Optional[jnp.ndarray] = None) -> State:
+    """Return the start state for the field ``B_dof`` and, for a compressible stepper, the advected pressure ``p``
+    (see :func:`mrx.relaxation.physics.initial_pressure`). ``step`` is the step number the field is at (nonzero
+    for a restart). This evaluates the force once."""
     seq = ts.seq
     odd, even = seq.odd, seq.even
+    if ts.compressible == (p is None):
+        raise ValueError("a compressible stepper needs the advected pressure p, and only it takes one")
+    p = jnp.zeros(even.free.n(0), dtype=DTYPE) if p is None else p.astype(DTYPE)
     F0, MF0, _, J0, a_F0 = ts._potential_force(B_dof, jnp.zeros(even.n(1), dtype=DTYPE), None, smooth=False)
+    if ts.compressible:
+        F0, MF0, J0, _ = ts._compressible_force(B_dof, p, None, None)
     # the pressure warm starts only feed the sampler's diagnostic Leray solve
     p0, JxB0 = jnp.zeros(even.n(3), dtype=DTYPE), jnp.zeros(even.n(2), dtype=DTYPE)
     resid0 = (jnp.sqrt(F0 @ MF0) / force_scale_jit(seq, B_dof)) ** 2
     zero = jnp.zeros((), dtype=DTYPE)       # scalars as dtype arrays: one carry signature for the scan
     zeros1_odd = jnp.zeros(odd.n(1), dtype=DTYPE)
     return State(
-        B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones((), dtype=DTYPE), dt_star=jnp.ones((), dtype=DTYPE), cfl_max=zero,
+        B_n=B_dof, B_nplus1=B_dof, p_n=p, p_nplus1=p, dt=jnp.ones((), dtype=DTYPE), dt_star=jnp.ones((), dtype=DTYPE), cfl_max=zero,
         warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1), dtype=DTYPE),
                         a_F=a_F0,
-                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2), dtype=DTYPE)),
+                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2), dtype=DTYPE), dp=jnp.zeros_like(p)),
         last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2), dtype=DTYPE), v_norm=zero,
-                      newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
-        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=DTYPE), step=jnp.int32(step)),
+                      newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero,
+                      smoothing_it=jnp.int32(0)),
+        best=BestState(B=B_dof, p=p, resid=jnp.asarray(resid0, dtype=DTYPE), step=jnp.int32(step)),
     )
 
 
@@ -289,7 +362,7 @@ def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[
     """Return a function ``run(state, it0) -> (state, trace)`` that takes ``n_chunk`` steps in one compiled loop.
 
     ``it0`` is the step number before the chunk. ``trace[name]`` is an array with one value per step:
-    ``dE`` (the energy change), ``F`` and ``v`` (the norms of force and velocity), ``dt``, ``dt_star``, ``cfl``,
+    ``dE`` (the change of the energy the step lowers, ``int B^2/2 - p dV`` when compressible), ``F`` and ``v`` (the norms of force and velocity), ``dt``, ``dt_star``, ``cfl``,
     ``div`` (``||div B||``), ``Fu`` (``<F, u>``), ``newton_it``, ``res_it``, ``res_moved`` and ``resid``, the
     squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. A field with a lower ``resid`` than
     ``state.best`` replaces it. Runners of the same stepper share the compiled code. Only a new ``n_chunk``
@@ -303,18 +376,21 @@ def _chunk_body(ts, state, it):
     state = ts.relaxation_step(state)
     B_n, B_new = state.B_n, state.B_nplus1
     dE = 0.5 * ((B_new - B_n) @ (seq.odd.M[2] @ (B_new + B_n)))
+    if ts.compressible:
+        dE = dE - pressure_integral(state.p_nplus1 - state.p_n, seq)
     resid = (state.last.F_norm / force_scale(seq, B_new)) ** 2
     better = resid < state.best.resid
-    best = BestState(B=jnp.where(better, B_n, state.best.B),
+    best = BestState(B=jnp.where(better, B_n, state.best.B), p=jnp.where(better, state.p_n, state.best.p),
                      resid=jnp.where(better, resid, state.best.resid).astype(state.best.resid.dtype),
                      step=jnp.where(better, it - 1, state.best.step).astype(state.best.step.dtype))
-    state = eqx.tree_at(lambda s: (s.B_n, s.best), state, (B_new, best))
+    state = eqx.tree_at(lambda s: (s.B_n, s.p_n, s.best), state, (B_new, state.p_nplus1, best))
     trace = dict(
         dE=dE, F=state.last.F_norm, v=state.last.v_norm,
         dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
         div=compute_divergence_norm(state.B_n, seq),
         Fu=state.last.F @ (seq.even.M[2] @ state.last.v),
         newton_it=state.last.newton_it, res_it=state.last.resistive_it, res_moved=state.last.resistive_moved,
+        smoothing_it=state.last.smoothing_it,
         resid=resid)
     return state, trace
 
@@ -344,7 +420,9 @@ def make_sampler(ts: TimeStepper):
     the current field.
 
     ``scalars`` is a dict of Python floats: the energy ``E`` (computed in the residual precision), the
-    ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and ``beta_vol``. ``p_w`` is the weak
+    ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and ``beta_vol``. For a compressible
+    stepper ``E`` is ``int B^2/2 - p dV``, and ``p_int`` (``int p dV`` of the advected pressure) and ``beta_p``
+    (``int p dV / int B^2/2 dV``) are added. ``p_w`` is the weak
     pressure, to be passed back as ``pw_guess`` next time. The returned state has refreshed starting guesses.
     """
     seq = ts.seq
@@ -358,6 +436,9 @@ def make_sampler(ts: TimeStepper):
         state = eqx.tree_at(lambda s: (s.warm.p, s.warm.JxB, s.warm.J, s.warm.A), state, (p, JxB, J, A))
         E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
         scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB), beta_vol=float(beta))
+        if ts.compressible:
+            p_int = float(pressure_integral(state.p_n, seq))
+            scalars.update(E=E - p_int, p_int=p_int, beta_p=p_int / E)
         return state, p_w, scalars
 
     return sample
@@ -448,7 +529,8 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    skeleton = initial_state(jnp.asarray(data["B_n"]), ts, step=step)
+    p = jnp.asarray(data["p_n"]) if ts.compressible else None
+    skeleton = initial_state(jnp.asarray(data["B_n"]), ts, step=step, p=p)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
     for keypath, leaf in leaves:
@@ -517,7 +599,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     if verbose:
         print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.last.F_norm):.4e}  "
               f"resid={qoi['resid'][-1]:.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}  "
-              f"beta_vol={scalars['beta_vol']:.3e}", flush=True)
+              f"beta_vol={scalars['beta_vol']:.3e}"
+              + (f"  beta_p={scalars['beta_p']:.4e}" if ts.compressible else ""), flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"
@@ -544,7 +627,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
                   f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  beta_vol={scalars['beta_vol']:.3e}  "
-                  f"[{wall:.0f}s steps +{t_out:.0f}s other]"
+                  + (f"beta_p={scalars['beta_p']:.4e}  " if ts.compressible else "")
+                  + f"[{wall:.0f}s steps +{t_out:.0f}s other]"
                   + (f"\n           newton: MINRES it mean {np.abs(ch['newton_it']).mean():.0f} max "
                      f"{np.abs(ch['newton_it']).max()}, unconverged {int((ch['newton_it'] < 0).sum())}, "
                      f"dt* mean {ch['dt_star'].mean():.3e}" if ts.newton else "")
@@ -594,6 +678,11 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    helicity {h[0]:+.6e} -> {h[-1]:+.6e}  drift {h[-1] - h[0]:+.3e}"
           f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}")
     print(f"    beta_vol {q['beta_vol'][0]:.4e} -> {q['beta_vol'][-1]:.4e}")
+    if ts.compressible:
+        print(f"    advected pressure: int p dV {q['p_int'][0]:.6e} -> {q['p_int'][-1]:.6e},  "
+              f"beta_p {q['beta_p'][0]:.4e} -> {q['beta_p'][-1]:.4e}"
+              + (f",  parallel smoothing CG it mean {np.abs(np.array(tr['smoothing_it'])).mean():.0f}, "
+                 f"unconverged {int((np.array(tr['smoothing_it']) < 0).sum())}" if ts.smooth_pressure else ""))
     dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
     print(f"    CFL cap (C={CFL}) bound on {int((dts < dt_star).sum())}/{n} steps,  "
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f},  "

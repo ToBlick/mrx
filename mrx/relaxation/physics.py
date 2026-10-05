@@ -7,6 +7,9 @@
 - :func:`compute_helicity` and :func:`compute_divergence_norm` monitor the two quantities an ideal relaxation
   should conserve.
 - :func:`resistive_step` takes one implicit step of resistive diffusion.
+- :func:`initial_pressure`, :func:`pressure_gradient`, :func:`advection` and :func:`pressure_integral` serve the
+  compressible relaxation, in which a prescribed pressure is carried along by the flow instead of being the
+  multiplier of a divergence-free velocity.
 
 All functions are jit-compiled with the sequence as an argument. The first call on a sequence compiles, later
 calls on the same sequence (also with a new geometry) reuse the compiled code.
@@ -15,12 +18,15 @@ from typing import Optional
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, RESIDUAL_DTYPE
 
 # With stellarator symmetry, B, A, E and J live on the odd view ``seq.odd`` and the velocity, the force and the
 # pressures on the even view ``seq.even``. A product is assembled on its own view from factors on theirs.
+# The advected pressure is a free 0-form (``seq.even.free``). The constant is in that space, so the discrete
+# advection changes int p dV by exactly -int u . grad p dV.
 
 
 @eqx.filter_jit
@@ -108,3 +114,71 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     delta, info = seq.shifted(2, eps).solve(rhs, guess=guess, return_info=True)
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
     return B + delta, info.astype(jnp.int32), rel
+
+
+def initial_pressure(seq: DeRhamSequence, B: jnp.ndarray, beta: float) -> jnp.ndarray:
+    """Return the advected pressure at the start, a free 0-form on the even view.
+
+    It has the shape of the equilibrium file's pressure profile as a function of the logical radius ``r``, so it
+    is constant on the flux surfaces of the file's field, and is scaled to the volume beta
+    ``int p dV / int B^2/2 dV = beta`` of the field ``B``."""
+    r = np.linspace(0.0, 1.0, 2001)
+    values = seq.equilibrium["profiles"]["pressure"](r)
+    if not np.any(values):
+        raise ValueError(f"{seq.equilibrium['path']} has no pressure profile to prescribe")
+    r, values = jnp.asarray(r), jnp.asarray(values / np.abs(values).max())
+    p = seq.even.free.interpolate(lambda x: jnp.interp(x[0], r, values), 0, frame='logical')
+    return p * (beta * 0.5 * seq.odd.l2_norm_sq(B, 2) / pressure_integral(p, seq))
+
+
+@eqx.filter_jit
+def pressure_integral(p: jnp.ndarray, seq: DeRhamSequence) -> jnp.ndarray:
+    """Return ``int p dV`` of an advected pressure ``p``."""
+    even = seq.even
+    return jnp.sum(even.quad.w * even.jacobian_j * even.free.evaluate_at_quadrature(p, 0)[:, 0])
+
+
+def pressure_gradient(p: jnp.ndarray, seq: DeRhamSequence) -> jnp.ndarray:
+    """Return the covariant components of ``grad p`` at the quadrature points, for an advected pressure ``p``.
+
+    For the result ``g``, ``seq.even.vector_load_values(g, 1, 2)`` is the force ``grad p`` tested against the
+    2-forms. It carries no metric."""
+    free = seq.even.free
+    return free.evaluate_at_quadrature(free.G[0] @ p, 1)
+
+
+def advection(grad_p: jnp.ndarray, u_jk: jnp.ndarray, seq: DeRhamSequence,
+              guess: jnp.ndarray | None = None) -> jnp.ndarray:
+    """Return ``dp/dt = -u . grad p``, the rate of change of the advected pressure under the velocity ``u``.
+
+    ``grad_p`` is the output of :func:`pressure_gradient` and ``u_jk`` the quadrature values of the velocity
+    2-form. The result is the L2 projection onto the free 0-forms, one mass solve warm-started from ``guess``."""
+    free = seq.even.free
+    return -free.M[0].solve(free.dot_product_load_values(u_jk, grad_p, 0, 2, 1), guess=guess)
+
+
+def parallel_smoothing(p: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence, eps) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Return ``(p + delta, info)``: one backward-Euler step of diffusion of the advected pressure along ``B``,
+    ``(M_0 + eps K) delta = -eps K p``, with ``K`` the form ``int (b . grad p)(b . grad w) dV`` and ``b = B/|B|``.
+
+    It damps the variation of ``p`` along the field lines that the discrete advection creates and leaves its
+    variation across them alone. ``eps`` is a length squared. On the free 0-forms the constant is in the kernel of
+    ``K``, so ``int p dV`` does not change. ``info`` is the signed iteration count of the conjugate-gradient solve,
+    preconditioned by the 0-form mass atom.
+    """
+    from mrx.precision import default_tol  # noqa: PLC0415
+    from mrx.solvers import preconditioned_cg  # noqa: PLC0415
+    free = seq.even.free
+    B_jk = seq.odd.evaluate_at_quadrature(B, 2)
+    # the parallel conductivity J b b^T maps grad p (covariant) to a contravariant density, with no metric on top
+    K_q = (jnp.einsum('qi,qj->qij', B_jk, B_jk) * seq.jacobian_j[:, None, None]
+           / jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk)[:, None, None])
+
+    def K(q):
+        flux = jnp.einsum('qij,qj->qi', K_q, free.evaluate_at_quadrature(free.G[0] @ q, 1))
+        return free.G[0].T @ free.vector_load_values(flux, 2, 1)
+
+    # solved for the small increment, so that float32 keeps its accuracy
+    delta, info = preconditioned_cg(lambda x: free.M[0] @ x + eps * K(x), -eps * K(p), M=free.M[0].precondition,
+                                    tol=default_tol(free.dtype, refine=False), maxiter=seq.maxiter)
+    return p + delta, info

@@ -6,6 +6,9 @@ an earlier run with ``--output.restart``. It can then open island chains (``--se
 stops falling or the step budget is spent. The fixed point satisfies ``J x B = grad p``, where ``p`` is the
 pressure that keeps the flow divergence-free, so the result is a finite-beta equilibrium.
 
+With ``--pressure.advected`` the pressure is prescribed instead: the file's pressure profile, scaled to the volume
+beta ``--pressure.beta``, moves with a compressible flow, and the fixed point is ``J x B = grad p`` with it.
+
 With ``--drive.resistivity C`` every step is followed by a resistive step of size ``C h_r^2`` (``h_r`` the radial
 cell size) that pulls the current towards that of the ``--drive.reference`` field. The reference is first smoothed
 by one heat step of ``--drive.reference-smoothing`` h_r^2 and can be given an island chain with ``--drive.chain``
@@ -45,7 +48,7 @@ def main(cfg):
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation.loop import (check_checkpoint, initial_state, radial_cell_sq, read_checkpoint, relax,
                                      write_checkpoint)
-    from mrx.relaxation.physics import resistive_step
+    from mrx.relaxation.physics import initial_pressure, resistive_step
     from mrx.relaxation.seeding import energy_seed
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
@@ -81,12 +84,13 @@ def main(cfg):
         print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                           for k, v in ic.items() if k != "kind"), flush=True)
-        state, it0 = initial_state(B0, ts), 0
+        p0 = initial_pressure(seq, B0, cfg.pressure.beta) if cfg.pressure else None
+        state, it0 = initial_state(B0, ts, p=p0), 0
     if cfg.seed:
         B_seeded, rows = energy_seed(seq, state.B_n, iotas=cfg.seed.iotas, amplitudes=cfg.seed.amplitudes,
                                      scale=cfg.seed.scale)
         results["seed"] = rows
-        state = initial_state(B_seeded, ts, step=it0)
+        state = initial_state(B_seeded, ts, step=it0, p=state.p_n if cfg.pressure else None)
     write_checkpoint(os.path.join(ckpt_dir, f"state_{it0:06d}.h5"), state, it0, seq)
 
     # --- the drive: resistive steps towards the reference current ---------
@@ -109,7 +113,9 @@ def main(cfg):
     print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d' % (n.penalty, n.tol, n.maxiter) if d.newton else 'gradient descent'}"
           f"  smoothing@{ts.velocity_smoothing_scale:.3e}  steps<={b.steps} chunk={b.chunk} "
           f"floor-tol={b.floor_tol:.1e}"
-          + (f"  drive: resistivity={dr.resistivity:g} h_r^2" if dr else "") + " ===", flush=True)
+          + (f"  drive: resistivity={dr.resistivity:g} h_r^2" if dr else "")
+          + (f"  advected pressure, compressible flow, beta {cfg.pressure.beta:g} at the start" if cfg.pressure else "")
+          + " ===", flush=True)
 
     def save(res):
         """Write the checkpoint of this step, then rewrite relax.json with the run so far."""
@@ -129,7 +135,8 @@ def main(cfg):
 
     res = relax(state, ts, it0=it0, on_chunk=save, **cfg.relax_kwargs())
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
-                     initial_state(res.state.best.B, ts, step=int(res.state.best.step)), int(res.state.best.step), seq)
+                     initial_state(res.state.best.B, ts, step=int(res.state.best.step),
+                                   p=res.state.best.p if cfg.pressure else None), int(res.state.best.step), seq)
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.best.step)}, "
           f"residual {float(res.state.best.resid):.3e})", flush=True)
 

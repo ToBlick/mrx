@@ -341,3 +341,52 @@ Decided against / removed:
 - lambda smoothing of the IC: beyond h = 1e-4 it ADDS current (0.43..1.22 J/B, stochastic at h =
   1e-2), because lambda = 0 is the straight-field-line field with ||J||/||B|| ~ 1.2, not vacuum
   (2026-08-26).
+
+## Advected pressure (compressible route, `--pressure.advected`, 2026-10-05)
+
+- Exactness: L'(0), L''(0) and the polarised Hessian of L = int B^2/2 - p dV along the flow of a random
+  compressible u agree with the force pairing and second_variation(p=) to 7 digits (li383 (8,12,12)).
+- Fixed point: DESC's iota-constrained circular tokamak (R0 1, a 1/3, iota 0.4 + 0.5 s, p ~ 1 - s, beta 1.04 %)
+  read as the MRX start at (12,24,6): compressible Newton takes F2 7.5e-5 -> 2.4e-8 in 20 steps at dt = 1, the axis
+  stays at R 1.0252 (DESC 1.0253), p(Phi) drifts 3e-5. The pressure-force sign is right.
+- Far from equilibrium (circular start with straight surfaces, F2 8.4): compressible Newton follows
+  negative-curvature directions, is CFL-capped and grows current sheets. Gradient descent reaches F2 4e-3 in
+  4000 steps (power law). Its axis sat at R 0.975 there, against DESC's 1.025, while iota(p) matched the start to
+  1-2 %. Not resolved: the run had not converged.
+- Newton preconditioner (li383 (8,12,12) start, tol 0.1): mass atom 17, CompressibleAtom 26, incompressible
+  system 20 MINRES iterations. At tol 1e-3 the compressible solves exit on negative curvature. The parallel
+  penalty at 30 / 300 helps little.
+- Discrete advection (0-form Galerkin, no smoothing) loses B . grad p = 0: from the files' own fields at their
+  beta, li383 (24,32,32) and W7-X FMM002 (16,32,32) p=2 reach F2 1.4e-5 / 9e-7, then climb to 2e-2 / 6e-3 as
+  ||B.grad p|| / || |B| |grad p| || grows to 1.3e-2 / 3.5e-3 over 50 Newton steps.
+- Parallel smoothing (M_0 + eps K_par) after every step, eps = C h_zeta^2, 50 Newton steps:
+
+  | case | C | F2 end (min) | B.grad p | p_w vs p | int p drift | CG it |
+  |---|---|---|---|---|---|---|
+  | li383 beta 4.25 % | 0 | 2.1e-2 (1.4e-5) | 1.3e-2 | 6.7 % | 4.6e-3 | - |
+  | li383 beta 4.25 % | 1 | 2.4e-3 (1.2e-5) | 3.8e-3 | 2.4 % | 4.9e-4 | 25 |
+  | li383 beta 4.25 % | 10 | 1.5e-5 (9.3e-6) | 3.1e-4 | 0.30 % | 9e-6 | 84 |
+  | W7-X beta 1.11 % | 0 | 5.9e-3 (9e-7) | 3.5e-3 | 1.6 % | 4e-5 | - |
+  | W7-X beta 1.11 % | 1 | 1.9e-3 (9.4e-7) | 6.1e-4 | 0.85 % | 4e-5 | 25 |
+  | W7-X beta 1.11 % | 10 | 6.6e-7 (4.8e-7) | 1.7e-4 | 0.11 % | 4e-6 | 80 |
+
+  C = 10 holds a flat floor. The Leray route from the same starts reaches 2.5e-10 / 5.9e-11: the advected floor is
+  set by the remaining B . grad p. p(Phi) moves 1.4-1.7 % in the first steps on both (the file's p(r) against the
+  discrete field), 3e-5 from the DESC start.
+
+## Volume outer loop for p(s) (`mrx.relaxation.pressure_loop`, 2026-10-05)
+
+- Sign: g = +gain (p_w - p*)/<B^2> (expand over-pressured shells) diverges, beta_w 4.0 % -> 12 % in 6 outer
+  iterations (li383 (8,12,12)). p_w is measured from the wall, and a shell expanded at fixed flux carries a weaker
+  field, so its p_w rises. g = -gain (...) converges.
+- From the files' own fields, 10 outer iterations of 10 Leray-route Newton steps, 16 bins of s, gain 2:
+
+  | case | target beta | |p_w - p*|/|p*| | F2 end | beta_w end |
+  |---|---|---|---|---|
+  | li383 (24,32,32) | 1 % | 3.26 -> 1.6e-3 | 1.1e-10 | 0.989 % |
+  | W7-X (16,32,32) | 0.5 % | 1.22 -> 1.9e-3 | 2.7e-11 | 0.498 % |
+
+  Gain 2 overshoots at the first iteration (li383 beta_w -0.02 %, F2 1.6e-5) and contracts by about 0.3-0.5 per
+  iteration afterwards. Gain 0.5 contracts by 0.8 (li383 (8,12,12)).
+- Against the advected route at the same li383 target (beta 1 %): F2 2.1e-4 there (no smoothing), against 1.1e-10.
+  The outer loop keeps the Leray floor because p is never carried by the discrete flow.
