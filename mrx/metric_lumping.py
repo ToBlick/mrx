@@ -27,8 +27,6 @@ entries are neglected.
 
 from __future__ import annotations
 
-import functools
-
 import numpy as np
 
 import equinox as eqx
@@ -83,26 +81,6 @@ def _dense_incidence_1d(n0, typ):
         j = jnp.arange(n0)
         return jnp.zeros((n0, n0), dtype=DTYPE).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
     return jnp.zeros((n0, n0), dtype=DTYPE)
-
-
-def _fd_apply_3d(V, lam, x, alpha=None, shift=None):
-    """``(sum_a alpha_a (K_a term) + shift M)^-1 x`` on a 3-tensor, from the per-axis
-    ``M``-orthonormal eigenpairs ``(V, lam)``. ``alpha=None`` weighs every term by one. Without a
-    shift the kernel (the constants) is dropped."""
-    V_r, V_t, V_z = V
-    y = jnp.einsum('ji,jkl->ikl', V_r, x)
-    y = jnp.einsum('ji,kjl->kil', V_t, y)
-    y = jnp.einsum('ji,klj->kli', V_z, y)
-    lam_r, lam_t, lam_z = lam if alpha is None else (alpha[a] * lam[a] for a in range(3))
-    denom = lam_r[:, None, None] + lam_t[None, :, None] + lam_z[None, None, :]
-    if shift is None:
-        null = jnp.abs(denom) < sqrt_eps(6.7e-3) * jnp.max(jnp.abs(denom))
-        y = jnp.where(null, 0.0, y / jnp.where(null, 1.0, denom))
-    else:
-        y = y / (denom + shift)
-    y = jnp.einsum('ij,jkl->ikl', V_r, y)
-    y = jnp.einsum('ij,kjl->kil', V_t, y)
-    return jnp.einsum('ij,klj->kli', V_z, y)
 
 
 # --------------------------------------------------------------------------- #
@@ -381,84 +359,132 @@ def _tensor_blocks(seq, k):
                        int(rows_t[0]) if selector else -1))
     return core, blocks
 
-
 # --------------------------------------------------------------------------- #
 # The applied payload                                                          #
 # --------------------------------------------------------------------------- #
+#
+# Away from the axis every vector component is a tensor-product block, post * R D^-1 L (pre * x), with the
+# per-axis matrices L (the 1-D inverses for the mass, V^T for the Laplacian), D the Laplacian's Kronecker-sum
+# eigenvalues (none for the mass) and R = V (none for the mass). The components are zero-padded to one grid and
+# applied as one batch, with identity on the padding of the 1-D matrices. Everything linear and fixed around them
+# (the component gathers, the parity expansion X of a reduced view, the output permutation and X^T) is composed
+# on the host into one input gather and one output gather, because on a GPU every launched kernel costs a few
+# microseconds whatever its size.
 
-class _LumpBlock(eqx.Module):
-    """The Laplacian preconditioner of one vector component away from the axis."""
+class _Batched(eqx.Module):
+    """The arrays of one batched preconditioner apply (see the section comment)."""
 
-    rows: jnp.ndarray            # gather indices, tensor order
-    vals: jnp.ndarray            # extraction weights, tensor order
-    v: tuple                     # per-axis eigenvectors
-    lam: tuple                   # per-axis eigenvalues
-    dscale: jnp.ndarray          # D^{-1/2}
-    alpha: object                # per-term weights, None for all ones
-    shape: tuple = eqx.field(static=True)
-    offset: int = eqx.field(static=True)      # first row of a selector block, -1 otherwise
-
-    def solve(self, xb, shift):
-        return _fd_apply_3d(self.v, self.lam, xb * self.dscale, self.alpha, shift) * self.dscale
-
-
-class _MassBlock(eqx.Module):
-    """The mass preconditioner of one vector component away from the axis."""
-
-    rows: jnp.ndarray
-    vals: jnp.ndarray
-    inv: tuple                   # the three 1-D inverses
-    scale: jnp.ndarray           # Lam
-    shape: tuple = eqx.field(static=True)
-    offset: int = eqx.field(static=True)
-
-    def solve(self, xb, shift):
-        xb = xb / self.scale
-        for a, inv in enumerate(self.inv):
-            xb = jnp.moveaxis(jnp.tensordot(inv, xb, axes=([1], [a])), 0, a)
-        return xb / self.scale
+    in_idx: jnp.ndarray          # (nb, N0 N1 N2, T_in) input entries feeding each padded block entry
+    in_w: jnp.ndarray            # (nb, N0 N1 N2, T_in)
+    pre: jnp.ndarray             # (nb, N0, N1, N2)
+    post: jnp.ndarray            # (nb, N0, N1, N2)
+    left: tuple                  # 3 x (nb, Na, Na)
+    right: object                # 3 x (nb, Na, Na), or None for the mass
+    lam: object                  # 3 x (nb, Na) Kronecker-sum eigenvalues, or None for the mass
+    core_idx: jnp.ndarray        # (n_core, T_c) input entries feeding each axis row
+    core_w: jnp.ndarray
+    core_inv: jnp.ndarray        # (n_core, n_core)
+    out_idx: jnp.ndarray         # (n_out, T_out) positions in concat(block results, axis results)
+    out_w: jnp.ndarray
+    N: tuple = eqx.field(static=True)
 
 
-class _Payload(eqx.Module):
-    """The arrays one preconditioner apply needs: the per-component blocks, the axis rows with
-    their dense inverse, and the output permutation ``perm`` (``None`` for the identity)."""
-
-    blocks: tuple
-    core: jnp.ndarray
-    core_inv: jnp.ndarray
-    perm: object
-
-
-def _apply_payload(payload, x, shift=None):
-    """Apply the preconditioner stored in ``payload`` to ``x``. ``shift`` is ``1/eps`` for the
-    shifted-stiffness preconditioner and ``None`` otherwise."""
-    parts = []
-    for b in payload.blocks:
-        n = int(np.prod(b.shape))
-        xb = x[b.offset:b.offset + n] if b.offset >= 0 else b.vals * x[b.rows]
-        sol = b.solve(xb.reshape(b.shape), shift).reshape(-1)
-        out = sol if b.offset >= 0 else b.vals * sol
-        parts.append(out if shift is None else shift * out)
-    if payload.core.size:
-        parts.append(payload.core_inv @ x[payload.core])
-    out = parts[0] if len(parts) == 1 else jnp.concatenate(parts)
-    return out if payload.perm is None else out[payload.perm]
+def _rows_table(rows, cols, vals, n_rows):
+    """A sparse matrix given by its entries as padded per-row tables ``(cols, vals)`` of shape ``(n_rows, T)``."""
+    order = np.argsort(rows, kind="stable")
+    rows, cols, vals = rows[order], cols[order], vals[order]
+    counts = np.bincount(rows, minlength=n_rows)
+    T = max(int(counts.max()) if counts.size else 1, 1)
+    first = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    slot = np.arange(rows.size) - first[rows]
+    c_tab, v_tab = np.zeros((n_rows, T), dtype=np.int64), np.zeros((n_rows, T))
+    c_tab[rows, slot], v_tab[rows, slot] = cols, vals
+    return c_tab, v_tab
 
 
-@functools.lru_cache(maxsize=32)
-def _jitted_for(treedef):
-    """The jitted apply for one payload structure. A new geometry on the same sequence gives a
-    payload of the same structure, so it reuses the compiled function."""
+def _batch(specs, core, core_inv, n_full, X=None):
+    """The :class:`_Batched` of the blocks ``specs`` (dicts with ``rows``, ``vals``, ``shape``, ``pre``, ``post``,
+    ``left`` and, for the Laplacian, ``right`` and ``lam``) and the axis rows ``core`` with their dense inverse,
+    on a space of ``n_full`` entries. With ``X`` (a reduced view's expansion, full <- reduced) the apply acts on
+    the reduced vectors as ``X^T P X``."""
+    core = np.asarray(core)
+    if X is None:
+        x_cols, x_vals = np.arange(n_full)[:, None], np.ones((n_full, 1))
+        out_rows = (np.arange(n_full), np.arange(n_full), np.ones(n_full))
+        n_out = n_full
+    else:
+        r, c, v = X.entries()
+        x_cols, x_vals = _rows_table(r, c, v, n_full)              # x_full[r] = sum_t x_vals x_red[x_cols]
+        out_rows = (c, r, v)                                       # y_red[c] = sum v y_full[r]
+        n_out = int(X.forward_shape[1])
+    nb = len(specs)
+    N = tuple(max(s["shape"][a] for s in specs) for a in range(3))
+    n_tot = N[0] * N[1] * N[2]
+    T = x_cols.shape[1]
+    in_idx, in_w = np.zeros((nb, n_tot, T), dtype=np.int64), np.zeros((nb, n_tot, T))
+    pre, post = np.ones((nb,) + N), np.ones((nb,) + N)
+    laplacian = "right" in specs[0]
+    left = [np.zeros((nb, N[a], N[a])) for a in range(3)]
+    right = [np.zeros((nb, N[a], N[a])) for a in range(3)]
+    lam = [np.zeros((nb, N[a])) for a in range(3)]
+    source = np.zeros((n_full, 2))                                 # y_full[j] = source[j, 1] z[source[j, 0]]
+    for b, s in enumerate(specs):
+        shape = s["shape"]
+        n = shape[0] * shape[1] * shape[2]
+        padded = np.ravel_multi_index(np.unravel_index(np.arange(n), shape), N)
+        rows, vals = np.asarray(s["rows"]), np.asarray(s["vals"], dtype=np.float64)
+        in_idx[b, padded] = x_cols[rows]
+        in_w[b, padded] = x_vals[rows] * vals[:, None]
+        sl = (b, slice(0, shape[0]), slice(0, shape[1]), slice(0, shape[2]))
+        pre[sl] = np.broadcast_to(np.asarray(s["pre"], dtype=np.float64), shape)
+        post[sl] = np.broadcast_to(np.asarray(s["post"], dtype=np.float64), shape)
+        for a in range(3):
+            left[a][b] = np.eye(N[a])
+            left[a][b, :shape[a], :shape[a]] = np.asarray(s["left"][a], dtype=np.float64)
+            if laplacian:
+                right[a][b] = np.eye(N[a])
+                right[a][b, :shape[a], :shape[a]] = np.asarray(s["right"][a], dtype=np.float64)
+                lam[a][b, :shape[a]] = np.asarray(s["lam"][a], dtype=np.float64)
+        source[rows] = np.stack([b * n_tot + padded, vals], axis=1)
+    source[core] = np.stack([nb * n_tot + np.arange(core.size), np.ones(core.size)], axis=1)
+    o_cols, o_vals = _rows_table(*out_rows, n_out)
 
-    def run(leaves, x):
-        return _apply_payload(jax.tree_util.tree_unflatten(treedef, leaves), x)
+    def dev(arrays):
+        return tuple(jnp.asarray(m, DTYPE) for m in arrays)
+    return _Batched(jnp.asarray(in_idx), jnp.asarray(in_w, DTYPE), jnp.asarray(pre, DTYPE),
+                    jnp.asarray(post, DTYPE), dev(left), dev(right) if laplacian else None,
+                    dev(lam) if laplacian else None, jnp.asarray(x_cols[core]), jnp.asarray(x_vals[core], DTYPE),
+                    jnp.asarray(core_inv, DTYPE), jnp.asarray(source[o_cols, 0].astype(np.int64)),
+                    jnp.asarray(o_vals * source[o_cols, 1], DTYPE), N)
 
-    return jax.jit(run)
+
+@eqx.filter_jit
+def _apply_batched(p, x, core_inv, alpha, shift):
+    """Apply the :class:`_Batched` ``p`` to ``x``. ``core_inv`` replaces ``p.core_inv`` when given. ``alpha``
+    (per block and axis) weighs the Laplacian's Kronecker terms, ``None`` for all ones. ``shift`` is ``1/eps`` of
+    the shifted-stiffness preconditioner and ``None`` otherwise."""
+    nb = p.pre.shape[0]
+    xb = jnp.sum(p.in_w * x[p.in_idx], axis=-1).reshape((nb,) + p.N) * p.pre
+    y = jnp.einsum('bia,bjc,bkd,bacd->bijk', *p.left, xb)
+    if p.lam is not None:
+        lam = p.lam if alpha is None else tuple(alpha[:, a, None] * p.lam[a] for a in range(3))
+        denom = lam[0][:, :, None, None] + lam[1][:, None, :, None] + lam[2][:, None, None, :]
+        if shift is None:
+            # the kernel (the constants) is dropped
+            null = jnp.abs(denom) < sqrt_eps(6.7e-3) * jnp.max(jnp.abs(denom), axis=(1, 2, 3), keepdims=True)
+            y = jnp.where(null, 0.0, y / jnp.where(null, 1.0, denom))
+        else:
+            y = shift * y / (denom + shift)
+        y = jnp.einsum('bia,bjc,bkd,bacd->bijk', *p.right, y)
+    y = y * p.post
+    core = (p.core_inv if core_inv is None else core_inv) @ jnp.sum(p.core_w * x[p.core_idx], axis=-1)
+    z = jnp.concatenate([y.reshape(-1), core])
+    return jnp.sum(p.out_w * z[p.out_idx], axis=-1)
 
 
-def _cast_leaves(leaves, dtype):
-    return tuple(leaf.astype(dtype) if jnp.issubdtype(leaf.dtype, jnp.floating) else leaf
-                 for leaf in leaves)
+def _cast(p, dtype):
+    """``p`` with its floating-point arrays in ``dtype``."""
+    return jax.tree_util.tree_map(lambda a: a.astype(dtype) if jnp.issubdtype(a.dtype, jnp.floating) else a, p)
 
 
 class _Atom:
@@ -473,37 +499,38 @@ class _Atom:
         core, raw_blocks = _tensor_blocks(seq, k)
         on = seq if seq.residual is None else seq.residual
         size, split = seq.n(k), _parity_split(on, k)
+        self._n = size
         return core, raw_blocks, on, lambda apply: _probe_rows(apply, size, core, on.dtype, split)
 
-    def _install(self, core, raw_blocks, blocks, core_inv):
-        perm = np.argsort(np.concatenate([blk[1] for blk in raw_blocks] + [core]))
-        identity = np.array_equal(perm, np.arange(perm.size))
-        self._payload = _Payload(tuple(blocks), jnp.asarray(core), core_inv,
-                                 None if identity else jnp.asarray(perm))
-        leaves, treedef = jax.tree_util.tree_flatten(self._payload)
-        self._flat = (tuple(leaves), _jitted_for(treedef))
+    def _install(self, core, specs, core_inv):
+        # device arrays, not NumPy: NumPy attributes are static and a new geometry would recompile
+        self._core = jnp.asarray(core)
+        self._specs = [dict(s, rows=jnp.asarray(s["rows"]), vals=jnp.asarray(s["vals"], dtype=DTYPE)) for s in specs]
+        self._payload = _batch(self._specs, core, core_inv, self._n)
+
+    def reduced(self, X):
+        """The batched payload of ``X^T P X`` for a reduced view with the expansion ``X``."""
+        return _batch(self._specs, self._core, self._payload.core_inv, self._n, X)
 
     def apply(self, x):
         """Apply the preconditioner to a coefficient vector of the free degrees of freedom."""
-        leaves, jitted = self._flat
+        p = self._payload
         if self.parity_projector is None:
-            return jitted(leaves, jnp.asarray(x))
-        return self.parity_projector(lambda v: jitted(leaves, v), jnp.asarray(x))
+            return _apply_batched(p, jnp.asarray(x), None, None, None)
+        return self.parity_projector(lambda v: _apply_batched(p, v, None, None, None), jnp.asarray(x))
 
     def apply_in(self, dtype):
         """Return :meth:`apply` computed in ``dtype``, for use inside an operator of that
         precision."""
-        # Not memoised on the atom. A stored closure would differ per build and recompile every
-        # program the atom enters at each new geometry.
         dtype = jnp.dtype(dtype)
-        leaves, jitted = self._flat
-        leaves = _cast_leaves(leaves, dtype)
+        p = _cast(self._payload, dtype)
         project = self.parity_projector
 
         def apply(x):
             if project is None:
-                return jitted(leaves, jnp.asarray(x, dtype))
-            return project(lambda v: jitted(leaves, jnp.asarray(v, dtype)), jnp.asarray(x, dtype))
+                return _apply_batched(p, jnp.asarray(x, dtype), None, None, None)
+            return project(lambda v: _apply_batched(p, jnp.asarray(v, dtype), None, None, None),
+                           jnp.asarray(x, dtype))
         return apply
 
 
@@ -518,18 +545,17 @@ class MetricLumpingLaplacian(_Atom):
     def __init__(self, seq, operators, k):
         from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
         core, raw_blocks, on, probe = self._prologue(seq, k)
-        blocks, shifted = [], []
+        specs, strong = [], []
         for c, rows, vals, (r0, nr), shape, offset in raw_blocks:
             masses, stiffs = component_factors(seq, k, c, (r0, nr))
             v, lam = zip(*map(_simultaneous_diagonalize_pair, masses, stiffs))
             # D_i is a ratio of two positive integrals
             dscale = 1.0 / jnp.sqrt(component_diagonal(seq, k, c)[r0:r0 + nr])
+            specs.append(dict(rows=rows, vals=vals, shape=shape, pre=dscale, post=dscale,
+                              left=tuple(m.T for m in v), right=v, lam=lam))
             # the strong half S_k: the Kronecker terms of the primal axes
-            strong = jnp.asarray([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)], dtype=DTYPE)
-            block = dict(rows=jnp.asarray(rows), vals=jnp.asarray(vals, dtype=DTYPE), v=v, lam=lam,
-                         dscale=dscale, shape=shape, offset=offset)
-            blocks.append(_LumpBlock(alpha=None, **block))
-            shifted.append(_LumpBlock(alpha=strong, **block))
+            strong.append([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)])
+        self._strong = jnp.asarray(strong, dtype=DTYPE)
         core_inv = _dense_symmetric_inverse(
             probe(lambda x: apply_laplacian_approx(on, operators, x, k)), CORE_TOL)
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
@@ -537,20 +563,18 @@ class MetricLumpingLaplacian(_Atom):
         stiffness_core = probe(lambda x: on.S[k] @ x)
         self._core_pair = (_simultaneous_diagonalize_pair(mass_core, stiffness_core) if core.size
                            else (mass_core, jnp.zeros(0, dtype=DTYPE)))
-        self._shifted_blocks = tuple(shifted)
-        self._install(core, raw_blocks, blocks, core_inv)
+        self._install(core, specs, core_inv)
 
-    def shifted_stiffness_apply(self, eps):
+    def shifted_stiffness_apply(self, eps, payload=None):
         """Return ``x -> (M_k + eps S_k)^{-1} x`` in the same approximation, the preconditioner of
         the shifted Laplacian solves. ``eps`` may be a traced value, so changing it does not
-        rebuild or recompile anything."""
+        rebuild or recompile anything. ``payload`` is a reduced view's :meth:`reduced` payload."""
         V, mu = self._core_pair
-        p = self._payload
-        payload = _Payload(self._shifted_blocks, p.core, (V / (1.0 + eps * mu)) @ V.T, p.perm)
-        inv_eps = 1.0 / eps
+        core_inv = (V / (1.0 + eps * mu)) @ V.T
+        p, strong = (self._payload if payload is None else payload), self._strong
 
         def apply(x):
-            return _apply_payload(payload, jnp.asarray(x), inv_eps)
+            return _apply_batched(p, jnp.asarray(x), core_inv, strong, 1.0 / eps)
         return apply
 
 
@@ -565,42 +589,40 @@ class MetricLumpingMass(_Atom):
     def __init__(self, seq, operators, k):
         core, raw_blocks, on, probe = self._prologue(seq, k)
         mass_1d, lam = _kron_mass_model_1d(seq, k)
-        blocks = [_MassBlock(rows=jnp.asarray(rows), vals=jnp.asarray(vals, dtype=DTYPE),
-                             inv=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
-                                       for a, m in enumerate(mass_1d[c])),
-                             scale=lam[c][r0:r0 + nr], shape=shape, offset=offset)
-                  for c, rows, vals, (r0, nr), shape, offset in raw_blocks]
+        specs = [dict(rows=rows, vals=vals, shape=shape, pre=1.0 / lam[c][r0:r0 + nr],
+                      post=1.0 / lam[c][r0:r0 + nr],
+                      left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
+                                 for a, m in enumerate(mass_1d[c])))
+                 for c, rows, vals, (r0, nr), shape, offset in raw_blocks]
         core_inv = _dense_symmetric_inverse(
             probe(lambda x: on.M[k] @ x), CORE_TOL)
-        self._install(core, raw_blocks, blocks, core_inv)
+        self._install(core, specs, core_inv)
 
 
 class ReducedAtom(eqx.Module):
     """A preconditioner ``P`` of the half-period sequence restricted to its even or odd part, as
     ``X^T P X`` where ``X`` expands a vector of that part to the full space. The parity views
-    of the sequence hold these, built from the base sequence's preconditioners."""
+    of the sequence hold these, built from the base sequence's preconditioners, with ``X`` composed into the
+    gathers of the batched apply."""
     atom: object
-    X: object
+    payload: _Batched
+
+    def __init__(self, atom, X):
+        self.atom = atom
+        self.payload = atom.reduced(X)
 
     def apply(self, x):
-        leaves, jitted = self.atom._flat
-        return self.X.T @ jitted(leaves, self.X @ jnp.asarray(x))
+        return _apply_batched(self.payload, jnp.asarray(x), None, None, None)
 
     def apply_in(self, dtype):
         """Return :meth:`apply` computed in ``dtype``."""
         dtype = jnp.dtype(dtype)
-        leaves, jitted = self.atom._flat
-        leaves = _cast_leaves(leaves, dtype)
-        X = self.X
+        p = _cast(self.payload, dtype)
 
         def apply(x):
-            return X.T @ jitted(leaves, X @ jnp.asarray(x, dtype))
+            return _apply_batched(p, jnp.asarray(x, dtype), None, None, None)
         return apply
 
     def shifted_stiffness_apply(self, eps):
         """The restricted :meth:`MetricLumpingLaplacian.shifted_stiffness_apply`, ``x -> X^T (M + eps S)^{-1} X x``."""
-        f, X = self.atom.shifted_stiffness_apply(eps), self.X
-
-        def apply(x):
-            return X.T @ f(X @ jnp.asarray(x))
-        return apply
+        return self.atom.shifted_stiffness_apply(eps, self.payload)
