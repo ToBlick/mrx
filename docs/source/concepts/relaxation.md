@@ -25,7 +25,8 @@ for that pressure.
 
 ## 2. The step
 
-`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, resistivity, resistive_reference)`
+`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_tol, resistivity,
+resistive_reference)`
 is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
 `B_{n+1} = B_n + dt curl(u x B)`:
 
@@ -70,6 +71,20 @@ right-hand side or after `newton_maxiter` iterations, with an exit on
 nonpositive curvature. `H` vanishes on field-aligned flows `u = f B`, and a
 penalty of `newton_penalty` times the strain along the field lifts that
 null space.
+
+Every apply of `H` contains two k = 1 mass solves, so the Newton solve runs
+a Krylov solve inside MINRES, and the mass solves dominate its cost. By
+default (`newton_mass_tol = 1e-3`, `None` keeps the solves) they are
+replaced by `MassChebyshev`, the Chebyshev polynomial of degree `k` in the
+mass atom times `M_1`
+(`mrx.solvers.chebyshev`). It costs `k` mass applies and runs no loop. It is
+linear and symmetric, so `H` stays symmetric and MINRES applies unchanged.
+The spectral interval comes from 60 PCG iterations at construction
+(`mrx.solvers.lanczos_bounds`), widened by 5 %, and `k` is the smallest
+degree whose error bound `2 rho^k` is below `newton_mass_tol`. The
+right-hand side and the line search are unchanged, so only the Newton
+direction is approximate. The error of `H` is 3 to 4 times that of the mass
+inverse.
 
 ### Resistive step and drive
 

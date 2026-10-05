@@ -5,11 +5,13 @@ inside ``jit`` and never form a matrix. :func:`preconditioned_cg` solves SPD sys
 :func:`minres` solves symmetric indefinite ones. :func:`minres` can also stop at a direction of
 nonpositive curvature, which the Newton-MR relaxation uses. :func:`solve_singular_cg` solves a
 semidefinite system with a known kernel, and :func:`solve_saddle_point_minres` solves the
-saddle-point form of a Hodge Laplacian. :func:`refine` wraps a solve in iterative refinement: the
+saddle-point form of a Hodge Laplacian. :func:`chebyshev` is a fixed polynomial approximate inverse
+with no loop, for use where an inverse sits inside another iteration, and :func:`lanczos_bounds`
+estimates the spectral interval it needs. :func:`refine` wraps a solve in iterative refinement: the
 residual is computed in the residual precision (float64 in the mixed configuration) and each
 correction is solved in the working precision (see :mod:`mrx.precision`).
 
-Every solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
+Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
 """
 
@@ -58,6 +60,63 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None):
 
     x_final, _, _, _, _, k_final, converged_final = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return x_final, jnp.where(converged_final, k_final, -k_final)
+
+
+def chebyshev(A_matvec, b, M, bounds, steps):
+    """Return ``x = q(M A) M b``, a fixed polynomial approximation of ``A^{-1} b``.
+
+    ``q`` is the Chebyshev polynomial of degree ``steps`` for the interval ``bounds = (lmin, lmax)``, which
+    must contain the spectrum of ``M A`` (``A`` SPD, ``M`` an SPD approximation of ``A^{-1}``). The cost is
+    ``steps`` applies of ``A`` and ``steps + 1`` of ``M``, with no loop and no stopping test. Unlike a
+    Krylov solve the result is linear in ``b``, and for symmetric ``A`` and ``M`` the map ``b -> x`` is
+    symmetric, so it can stand for ``A^{-1}`` inside another symmetric operator. The relative error in the
+    ``A``-norm falls like ``2 ((sqrt(kappa) - 1) / (sqrt(kappa) + 1))^steps`` with ``kappa = lmax / lmin``
+    (Saad 2003, Algorithm 12.1).
+    """
+    lmin, lmax = bounds[0].astype(b.dtype), bounds[1].astype(b.dtype)
+    theta, delta = (lmax + lmin) / 2, (lmax - lmin) / 2
+    sigma = theta / delta
+    rho = 1 / sigma
+    r = b
+    d = M(r) / theta
+    x = d
+    for _ in range(steps):
+        r = r - A_matvec(d)
+        rho_new = 1 / (2 * sigma - rho)
+        d = rho_new * rho * d + (2 * rho_new / delta) * M(r)
+        rho = rho_new
+        x = x + d
+    return x
+
+
+def lanczos_bounds(A_matvec, b, M, steps):
+    """The extreme Ritz values ``(lmin, lmax)`` of ``M A`` after ``steps`` iterations of PCG on ``A x = b``.
+
+    The Lanczos matrix is read off the PCG coefficients. Both values lie inside the spectrum of ``M A``,
+    ``lmax`` close to the top already after a few iterations and ``lmin`` approaching the bottom more
+    slowly. The loop has a fixed length, so ``steps`` must stay below the iteration count at which PCG
+    converges to round-off.
+    """
+    z = M(b)
+    rz = jnp.dot(b, z)
+
+    def body(carry, _):
+        r, z, p, rz = carry
+        Ap = A_matvec(p)
+        alpha = rz / jnp.dot(p, Ap)
+        r = r - alpha * Ap
+        z_new = M(r)
+        rz_new = jnp.dot(r, z_new)
+        beta = rz_new / rz
+        return (r, z_new, z_new + beta * p, rz_new), (alpha, beta)
+
+    _, (alpha, beta) = jax.lax.scan(body, (b, z, z, rz), None, length=steps)
+    beta_prev = jnp.concatenate([jnp.zeros(1, alpha.dtype), beta[:-1]])
+    alpha_prev = jnp.concatenate([jnp.ones(1, alpha.dtype), alpha[:-1]])
+    diag = 1 / alpha + beta_prev / alpha_prev
+    off = jnp.sqrt(beta[:-1]) / alpha[:-1]
+    ritz = jnp.linalg.eigvalsh(jnp.diag(diag) + jnp.diag(off, 1) + jnp.diag(off, -1))
+    return ritz[0], ritz[-1]
 
 
 def deflation_projectors(vs, mass_matvec):

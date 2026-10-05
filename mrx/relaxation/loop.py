@@ -20,7 +20,8 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation.newton import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, newton_direction
+from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
+                                   newton_direction)
 from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
                                    weak_pressure, beta_vol)
 from mrx.precision import DTYPE, RESIDUAL_DTYPE
@@ -145,9 +146,11 @@ class TimeStepper(eqx.Module):
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
     With ``newton=True`` the velocity ``u`` is the Newton direction of
     :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol`` and
-    ``newton_maxiter``. Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with
-    ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the 2-form mass matrix and ``L_2`` the 2-form Laplacian. The
-    step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
+    ``newton_maxiter``. The mass solves inside the Hessian are replaced by a
+    :class:`~mrx.relaxation.newton.MassChebyshev` of accuracy ``newton_mass_tol``, built once at construction
+    (``None`` keeps the solves). Otherwise ``u``
+    is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
+    2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
 
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
     :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
@@ -158,12 +161,14 @@ class TimeStepper(eqx.Module):
     newton_penalty: float = NEWTON_PENALTY
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
+    newton_mass_tol: Optional[float] = eqx.field(static=True, default=NEWTON_MASS_TOL)
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
     velocity_smoothing_scale: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
+    mass_inverse: Optional[MassChebyshev] = None
     resistive: bool = eqx.field(static=True, default=False)
 
     def __post_init__(self):
@@ -177,6 +182,8 @@ class TimeStepper(eqx.Module):
         self.resistive = bool(self.resistivity != 0)
         self.resistivity = jnp.asarray(self.resistivity, dtype=DTYPE)
         self.cfl_weights = logical_cfl_weights(self.seq)
+        if self.newton and self.newton_mass_tol is not None:
+            self.mass_inverse = MassChebyshev.build(self.seq, self.newton_mass_tol)
 
     def _lorentz(self, B: jnp.ndarray, J_guess: jnp.ndarray):
         """Return ``(J, (J x B)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
@@ -216,7 +223,7 @@ class TimeStepper(eqx.Module):
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
             J, JxB_dual = self._lorentz(B, w.J)
             u, a, newton_it = newton_direction(seq, B, J, JxB_dual, w.a, self.newton_penalty, self.newton_tol,
-                                               self.newton_maxiter)
+                                               self.newton_maxiter, self.mass_inverse)
             F, MF, _, _, a_F = self._potential_force(B, w.a_F, J, smooth=False)
         else:
             F, MF, u, J, a = self._potential_force(B, w.a, w.J)       # u the smoothed force

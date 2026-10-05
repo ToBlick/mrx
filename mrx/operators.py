@@ -183,7 +183,8 @@ def _mass(seq, v, k: int):
 def _projection(seq, v, k_in: int, k_out: int):
     """``P v`` with the metric-free pairing ``P_ij = int Lambda^{k_out}_i . Lambda^{k_in}_j`` over the
     logical domain, for ``(k_in, k_out)`` = (1, 2), (2, 1), (0, 3) or (3, 0)."""
-    plan, weights = seq.projection_plan[(k_out, k_in)], _geometry(seq).reference_weights
+    plan = seq.projection_plan[(k_out, k_in)]
+    weights = _geometry(seq).reference_weights[len(plan.shapes_r)]
     core = _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k_in, k_out)
     return seq.E(k_out) @ core(seq.E(k_in).T @ v)
 

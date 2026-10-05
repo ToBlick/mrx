@@ -50,6 +50,28 @@ Paper-arm rate -> rate on e680ab4:
   min for n = 16 / 24 / 32 / 48 (steps to the floor ~n, cost/step ~DoFs).
 - Harmonic atom kappa = 3 at 100 MINRES 5.0 s/step vs Laplacian atom 12.5 s/step (2026-09-11).
 - A Newton step makes ~45k preconditioner applies (2026-09-17).
+- 2026-10-05 (branch batched-mass, s/step without diagnostics): li383 (12,16,16) 3.23 (refined M_1
+  solves) -> 0.83 (Chebyshev M_1^-1, mass-tol 1e-3, degree 23) -> 0.68 (batched mass apply) -> 0.49
+  (batched atoms) -> 0.44 (two M_1^-1 per Hessian). W7-X FMM002 (16,32,32) 4.96 -> 0.83 (Chebyshev 20).
+  Same floors and energy. MINRES stopping at --newton.tol instead of always 200: li383 1.4m (16,32,32)
+  1.32 -> 0.82 s/step with diagnostics, W7-X unchanged (never meets 0.1).
+- The Hessian error is 3-4x the error of the M_1^-1 approximation. mass-tol 1e-2 (degree 17) stalls li383
+  at 1e-6, 1e-3 and 1e-4 reach the solve floor. 20 Lanczos steps put the bottom of the atom*M_1 interval
+  20 % high (kappa ~34 li383), 60 are converged to 3 %.
+
+## 2b. Kernel-level profile (XProf, H100, 2026-10-05)
+
+- Before the Chebyshev change a li383 (12,16,16) Newton step was 2.1M kernels of ~2 us, the GPU ~90 % busy,
+  almost all in the refined M_1 solves of the Hessian. XLA command buffers for while/cond: -7.5 % only.
+- Per apply after batching (ms, M_1 / mass atom / Hessian): li383 12^3 0.034 / 0.024 / 3.0, W7-X 16^3
+  0.067 / 0.034 / 3.6, 24^3 0.093 / 0.041 / 6.3, 32^3 0.19 / 0.03 / 10.7. Up to 16^3 the apply is
+  kernel-count bound. At 32^3 the mass apply dominates: weight contraction 36 us (memory), six skinny GEMMs
+  77 us, XLA transposes 40 us.
+- Tried at 32^3 and dropped: rotating layout + 6 unique weights (0.96x), E folded into the gathers (1.0x),
+  Pallas element kernels (1.15-1.3x best, 2-3.7x at 12-16^3), CUDA FFI kernels (slower, 5M atomic adds per
+  apply). Records in outputs/matvec_profile/README.md.
+- eqx.filter_jit of a function of the sequence costs ~10 ms of host dispatch per call. build_preconditioners
+  probed the axis block one row per call: 13.5 s -> 2.1 s per geometry with batched probes.
 
 ## 3. Symmetry models and the pure chunk runner (li383 p=2, refined float32, 2026-09-18)
 

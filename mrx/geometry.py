@@ -52,7 +52,7 @@ class SequenceGeometry(eqx.Module):
     metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
     mass_weights: Optional[dict] = None
-    reference_weights: Optional[tuple] = None
+    reference_weights: Optional[dict] = None
 
     @classmethod
     def from_map(cls, Phi: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
