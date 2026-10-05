@@ -42,6 +42,9 @@ from mrx.symmetry import mirror_component, mirror_zeta_1d
 #: Relative eigenvalue cut-off of the dense inverses of the axis blocks (in the residual precision).
 CORE_TOL = 4096.0 * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
+#: Axis rows probed per batch when the dense axis block is built (bounds the memory of the batched applies).
+PROBE_BATCH = 64
+
 #: Empirical factor on the boundary term of the Laplacian preconditioner under natural boundary
 #: conditions. Three times the exact surface integral gave the smallest condition number.
 PRODUCTION_BC_SCALE = 3.0
@@ -306,11 +309,12 @@ def _probe_rows(apply, size, rows, dtype, split):
         return jnp.zeros((0, 0), dtype=dtype)
     rows_j = jnp.asarray(rows)
 
-    def column(i):
-        e = jnp.zeros(size, dtype=dtype).at[int(i)].set(1.0)
-        return apply(e) if split is None else sum(apply(part) for part in split(e))
+    def column(e):
+        return (apply(e) if split is None else sum(apply(part) for part in split(e)))[rows_j]
 
-    block = jnp.stack([column(i)[rows_j] for i in rows], axis=1)
+    # the columns in batches of PROBE_BATCH inside one call: one host dispatch instead of one per axis row
+    units = jnp.zeros((rows.size, size), dtype=dtype).at[jnp.arange(rows.size), rows_j].set(1.0)
+    block = jax.lax.map(column, units, batch_size=PROBE_BATCH).T
     return 0.5 * (block + block.T)
 
 

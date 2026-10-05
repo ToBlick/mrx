@@ -137,6 +137,15 @@ class HarmonicAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
+@eqx.filter_jit
+def _mass_interval(odd):
+    """The Ritz interval of the mass atom times ``M_1`` on ``odd``, one compiled program that a new geometry
+    reuses."""
+    M = odd.M[1]
+    b = jax.random.normal(jax.random.PRNGKey(0), (odd.n(1),), dtype=odd.dtype)
+    return lanczos_bounds(lambda x: M @ x, b, M.precondition, LANCZOS_STEPS)
+
+
 class MassChebyshev(eqx.Module):
     """A fixed approximate inverse of the 1-form mass matrix ``M_1`` of the odd view, applied as ``S(view, x)``.
 
@@ -156,9 +165,7 @@ class MassChebyshev(eqx.Module):
         the smallest degree whose error bound ``2 rho^steps`` is below ``tol``, with
         ``rho = (sqrt(kappa) - 1) / (sqrt(kappa) + 1)`` and ``kappa`` the ratio of the interval's ends."""
         odd = seq.odd if seq.odd.residual is None else seq.odd.residual
-        M = odd.M[1]
-        b = jax.random.normal(jax.random.PRNGKey(0), (odd.n(1),), dtype=odd.dtype)
-        lmin, lmax = lanczos_bounds(lambda x: M @ x, b, M.precondition, LANCZOS_STEPS)
+        lmin, lmax = _mass_interval(odd)
         bounds = jnp.stack([lmin * (1 - LANCZOS_MARGIN), lmax * (1 + LANCZOS_MARGIN)])
         root = np.sqrt(float(bounds[1] / bounds[0]))
         steps = int(np.ceil(np.log(tol / 2) / np.log((root - 1) / (root + 1))))
