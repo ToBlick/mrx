@@ -49,7 +49,7 @@ the pair `--seed` / `--no-seed`:
 | geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.precision`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
-| newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter` |
+| newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | output | `--output.out`, `--output.restart` |

@@ -20,7 +20,7 @@ from typing import Annotated, Optional
 
 import tyro
 
-from mrx.relaxation.newton import NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
+from mrx.relaxation.newton import NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 
 
 class Symmetry(StrEnum):
@@ -132,6 +132,8 @@ class Newton:
     """The relative tolerance of each Newton solve."""
     maxiter: int = NEWTON_MAXITER
     """The maximum number of MINRES iterations of each Newton solve."""
+    mass_tol: Optional[float] = NEWTON_MASS_TOL
+    """The accuracy of the Chebyshev polynomial that replaces the 1-form mass solves inside the Hessian (mrx.relaxation.newton.MassChebyshev). Its degree follows from this and the spectral interval of the mass atom. None keeps the mass solves, which cost about three times as much."""
 
 
 @dataclass(frozen=True)
@@ -208,7 +210,8 @@ class RelaxConfig:
         from mrx.relaxation.loop import TimeStepper, radial_cell_sq
         n = self.newton
         return TimeStepper(seq=seq, newton=self.descent.newton, newton_penalty=n.penalty, newton_tol=n.tol,
-                           newton_maxiter=n.maxiter, resistivity=self.drive.resistivity * radial_cell_sq(seq))
+                           newton_maxiter=n.maxiter, newton_mass_tol=n.mass_tol,
+                           resistivity=self.drive.resistivity * radial_cell_sq(seq))
 
     def relax_kwargs(self):
         """Return the keyword arguments ``steps``, ``chunk`` and ``floor_tol`` for
