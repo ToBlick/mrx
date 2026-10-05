@@ -8,11 +8,23 @@ in ``u``. Its gradient is ``-load(J x B)`` and its symmetric Hessian is
 
 At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
 
-* :func:`second_variation` returns the map ``u -> H u``, optionally with a penalty on flows along the field.
+In the compressible relaxation the velocity need not be divergence-free and an advected pressure ``p`` (a free
+0-form) moves with the flow, ``p_t = -u . grad p``. The energy is then ``int B^2/2 - p dV``, the ideal-MHD energy
+at ``gamma = 0``. Its gradient is ``-load(J x B - grad p)`` and its Hessian gains the pressure term
+
+    (u, H_p v) = [l(u)^T M_0^-1 d(v) + l(v)^T M_0^-1 d(u)] / 2,
+
+with ``l(u)`` the load of ``u . grad p`` and ``d(u)`` the load of ``div u``, both tested against the free
+0-forms, and ``M_0`` their mass matrix. It is the discrete form of ``int (u . grad p) div v``.
+
+* :func:`second_variation` returns the map ``u -> H u``, optionally with a penalty on flows along the field and
+  with the pressure term.
 * :func:`newton_direction` computes one Newton step. It writes ``u = curl a``, so that ``u`` is exactly
   divergence-free, and solves ``curl^T H curl a = curl^T M_2 F`` for the potential ``a`` by Newton-MR, a MINRES
   solve that can stop at a direction of nonpositive curvature. The preconditioner is
   :func:`harmonic_preconditioner`.
+* :func:`compressible_newton_direction` solves ``H u = M_2 F`` for the velocity itself, preconditioned by
+  :class:`CompressibleAtom`.
 * :class:`MassChebyshev` is a fixed polynomial approximation of the 1-form mass inverse. With it the two mass
   solves of every Hessian apply become a few mass applies, so no Krylov solve runs inside MINRES.
 
@@ -25,6 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import dual_norm
+from mrx.relaxation.physics import pressure_gradient
 from mrx.solvers import chebyshev, lanczos_bounds, minres
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
@@ -179,7 +192,7 @@ class MassChebyshev(eqx.Module):
         return chebyshev(lambda y: M @ y, x, M.precondition, self.bounds, self.steps)
 
 
-def second_variation(seq, B, J, penalty=None, mass_inverse=None):
+def second_variation(seq, B, J, penalty=None, mass_inverse=None, p=None):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
     ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
@@ -188,7 +201,8 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     Flows along the field, ``u = f B``, do not change ``B`` and form a null space of ``H``. ``penalty`` (the
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
     ``(v, M_par u) = int w(r) (v . B)(u . B) / |B|^2 dx``, which leaves flows across the field unchanged.
-    ``penalty=None`` gives the bare Hessian.
+    ``penalty=None`` gives the bare Hessian. An advected pressure ``p`` adds the pressure term of the module
+    docstring, at the cost of two 0-form mass solves.
     """
     # B, J and the intermediate forms live in the odd parity view, u and H u in the even one
     odd, even = seq.odd, seq.even
@@ -197,6 +211,9 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     if penalty is not None:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
         weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
+    if p is not None:
+        free = even.free
+        grad_p = pressure_gradient(p, seq)
 
     curl = odd.G[1]
     if mass_inverse is None:
@@ -204,6 +221,12 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     else:
         def m1_inv(x):
             return mass_inverse(odd, x)
+
+    def pressure_term(u, u_jk):
+        y = free.M[0].solve(free.P[3, 0] @ (even.G[2] @ u))                                # M_0^-1 d(u)
+        z = free.M[0].solve(free.dot_product_load_values(u_jk, grad_p, 0, 2, 1))          # M_0^-1 l(u)
+        return 0.5 * (even.scalar_vector_load_values(free.evaluate_at_quadrature(y, 0), grad_p, 2, 0, 1)
+                      + even.G[2].T @ (free.P[0, 3] @ z))
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
@@ -216,6 +239,8 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
         Y_jk = odd.evaluate_at_quadrature(Y, 1)
         Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
               + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        if p is not None:
+            Hu = Hu + pressure_term(u, u_jk)
         if penalty is None:
             return Hu
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
@@ -245,6 +270,48 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     rhs = curl_t(load)
     a, info, _ = newton_mr(A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, dual_norm(even, 1))
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
+
+
+class CompressibleAtom(eqx.Module):
+    """The preconditioner of the compressible Newton system ``H u = M_2 F``, applied to a dual 2-form ``y`` as
+    ``atom(seq, y)``.
+
+    It is the sum of two approximate inverses, one per part of the Hodge split of the velocity. The
+    divergence-free part ``curl a`` takes :func:`harmonic_preconditioner` of the potential, ``curl C curl^T y``.
+    The compressive part sees ``H`` as ``beta S_2``, the cost ``int |B|^2 (div u)^2`` of compressing the field,
+    with ``beta`` the volume mean of ``|B|^2`` and ``S_2 = G_2^T M_3 G_2``. Its pseudo-inverse is
+    ``M_2^-1 D_2^T L_3^-1 M_3 L_3^-1 D_2 M_2^-1 / beta`` with ``D_2 = M_3 G_2``, in which the mass and Laplacian
+    inverses are replaced by their preconditioners.
+    """
+    harmonic: HarmonicAtom
+    beta: jnp.ndarray
+
+    def __call__(self, seq, y):
+        solenoidal = seq.G[1] @ self.harmonic(seq, seq.G[1].T @ y)
+        s = seq.L[3].precondition(seq.D[2] @ seq.M[2].precondition(y))
+        s = seq.L[3].precondition(seq.M[3] @ s)
+        return solenoidal + seq.M[2].precondition(seq.D[2].T @ s) / self.beta
+
+
+def compressible_newton_direction(seq, B, J, p, load, u_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL,
+                                  maxiter=NEWTON_MAXITER, mass_inverse=None):
+    """The Newton direction of the compressible relaxation at ``(B, p)``. Returns ``(u, info)``.
+
+    ``J`` is the weak curl of ``B``, ``p`` the advected pressure and ``load`` the force ``J x B - grad p`` as a dual
+    2-form. The velocity solves ``H u = load`` with ``H`` the Hessian of ``int B^2/2 - p dV`` plus the
+    parallel-flow penalty of weight ``kappa``, by :func:`newton_mr` warm-started from ``u_guess`` and
+    preconditioned by :class:`CompressibleAtom`. ``tol``, ``maxiter``, ``mass_inverse`` and ``info`` are as in
+    :func:`newton_direction`.
+    """
+    even = seq.even
+    profiles = harmonic_atom_profiles(seq, B)
+    penalty = parallel_penalty_profile(profiles, kappa)
+    H = second_variation(seq, B, J, penalty, mass_inverse, p)
+    wJ = even.quad.w * even.jacobian_j
+    atom = CompressibleAtom(harmonic=harmonic_preconditioner(seq, profiles, penalty),
+                            beta=seq.odd.l2_norm_sq(B, 2) / jnp.sum(wJ))
+    u, info, _ = newton_mr(H, lambda y: atom(even, y), load, u_guess, tol, maxiter, dual_norm(even, 2))
+    return u, jnp.asarray(info, dtype=jnp.int32)
 
 
 def _newton_system(seq, B, J, penalty, mass_inverse):
