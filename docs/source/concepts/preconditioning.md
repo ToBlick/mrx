@@ -61,7 +61,9 @@ free spaces (`dp/dn = v . n`).
 
 There is no Krylov solve inside a Krylov solve. Where the weak term
 `M_k G M_{k-1}^{-1} G^T M_k` of `L_k` sits inside an iteration, the mass
-preconditioner replaces `M_{k-1}^{-1}` (`apply_laplacian_approx`). Every
+preconditioner replaces `M_{k-1}^{-1}` (`apply_laplacian_approx`). In the
+Newton Hessian a fixed Chebyshev polynomial in the mass atom replaces
+`M_1^{-1}` ([Relaxation](relaxation.md)). Every
 unshifted solve deflates the harmonic forms. Every solve stops on its true
 residual in the mass-atom norm ([Precision](precision.md)).
 
@@ -90,9 +92,9 @@ of the weak block enters the radial stiffness as a rank-one update, scaled
 by `PRODUCTION_BC_SCALE`.
 
 **Core.** The polar rows ([polar.md](polar.md)) are not tensor-product
-functions. The operator is probed on them, one apply per row in the
-residual precision, and the block is inverted densely, eigenvalues below
-`CORE_TOL` relative to the largest dropped.
+functions. The operator is probed on them in the residual precision, in
+batches of `PROBE_BATCH` rows per call, and the block is inverted densely,
+eigenvalues below `CORE_TOL` relative to the largest dropped.
 
 **Shifted stiffness.** The same atom preconditions `M_k + eps S_k` for an
 `eps` known only at the solve: the bulk Kronecker terms are shifted, and
@@ -101,6 +103,16 @@ the core pair `(M_k, S_k)` is diagonalised once so the block is
 
 On a half-period sequence the parity views reduce the base atoms
 (`ReducedAtom`, `X^T P X` with the view's expansion `X`).
+
+**The apply.** The three vector components of a 1- or 2-form have slightly
+different grid sizes. The apply pads them to one common size and treats
+them together, so each step runs once instead of once per component. The
+index shuffling around the blocks (picking out each component's entries,
+the parity views, putting the result back in order) is worked out once when
+the atom is built and done in a single lookup on the way in and one on the
+way out. On a GPU every small operation costs a few microseconds no matter
+how little it computes, so doing fewer of them halved the cost of an apply
+(`docs/research/performance.md`).
 
 ## 3. Building and invalidation
 
@@ -111,7 +123,7 @@ compute_nullspaces(seq)         # the harmonic forms, onto the bundle
 ```
 
 A missing atom raises at the solve. Nothing is built on demand. The atom
-payloads are `eqx.Module` pytrees with one jitted apply per tree structure,
-so a rebuild for a new geometry of the same discretisation reuses the
-compiled program. `test/test_vacuum.py` checks the Laplacian solves against
-manufactured solutions on the session geometry.
+payloads are `eqx.Module` pytrees of device arrays applied by one
+module-level jitted function, so a rebuild for a new geometry of the same
+discretisation reuses the compiled program. `test/test_poisson.py` checks
+the Laplacian solves against manufactured solutions on li383, k = 0..3.
