@@ -106,7 +106,9 @@ def main(cfg):
               f"{dr.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
-    print(f"\n=== {'newton-MR penalty=%g tol=%.1e maxiter=%d' % (n.penalty, n.tol, n.maxiter) if d.newton else 'gradient descent'}"
+    newton = 'newton-MR penalty=%g tol=%.1e maxiter=%d mass=%s' % (
+        n.penalty, n.tol, n.maxiter, 'solve' if ts.mass_inverse is None else 'chebyshev-%d' % ts.mass_inverse.steps)
+    print(f"\n=== {newton if d.newton else 'gradient descent'}"
           f"  smoothing@{ts.velocity_smoothing_scale:.3e}  steps<={b.steps} chunk={b.chunk} "
           f"floor-tol={b.floor_tol:.1e}"
           + (f"  drive: resistivity={dr.resistivity:g} h_r^2" if dr else "") + " ===", flush=True)

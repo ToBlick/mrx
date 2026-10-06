@@ -11,7 +11,7 @@ The force pairing ``-(u, J x B)_M`` must equal ``E'(0)``, and the second variati
 are computed from different code: the left from the stepper's ``A_u`` alone, the right from the current and the
 product loads. By polarisation the bilinear form is checked too, ``(u, H v) = (q(u + v) - q(u) - q(v)) / 2``
 with ``q(w)`` the ``E''(0)`` of the flow along ``w``. The parallel-flow penalty adds a positive semidefinite
-term.
+term. With the Chebyshev mass inverse in place of the mass solves the Hessian stays symmetric.
 
 The Newton direction is divergence-free to round-off and pairs positively with the force, and a short run with
 the production stepper lowers the energy at every step, lowers the force, keeps ``div B`` at round-off and the
@@ -29,7 +29,7 @@ import pytest
 from mrx.precision import DTYPE, eps
 from mrx.relaxation.loop import (TimeStepper, check_checkpoint, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
-from mrx.relaxation.newton import newton_direction, second_variation
+from mrx.relaxation.newton import MassChebyshev, newton_direction, second_variation
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
@@ -95,6 +95,26 @@ def test_parallel_penalty_is_positive_semidefinite(seq, b0):
     extra = float(u @ H_pen(u)) - float(u @ H(u))
     print(f"\n  (u, M_par u) {extra:+.6e}")
     assert extra > 0.0
+
+
+def test_chebyshev_mass_hessian_is_symmetric(seq, b0):
+    """The Chebyshev mass inverse meets its error bound against the mass solve, and the Hessian built with it is
+    symmetric, ``(u, H v) = (v, H u)``."""
+    odd = seq.odd
+    _, _, J, _ = compute_force(b0, seq)
+    S = MassChebyshev.build(seq, 0.3)
+    lmin, lmax = (float(x) for x in S.bounds)
+    rate = (np.sqrt(lmax / lmin) - 1) / (np.sqrt(lmax / lmin) + 1)
+    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(5), (odd.n(1),), dtype=DTYPE)
+    x = odd.M[1].solve(b)
+    err = float(odd.l2_norm(S(odd, b) - x, 1) / odd.l2_norm(x, 1))
+    H = second_variation(seq, b0, J, mass_inverse=S)
+    u, v = _divergence_free(seq, jax.random.PRNGKey(6)), _divergence_free(seq, jax.random.PRNGKey(7))
+    uHv, vHu = float(u @ H(v)), float(v @ H(u))
+    print(f"\n  bounds [{lmin:.3f}, {lmax:.3f}], error {err:.2e} (degree {S.steps}, bound {2 * rate ** S.steps:.2e}), "
+          f"(u, H v) {uHv:+.6e} vs (v, H u) {vHu:+.6e}")
+    assert err < 2 * rate ** S.steps < 0.3
+    assert abs(uHv - vHu) < 1e3 * eps() * (abs(float(u @ H(u))) + abs(float(v @ H(v))))
 
 
 def test_newton_direction_is_divergence_free_and_descends(seq, b0):

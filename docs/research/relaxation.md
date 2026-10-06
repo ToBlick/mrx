@@ -242,6 +242,26 @@ Results with the penalty (2026-09-17/18), vs the previous released configuration
 - Newton ladder (5 rungs x 60 steps, 2.5% H per resistive solve): every rung floors (4.9 / 3.2 / 1.6 /
   1.7 / 1.7e-9), 300 steps in 22 min vs 40000 descent steps (3.3 h). Removed with the reconnection
   series because of the regularised search (2026-09-12/13).
+- Step dt = theta dt* up to the CFL limit instead of the cap 1 (2026-10-05, li383 1.4m and seeded W7-X
+  (16,32,32)): dt* grows to 20-585 toward the floor with the cap, but taking it reaches 1e-9 later on both
+  (li383 never, W7-X 116 vs 13 steps) and opens islands on li383 (12 vs 3 chaotic lines). theta = 1/2:
+  68 vs 41 steps. Cap 1 kept.
+- Inexact Newton forcing (Eisenstat-Walker choice 2, 0.9 (F_k/F_k-1)^2 in [0.05, 0.5]) and a MINRES
+  stagnation exit (25 or 50 iterations, ratio 0.8), with the early exit (2026-10-05): forcing loosens to 0.5
+  near li383's floor and floors at 2e-9, slower than a fixed 0.3 on W7-X. Stall exit floors 1e-8 (window
+  25) or needs 3x the steps on W7-X (window 50).
+
+### Newton tolerance and MINRES budget (2026-10-05, early exit)
+
+- Until 2026-10-05 newton_mr ran MINRES with tol = 0, so every solve took maxiter iterations and
+  --newton.tol only set the sign of the count. Now MINRES stops at its residual estimate of --newton.tol.
+- Fixed states (W7-X, li383 1.4m (16,32,32)): energy removed by one step vs maxiter 800. li383 from step 5 on:
+  25 iterations = 800. W7-X late: 25-200 iterations 0.78-0.90, 400-800 +20 % at 2-4x cost.
+- tol sweep, 200 steps (to 1e-9 in steps / compute s, best): li383 0.5 never / 1.9e-9, 0.3 101 / 64 /
+  8.2e-10, 0.1 47 / 38 / 3.6e-10, 0.03 41 / 49, 0.01 41 / 54 / 3.1e-10 (= always 200). W7-X 0.5 25 / 14 /
+  1.7e-10, 0.3 18 / 11 / 9.1e-11, 0.1-0.01 13-15 / 21-24 / 7.8-8.3e-11. Cap 400 at 0.01-0.03: W7-X 8 steps
+  to 1e-9 but 2.4 s/step. Chaotic lines, energy and helicity equal across arms.
+- Caps 50 and 100 cost more steps than they save (li383 cap 50: 127 steps to 1e-9).
 
 ## 5. Helicity
 

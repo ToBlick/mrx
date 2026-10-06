@@ -1,33 +1,39 @@
 # Mass operators
 
 No mass matrix is stored. Every operator that needs quadrature is applied
-element by element from the 1-D basis tables and the metric weight at the
-quadrature points (`mrx/mass.py`).
+from the 1-D basis tables and the metric weight at the quadrature points
+(`mrx/mass.py`).
 
 ## 1. The apply
 
-The mass matrix of `V^k` is `(M_k)_IJ = int Lambda_I . W_k . Lambda_J dx`. A degree-`p`
-spline touches `p + 1` cells per axis, so `M_k` is a sum over elements of
-dense `(p+1)^3 x (p+1)^3` blocks. A matvec never forms them. Per element it
+The mass matrix of `V^k` is `(M_k)_IJ = int Lambda_I . W_k . Lambda_J dx`. A matvec
+never forms it. It is a global sum factorisation on the whole coefficient grid:
 
-1. reads the local coefficient cube (on a tensor-product basis the
-   element-to-DoF map of every axis is a shift, so this is a stack of
-   rolled slices, no index tensor).
-2. contracts it to the element's quadrature points by 1-D contractions
-   (sum factorisation, with the `theta` and `zeta` tables fused into one).
-3. multiplies by the weight, mixing the components at the quadrature points.
-4. contracts back and accumulates by the same shifts.
+1. the coefficients of each component are zero-padded to the largest grid
+   of the form, so the three components of a 1- or 2-form form one batch.
+2. one contraction per axis with the 1-D basis tables takes the batch to the
+   quadrature grid.
+3. the weight mixes the components at every quadrature point.
+4. the same contractions with the row tables take it back.
+
+On a GPU every launched kernel costs a few microseconds whatever its size, and
+at the meshes MRX runs the apply is bound by the number of kernels, not by
+arithmetic. The batched form needs a handful of large contractions where an
+element-by-element apply (gather the local cube, two small contractions in,
+two out, scatter, per component) needed about 30 kernels for `M_1`. It is
+1.5x faster on li383 (12,16,16) and 1.4-2.2x on W7-X (16,32,32)
+(`docs/research/performance.md`).
 
 Row and column tables are the same, so the apply is symmetric by
-construction. `mass_plan(seq, k)` is the geometry-independent part (tables,
-shift plans, weight structure), built once per sequence.
+construction. `mass_plan(seq, k)` is the geometry-independent part (the padded
+tables and the component shapes), built once per sequence.
 `attach_weights(seq, geometry)` puts the weights on the geometry.
 `sumfact_apply(plan, weights, x)` applies them on the raw DoFs, and the
 caller applies the extraction, `seq.M[k] @ v = E M_k E^T v`. The
 inter-degree projection masses `P_21`, `P_12`, `P_03`, `P_30`
 (`projection_plan`) are the same apply with the weight `I`.
 `build_mass_diagonal(seq, k)` gives `diag(M_k)` by the same sum
-factorisation, with no apply.
+factorisation with squared tables, with no apply.
 
 ## 2. The weights
 
@@ -40,17 +46,19 @@ factorisation, with no apply.
 
 with `g = DPhi^T DPhi`, where `DPhi` is the Jacobian of the map `Phi`.
 `SequenceGeometry` stores `g`, `g^{-1}` and `det DPhi` at the quadrature
-points. Each weight entry is one elementwise
-product or quotient of them (six unique entries for k = 1, 2), formed once
-per geometry in the element layout with the Gauss weights folded in. The
+points. The weight is one pointwise product or quotient of them, stored as
+the full `n x n` matrix per quadrature point (`n` = 1 or 3 components),
+formed once per geometry on the quadrature grid with the Gauss weights
+folded in. The
 weights are fields of the geometry pytree, so a new map runs the same compiled
 kernel with new arguments.
 
 ## 3. Memory
 
 Resident per quadrature point: the metric, its inverse and `det DPhi` (19
-scalars) plus the unique weight entries (14 over k = 0..3). Per apply the
-largest transient is one element field at the quadrature points. A stored
+scalars) plus the weights (20 over k = 0..3, and 10 for the projection
+masses). Per apply the largest transient is the batch of component fields on
+the quadrature grid. A stored
 `M_k` would be `O(n^3 (p+1)^6)`.
 
 ## 4. Quadrature: `q = p + 1`
