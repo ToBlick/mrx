@@ -13,7 +13,7 @@ At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
   divergence-free, and solves ``curl^T H curl a = curl^T M_2 F`` for the potential ``a`` by Newton-MR, a MINRES
   solve that can stop at a direction of nonpositive curvature. The preconditioner is
   :func:`harmonic_preconditioner`.
-* :class:`MassChebyshev` is a fixed polynomial approximation of the 1-form mass inverse. With it the three mass
+* :class:`MassChebyshev` is a fixed polynomial approximation of the 1-form mass inverse. With it the two mass
   solves of every Hessian apply become a few mass applies, so no Krylov solve runs inside MINRES.
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
@@ -179,8 +179,8 @@ class MassChebyshev(eqx.Module):
 def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
-    ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs three 1-form mass solves,
-    or, with ``mass_inverse`` (a :class:`MassChebyshev`), three applies of that approximation of ``M_1^{-1}``.
+    ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
+    or, with ``mass_inverse`` (a :class:`MassChebyshev`), two applies of that approximation of ``M_1^{-1}``.
     The map then stays exactly symmetric.
     Flows along the field, ``u = f B``, do not change ``B`` and form a null space of ``H``. ``penalty`` (the
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
@@ -207,14 +207,12 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
         E = m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
         Q = curl @ E
         Q_jk = odd.evaluate_at_quadrature(Q, 2)
-        dJ = m1_inv(odd.D[1].T @ Q)
-        dJ_jk = odd.evaluate_at_quadrature(dJ, 1)
         JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
-        W = m1_inv(curl.T @ JxU)
-        W_jk = odd.evaluate_at_quadrature(W, 1)
-        Hu = (even.cross_product_load_values(B_jk, dJ_jk, 2, 2, 1)
-              + 0.5 * (even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1)
-                       + even.cross_product_load_values(B_jk, W_jk, 2, 2, 1)))
+        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
+        Y = m1_inv(odd.D[1].T @ Q + 0.5 * (curl.T @ JxU))
+        Y_jk = odd.evaluate_at_quadrature(Y, 1)
+        Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
+              + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
         if penalty is None:
             return Hu
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2

@@ -72,7 +72,7 @@ nonpositive curvature. `H` vanishes on field-aligned flows `u = f B`, and a
 penalty of `newton_penalty` times the strain along the field lifts that
 null space.
 
-Every apply of `H` contains three k = 1 mass solves, so the Newton solve runs
+Every apply of `H` contains two k = 1 mass solves, so the Newton solve runs
 a Krylov solve inside MINRES, and the mass solves dominate its cost. By
 default (`newton_mass_tol = 1e-3`, `None` keeps the solves) they are
 replaced by `MassChebyshev`, the Chebyshev polynomial of degree `k` in the
