@@ -26,6 +26,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import solvax
 
 from mrx.differential_forms import DifferentialForm, inv33
 from mrx.equilibria import CylindricalMap
@@ -226,7 +227,12 @@ def vacuum_two_form(seq, seed):
     """``(h, info)``: the vacuum field, the harmonic 2-form ``h = seed - G_1 a`` with ``S_1 a = G_1^T M_2
     seed`` (see the module docstring), on ``seq`` (a :func:`with_geometry` copy). ``h`` is differentiable in
     the geometry and has the toroidal flux of ``seed``, without normalisation. ``info`` is the signed
-    iteration count of the forward solve."""
+    iteration count of the forward solve.
+
+    The right-hand side lies in the range of ``G_1^T``, so the exact part of a Hodge-Laplacian solve is zero
+    and one preconditioned conjugate-gradient solve on ``S_1`` (:func:`solvax.pcg`, with the preconditioner of
+    ``L_1``) gives ``a``. The forward and the adjoint solve are both this solve, so the derivative is that of
+    the converged equation. The residual is measured in the Euclidean norm, two digits below ``seq.tol``."""
     b = seq.D[1].T @ seed
     parity = seq.free_projector(1)
 
@@ -236,9 +242,10 @@ def vacuum_two_form(seq, seed):
     def solve(_, r):
         if parity is not None:
             # h is odd. The adjoint right-hand side has an even part, which pairs to zero with every odd
-            # tangent but would otherwise decide the parity the solver reads off it.
+            # tangent. Removing it keeps both solves in the odd space.
             r = parity.dual(r, -1.0)
-        return seq.L[1].solve(r, return_info=True)
+        sol = solvax.pcg(matvec, r, precond=seq.L[1].precondition, rtol=1e-2 * seq.tol, max_steps=seq.maxiter)
+        return sol.x, jnp.where(sol.converged, sol.iterations, -sol.iterations)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - seq.G[1] @ a, info
