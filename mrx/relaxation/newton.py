@@ -271,8 +271,8 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=
     """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info, npc)``.
 
     If the warm start ``x0`` already meets ``norm(b - A_res x0) <= tol norm(b)`` it is returned unchanged.
-    Otherwise one preconditioned MINRES solve of at most ``maxiter`` iterations computes the correction to
-    ``x0``. ``A_res`` is the operator in the residual precision and ``A`` the one in ``inner_dtype``. MINRES
+    Otherwise one preconditioned MINRES solve computes the correction to ``x0``. It stops when its own residual
+    estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. ``A_res`` is the operator in the residual precision and ``A`` the one in ``inner_dtype``. MINRES
     stops early at a direction of nonpositive curvature (``npc`` is then true). Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
     from zero. ``project_dual`` removes round-off of the wrong parity from the residual. ``info`` is the number
@@ -287,10 +287,11 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=
 
     def solve(_):
         rnorm = norm(r0)
-        d, info, npc = minres(A, (r0 / rnorm).astype(inner_dtype), M=P, tol=0.0, maxiter=maxiter, npc_exit=True)
+        d, info, npc = minres(A, (r0 / rnorm).astype(inner_dtype), M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
+                              npc_exit=True)
 
         def from_zero(_):
-            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=0.0, maxiter=maxiter, npc_exit=True)
+            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True)
             return d0.astype(RESIDUAL_DTYPE) * bnorm, jnp.abs(info0).astype(jnp.int32)
 
         x_new, its_npc = jax.lax.cond(npc, from_zero,
