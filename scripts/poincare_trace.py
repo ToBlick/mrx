@@ -14,7 +14,8 @@ and one pressure scale.
     python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc outputs/run/checkpoints/state_*.h5
 
 The archive (numpy .npz) holds ``fields`` (the checkpoint names, in order), ``planes``, ``resolution``, ``p``,
-``nfp``, ``symmetry``, ``steps`` (per period), ``source`` and ``trace_precision``. Per field ``<f>`` it holds
+``nfp``, ``symmetry``, ``steps`` (per period), ``source``, ``trace_precision`` and ``section_labels`` (the names of
+the section coordinates stored as ``R``, ``Z``: ``R``, ``Z``, or ``X1``, ``X2`` of a G-frame). Per field ``<f>`` it holds
 ``<f>_label``, ``<f>_step``, ``<f>_bsq`` (the volume mean of |B|^2, which the plotter uses to normalise the
 pressure), ``<f>_iota``, ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``, ``<f>_shown`` and ``<f>_drift``. Per field
 and plane it holds ``<f>_zeta<plane>_{R,Z,axisR,axisZ,logr,logth}`` and ``<f>_zeta<plane>_pressure``, the weak

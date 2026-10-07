@@ -6,15 +6,18 @@ a plausible axis. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or c
 reproduces its formulas to round-off, and DESC's conversion of the li383 wout matches the wout.
 Without stellarator symmetry: the li383 wout and the synthetic GVEC state, shifted in both angles, read as
 the shifted series, and a synthetic DESC file with terms of the other parity reproduces its formulas.
+G-frame: the synthetic torus written in GVEC's axis-following frame reads as the same map.
 Orientation: ``read_equilibrium`` reverses the poloidal angle of the left-handed VMEC files and not of DESC's
 right-handed conversion, and the result is right-handed with the same R and Z at the mirrored angle.
 """
+import jax
+import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 from scipy.io import netcdf_file
 
 import mrx
-from mrx.equilibria import _left_handed, is_stellarator_symmetric, read_equilibrium
+from mrx.equilibria import _left_handed, is_stellarator_symmetric, read_equilibrium, state_position
 from mrx.equilibria.fit import axis_orders
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
@@ -56,6 +59,21 @@ def test_gvec_state_file_reproduces_the_formulas(tmp_path):
         assert np.abs(got - np.asarray(want)).max() <= mrx.eps(8192) * max(1.0, np.abs(want).max()), name
     dPsi = st["profiles"]["phi"].derivative()(r)
     assert np.abs(dPsi - np.asarray(torus.dPsi_dr(r))).max() <= mrx.eps(8192)
+
+
+def test_gvec_gframe_state_is_the_same_torus(tmp_path):
+    """The synthetic torus written in GVEC's G-frame (``hmap = 21``, a frame that turns once per field period)
+    reads as the same map as the cylindrical state, over two field periods, with the same theta reversal."""
+    kw = dict(R0=R0, a=A, nfp=NFP, iota=IOTA, Psi_edge=PSI_EDGE, lam_amplitude=LAM_AMPLITUDE, beta=BETA)
+    (tmp_path / "gframe").mkdir()
+    cylindrical, framed = str(tmp_path / "GVEC_State_torus.dat"), str(tmp_path / "gframe" / "GVEC_State_torus.dat")
+    write_synthetic_state(cylindrical, **kw)
+    write_synthetic_state(framed, frame=True, **kw)
+    st_c, st_f = read_equilibrium(cylindrical), read_equilibrium(framed)
+    assert st_f["hmap"] == 21 and st_f["theta_reversed"] and is_stellarator_symmetric(st_f)
+    x = jnp.asarray(np.random.default_rng(0).uniform([0.0, 0.0, 0.0], [1.0, 1.0, 2.0], (64, 3)))
+    got, want = jax.vmap(state_position(st_f))(x), jax.vmap(state_position(st_c))(x)
+    assert jnp.abs(got - want).max() <= mrx.eps(64) * R0
 
 
 def test_vmec_li383_reads_and_reproduces_the_file():

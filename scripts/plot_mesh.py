@@ -73,9 +73,11 @@ def main(cli):
     print(f"[mesh] {label}: nfp={nfp} radial cells {ns[0] - p}, "
           f"breakpoints {'given' if bp is not None else 'uniform'}", flush=True)
 
+    section_v = jax.jit(jax.vmap(Phi.section))
+
     def RZ(r, th, ze):
-        y = np.asarray(Phi_v(jnp.stack([jnp.asarray(r), jnp.asarray(th), jnp.asarray(ze)], axis=-1)))
-        return np.hypot(y[:, 0], y[:, 1]), y[:, 2]
+        # the coordinates in the cross-section: (R, Z), or (X1, X2) in the plane of a G-frame
+        return np.asarray(section_v(jnp.stack([jnp.asarray(r), jnp.asarray(th), jnp.asarray(ze)], axis=-1))).T
 
     os.makedirs(cli.out, exist_ok=True)
     with house_style():

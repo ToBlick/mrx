@@ -273,7 +273,7 @@ def _padded(v, pad=0.06, floor=0.0):
 @house_style()
 def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subtitle=None, pressure=None,
                    pressure_label=r"$p$", iota_lim=None, p_lim=None, window=None, profile_rays=1,
-                   axis_marker=True, dot_scale=1.0):
+                   axis_marker=True, dot_scale=1.0, labels=("R", "Z")):
     """A figure of one Poincare section in three panels: the ``(R, Z)`` crossings coloured by the iota of their
     line, the same crossings in the logical ``(theta, r)`` plane, and iota against logical r read along
     ``profile_rays`` poloidal rays.
@@ -289,7 +289,7 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
 
     ``iota_lim``, ``p_lim`` (each ``(lo, hi)``) and ``window`` (``((R0, R1), (Z0, Z1))``) fix the scales, so
     that several figures can be compared. ``dot_scale`` multiplies the marker size, ``axis_marker`` draws the
-    axis, and ``title=None`` leaves out the figure title. Returns ``(fig, (ax_section, ax_logical,
+    axis, ``labels`` names the section's axes, and ``title=None`` leaves out the figure title. Returns ``(fig, (ax_section, ax_logical,
     ax_profile))``.
     """
     has_p = pressure is not None
@@ -364,8 +364,8 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
                 transform=ax.transAxes, ha="center", fontsize=FS.annot, color="0.35")
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
-    ax.set_xlabel("R")
-    ax.set_ylabel("Z")
+    ax.set_xlabel(labels[0])
+    ax.set_ylabel(labels[1])
 
     # the logical chart, split by its own coordinate: iota on theta < 1/2, p on theta >= 1/2
     top = lth < 0.5 if has_p else np.ones_like(R, dtype=bool)
@@ -475,6 +475,8 @@ def plot_archive(archive, out, *, fields=None, planes=None, pressure=True, profi
     if planes:
         shown_planes = [pl for pl in shown_planes if any(abs(pl - v) < 1e-9 for v in planes)]
     nfp = int(archive["nfp"])
+    # archives traced before 2026-10-06 hold cylindrical sections and no labels
+    labels = tuple(str(v) for v in archive.get("section_labels", ("R", "Z")))
     per = {n: {k: np.asarray(archive[f"{n}_{k}"]) for k in ("iota", "keep", "shown")} for n in which}
     if iota_lim is None:
         iota_lim = (min(float(per[m]["iota"][per[m]["shown"]].min()) for m in which if per[m]["shown"].any()),
@@ -493,7 +495,8 @@ def plot_archive(archive, out, *, fields=None, planes=None, pressure=True, profi
             fig, _ = render_section(R, Z, per[n]["iota"], per[n]["keep"], logical=(lr, lth), axis_RZ=(aR, aZ),
                                     nfp=nfp, pressure=presses[n, pl], pressure_label=PRESSURE_LABEL,
                                     axis_marker=False, dot_scale=dot_scale, iota_lim=iota_lim, p_lim=p_lim,
-                                    window=window, profile_rays=profile_rays)
+                                    window=window, profile_rays=profile_rays,
+                                    labels=labels)
             paper_fonts(fig, label_size=label_size, page_width=page_width)
             stem = os.path.join(out, f"poincare{'' if len(all_fields) == 1 else '_' + n}_zeta{pl:g}")
             # the tight box crops the left margin of the layout (colour bars) here, not in the including document

@@ -2,7 +2,8 @@ r"""Poincare sections of a magnetic field given as a discrete 2-form.
 
 The entry point is :func:`poincare`. It starts field lines on a ray from the magnetic axis to the edge,
 follows them for many field periods, measures the rotational transform iota of each line, marks the lines
-that are chaotic, and returns their crossings with a few toroidal planes as ``(R, Z)`` points.
+that are chaotic, and returns their crossings with a few toroidal planes as ``(R, Z)`` points (for a G-frame map
+the coordinates ``(X1, X2)`` in the plane of the frame, under the same keys).
 :func:`locked_width` reads a quick island width off that result. :func:`trace_archive` traces several fields
 into one archive with the weak pressure at every crossing, the input of
 :func:`mrx.diagnostics.plotting.plot_archive` and of ``scripts/poincare_plot.py``.
@@ -267,15 +268,16 @@ def steps_for(planes):
 
 
 @partial(jax.jit, static_argnames=("seq",))
-def _map_points(seq, x):
-    return jax.vmap(seq.map)(x.reshape(-1, 3)).reshape(x.shape)
+def _section_points(seq, x):
+    return jax.vmap(seq.map.section)(x.reshape(-1, 3)).reshape(x.shape[:-1] + (2,))
 
 
 def to_RZ(seq, ys, zeta):
-    """The cylindrical ``(R, Z)`` of ``(u, v)`` cross-section points at the logical angle ``zeta``."""
+    """The coordinates in the cross-section (``section`` of the map: cylindrical ``(R, Z)``, or ``(X1, X2)`` in
+    the plane of a G-frame) of ``(u, v)`` cross-section points at the logical angle ``zeta``."""
     r, theta = to_polar(ys)
-    xyz = _map_points(seq, jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1))
-    return jnp.sqrt(xyz[..., 0] ** 2 + xyz[..., 1] ** 2), xyz[..., 2]
+    xy = _section_points(seq, jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1))
+    return xy[..., 0], xy[..., 1]
 
 
 def _section_RZ(seq, ys, axis_uv, steps_per_period, plane):
@@ -363,6 +365,7 @@ def trace_archive(seq, fields, *, lines=160, periods=400, planes=5, seed=0, sour
 
     archive = {"fields": np.array(list(fields)), "planes": np.array(planes), "resolution": np.array(seq.ns),
                "p": seq.p, "nfp": seq.nfp, "symmetry": np.array(seq.symmetry), "steps": steps_for(planes),
+               "section_labels": np.array(seq.map.section_labels),
                "source": np.array(source), "trace_precision": np.array(jnp.dtype(seq.dtype).name)}
     results = {}
     for name, (B, step) in fields.items():

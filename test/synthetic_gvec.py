@@ -19,11 +19,22 @@ The poloidal angle runs counter-clockwise, so the angles are left-handed as in a
 VMEC file and :func:`mrx.equilibria.read_equilibrium` reverses theta. :func:`evaluate` evaluates a block
 independently of the parser. ``shift = (c, d)`` writes the same fields at
 ``(theta_G + c, zeta_G + d)``, without stellarator symmetry.
+
+``frame=True`` writes the same torus in GVEC's G-frame (``hmap = 21``), with the frame file ``frame.nc``
+and a parameter file ``parameter.ini`` naming it next to the state. The axis is the circle ``R = R0``,
+and the frame turns once per field period about it,
+
+    N = cos(alpha) e_R - sin(alpha) e_Z,   B = -sin(alpha) e_R - cos(alpha) e_Z,   alpha = -nfp zeta_G,
+
+so ``(T, N, B)`` is right-handed, ``X1 = a r cos(theta_G - nfp zeta_G)`` and
+``X2 = -a r sin(theta_G - nfp zeta_G)``.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
+import h5py
 import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
@@ -123,7 +134,7 @@ def _sincos(modes, sin_cos, nfp, c, d):
 
 
 def write_synthetic_state(path, *, R0, a, nfp, iota, Psi_edge, lam_amplitude,
-                          beta, n_elems=10, deg=5, shift=None):
+                          beta, n_elems=10, deg=5, shift=None, frame=False):
     """Write the synthetic state to ``path`` and return its :class:`SyntheticTorus`.
 
     Args:
@@ -139,6 +150,7 @@ def write_synthetic_state(path, *, R0, a, nfp, iota, Psi_edge, lam_amplitude,
             (GVEC's defaults for W7-X).
         shift: ``(c, d)`` writes the fields at ``(theta_G + c, zeta_G + d)``. The state is then not
             stellarator-symmetric and every block carries both the sine and the cosine series.
+        frame: write the torus in the G-frame, with ``frame.nc`` and ``parameter.ini`` next to ``path``.
     """
     iota0, iota1 = (float(v) for v in iota)
     torus = SyntheticTorus(float(R0), float(a), int(nfp), float(Psi_edge),
@@ -152,6 +164,9 @@ def write_synthetic_state(path, *, R0, a, nfp, iota, Psi_edge, lam_amplitude,
         "X2": (1, [(1, 0, a * g)]),
         "LA": (1, [(1, 0, lam_amplitude * g), (1, nfp, half * g), (1, -nfp, half * g)]),
     }
+    if frame:
+        blocks["X1"], blocks["X2"] = (2, [(1, nfp, a * g)]), (1, [(1, nfp, -a * g)])
+        _write_frame(os.path.dirname(os.path.abspath(path)), R0, nfp)
     if shift is not None:
         blocks = {name: (3, _sincos(modes, sin_cos, nfp, *shift)) for name, (sin_cos, modes) in blocks.items()}
     rule = "#" * 60
@@ -159,7 +174,7 @@ def write_synthetic_state(path, *, R0, a, nfp, iota, Psi_edge, lam_amplitude,
              f"## grid: nElems, gridType {rule}", f"{n_elems:8d},{0:8d}",
              "## grid: sp(0:nElems)", _row(sp),
              f"## global: nfp,degGP,mn_nyq(2),hmap {rule}",
-             f"{nfp:8d},{deg + 2:8d},{4:8d},{4:8d},{1:8d}"]
+             f"{nfp:8d},{deg + 2:8d},{4:8d},{4:8d},{21 if frame else 1:8d}"]
     for name, (sin_cos, modes) in blocks.items():
         lines.append(f"## {name}_base: s%nbase,s%deg,s%continuity,f%modes,f%sin_cos,f%excl_mn_zero {rule}")
         lines.append(f"{len(g):8d},{deg:8d},{deg - 1:8d},{len(modes):8d},{sin_cos:8d},{0:8d}")
@@ -175,3 +190,21 @@ def write_synthetic_state(path, *, R0, a, nfp, iota, Psi_edge, lam_amplitude,
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
     return torus
+
+
+def _write_frame(directory, R0, nfp, n_zeta=7):
+    """Write the G-frame file ``frame.nc`` of the synthetic torus and a ``parameter.ini`` naming it into
+    ``directory``, with ``n_zeta`` samples per field period over the full turn."""
+    zeta = (np.arange(nfp * n_zeta) + 0.5) / n_zeta * TWO_PI / nfp
+    alpha = -nfp * zeta
+    e_R = np.array([np.cos(zeta), np.sin(zeta), np.zeros_like(zeta)])
+    e_Z = np.array([np.zeros_like(zeta), np.zeros_like(zeta), np.ones_like(zeta)])
+    vectors = {"xyz": R0 * e_R, "Nxyz": np.cos(alpha) * e_R - np.sin(alpha) * e_Z,
+               "Bxyz": -np.sin(alpha) * e_R - np.cos(alpha) * e_Z}
+    with h5py.File(os.path.join(directory, "frame.nc"), "w") as fh:
+        fh["NFP"] = nfp
+        fh["axis/zeta(:)"] = zeta[:n_zeta]
+        for name, v in vectors.items():
+            fh[f"axis/{name}(::)"] = v
+    with open(os.path.join(directory, "parameter.ini"), "w") as fh:
+        fh.write("which_hmap = 21\nhmap_ncfile = frame.nc\n")
