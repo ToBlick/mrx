@@ -58,6 +58,12 @@ Paper-arm rate -> rate on e680ab4:
 - The Hessian error is 3-4x the error of the M_1^-1 approximation. mass-tol 1e-2 (degree 17) stalls li383
   at 1e-6, 1e-3 and 1e-4 reach the solve floor. 20 Lanczos steps put the bottom of the atom*M_1 interval
   20 % high (kappa ~34 li383), 60 are converged to 3 %.
+- 2026-10-08, finer meshes (li383 1.4m, 20 Newton steps from the wout field, `--newton.mass-tol` 1e-3 / 1e-4 /
+  1e-5 / exact solves, outputs/masstol_scan): at (32,64,64) 1e-3 stalls at resid 2e-6 in float64 and mixed, while
+  1e-4 and tighter reach 1e-9 like exact solves. At (16,32,32) 1e-3 is only 2x above the floor, so the coarse
+  sweep above missed it. First seen on W7-X free-boundary meshes. The Chebyshev degree is 27 / 35 / 43 at
+  (16,32,32) and 28 / 36 / 45 at (32,64,64), so kappa of atom * M_1 does not grow with n. Wall time at
+  (32,64,64) float64: 118 s (1e-3), 186 s (1e-4), 260 s (exact), mixed 98 / 142 / 170 s. Default is now 1e-4.
 
 ## 2b. Kernel-level profile (XProf, H100, 2026-10-05)
 

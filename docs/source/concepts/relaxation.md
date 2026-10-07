@@ -74,7 +74,7 @@ null space.
 
 Every apply of `H` contains two k = 1 mass solves, so the Newton solve runs
 a Krylov solve inside MINRES, and the mass solves dominate its cost. By
-default (`newton_mass_tol = 1e-3`, `None` keeps the solves) they are
+default (`newton_mass_tol = 1e-4`, `None` keeps the solves) they are
 replaced by `MassChebyshev`, the Chebyshev polynomial of degree `k` in the
 mass atom times `M_1`
 (`mrx.solvers.chebyshev`). It costs `k` mass applies and runs no loop. It is

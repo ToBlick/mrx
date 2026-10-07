@@ -352,7 +352,9 @@ class DeRhamSequence():
         """The view of a half-period sequence whose spaces contain only the fields of the given
         parity (``+1`` even, ``-1`` odd). It shares the geometry and quadrature with this
         sequence, has about half the DoFs and its own preconditioners. A full-period sequence is
-        its own view."""
+        its own view. In compiled code take both views from the full sequence. A view reaches the
+        other one through its static base, so that view's arrays would be compiled in as
+        constants, which a later :meth:`set_map` does not reach."""
         s = int(parity)
         if not self.half_period or s == self.parity:
             return self
