@@ -233,12 +233,14 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     positive when ``tol`` was met and negative when not. ``u`` and ``a`` are in the sequence's dtype.
     """
     even = seq.even                           # a and u = curl a live in the even parity view
-    on = even if even.residual is None else even.residual
+    # Both parity views are taken from a full sequence. From a view the other one is reached through its static
+    # base, and its geometry would be compiled in as a constant that a later set_map does not reach.
+    on = seq if seq.residual is None else seq.residual
     profiles = harmonic_atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
-    curl, curl_t, A = _newton_system(even, B, J, penalty, mass_inverse)
+    curl, curl_t, A = _newton_system(seq, B, J, penalty, mass_inverse)
     # the residual operator computes its own penalty from B in the residual precision
-    penalty_res = penalty if on is even else parallel_penalty_profile(
+    penalty_res = penalty if on is seq else parallel_penalty_profile(
         harmonic_atom_profiles(on, B.astype(on.dtype)), kappa)
     A_res = _newton_system(on, B, J, penalty_res, mass_inverse)[2]
     atom = harmonic_preconditioner(seq, profiles, penalty)
@@ -253,14 +255,16 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
 
 
 def _newton_system(seq, B, J, penalty, mass_inverse):
-    """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Newton system on the even view ``seq``."""
+    """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Newton system on the even view of the full
+    sequence ``seq``."""
     Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), penalty, mass_inverse)
+    even = seq.even
 
     def curl(a):
-        return seq.G[1] @ a
+        return even.G[1] @ a
 
     def curl_t(y):
-        return seq.G[1].T @ y
+        return even.G[1].T @ y
 
     def A(a):
         return curl_t(Hs(curl(a)))
