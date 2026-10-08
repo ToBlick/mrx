@@ -1,7 +1,8 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
 On QA at (8, 12, 12) p=2 the field is the harmonic 2-form of :func:`mrx.nullspace.compute_nullspaces` up to
-its scale, and the derivative of the mean rotational transform with respect to every map coefficient matches
+its scale and equals the field of the full Laplacian solve, a gradient added to the potential does not change it,
+and the derivative of the mean rotational transform with respect to every map coefficient matches
 central differences. Shape gradients need float64 (see tutorial 6), so the test is skipped in float32.
 """
 import os
@@ -32,6 +33,13 @@ def test_vacuum_field_and_its_shape_derivative():
     harmonic = seq.nullspace(2)[0]
     scale = (h @ harmonic) / (harmonic @ harmonic)
     assert jnp.linalg.norm(h - scale * harmonic) <= 1e-8 * jnp.linalg.norm(h)
+    # The same field as the full Hodge-Laplacian solve
+    h_L = seed - seq.G[1] @ seq.L[1].solve(seq.D[1].T @ seed)
+    assert jnp.linalg.norm(h - h_L) <= 1e-8 * jnp.linalg.norm(h)
+    # The S_1 solve leaves the gradient part of a free; it cannot reach h because G_1 G_0 = 0
+    phi = jax.random.normal(jax.random.PRNGKey(0), (seq.n(0),), dtype=h.dtype)
+    gradient = seq.G[0] @ phi
+    assert jnp.linalg.norm(seq.G[1] @ gradient) <= 1e-12 * jnp.linalg.norm(gradient)
 
     _, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
     shape = sa.BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], seq.nfp, extension="harmonic",

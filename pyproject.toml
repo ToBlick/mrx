@@ -41,7 +41,6 @@ dependencies = [
     "equinox",
     "h5py",
     "tyro",
-    "solvax",
 ]
 
 [tool.pytest.ini_options]
