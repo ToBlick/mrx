@@ -36,7 +36,7 @@ from mrx.solvers import chebyshev, lanczos_bounds, minres
 NEWTON_PENALTY = 3.0
 NEWTON_TOL = 0.1
 NEWTON_MAXITER = 200
-NEWTON_MASS_TOL = 1e-3
+NEWTON_MASS_TOL = 1e-4
 #: PCG iterations of the spectral estimate of :meth:`MassChebyshev.build`. At 20 the lower end came out 20 %
 #: high on li383 (12, 16, 16), at 40 3 % and at 80 converged.
 LANCZOS_STEPS = 60
