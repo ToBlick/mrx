@@ -160,6 +160,26 @@ Decided against:
 - A closed-only shortcut (`b = M_k G c`, one solve `S_{k-1} a = M_{k-1} c`) was not built. `M_{k-1} c` is
   consistent only for a co-closed `c`, and no caller holds one.
 
+### Where the harmonic deflation lives (2026-10-10, reasoned from the code, not measured)
+
+- `solve_singular_cg` wraps the operator as `project_dual . A . project_primal` and the preconditioner as
+  `project_primal . P . project_dual`: 4 projections per CG iteration. The saddle MINRES does the same on its
+  upper block. With m = 0 harmonic forms the projections are the identity.
+- Until this change `project_primal` applied the mass matrix (`vs @ M x`). With m >= 1 that was 2 mass applies
+  per iteration on top of the matvec: the odd Dirichlet 2-forms, the free 1-forms, the even free 0-forms and
+  Dirichlet 3-forms, and so 2 `M_3` applies per iteration of the Leray saddle solve. An `L^_2` iteration had 5
+  mass-type applies where the operator needs 3. The force potential (even, Dirichlet k = 1) has m = 0.
+- Now `project_primal(x) = x - ((M vs) @ x) @ vs` with the stored `M vs` (M symmetric). Same projection in exact
+  arithmetic. The suite was NOT rerun with it on this cluster (branch `deflation-mass-apply`): run it first.
+- Moving the deflation out of the inner solves into the split (steps 1 and 5 of the Hodge solve) would then save
+  only 4 m dot products per iteration. It stays per iteration.
+- If it were moved: `L^_k` is singular on the harmonic forms, so the inner solve converges only on a deflated
+  right-hand side, like the co-closed solve. Steps 1 and 5 alone are not enough. The degree-(k-1) solution `g`
+  must be deflated between steps 2 and 4, because `M_{k-1} g` carries its harmonic part into step 4's right-hand
+  side and makes it inconsistent. These are per-pass projections in the residual precision.
+- An undeflated working-precision pass sees a harmonic part of about 1e-7 of its right-hand side (the float64
+  residual cast to float32). It must not stop below about 1e-6.
+
 ## 5. Operator identities at round-off
 
 - quasr44970, tol 1e-12 (2026-08-25): curl adjointness 4.0e-13, div(P_Leray v) 4.7e-12, Leray

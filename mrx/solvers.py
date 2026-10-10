@@ -130,7 +130,8 @@ def deflation_projectors(vs, mass_matvec):
     The rows of ``vs`` (shape ``(m, n)``) are the kernel vectors, orthonormal in the mass
     inner product ``M``. ``project_primal(x) = x - (vs M x) vs`` acts on coefficient vectors and
     ``project_dual(f) = f - (vs f) (M vs)`` on right-hand sides and residuals. With ``m = 0``
-    both are the identity.
+    both are the identity. ``M`` is symmetric, so ``vs M x`` is the product of the stored ``M vs``
+    with ``x``, and neither projection applies the mass matrix.
     """
     vs = jnp.asarray(vs)
     if vs.shape[0] == 0:
@@ -138,7 +139,7 @@ def deflation_projectors(vs, mass_matvec):
     mass_vs = jax.vmap(mass_matvec)(vs)
 
     def project_primal(x):
-        return x - (vs @ mass_matvec(x)) @ vs
+        return x - (mass_vs @ x) @ vs
 
     def project_dual(f):
         return f - (vs @ f) @ mass_vs
