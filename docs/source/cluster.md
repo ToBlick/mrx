@@ -15,7 +15,28 @@ export SLURM_EXCLUDE=<node,node>      # optional
 ```
 
 Put them in `slurm/site.env`, which is gitignored and sourced by
-`run.sh`, or export them in the shell.
+`run.sh`, or export them in the shell. `slurm/site.env.example` is a
+template.
+
+## The data root: `MRX_DATA`
+
+Runs and large input files can live in one directory outside the
+repository. Set `MRX_DATA` to it, in `slurm/site.env` or in the shell:
+
+```bash
+export MRX_DATA=/path/to/mrx-data
+```
+
+- `$MRX_DATA/data` holds input files that are not tracked in git. A
+  geometry file that is not found at the path given is looked up there by
+  its name.
+- `$MRX_DATA/runs/mrx` takes the place of `outputs/`: the job logs of
+  `run.sh`, the default run directory of `scripts/relax.py` and the run
+  directories of the tutorials.
+- `$MRX_DATA/cache/xla` holds the compilation cache of the test suite.
+
+Without `MRX_DATA` nothing changes: runs go to `outputs/` in the
+repository and files are read from the path given.
 
 ## One script: `slurm/run.sh`
 
@@ -26,14 +47,15 @@ SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=60 bash slurm/run.sh
 
 The job activates the virtualenv, exports `PYTHONPATH=$MRX_ROOT`, prints
 `mrx from: <path>`, and runs `python -u $SCRIPT $ARGS`. The log is
-`$MRX_ROOT/outputs/$OUTSUB/<date>/<time>/$JOB_NAME.log`.
+`$MRX_ROOT/outputs/$OUTSUB/<date>/<time>/$JOB_NAME.log`, or
+`$MRX_DATA/runs/mrx/$OUTSUB/<date>/<time>/$JOB_NAME.log` with `MRX_DATA` set.
 
 | variable | meaning | default |
 |---|---|---|
 | `SCRIPT` | path relative to `MRX_ROOT`, or `-m module` | required |
 | `ARGS` | arguments passed to the script | |
 | `JOB_NAME` | job name and log file stem | `run` |
-| `OUTSUB` | log directory under `outputs/` | `JOB_NAME` |
+| `OUTSUB` | log directory under `outputs/` (under `$MRX_DATA/runs/mrx` with `MRX_DATA` set) | `JOB_NAME` |
 | `TIMEOUT_MIN` | wall time in minutes | 60 |
 | `MEM_GB` | host memory | 64 |
 | `CPUS` | CPUs per task | 32 |

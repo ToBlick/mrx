@@ -173,7 +173,7 @@ class Drive:
 class Output:
     """Output directory and restart."""
     out: Optional[str] = None
-    """The directory the run writes to. Unset, it is outputs/relax/<date>/<time>."""
+    """The directory the run writes to. Unset, it is relax/<date>/<time> under $MRX_DATA/runs/mrx, or under outputs without MRX_DATA."""
     restart: Optional[str] = None
     """Continue from a checkpoint file checkpoints/state_<step>.h5 written with the same geometry, resolution and spline degree."""
 

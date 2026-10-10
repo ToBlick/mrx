@@ -41,6 +41,7 @@ print("[tutorial 6] shape optimization of the QA stellarator: importing JAX and 
 
 import tyro
 
+from mrx.paths import runs_root
 from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
@@ -63,7 +64,7 @@ class Options:
     """The number of L-BFGS-B iterations between updates of the multipliers."""
     stop_qa: float = 1.0
     """Stop once the criterion is at most this times the device's value with both constraints met. 0 runs --maxiter iterations."""
-    out: str = "outputs/tutorials/6_qa_shape_optimization"
+    out: str = os.path.join(runs_root(), "tutorials", "6_qa_shape_optimization")
     """The directory for the figures."""
 
 

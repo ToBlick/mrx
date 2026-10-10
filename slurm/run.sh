@@ -11,12 +11,14 @@
 #
 #   export SLURM_ACCOUNT=<account> SLURM_PARTITION=<gpu partition>
 #   export SLURM_EXCLUDE=<comma-separated nodes to avoid>   # optional
+#   export MRX_DATA=<data root outside the repository>      # optional, see slurm/site.env.example
 #
 # Variables:
 #   SCRIPT       (required) path relative to MRX_ROOT, or "-m module"
 #   ARGS         arguments passed to the script
 #   JOB_NAME     slurm job name and log file stem          (default: run)
-#   OUTSUB       log directory under MRX_ROOT/outputs/     (default: JOB_NAME)
+#   OUTSUB       log directory under the runs root         (default: JOB_NAME)
+#                The runs root is $MRX_DATA/runs/mrx if MRX_DATA is set, MRX_ROOT/outputs otherwise.
 #   MRX_ROOT     checkout to run; defaults to the repo containing this file.
 #                Also exported as PYTHONPATH so an editable install pinned to
 #                another checkout does not shadow it.
@@ -50,12 +52,14 @@ VENV=${MRX_VENV:-${MRX_ROOT}/.venv}
 [ -d "${VENV}" ] || VENV=$(cd "${MRX_ROOT}" && git rev-parse --path-format=absolute --git-common-dir)/../.venv
 
 STAMP=$(date +%Y-%m-%d/%H-%M-%S)
-OUTDIR="${MRX_ROOT}/outputs/${OUTSUB}/${STAMP}"
+RUNS=${MRX_DATA:+${MRX_DATA}/runs/mrx}
+OUTDIR="${RUNS:-${MRX_ROOT}/outputs}/${OUTSUB}/${STAMP}"
 mkdir -p "${OUTDIR}"
 LOG="${OUTDIR}/${JOB_NAME}.log"
 
 CMD="set -euo pipefail; cd ${MRX_ROOT}; source ${VENV}/bin/activate; \
 export MRX_ROOT=${MRX_ROOT} PYTHONPATH=${MRX_ROOT} PYTHONUNBUFFERED=1; \
+${MRX_DATA:+export MRX_DATA=${MRX_DATA}; } \
 ${EXTRA_ENV:+export ${EXTRA_ENV}; } \
 python -c 'import mrx; print(\"mrx from:\", mrx.__file__)'; \
 python -u ${SCRIPT} ${ARGS}"

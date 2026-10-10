@@ -26,6 +26,7 @@ print("[tutorial 1] the geometry of the QA stellarator: importing JAX and MRX", 
 
 import tyro
 
+from mrx.paths import runs_root
 from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
@@ -39,7 +40,7 @@ class Options:
                                   spline_degree=2)
     cuts: int = 6
     """The number of poloidal cuts per field period."""
-    out: str = "outputs/tutorials/1_qa_geometry"
+    out: str = os.path.join(runs_root(), "tutorials", "1_qa_geometry")
     """The directory for the figures."""
 
 

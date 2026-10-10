@@ -35,17 +35,18 @@ def main(cfg):
     import mrx
     from mrx.relaxation.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
+    from mrx.paths import data_file, runs_root
     from mrx.relaxation.loop import initial_state, radial_cell_sq, read_checkpoint, read_field, relax, write_checkpoint
     from mrx.relaxation.physics import resistive_step
     from mrx.relaxation.seeding import energy_seed
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
-    out = cfg.output.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
+    out = cfg.output.out or os.path.join(runs_root(), "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
     # The record holds the flat configuration plus the facts of the run.
-    params = dict(cfg.params, out=out, geometry_path=os.path.abspath(g.path))
+    params = dict(cfg.params, out=out, geometry_path=os.path.abspath(data_file(g.path)))
     results = {"params": params}
 
     # --- geometry and operators ------------------------------------------
