@@ -480,6 +480,10 @@ def _coclosed_solve(seq, b, k: int, guess=None):
     2-norm, and the passes end when it is below ``seq.tol`` times that of ``b``. A pass only goes as far as
     this test still needs, and never below the inner tolerance. ``info`` is the signed iteration count of all
     passes.
+
+    Without a finer residual precision (plain float32 or float64) there are no passes: it is one conjugate
+    gradient solve to ``seq.tol`` with its own stopping test. A second pass would ask the working precision
+    for a residual it cannot resolve.
     """
     on, inner = _outer(seq)
     P, vs = _seq_atom(seq, "laplacian", k).apply, _harmonic(seq, k)
@@ -507,6 +511,15 @@ def _coclosed_solve(seq, b, k: int, guess=None):
         )
         x = project_primal(x + rho * dx.astype(on.dtype))
         return x, jnp.linalg.norm(residual(x)), passes + 1, its + jnp.abs(info)
+
+    if seq.residual is None:
+        # without a finer residual there is nothing to refine against: one solve with its own stopping test
+        x, info = solve_singular_cg(
+            lambda v: _stiffness(seq, v, k), b, vs,
+            precond_matvec=P, tol=seq.tol, maxiter=seq.maxiter, mass_matvec=lambda v: _mass(seq, v, k),
+            x0=None if guess is None else guess.astype(seq.dtype), parity=parity_projectors(seq, k, b),
+        )
+        return project_primal(x), info
 
     x0 = jnp.zeros_like(b) if guess is None else project_primal(guess.astype(on.dtype))
     x, rho, _, its = jax.lax.while_loop(
