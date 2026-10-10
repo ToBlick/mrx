@@ -202,7 +202,7 @@ class TimeStepper(eqx.Module):
         """
         seq = self.seq.even
         J, JxB_dual = self._lorentz(B, J_guess)
-        a = seq.L[1].solve(seq.G[1].T @ JxB_dual, guess=a_guess)
+        a = seq.L[1].solve_coclosed(JxB_dual, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         if not smooth:

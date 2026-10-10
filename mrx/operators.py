@@ -21,10 +21,11 @@ from __future__ import annotations
 from typing import Optional
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 
 from mrx.mass import sumfact_apply
-from mrx.precision import RESIDUAL_DTYPE, inner_tol
+from mrx.precision import MAX_PASSES, RESIDUAL_DTYPE, inner_tol
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
 from mrx.symmetry import symmetrize_like
 
@@ -458,6 +459,76 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, dt
     return (u, info) if return_info else u
 
 
+#: A pass of :func:`_coclosed_solve` aims this factor below what the stopping test still needs. The pass stops
+#: in the preconditioner's norm and the test uses the 2-norm, so the two do not agree exactly.
+COCLOSED_PASS_MARGIN = 0.1
+
+
+def _coclosed_solve(seq, b, k: int, guess=None):
+    """``(x, info)`` with ``S_k x = b`` for a right-hand side ``b`` in the range of ``G_k^T``.
+
+    ``S_k`` is singular. Its kernel are the closed forms, so ``x`` is only fixed up to a closed form and no
+    gauge is imposed. Use this where only ``G_k x`` is needed. Conjugate gradients converge on the singular
+    system because ``b`` is consistent, which holds when ``b`` is literally ``G_k^T`` of something and was
+    formed in the residual precision. A right-hand side that is only approximately in that range, as inside
+    the Hodge split, makes the iteration diverge. Use :func:`_laplacian_solve` for those.
+
+    These are the steps of the Hodge split that such a right-hand side leaves. The harmonic part of ``b`` is
+    removed first. Each pass then runs conjugate gradients in the working precision with the preconditioner
+    of ``L_k`` on the residual of the previous one, and the harmonic part of ``x`` is removed after every pass.
+    The residual and both projections are formed in the residual precision. The residual is measured in the
+    2-norm, and the passes end when it is below ``seq.tol`` times that of ``b``. A pass only goes as far as
+    this test still needs, and never below the inner tolerance. ``info`` is the signed iteration count of all
+    passes.
+    """
+    on, inner = _outer(seq)
+    P, vs = _seq_atom(seq, "laplacian", k).apply, _harmonic(seq, k)
+    project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=on.dtype), lambda v: _mass(on, v, k))
+    b = project_dual(b.astype(on.dtype))
+    b_norm = jnp.linalg.norm(b)
+
+    def residual(x):
+        return b - _stiffness(on, x, k)
+
+    def unconverged(carry):
+        _, rho, passes, _ = carry
+        return (rho > seq.tol * b_norm) & (passes < MAX_PASSES)
+
+    def one_pass(carry):
+        x, rho, passes, its = carry
+        r = (residual(x) / rho).astype(seq.dtype)
+        dx, info = solve_singular_cg(
+            lambda v: _stiffness(seq, v, k), r, vs,
+            precond_matvec=P,
+            tol=jnp.maximum(inner, COCLOSED_PASS_MARGIN * seq.tol * b_norm / rho),
+            maxiter=seq.maxiter,
+            mass_matvec=lambda v: _mass(seq, v, k),
+            parity=parity_projectors(seq, k, r),
+        )
+        x = project_primal(x + rho * dx.astype(on.dtype))
+        return x, jnp.linalg.norm(residual(x)), passes + 1, its + jnp.abs(info)
+
+    x0 = jnp.zeros_like(b) if guess is None else project_primal(guess.astype(on.dtype))
+    x, rho, _, its = jax.lax.while_loop(
+        unconverged, one_pass, (x0, jnp.linalg.norm(residual(x0)), jnp.int32(0), jnp.int32(0)))
+    return x, jnp.where(rho <= seq.tol * b_norm, its, -its)
+
+
+@eqx.filter_jit
+def _coclosed_solve_of(seq, w, k: int, guess=None, return_info: bool = False, dtype=None, gauge: bool = False):
+    """``x`` with ``S_k x = G_k^T w`` (see :func:`_coclosed_solve`). ``G_k^T w`` is formed in the residual
+    precision. With ``gauge`` the closed part of ``x`` is removed by the last solve of the Hodge split,
+    ``S_{k-1} a = -G_{k-1}^T M_k x`` and ``x + G_{k-1} a``, which makes ``x`` the solution of ``L_k``."""
+    on, inner = _outer(seq)
+    x, info = _coclosed_solve(seq, _grad(on, w.astype(on.dtype), k, transpose=True), k, guess)
+    if gauge:
+        c = -_grad(on, _mass(on, x, k), k - 1, transpose=True)
+        a = _k0_solve(seq, c, seq.tol, on=on, inner=inner)[0] if k == 1 else _coclosed_solve(seq, c, k - 1)[0]
+        x = x + _grad(on, a.astype(on.dtype), k - 1)
+    x = _out(seq, x, dtype)
+    return (x, info) if return_info else x
+
+
 @eqx.filter_jit
 def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     """``L_3^{-1} rhs`` by MINRES on the saddle-point system, returning ``(u, sigma, info)``::
@@ -613,6 +684,19 @@ class Laplacian(_Symmetric):
         zero nothing is removed. ``guess``, ``return_info`` and ``dtype`` work as in
         :meth:`MassMatrix.solve`."""
         return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
+
+    def solve_coclosed(self, w, guess=None, return_info=False, dtype=None, gauge=False):
+        """A solution ``x`` of ``S_k x = G_k^T w``, for a dual ``(k+1)``-form ``w``.
+
+        This is the part of the Laplacian solve that ``G_k x`` depends on, by one conjugate-gradient solve on
+        the stiffness ``S_k`` instead of the three of :meth:`solve`. ``x`` differs from
+        ``solve(G_k^T w)`` by a closed form, which is left uncontrolled, so use it where only ``G_k x``
+        enters. The method takes ``w`` and not the right-hand side because the solve only converges for a
+        right-hand side that is exactly a transposed derivative, formed in the residual precision. With
+        ``gauge`` one more solve of degree ``k - 1`` removes the closed part, and ``x`` is ``solve(G_k^T w)``.
+        ``guess``, ``return_info`` and ``dtype`` work as in :meth:`MassMatrix.solve`."""
+        return _coclosed_solve_of(self.seq, w, self.k, guess=guess, return_info=return_info, dtype=dtype,
+                                  gauge=gauge)
 
     def precondition(self, v):
         """The preconditioner of ``L_k`` that the Laplacian solves use, applied to ``v``."""

@@ -19,7 +19,7 @@ one field period with stellarator symmetry, ``period``: one field period, ``full
 same mesh per period, and ``B*`` and ``psi`` have the period and the parity of li383. So the three must give the
 same error to the solver tolerance: this checks the half-period quadrature, the parity views and the field-period
 reduction end to end. The Leray projection, the k = 3 saddle solve of the relaxation, is divergence-free,
-idempotent and non-expansive.
+idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve.
 """
 import jax
 import jax.numpy as jnp
@@ -180,3 +180,20 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
     finally:
         s.build_preconditioners()
         compute_nullspaces(s, verbose=False)
+
+
+def test_coclosed_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
+    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve_coclosed`` and ``L[1].solve``
+    converge and differ by a closed form only, so their curls agree. With ``gauge`` they agree themselves."""
+    odd = seq.odd
+    w = odd.M[2] @ b0
+    a, info = odd.L[1].solve_coclosed(w, return_info=True, dtype=RESIDUAL_DTYPE)
+    a_g = odd.L[1].solve_coclosed(w, dtype=RESIDUAL_DTYPE, gauge=True)
+    a_L, info_L = odd.L[1].solve(odd.G[1].T @ w, return_info=True, dtype=RESIDUAL_DTYPE)
+    diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
+    diff_g = float(odd.l2_norm(a_g - a_L, 1) / odd.l2_norm(a_L, 1))
+    print(f"\n  co-closed {int(info)} iterations, Hodge split {int(info_L)}, ||curl (a - a_L)|| / ||curl a_L|| {diff:.2e}, "
+          f"with the gauge solve ||a - a_L|| / ||a_L|| {diff_g:.2e}")
+    assert info > 0 and info_L > 0
+    assert diff <= 1e3 * seq.tol
+    assert diff_g <= 1e3 * seq.tol

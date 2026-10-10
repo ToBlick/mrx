@@ -14,8 +14,9 @@ The relaxation forms the force by the potential route:
 
 1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl: one k = 1 mass solve.
 2. `load(J x B)`, the Lorentz force tested against the 2-form basis, not projected.
-3. `L_1 a = curl^T load(J x B)`: one k = 1 Hodge solve for the force potential `a`. The force is
-   `F = curl a + c h`, with `c h` its harmonic part (zero for the even force of a half-period sequence).
+3. `S_1 a = curl^T load(J x B)`: one curl-curl solve for the force potential `a`
+   (`seq.L[1].solve_coclosed`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
+   the even force of a half-period sequence). `a` is fixed only up to a gradient, which `curl` removes.
 
 `F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
 divergence-free fields, with no pressure solve. Every solve is warm-started from the previous step's value.
@@ -100,8 +101,8 @@ then goes to the resistive steady state of that current.
 
 ## 3. Diagnostics
 
-- `compute_helicity(B, seq, A_guess)`: `A` from one k = 1 Hodge solve of
-  `L_1 A = D_1^T B`, then `H = <A, P_{21}(B + B_harm)>` with
+- `compute_helicity(B, seq, A_guess)`: `A` from one curl-curl solve
+  `S_1 A = D_1^T B` (`seq.L[1].solve_coclosed`), then `H = <A, P_{21}(B + B_harm)>` with
   `B_harm = B - curl A`.
 - `compute_divergence_norm(B, seq)`: `||G_2 B||`, no solve.
 - `force_scale(seq, B) = ||grad(|B|^2/2)||`: the scale of the force residual

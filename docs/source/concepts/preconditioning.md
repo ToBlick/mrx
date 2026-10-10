@@ -16,6 +16,7 @@ is called on, `seq` (Dirichlet) or `seq.free`.
 | `M_k u = f` | `seq.M[k].solve(f)` | PCG | the mass atom |
 | `L_0 u = f` | `seq.L[0].solve(f)` | PCG on `S_0`, kernel deflated | the k = 0 Laplacian atom |
 | `L_k u = f`, k = 1, 2 | `seq.L[k].solve(f)` | the Hodge split: three SPD PCGs | the Laplacian atoms of levels k and k-1 |
+| `S_k u = G_k^T w` | `seq.L[k].solve_coclosed(w)` | PCG on the singular `S_k`, restarted on the true residual | the Laplacian atom of level k |
 | `L_3 u = f` | `seq.L[3].solve(f)` and `seq.leray(v, k=2)` | saddle-point MINRES | the k = 3 Laplacian atom, the k = 2 mass atom |
 | `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | two SPD PCGs | the shifted-stiffness atoms |
 
@@ -33,6 +34,17 @@ S_{k-1} g = G^T b,   S_k x_perp = b - M_k G g,   S_{k-1} a = M_{k-1} g - G^T M_k
 `S_k` alone is singular on the exact forms, so the
 middle solve runs on `S_k + M_k G W G^T M_k` (`W` the level-(k-1) mass
 atom), which has the same exact-orthogonal solution for any SPD `W`.
+
+**Co-closed solve.** When the right-hand side is a transposed derivative, `b = G_k^T w`, the first solve of
+the split is zero and `G_k x` only needs `S_k x = b`. `seq.L[k].solve_coclosed(w)` solves that system alone.
+Conjugate gradients converge on the singular `S_k` because `b` lies exactly in its range, and each iteration
+drops the two mass applies and the atom of the exact-form term. Two things keep it there. `G_k^T w` is formed
+in the residual precision, since in float32 it is inconsistent at about `1e-7`. And the solve restarts on the
+2-norm of the same residual that each pass reduces, with a pass tolerance that never asks for more than the
+stopping test needs. `x` keeps a closed part that no one controls, so the method is for callers that only use
+`G_k x`: the force potential, the vector potential of the helicity, the harmonic 2-form and the vacuum field of
+the shape optimisation. A right-hand side that is only approximately in the range of `G_k^T`, such as the
+middle one of the Hodge split, makes the iteration diverge.
 
 **Saddle point** (k = 3). With `S_3 = 0` there is nothing to split:
 

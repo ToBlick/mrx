@@ -31,8 +31,8 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     previous call) is the starting guess of the solve for ``A``.
     """
     seq = seq.odd
-    # the saddle solve takes the DUAL 1-form D_1^T B, not the weak curl M_1^-1 D_1^T B
-    A = seq.L[1].solve(seq.D[1].T @ B, guess=A_guess)
+    # A enters the helicity up to a gradient, which pairs to zero with the divergence-free B + B_harm
+    A = seq.L[1].solve_coclosed(seq.M[2] @ B, guess=A_guess)
     B_harm = B - seq.G[1] @ A
     helicity = A @ (seq.P[2, 1] @ (B + B_harm))
     return helicity, A

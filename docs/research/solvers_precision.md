@@ -107,6 +107,59 @@ Decided against:
 - Inverse-iteration polish of a computed form (6 steps, eps 1e-4) walks away: W7-X p3 3.0e-4 ->
   1.4e-2, quasr9983 4.5e-7 -> 1.8e-5 (2026-08-24).
 
+### Co-closed solve: S_k alone for a right-hand side G_k^T w (2026-10-09/10)
+
+`seq.L[k].solve_coclosed(w)`, branch `laplacian-solvers`. Scripts and logs: `outputs/hodge_gamma/`,
+`outputs/laplacian_solvers/` (main checkout), bench notes `boxes_and_exact_forms_2026-10-09.md`.
+
+- The atom preconditions `S_k` well and the exact-form term `M G W G^T M` of `L^_k` badly (dense spectra of the
+  multigrid session, 12x20x20: condition 1903 / 1130 with the term, 93 / 103 for `S_1` alone, li383 / W7-X).
+- Weighting the term by gamma is worse the smaller gamma gets (24x42x42, `b = S_1 x`, float64 to 1e-8: 467 / 384
+  iterations at 1, 698 / 633 at 0.1, none at 0.001). gamma = 0, the singular `S_k`: 147 / 148 (k = 1), 145 / 142
+  (k = 2). Scaling the atom's own model of the term up is worse too.
+- Condition: the right-hand side must be consistent. PCG on a singular `S_k` converges for any SPD preconditioner
+  on a consistent right-hand side, with a bounded kernel part in the iterate (Kaasschieter 1988). An inconsistent
+  share delta stays in the residual, and the iterate blows up once the residual reaches about delta.
+- Two requirements, each measured on the 2026-10-07 case (li383 (12,16,16), start field, `G_1^T JxB`):
+  1. `G^T w` formed in the residual precision. Formed in float32 the second pass runs to maxiter, `|a|_M` 3e5
+     against 1e-3.
+  2. Restart on the 2-norm of the residual that the pass reduces. `solve_singular_cg` with `A_res` (`refine`,
+     dual-norm test) diverges even in float64: `|a|_M` 2e14, curl error 18. This was the 2026-10-07 failure.
+- Inside the Hodge split it does not work: the middle right-hand side `b - M G g` is consistent only to the
+  tolerance of the `g` solve. `S_k` alone there: count -60000, error 1e59. With the stop tied to a measured
+  inconsistency `L_1` converges, `L_2` does not (inconsistent at 0.1 and 2 in the atom's norm).
+- Ladder meshes M, start field, real `J x B`, second identical call, solve time in s (signed count):
+
+  | | li383 (48,64,24) mixed | float64 | W7-X (32,64,36) mixed | float64 |
+  |---|---|---|---|---|
+  | force potential, `L[1].solve` | 0.709 (+1105) | 1.399 (+1692) | 0.356 (+567) | 0.688 (+890) |
+  | `solve_coclosed` | 0.072 (+289) | 0.100 (+336) | 0.040 (+162) | 0.062 (+221) |
+  | `solve_coclosed`, gauge | 0.122 | 0.200 | 0.072 | 0.124 |
+  | Leray k=2, saddle MINRES | 1.067 (+2255) | 2.157 (+3700) | 0.334 (+729) | 1.067 (+1953) |
+  | `L[2].solve_coclosed(M_3 G_2 v, gauge=True)` | 0.105 (+229) | 0.146 (+290) | 0.067 (+145) | 0.088 (+169) |
+
+  The Hodge-split count is that of its middle solve only. `curl a` agrees with the Hodge split to 4e-7 (mixed)
+  and 5e-12 (float64), with the gauge solve `a` itself to 2e-7 / 3e-7 and 2e-12 / 4e-12. The gauge part without
+  it is 0.41 / 0.46 of the co-closed potential in the M norm.
+- Leray by the co-closed route (`sigma` with `S_2 sigma = G_2^T M_3 G_2 v`, closed part removed by a co-closed
+  solve on `S_1`, `F = v - sigma`, no pressure): `F` agrees with the saddle's to 2e-7 / 7e-7 (mixed) and
+  4e-10 / 7e-9 (float64). Its divergence is larger: `|div F| / |F|` 1.1e-5 / 9.0e-6 against 9.7e-9 / 3.2e-5 in
+  mixed, 2.8e-8 / 2.2e-7 against 1e-12 in float64. The stop is on the 2-norm residual of `S_2`, relative to `|v|`,
+  and `|F|` is 0.05 `|v|`. NOT wired into `leray`.
+- In a relaxation (main 732f824 with the solve patched in, (24,32,32), a mesh now retired): li383 gradient
+  descent 400 steps, same energy change (-1.35e-6) and residual trace, 47.8 -> 19.7 s per 200 steps. Newton 20
+  steps li383 and W7-X: same energies, no gain (the force potential is a small share of a step). The gauge share
+  `|G_0^T M_1 a| / |M_1 a|` stays between 0.17 and 0.41 over 400 steps.
+- Run to 6000 steps on the branch, li383 (48,48,28) gradient descent, mixed: residual 2.4e-4 -> 3.2e-7, still
+  falling as a power law (no floor reached), 0.21 s/step, helicity drift 2.9e-6 relative, `|dE - dE_ls| / E0`
+  median 3.7e-10. Energy increases on 1098 steps (all below 6e-10, float32 round-off of `E`) and `||div B||`
+  grows to 1.7e-4. Both also occur with the Hodge split (33 of 400 steps and 4e-6 after 400 steps in both arms
+  of the pair above), no production run of this length on this mesh was made for comparison.
+- Not covered: plain float32, seeded or driven runs, p = 3, the Newton solve (same kernel, different operator),
+  the pass tolerance below the inner tolerance, more than 400 steps of the gauge share.
+- A closed-only shortcut (`b = M_k G c`, one solve `S_{k-1} a = M_{k-1} c`) was not built. `M_{k-1} c` is
+  consistent only for a co-closed `c`, and no caller holds one.
+
 ## 5. Operator identities at round-off
 
 - quasr44970, tol 1e-12 (2026-08-25): curl adjointness 4.0e-13, div(P_Leray v) 4.7e-12, Leray
