@@ -33,6 +33,7 @@ from mrx.geometry import SequenceGeometry, _tp_evaluate, grad_1d
 from mrx.mappings import stellarator_symmetric_scalar
 from mrx.mass import attach_weights
 from mrx.precision import RESIDUAL_DTYPE, cast_arrays
+from mrx.solvers import preconditioned_cg
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
 
@@ -226,7 +227,14 @@ def vacuum_two_form(seq, seed):
     """``(h, info)``: the vacuum field, the harmonic 2-form ``h = seed - G_1 a`` with ``S_1 a = G_1^T M_2
     seed`` (see the module docstring), on ``seq`` (a :func:`with_geometry` copy). ``h`` is differentiable in
     the geometry and has the toroidal flux of ``seed``, without normalisation. ``info`` is the signed
-    iteration count of the forward solve."""
+    iteration count of the forward solve.
+
+    ``a`` comes from one preconditioned CG solve on ``S_1`` alone (with the preconditioner of ``L_1``), not from
+    a Hodge-Laplacian solve. ``S_1`` is singular, and CG leaves the gradient part of ``a`` uncontrolled. That
+    is harmless here and only here: ``a`` enters ``h`` through ``G_1 a``, and ``G_1 G_0 = 0``, so any gradient
+    added to ``a`` drops out of ``h`` exactly. Where ``a`` itself is used (helicity, the relaxation), use the
+    Laplacian solve. The forward and the adjoint solve are both this solve, so the derivative is that of the
+    converged equation; the tolerance is two digits below ``seq.tol`` so finite differences can check it."""
     b = seq.D[1].T @ seed
     parity = seq.free_projector(1)
 
@@ -236,9 +244,9 @@ def vacuum_two_form(seq, seed):
     def solve(_, r):
         if parity is not None:
             # h is odd. The adjoint right-hand side has an even part, which pairs to zero with every odd
-            # tangent but would otherwise decide the parity the solver reads off it.
+            # tangent. Removing it keeps both solves in the odd space.
             r = parity.dual(r, -1.0)
-        return seq.L[1].solve(r, return_info=True)
+        return preconditioned_cg(matvec, r, seq.L[1].precondition, 1e-2 * seq.tol, seq.maxiter)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - seq.G[1] @ a, info
