@@ -5,13 +5,12 @@
 #   SCRIPT=scripts/tutorials/1_qa_geometry.py bash slurm/run.sh
 #   SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 #
-# Site settings come from the environment, never from this file. Put them in
-# a file outside the repo (or in slurm/site.env, which is gitignored) and
-# source it first:
+# Site settings never live in the repository. They are read from one file in the
+# user's home, ~/.config/mrx/site.env, or from the file MRX_SITE_ENV names:
 #
 #   export SLURM_ACCOUNT=<account> SLURM_PARTITION=<gpu partition>
 #   export SLURM_EXCLUDE=<comma-separated nodes to avoid>   # optional
-#   export MRX_DATA=<data root outside the repository>      # optional, see slurm/site.env.example
+#   export MRX_DATA=<data root outside the repository>      # optional
 #
 # Variables:
 #   SCRIPT       (required) path relative to MRX_ROOT, or "-m module"
@@ -34,7 +33,12 @@
 set -euo pipefail
 
 MRX_ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-[ -f "${MRX_ROOT}/slurm/site.env" ] && source "${MRX_ROOT}/slurm/site.env"
+SITE_ENV=${MRX_SITE_ENV:-${HOME}/.config/mrx/site.env}
+if [ ! -f "${SITE_ENV}" ]; then
+  echo "run.sh: no site settings at ${SITE_ENV} (see docs/source/cluster.md, Site settings)" >&2
+  exit 1
+fi
+source "${SITE_ENV}"
 
 SCRIPT=${SCRIPT:?set SCRIPT}
 ARGS=${ARGS:-}

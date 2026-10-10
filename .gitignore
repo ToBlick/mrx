@@ -36,8 +36,7 @@ jax-caches/
 .jax_cache
 slurm/job_*
 
-# Site-specific slurm and GKE settings, Terraform state (never commit)
-slurm/site.env
+# GKE settings and Terraform state (never commit)
 gcp.env
 terraform/.terraform/
 terraform/*.tfstate

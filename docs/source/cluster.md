@@ -6,26 +6,32 @@ on a CPU without it.
 
 ## Site settings
 
-`slurm/run.sh` reads the account and partition from the environment:
+The account, the partition and the paths of a site do not live in the
+repository. `slurm/run.sh` reads them from one file in your home,
+`~/.config/mrx/site.env`, or from the file that `MRX_SITE_ENV` names, and
+stops with a message if that file is missing. The same file serves every
+MRX repository:
 
 ```bash
+# ~/.config/mrx/site.env
 export SLURM_ACCOUNT=<account>
 export SLURM_PARTITION=<gpu partition>
-export SLURM_EXCLUDE=<node,node>      # optional
+# export SLURM_EXCLUDE=<node,node>
+# export MRX_DATA=/path/to/mrx-data
 ```
-
-Put them in `slurm/site.env`, which is gitignored and sourced by
-`run.sh`, or export them in the shell. `slurm/site.env.example` is a
-template.
 
 ## The data root: `MRX_DATA`
 
 Runs and large input files can live in one directory outside the
-repository. Set `MRX_DATA` to it, in `slurm/site.env` or in the shell:
+repository. Set `MRX_DATA` to it, in `~/.config/mrx/site.env` and in the shell
+of runs started by hand:
 
 ```bash
 export MRX_DATA=/path/to/mrx-data
 ```
+
+The directory holds `data/`, `runs/<repository>/<experiment>/`, `paper/`,
+`references/` and `notes/`.
 
 - `$MRX_DATA/data` holds input files that are not tracked in git. A
   geometry file that is not found at the path given is looked up there by
