@@ -197,3 +197,45 @@ def test_coclosed_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
     assert info > 0 and info_L > 0
     assert diff <= 1e3 * seq.tol
     assert diff_g <= 1e3 * seq.tol
+
+
+@pytest.mark.parametrize("k", [1, 2, 3])
+def test_parts_of_the_laplacian_solve(domains, k):
+    """``L[k].solve(b, part=...)`` on right-hand sides of one kind, ``G_k^T w`` (co-exact) and ``M_k G_{k-1} c``
+    (exact): each part converges to the full solve of the same right-hand side, the co-exact solution is
+    orthogonal to the exact forms, and the full solve of the sum is the sum of the parts. 3-forms only have the
+    exact part."""
+    s = domains("period")
+    on = s if s.residual is None else s.residual        # the right-hand sides are formed in the residual precision
+    rng = np.random.default_rng(k)
+    c = jnp.asarray(rng.standard_normal(s.n(k - 1)), dtype=RESIDUAL_DTYPE)
+    b = {"exact": on.M[k] @ (on.G[k - 1] @ c)}
+    if k < 3:
+        b["coexact"] = on.G[k].T @ jnp.asarray(rng.standard_normal(s.n(k + 1)), dtype=RESIDUAL_DTYPE)
+    x = {}
+    for part, rhs in b.items():
+        x[part], info = s.L[k].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE, part=part)
+        x_full, info_full = s.L[k].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
+        diff = float(s.l2_norm(x[part] - x_full, k) / s.l2_norm(x_full, k))
+        print(f"\n  L{k} {part}: {int(info)} iterations against {int(info_full)} of the full solve, "
+              f"relative difference {diff:.2e}")
+        assert info > 0 and info_full > 0
+        assert diff <= 1e3 * s.tol
+    if k == 3:
+        return
+    gauge = s.G[k - 1].T @ (s.M[k] @ x["coexact"])
+    assert float(jnp.linalg.norm(gauge)) <= 1e3 * s.tol * float(jnp.linalg.norm(s.M[k] @ x["coexact"]))
+    x_sum = s.L[k].solve(b["coexact"] + b["exact"], dtype=RESIDUAL_DTYPE)
+    assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
+
+
+def test_parts_that_do_not_exist_are_refused(domains):
+    s = domains("period")
+    with pytest.raises(ValueError):
+        s.L[0].solve(jnp.zeros(s.n(0)), part="exact")
+    with pytest.raises(ValueError):
+        s.L[3].solve(jnp.zeros(s.n(3)), part="coexact")
+    with pytest.raises(ValueError):
+        s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
+    with pytest.raises(ValueError):
+        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")

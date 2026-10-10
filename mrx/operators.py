@@ -529,6 +529,52 @@ def _coclosed_solve_of(seq, w, k: int, guess=None, return_info: bool = False, dt
     return (x, info) if return_info else x
 
 
+#: The parts of a Laplacian solve (:meth:`Laplacian.solve`).
+PARTS = ("full", "coexact", "exact")
+
+
+def _coexact_solve(seq, c, j: int, gauge: bool = True):
+    """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, in the residual precision.
+    With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Degree 0 has no exact forms."""
+    on, inner = _outer(seq)
+    if j == 0:
+        y, info = _k0_solve(seq, c, seq.tol, on=on, inner=inner)
+        return y.astype(on.dtype), info
+    y, info = _coclosed_solve(seq, c, j)
+    if gauge:
+        q, info_q = _coexact_solve(seq, -_grad(on, _mass(on, y, j), j - 1, transpose=True), j - 1)
+        y = y + _grad(on, q, j - 1)
+        info = _merge_info(info, info_q)
+    return y, info
+
+
+def _merge_info(a, b):
+    """The signed iteration count of two solves: the sum, negative if either did not converge."""
+    return jnp.where((a > 0) & (b > 0), 1, -1) * (jnp.abs(a) + jnp.abs(b))
+
+
+@eqx.filter_jit
+def _part_solve(seq, b, k: int, part: str, return_info: bool = False, dtype=None):
+    """``L_k^{-1} b`` for a ``b`` that has only the co-exact or only the exact part (:meth:`Laplacian.solve`),
+    k = 1, 2, 3. Every solve is one of the stiffness alone on a consistent right-hand side, as in
+    :func:`_coclosed_solve`::
+
+        coexact:  S_k x = b,   x co-exact
+        exact:    S_{k-1} g = G^T b,   g co-exact,   S_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
+    """
+    on, _ = _outer(seq)
+    b, = _plain(seq, b)
+    b = b.astype(on.dtype)
+    if part == "coexact":
+        x, info = _coexact_solve(seq, b, k)
+    else:
+        g, info_g = _coexact_solve(seq, _grad(on, b, k - 1, transpose=True), k - 1)
+        a, info_a = _coexact_solve(seq, _mass(on, g, k - 1), k - 1, gauge=False)
+        x, info = _grad(on, a, k - 1), _merge_info(info_g, info_a)
+    x = _out(seq, x, dtype)
+    return (x, info) if return_info else x
+
+
 @eqx.filter_jit
 def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     """``L_3^{-1} rhs`` by MINRES on the saddle-point system, returning ``(u, sigma, info)``::
@@ -677,13 +723,35 @@ class Laplacian(_Symmetric):
     def __matmul__(self, v):
         return _laplacian(self.seq, v, self.k)
 
-    def solve(self, b, guess=None, return_info=False, dtype=None):
+    def solve(self, b, guess=None, return_info=False, dtype=None, part="full"):
         """``L_k^{-1} b``, the solution orthogonal (in ``M_k``) to the harmonic forms.
 
         The harmonic forms come from :func:`mrx.nullspace.compute_nullspaces`. While they are still
         zero nothing is removed. ``guess``, ``return_info`` and ``dtype`` work as in
-        :meth:`MassMatrix.solve`."""
-        return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
+        :meth:`MassMatrix.solve`.
+
+        The solution is the sum of a co-exact form (``G_{k-1}^T M_k x = 0``) and an exact one
+        (``x = G_{k-1} a``). ``part`` says which of them ``b`` has, and leaves out the solves of the other:
+
+        - ``"full"``: any ``b``.
+        - ``"coexact"``: ``b`` is orthogonal to the closed forms, as ``b = G_k^T w`` is. The solution
+          is co-exact.
+        - ``"exact"``: ``b = M_k G_{k-1} c``. The solution is exact.
+
+        The parts solve the stiffness alone, which only converges on a right-hand side of that kind,
+        formed in the residual precision. A ``b`` with the other part as well returns a negative info.
+        They take no ``guess``. Every 0-form solution is co-exact and every 3-form solution is exact:
+        asking for the other part raises. :meth:`solve_coclosed` is the co-exact part for ``b = G_k^T w``
+        without the gauge solve."""
+        if part not in PARTS:
+            raise ValueError(f"part must be one of {PARTS}, got {part!r}")
+        if (self.k, part) in ((0, "exact"), (3, "coexact")):
+            raise ValueError(f"the solution of L_{self.k} has no {part} part")
+        if part == "full" or (self.k, part) == (0, "coexact"):
+            return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
+        if guess is not None:
+            raise ValueError("the part solves take no guess")
+        return _part_solve(self.seq, b, self.k, part, return_info=return_info, dtype=dtype)
 
     def solve_coclosed(self, w, guess=None, return_info=False, dtype=None, gauge=False):
         """A solution ``x`` of ``S_k x = G_k^T w``, for a dual ``(k+1)``-form ``w``.
