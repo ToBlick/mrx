@@ -464,7 +464,7 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, dt
 COCLOSED_PASS_MARGIN = 0.1
 
 
-def _coclosed_solve(seq, b, k: int, guess=None):
+def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
     """``(x, info)`` with ``S_k x = b`` for a right-hand side ``b`` in the range of ``G_k^T``.
 
     ``S_k`` is singular. Its kernel are the closed forms, so ``x`` is only fixed up to a closed form and no
@@ -486,6 +486,7 @@ def _coclosed_solve(seq, b, k: int, guess=None):
     for a residual it cannot resolve.
     """
     on, inner = _outer(seq)
+    tol = seq.tol if tol is None else tol
     P, vs = _seq_atom(seq, "laplacian", k).apply, _harmonic(seq, k)
     project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=on.dtype), lambda v: _mass(on, v, k))
     b = project_dual(b.astype(on.dtype))
@@ -496,7 +497,7 @@ def _coclosed_solve(seq, b, k: int, guess=None):
 
     def unconverged(carry):
         _, rho, passes, _ = carry
-        return (rho > seq.tol * b_norm) & (passes < MAX_PASSES)
+        return (rho > tol * b_norm) & (passes < MAX_PASSES)
 
     def one_pass(carry):
         x, rho, passes, its = carry
@@ -504,7 +505,7 @@ def _coclosed_solve(seq, b, k: int, guess=None):
         dx, info = solve_singular_cg(
             lambda v: _stiffness(seq, v, k), r, vs,
             precond_matvec=P,
-            tol=jnp.maximum(inner, COCLOSED_PASS_MARGIN * seq.tol * b_norm / rho),
+            tol=jnp.maximum(inner, COCLOSED_PASS_MARGIN * tol * b_norm / rho),
             maxiter=seq.maxiter,
             mass_matvec=lambda v: _mass(seq, v, k),
             parity=parity_projectors(seq, k, r),
@@ -516,7 +517,7 @@ def _coclosed_solve(seq, b, k: int, guess=None):
         # without a finer residual there is nothing to refine against: one solve with its own stopping test
         x, info = solve_singular_cg(
             lambda v: _stiffness(seq, v, k), b, vs,
-            precond_matvec=P, tol=seq.tol, maxiter=seq.maxiter, mass_matvec=lambda v: _mass(seq, v, k),
+            precond_matvec=P, tol=tol, maxiter=seq.maxiter, mass_matvec=lambda v: _mass(seq, v, k),
             x0=None if guess is None else guess.astype(seq.dtype), parity=parity_projectors(seq, k, b),
         )
         return project_primal(x), info
@@ -524,16 +525,17 @@ def _coclosed_solve(seq, b, k: int, guess=None):
     x0 = jnp.zeros_like(b) if guess is None else project_primal(guess.astype(on.dtype))
     x, rho, _, its = jax.lax.while_loop(
         unconverged, one_pass, (x0, jnp.linalg.norm(residual(x0)), jnp.int32(0), jnp.int32(0)))
-    return x, jnp.where(rho <= seq.tol * b_norm, its, -its)
+    return x, jnp.where(rho <= tol * b_norm, its, -its)
 
 
 @eqx.filter_jit
-def _coclosed_solve_of(seq, w, k: int, guess=None, return_info: bool = False, dtype=None, gauge: bool = False):
+def _coclosed_solve_of(seq, w, k: int, guess=None, return_info: bool = False, dtype=None, gauge: bool = False,
+                       tol=None):
     """``x`` with ``S_k x = G_k^T w`` (see :func:`_coclosed_solve`). ``G_k^T w`` is formed in the residual
     precision. With ``gauge`` the closed part of ``x`` is removed by the last solve of the Hodge split,
     ``S_{k-1} a = -G_{k-1}^T M_k x`` and ``x + G_{k-1} a``, which makes ``x`` the solution of ``L_k``."""
     on, inner = _outer(seq)
-    x, info = _coclosed_solve(seq, _grad(on, w.astype(on.dtype), k, transpose=True), k, guess)
+    x, info = _coclosed_solve(seq, _grad(on, w.astype(on.dtype), k, transpose=True), k, guess, tol)
     if gauge:
         c = -_grad(on, _mass(on, x, k), k - 1, transpose=True)
         a = _k0_solve(seq, c, seq.tol, on=on, inner=inner)[0] if k == 1 else _coclosed_solve(seq, c, k - 1)[0]
@@ -766,7 +768,7 @@ class Laplacian(_Symmetric):
             raise ValueError("the part solves take no guess")
         return _part_solve(self.seq, b, self.k, part, return_info=return_info, dtype=dtype)
 
-    def solve_coclosed(self, w, guess=None, return_info=False, dtype=None, gauge=False):
+    def solve_coclosed(self, w, guess=None, return_info=False, dtype=None, gauge=False, tol=None):
         """A solution ``x`` of ``S_k x = G_k^T w``, for a dual ``(k+1)``-form ``w``.
 
         This is the part of the Laplacian solve that ``G_k x`` depends on, by one conjugate-gradient solve on
@@ -775,9 +777,10 @@ class Laplacian(_Symmetric):
         enters. The method takes ``w`` and not the right-hand side because the solve only converges for a
         right-hand side that is exactly a transposed derivative, formed in the residual precision. With
         ``gauge`` one more solve of degree ``k - 1`` removes the closed part, and ``x`` is ``solve(G_k^T w)``.
-        ``guess``, ``return_info`` and ``dtype`` work as in :meth:`MassMatrix.solve`."""
+        ``guess``, ``return_info`` and ``dtype`` work as in :meth:`MassMatrix.solve`. ``tol`` replaces
+        ``seq.tol`` as the relative residual of this solve."""
         return _coclosed_solve_of(self.seq, w, self.k, guess=guess, return_info=return_info, dtype=dtype,
-                                  gauge=gauge)
+                                  gauge=gauge, tol=tol)
 
     def precondition(self, v):
         """The preconditioner of ``L_k`` that the Laplacian solves use, applied to ``v``."""
