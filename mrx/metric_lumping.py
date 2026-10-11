@@ -39,8 +39,11 @@ from mrx.precision import DTYPE, RESIDUAL_DTYPE, sqrt_eps
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
-#: Relative eigenvalue cut-off of the dense inverses of the axis blocks (in the residual precision).
-CORE_TOL = 4096.0 * float(jnp.finfo(RESIDUAL_DTYPE).eps)
+#: Relative eigenvalue cut-off of the dense inverses of the axis blocks, which are probed in the residual
+#: precision: 4096 eps in float64 (9e-13) and 16 eps in float32 (2e-6). With 4096 eps of float32 (5e-4) the
+#: mass k = 1 and Laplacian k = 1, 2 blocks lost real modes and the plain float32 Laplacian solves stalled on
+#: li383 (48,64,24).
+CORE_TOL = (4096.0 if RESIDUAL_DTYPE == jnp.dtype("float64") else 16.0) * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
 #: Axis rows probed per batch when the dense axis block is built (bounds the memory of the batched applies).
 PROBE_BATCH = 64
