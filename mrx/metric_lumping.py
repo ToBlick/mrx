@@ -337,11 +337,10 @@ def _dense_symmetric_inverse(block, tol):
 
 def _tensor_blocks(seq, k):
     """Split the degrees of freedom into the axis rows (``core``) and, per vector component, the
-    tensor-product rows away from the axis, as ``(c, rows, vals, (r0, nr), shape, offset)``.
+    tensor-product rows away from the axis, as ``(c, rows, vals, (r0, nr), shape)``.
 
     ``rows`` and ``vals`` map the component's radial slab ``[r0, r0 + nr)`` of shape
-    ``(nr, n_t, n_z)`` to the free degrees of freedom. ``offset >= 0`` marks a slab that is just a
-    contiguous range starting at ``offset``.
+    ``(nr, n_t, n_z)`` to the free degrees of freedom.
     """
     shapes = [tuple(int(s) for s in sh) for sh in getattr(seq, f"basis_{k}").shape]
     starts = np.cumsum([0] + [int(np.prod(s)) for s in shapes])
@@ -363,11 +362,7 @@ def _tensor_blocks(seq, k):
         r0 = int((lidx // (shape[1] * shape[2])).min())
         nr = int((lidx // (shape[1] * shape[2])).max()) + 1 - r0
         order = np.argsort(lidx - r0 * shape[1] * shape[2])
-        rows_t, vals_t = rows_b[sel][order], vals_b[sel][order]
-        selector = (np.array_equal(rows_t, rows_t[0] + np.arange(rows_t.size))
-                    and np.all(vals_t == 1.0))
-        blocks.append((c, rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
-                       int(rows_t[0]) if selector else -1))
+        blocks.append((c, rows_b[sel][order], vals_b[sel][order], (r0, nr), (nr, shape[1], shape[2])))
     return core, blocks
 
 # --------------------------------------------------------------------------- #
@@ -557,7 +552,7 @@ class MetricLumpingLaplacian(_Atom):
         from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
         core, raw_blocks, on, probe = self._prologue(seq, k)
         specs, strong = [], []
-        for c, rows, vals, (r0, nr), shape, offset in raw_blocks:
+        for c, rows, vals, (r0, nr), shape in raw_blocks:
             masses, stiffs = component_factors(seq, k, c, (r0, nr))
             v, lam = zip(*map(_simultaneous_diagonalize_pair, masses, stiffs))
             # D_i is a ratio of two positive integrals
@@ -604,7 +599,7 @@ class MetricLumpingMass(_Atom):
                       post=1.0 / lam[c][r0:r0 + nr],
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
-                 for c, rows, vals, (r0, nr), shape, offset in raw_blocks]
+                 for c, rows, vals, (r0, nr), shape in raw_blocks]
         core_inv = _dense_symmetric_inverse(
             probe(lambda x: on.M[k] @ x), CORE_TOL)
         self._install(core, specs, core_inv)

@@ -55,7 +55,7 @@ import numpy as np
 import mrx
 import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
-from mrx.extraction_operators import build_extraction, conforming_restriction, dirichlet_dofs, get_xi
+from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
 from mrx.geometry import SYMMETRIES, SequenceGeometry
 from mrx.incidence import build_curl_stencil_g1, build_grad_stencil_g0, build_matrixfree_incidence
 from mrx.mass import attach_weights, mass_plan, projection_plan
@@ -453,16 +453,6 @@ class DeRhamSequence():
         """The :class:`mrx.symmetry.FreeProjector` of the ``k``-form space. ``None`` on a
         full-period sequence and on a parity view."""
         return self._free_projectors.get((int(k), self.dirichlet))
-
-    def project_parity(self, v, k, parity):
-        """The part of the k-form DoF vector ``v`` with the given parity on a half-period
-        sequence. Returns ``v`` unchanged otherwise."""
-        if not self.half_period or self.parity is not None:
-            return v
-        e = self.E(k)
-        v = jnp.asarray(v)
-        raw = symmetrize(e.T @ v.astype(RESIDUAL_DTYPE), self.reflection_plan[k], parity)
-        return conforming_restriction(e, raw, self.core_rows(k)).astype(v.dtype)
 
     def l2_norm_sq(self, v, k):
         """The squared L2 norm ``v^T M_k v`` of the k-form ``v``."""

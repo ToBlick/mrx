@@ -24,7 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.operators import dual_norm, parity_projectors
+from mrx.operators import dual_norm
 from mrx.precision import RESIDUAL_DTYPE
 from mrx.solvers import chebyshev, lanczos_bounds, minres
 
@@ -245,11 +245,8 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     A_res = _newton_system(on, B, J, penalty_res, mass_inverse)[2]
     atom = harmonic_preconditioner(seq, profiles, penalty)
     rhs = curl_t(load)
-    # on a half-period sequence the residual is projected onto the parity of the right-hand side
-    parity = parity_projectors(even, 1, rhs)
-    project_dual = None if parity is None else parity[1]
     a, info, _ = newton_mr(A_res, A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter,
-                           dual_norm(even, 1), inner_dtype=seq.dtype, project_dual=project_dual)
+                           dual_norm(even, 1), inner_dtype=seq.dtype)
     a = a.astype(seq.dtype)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
@@ -271,7 +268,7 @@ def _newton_system(seq, B, J, penalty, mass_inverse):
     return curl, curl_t, A
 
 
-def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=None):
+def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype):
     """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info, npc)``.
 
     If the warm start ``x0`` already meets ``norm(b - A_res x0) <= tol norm(b)`` it is returned unchanged.
@@ -279,15 +276,13 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=
     estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. ``A_res`` is the operator in the residual precision and ``A`` the one in ``inner_dtype``. MINRES
     stops early at a direction of nonpositive curvature (``npc`` is then true). Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
-    from zero. ``project_dual`` removes round-off of the wrong parity from the residual. ``info`` is the number
+    from zero. ``info`` is the number
     of MINRES iterations, positive when the tolerance was met and negative when not.
     """
-    if project_dual is None:
-        def project_dual(r): return r
     b = b.astype(RESIDUAL_DTYPE)
     x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
     bnorm = norm(b)
-    r0 = project_dual(b - A_res(x))
+    r0 = b - A_res(x)
 
     def solve(_):
         rnorm = norm(r0)
@@ -301,7 +296,7 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype, project_dual=
         x_new, its_npc = jax.lax.cond(npc, from_zero,
                                       lambda _: (x + d.astype(RESIDUAL_DTYPE) * rnorm, jnp.zeros((), jnp.int32)),
                                       None)
-        return x_new, project_dual(b - A_res(x_new)), (jnp.abs(info) + its_npc).astype(jnp.int32), npc
+        return x_new, b - A_res(x_new), (jnp.abs(info) + its_npc).astype(jnp.int32), npc
 
     def skip(_):
         return x, r0, jnp.zeros((), jnp.int32), jnp.zeros((), bool)
