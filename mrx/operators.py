@@ -312,12 +312,15 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
 
         upper = b - S_k x - eps M_k x - M_k G w,   lower = G^T M_k x - M_{k-1} w
 
+    The solve is judged on the residual of ``(eps M_k + L_k) x = b`` itself, in the norm of the
+    ``k``-forms (:func:`dual_norm`): with ``w`` eliminated it is ``upper + M_k G M_{k-1}^{-1} lower``.
+
     ``split(r)`` must return ``(dx, dw, info)``, an approximate solution of
     ``(eps M_k + L_k) dx = r`` and its ``dw``. The kernel ``vs`` is removed from the upper residual.
     ``x`` is returned in the residual precision.
     """
     n_k, n_l = seq.n(k), seq.n(k - 1)
-    nu, nl = dual_norm(seq, k), dual_norm(seq, k - 1)
+    nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
     b64 = b.astype(RESIDUAL_DTYPE)
 
     _, project_dual_k = deflation_projectors(jnp.asarray(vs, dtype=RESIDUAL_DTYPE),
@@ -338,7 +341,9 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
         return project_dual(jnp.concatenate([upper, lower]))
 
     def norm(r):
-        return jnp.sqrt(nu(r[:n_k]) ** 2 + nl(r[n_k:]) ** 2)
+        # the residual of (eps M_k + L_k) x = b, which is upper + M_k G M_{k-1}^-1 lower once w is eliminated,
+        # with the preconditioner of M_{k-1} for its inverse as in dual_norm
+        return nu(r[:n_k] + _mass(on, _grad(on, P_lower(r[n_k:]), k - 1), k))
 
     def solve(r):
         r_u, r_l = r[:n_k], r[n_k:]
