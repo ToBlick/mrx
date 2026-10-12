@@ -1,6 +1,6 @@
 """MRX: magnetic relaxation with finite element exterior calculus on spline de Rham complexes.
 
-Importing the package fixes the precision (``MRX_DTYPE`` and ``MRX_RESIDUAL_DTYPE``, mixed precision by
+Importing the package fixes the precision (``MRX_DTYPE`` and ``MRX_RESIDUAL_DTYPE``, float64 by
 default) and turns on JAX's 64-bit mode, so set these environment variables before the first import. See
 :mod:`mrx.precision`.
 """

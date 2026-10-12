@@ -20,9 +20,9 @@ pip install "jax[cuda12]"
 
 Without it, JAX runs on the CPU.
 
-MRX runs in mixed precision by default: float32 fields and solves,
-refined against a float64 residual. `MRX_DTYPE=float64` or plain float32
-(`MRX_RESIDUAL_DTYPE=float32`) is chosen before `mrx` is imported (see
+MRX runs in float64 by default. Mixed precision (`MRX_DTYPE=float32`: float32
+fields and solves, refined against a float64 residual) or plain float32
+(also `MRX_RESIDUAL_DTYPE=float32`) is chosen before `mrx` is imported (see
 [Precision](concepts/precision.md)).
 
 ## Run the tests

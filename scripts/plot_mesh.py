@@ -139,6 +139,6 @@ def main(cli):
 if __name__ == "__main__":
     # The precision must be in the environment before mrx is imported. The full parse follows.
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--precision", default="float32", choices=("float32", "float64"))
+    pre.add_argument("--precision", default="float64", choices=("float32", "float64"))
     os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
     main(tyro.cli(PlotMesh, description=__doc__))
