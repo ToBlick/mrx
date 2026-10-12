@@ -189,7 +189,7 @@ class TimeStepper(eqx.Module):
         """Return ``(J, (J x B)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
         2-form basis), not projected."""
         odd, even = self.seq.odd, self.seq.even
-        J = odd.weak_curl(B, guess=J_guess)
+        J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
         return J, even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                                  odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
 

@@ -34,7 +34,7 @@ of fields such as ``J x B`` (:meth:`~DeRhamSequence.evaluate_at_quadrature` with
 ``*_load_values`` methods).
 
 The geometry (metric and Jacobian of the map at the quadrature points) and the preconditioners are
-data installed on the sequence. :meth:`~DeRhamSequence.set_map` installs a new map and discards the
+data installed on the sequence. :meth:`~DeRhamSequence.set_geometry_from_map` installs a new map and discards the
 preconditioners, :meth:`~DeRhamSequence.build_preconditioners` builds them again, and
 :func:`mrx.nullspace.compute_nullspaces` adds the harmonic forms. :func:`mrx.geometry.build_sequence`
 builds a sequence from a geometry file with its map and preconditioners installed. A free view
@@ -59,6 +59,7 @@ from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
 from mrx.geometry import SYMMETRIES, SequenceGeometry
 from mrx.incidence import build_curl_stencil_g1, build_grad_stencil_g0, build_matrixfree_incidence
 from mrx.mass import attach_weights, mass_plan, projection_plan
+from mrx.metric_lumping import ReducedAtom
 from mrx.precision import REFINE, RESIDUAL_DTYPE, SOLVE_TOL, cast_arrays, default_tol
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.pytree import register_arrays
@@ -103,9 +104,9 @@ class DeRhamSequence():
         half_period: whether the quadrature covers only half the zeta period (:mod:`mrx.symmetry`).
         residual: the float64 copy of the sequence on which the solves evaluate their residuals in
             the mixed precision configuration (:mod:`mrx.precision`), ``None`` otherwise.
-        geometry: the installed geometry (:meth:`set_map`), ``None`` before the first map.
+        geometry: the installed geometry (:meth:`set_geometry_from_map`), ``None`` before the first map.
         operators: the preconditioners and harmonic forms (:meth:`build_preconditioners`),
-            ``None`` after every :meth:`set_map`.
+            ``None`` after every :meth:`set_geometry_from_map`.
     """
 
     def __init__(self, ns, p, *, nfp, symmetry, knots=None, equilibrium=None, tol=None, maxiter=10_000):
@@ -254,7 +255,7 @@ class DeRhamSequence():
         ``p = 0`` on the wall), the working spaces of ``B``, ``J``, ``E`` and the force. Taking the
         view is free, also inside a jitted function. ``seq.free.odd`` and ``seq.odd.free`` are the
         same space. The view copies the geometry and preconditioners installed when it is taken, so
-        take it anew after :meth:`set_map`, :meth:`build_preconditioners` or
+        take it anew after :meth:`set_geometry_from_map`, :meth:`build_preconditioners` or
         :func:`mrx.nullspace.compute_nullspaces`."""
         if not self.dirichlet:
             return self
@@ -315,28 +316,41 @@ class DeRhamSequence():
         ``eps`` as a JAX array, otherwise every new value recompiles."""
         return op.ShiftedLaplacian(self, int(k), eps)
 
-    def set_map(self, Phi):
-        """Install the geometry of the logical-to-physical map ``Phi``. This discards the
-        preconditioners. Call :meth:`build_preconditioners` again afterwards."""
-        self.set_geometry(SequenceGeometry.from_map(Phi, self.quad.x))
+    def set_geometry_from_map(self, Phi, keep_preconditioners=False):
+        """Evaluate the geometry of the logical-to-physical map ``Phi`` at the quadrature points and
+        install it (:meth:`set_geometry`)."""
+        self.set_geometry(SequenceGeometry.from_map(Phi, self.quad.x), keep_preconditioners)
 
-    def set_geometry(self, geometry: SequenceGeometry):
-        """Install ``geometry`` on this sequence, its parity views and its float64 copy, and discard
-        the preconditioners (call :meth:`build_preconditioners` again). Raises ``ValueError`` if
-        ``det DPhi`` is not positive at every quadrature point."""
+    def set_geometry(self, geometry: SequenceGeometry, keep_preconditioners=False):
+        """Install ``geometry`` on this sequence, its parity views and its float64 copy. Raises
+        ``ValueError`` if ``det DPhi`` is not positive at every quadrature point.
+
+        The preconditioners and the harmonic forms belong to the old geometry and are discarded: call
+        :meth:`build_preconditioners` and :func:`mrx.nullspace.compute_nullspaces` again. With
+        ``keep_preconditioners`` the preconditioners stay. They are those of the old geometry, which
+        is still a valid preconditioner of the new operators and a good one after a small change of
+        the map. The harmonic forms are set to zero either way, because a form of the old geometry
+        is not in the kernel of the new Laplacian: compute them again before a solve that removes
+        them."""
         jac = np.asarray(geometry.jacobian_j)
         if not np.isfinite(jac).all() or jac.min() <= 0.0:
             raise ValueError(
                 f"the map folds: det DPhi at the quadrature points spans "
                 f"[{jac.min():.3e}, {jac.max():.3e}] and must be positive")
+        def stale(seq):
+            # the bundle of the old geometry with its harmonic forms zeroed, or nothing
+            if not keep_preconditioners or seq.operators is None:
+                return None
+            return op.init_nullspaces(seq, seq.operators)
+
         self.geometry = attach_weights(self, cast_arrays(geometry))
-        self.operators = None
+        self.operators = stale(self)
         views = list(self._parity_views.values())
         if self.residual is not None:
-            self.residual.geometry, self.residual.operators = cast_arrays(self.geometry, RESIDUAL_DTYPE), None
+            self.residual.geometry, self.residual.operators = cast_arrays(self.geometry, RESIDUAL_DTYPE), self.operators
             views += list(self.residual._parity_views.values())
         for view in views:
-            view.geometry, view.operators = view._base.geometry, None
+            view.geometry, view.operators = view._base.geometry, stale(view)
 
     @property
     def odd(self):
@@ -354,7 +368,7 @@ class DeRhamSequence():
         sequence, has about half the DoFs and its own preconditioners. A full-period sequence is
         its own view. In compiled code take both views from the full sequence. A view reaches the
         other one through its static base, so that view's arrays would be compiled in as
-        constants, which a later :meth:`set_map` does not reach."""
+        constants, which a later :meth:`set_geometry_from_map` does not reach."""
         s = int(parity)
         if not self.half_period or s == self.parity:
             return self
@@ -387,7 +401,9 @@ class DeRhamSequence():
         view.dtype = RESIDUAL_DTYPE
         view.tol = default_tol(RESIDUAL_DTYPE, refine=False)
         view.quad = cast_arrays(copy.copy(self.quad), RESIDUAL_DTYPE)
-        # rebuilt in float64 rather than cast, so that d d = 0 holds near the axis in float64
+        # the extractions and the polar stencils are built again in float64 rather than cast: their
+        # weights are cosines and sines, and d d = 0 near the axis holds to the round-off of those
+        # weights. The geometry of the copy is cast (set_geometry).
         view.extraction, _ = view._extractions(RESIDUAL_DTYPE)
         view.g0_grad, view.g1_curl = view._polar_stencils(RESIDUAL_DTYPE)
         return view
@@ -399,7 +415,6 @@ class DeRhamSequence():
         self._require_geometry()
         if self.parity is not None:
             # a parity view reuses the preconditioners of the full sequence, restricted to its space
-            from mrx.metric_lumping import ReducedAtom  # noqa: PLC0415
             base = self._base.operators
             if base is None:
                 base = self._base.build_preconditioners()
@@ -421,12 +436,12 @@ class DeRhamSequence():
 
     def _require_geometry(self):
         if self.geometry is None:
-            raise ValueError('Set the geometry first, for example with seq.set_map(...).')
+            raise ValueError('Set the geometry first, for example with seq.set_geometry_from_map(...).')
         return self.geometry
 
     def _require_operators(self):
         if self.operators is None:
-            raise ValueError('no operator bundle: call seq.build_preconditioners() after set_map')
+            raise ValueError('no operator bundle: call seq.build_preconditioners() after set_geometry_from_map')
         return self.operators
 
     def _form_comp_info(self, k):
@@ -461,10 +476,6 @@ class DeRhamSequence():
     def l2_norm(self, v, k):
         """The L2 norm ``sqrt(v^T M_k v)`` of the k-form ``v``."""
         return jnp.sqrt(self.l2_norm_sq(v, k))
-
-    def weak_curl(self, v, guess=None):
-        """The weak curl ``M_1^{-1} D_1^T v`` of the 2-form ``v``, a 1-form (one mass solve)."""
-        return self.M[1].solve(self.D[1].T @ v, guess=guess)
 
     def leray(self, v, k=2, p_guess=None, sigma_guess=None):
         """``(v_out, p)``: the weakly divergence-free part ``v_out = v - grad p`` of a 1- or 2-form.

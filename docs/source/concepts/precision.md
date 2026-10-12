@@ -60,7 +60,7 @@ unknowns their inner solves produce, with the saddle-point residual.
 
 The residual operator is `seq.residual`: a copy of the sequence with the
 geometry, quadrature, extraction and polar stencils in float64 and
-everything else shared. The constructor builds it, and every `set_map` hands
+everything else shared. The constructor builds it, and every `set_geometry_from_map` hands
 it the new geometry. It is `None` when the solves do
 not refine. The harmonic forms are built on it and stored in the working
 dtype.

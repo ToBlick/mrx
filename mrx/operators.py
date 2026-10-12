@@ -14,7 +14,7 @@ and space and reuse the compiled program for every new right-hand side and every
 
 The solves need the preconditioners and harmonic forms of the installed geometry, a
 :class:`SequenceOperators` bundle that ``seq.build_preconditioners()`` builds and that must be
-built again after every ``set_map``.
+built again after every ``set_geometry_from_map``.
 """
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ def set_nullspace(operators, k, dirichlet, values):
 
 def _bundle(operators):
     if operators is None:
-        raise ValueError("no operator bundle: call seq.build_preconditioners() after set_map")
+        raise ValueError("no operator bundle: call seq.build_preconditioners() after set_geometry_from_map")
     return operators
 
 
@@ -128,7 +128,7 @@ def assemble_preconditioners(seq, operators):
 
 def _geometry(seq):
     if seq.geometry is None:
-        raise ValueError("no geometry installed: call seq.set_map first")
+        raise ValueError("no geometry installed: call seq.set_geometry_from_map first")
     return seq.geometry
 
 

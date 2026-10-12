@@ -56,7 +56,7 @@ def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | No
     The optional guesses are the results of a previous call and only speed up the linear solves.
     """
     odd, even = seq.odd, seq.even
-    J = odd.weak_curl(B, guess=J_guess)
+    J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
     JxB_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                               odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
     # in the residual precision, because F = JxB - grad p is a small difference of large fields

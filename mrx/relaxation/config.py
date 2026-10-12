@@ -66,8 +66,8 @@ class Geometry:
     """The relative residual tolerance of every linear solve. Unset, it follows the precision: float32 1e-5, mixed 1e-8, float64 1e-8."""
     solve_maxiter: int = 2000
     """The maximum number of iterations of every linear solve."""
-    max_batch: int = 0
-    """The number of cells evaluated at once in the quadrature loops. 0 evaluates all of them at once. Set a bound at high resolution to limit memory."""
+    max_batch: int = 262144
+    """The number of points evaluated at once in the quadrature loops. 0 evaluates all of them at once. Lower it when one of these loops runs out of device memory."""
 
     def __post_init__(self):
         if self.max_batch < 0:

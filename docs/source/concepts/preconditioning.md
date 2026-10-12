@@ -117,7 +117,7 @@ how little it computes, so doing fewer of them halved the cost of an apply
 ## 3. Building and invalidation
 
 ```python
-seq.set_map(Phi)                # installs the geometry, drops seq.operators
+seq.set_geometry_from_map(Phi)                # installs the geometry, drops seq.operators
 seq.build_preconditioners()     # both atoms for every k, Dirichlet and free
 compute_nullspaces(seq)         # the harmonic forms, onto the bundle
 ```

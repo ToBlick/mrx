@@ -12,7 +12,7 @@ the force and the pressures on `seq.even` ([Architecture](architecture.md)).
 
 The relaxation forms the force by the potential route:
 
-1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl (`seq.weak_curl(B)`): one k = 1 mass solve.
+1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl: one k = 1 mass solve.
 2. `load(J x B)`, the Lorentz force tested against the 2-form basis, not projected.
 3. `L_1 a = curl^T load(J x B)`: one k = 1 Hodge solve for the force potential `a`. The force is
    `F = curl a + c h`, with `c h` its harmonic part (zero for the even force of a half-period sequence).

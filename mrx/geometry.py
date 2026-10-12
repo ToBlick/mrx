@@ -3,8 +3,8 @@
 A sequence lives on the logical cube ``(r, theta, zeta)``. The map ``Phi`` from the cube to physical
 space enters the discrete operators only through its Jacobian ``DPhi``: :class:`SequenceGeometry` holds
 the metric ``G = DPhi^T DPhi``, its inverse and ``det DPhi`` at the quadrature points.
-The geometry is data (a JAX pytree) that :meth:`~mrx.derham_sequence.DeRhamSequence.set_map` replaces. A new map of the same resolution does not
-recompile the sequence's solves, but it drops the preconditioners: call
+The geometry is data (a JAX pytree) that :meth:`~mrx.derham_sequence.DeRhamSequence.set_geometry_from_map` replaces. A new map of the same resolution does not
+recompile the sequence's solves, but it drops the preconditioners (unless ``keep_preconditioners``) and the harmonic forms: call
 :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners` again.
 
 Most users call :func:`build_sequence`, which reads a geometry file (a GVEC state ``.dat``, a VMEC wout
@@ -137,7 +137,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     print(f"[geom] {geometry}: nfp={info['nfp']}{reversed_note}, "
           f"det DPhi in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
           f"symmetry {symmetry} ({note})", flush=True)
-    seq.set_map(Phi)
+    seq.set_geometry_from_map(Phi)
     ops = seq.build_preconditioners()
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
     return seq, ops

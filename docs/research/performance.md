@@ -156,7 +156,7 @@ Steady s/step on the 2nd chunk of 20 steps. Setup / compile / s/step:
 - The old dense surgery coupling was O(N n_z): ~23 MB at 12^3, ~1.5 GB at 32x64x32, ~24 GB at
   64x128x64, vs (C C^T)^-1 27 KB. The old probed Jacobi diagonal 541 s and Schur-diagonal probe
   2236 s of a 2957 s setup (O(N^2), unbatched) at 12x24x12.
-- Harmonic-form setup on the W7-X 32^3 h5 geometry (route deleted, 2026-08-17): set_map 67 / 243 /
+- Harmonic-form setup on the W7-X 32^3 h5 geometry (route deleted, 2026-08-17): set_geometry_from_map 67 / 243 /
   607 s (n = 8/12/16, ~n^3.2), Schur-Jacobi assembly 28.6 / 174 / 873 s (~n^5). n = 28 took 8h14m.
 - Micro (2026-08, unexplained): (16,32,16) k=3 metric-lumping Laplacian apply 47 -> 60 us after the
   one-write apply (k = 1, 2 -15%). k=1 mass apply 61 -> 68 us (8,16,8) after the static selector. One

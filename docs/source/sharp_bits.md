@@ -103,7 +103,7 @@ slow and the first chunk of a relaxation takes much longer than the rest.
 Python numbers stored in `equinox` modules are static: changing one of them,
 for example a step size held as a Python `float`, compiles the function again.
 A new geometry of the same mesh reuses every compiled solve when its map is
-a pytree, as the `CylindricalMap` of `build_map` is: after `seq.set_map` and
+a pytree, as the `CylindricalMap` of `build_map` is: after `seq.set_geometry_from_map` and
 `build_preconditioners` the first Laplacian solve takes 0.14 s, not the 18 s
 of its compile (li383 at (12, 16, 16)). A map given as a plain Python
 function is a static part of the sequence, so every function of the sequence

@@ -234,7 +234,7 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     """
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
-    # base, and its geometry would be compiled in as a constant that a later set_map does not reach.
+    # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
     on = seq if seq.residual is None else seq.residual
     profiles = harmonic_atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)

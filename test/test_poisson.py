@@ -152,3 +152,31 @@ def test_leray_projection(seq):
     assert div <= 10 * seq.tol + eps(10)
     assert moved <= 10 * seq.tol + eps(10)
     assert float(even.l2_norm(Pv, 2)) < 1.0
+
+
+def test_a_new_geometry_can_keep_the_preconditioners(domains):
+    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the atoms and zeroes the harmonic forms, so
+    a solve runs without a new build. Without it the bundle is gone and a solve raises. The map installed here
+    is the sequence's own, and the preconditioners and harmonic forms are built again at the end."""
+    from mrx.equilibria import build_map
+    from mrx.nullspace import compute_nullspaces
+
+    s = domains("period")
+    Phi, _ = build_map(s.equilibrium, s, nfp=s.nfp, stellarator_symmetric=s.half_period)
+    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)), dtype=RESIDUAL_DTYPE)
+    x_ref = s.M[1].solve(b, dtype=RESIDUAL_DTYPE)
+    Pb = s.M[1].precondition(b)
+    try:
+        s.set_geometry_from_map(Phi, keep_preconditioners=True)
+        assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
+        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
+        x, info = s.M[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE)
+        assert info > 0
+        assert float(s.l2_norm(x - x_ref, 1) / s.l2_norm(x_ref, 1)) <= 1e3 * s.tol
+        s.set_geometry_from_map(Phi)
+        assert s.operators is None
+        with pytest.raises(ValueError):
+            s.M[1].solve(b)
+    finally:
+        s.build_preconditioners()
+        compute_nullspaces(s, verbose=False)
