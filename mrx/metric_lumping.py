@@ -27,6 +27,8 @@ entries are neglected.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 import equinox as eqx
@@ -45,8 +47,10 @@ from mrx.symmetry import mirror_component, mirror_zeta_1d
 #: li383 (48,64,24).
 CORE_TOL = (4096.0 if RESIDUAL_DTYPE == jnp.dtype("float64") else 16.0) * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
-#: Axis rows probed per batch when the dense axis block is built (bounds the memory of the batched applies).
-PROBE_BATCH = 64
+#: Axis rows probed per batch when the dense axis block is built. It bounds the memory of the batched applies:
+#: lower it with the environment variable ``MRX_PROBE_BATCH`` when the build runs out of device memory on a
+#: fine mesh.
+PROBE_BATCH = int(os.environ.get("MRX_PROBE_BATCH", "64"))
 
 #: Empirical factor on the boundary term of the Laplacian preconditioner under natural boundary
 #: conditions. Three times the exact surface integral gave the smallest condition number.
