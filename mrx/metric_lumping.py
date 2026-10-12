@@ -37,17 +37,9 @@ import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
-from mrx.precision import DTYPE, RESIDUAL_DTYPE, sqrt_eps
+from mrx.precision import DTYPE, sqrt_eps
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
-
-#: Relative eigenvalue cut-off of the dense inverses of the axis blocks, which are probed in the residual
-#: precision: 4096 eps in float64 (9e-13) and 16 eps in float32 (2e-6). With 4096 eps of float32 (5e-4) the
-#: mass k = 1 and Laplacian k = 1, 2 blocks lost real modes and the plain float32 Laplacian solves stalled on
-#: li383 (48,64,24). The blocks have no near-zero eigenvalues: at p = 2 the smallest is 4e-5 to 4e-4 of the largest
-#: on li383 (32,44,20) to (80,104,40) and W7-X (32,64,36), (40,80,48), and at p = 3 it is 2e-5, 1e-5 and 9e-6 on li383
-#: (32,44,20), (48,64,24), (64,80,32). So the cut-off removes nothing there, with a margin of 5 at p = 3 in float32.
-CORE_TOL = (4096.0 if RESIDUAL_DTYPE == jnp.dtype("float64") else 16.0) * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
 #: Axis rows probed per batch when the dense axis block is built. It bounds the memory of the batched applies:
 #: lower it with the environment variable ``MRX_PROBE_BATCH`` when the build runs out of device memory on a
@@ -327,14 +319,22 @@ def _probe_rows(apply, size, rows, dtype, split):
     return 0.5 * (block + block.T)
 
 
-def _dense_symmetric_inverse(block, tol):
-    """Pseudoinverse of a symmetric ``block`` dropping ``|w| <= tol max|w|``."""
+def _dense_symmetric_inverse(block, name):
+    """The inverse of the symmetric positive definite axis block ``block``, by its eigenvalues.
+
+    The axis blocks are an operator restricted to the axis rows and have no small eigenvalues: the
+    smallest is 9e-6 to 4e-4 of the largest on li383 (32,44,20) to (80,104,40) and W7-X (32,64,36),
+    (40,80,48) at p = 2 and 3 (2026-10-11). So nothing is cut off. A block whose smallest eigenvalue
+    is not above the round-off of its largest raises, with ``name`` in the message."""
     if block.size == 0:
         return block
     w, v = jnp.linalg.eigh(block)
-    keep = jnp.abs(w) > tol * jnp.max(jnp.abs(w))
-    inv_w = jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)
-    return (v * inv_w) @ v.T
+    if not isinstance(w, jax.core.Tracer):
+        floor = block.shape[0] * float(jnp.finfo(block.dtype).eps) * float(w[-1])
+        if not float(w[0]) > floor:
+            raise ValueError(f"the axis block of {name} is not positive definite: its eigenvalues span "
+                             f"[{float(w[0]):.3e}, {float(w[-1]):.3e}]")
+    return (v / w) @ v.T
 
 
 def _tensor_blocks(seq, k):
@@ -565,7 +565,7 @@ class MetricLumpingLaplacian(_Atom):
             strong.append([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)])
         self._strong = jnp.asarray(strong, dtype=DTYPE)
         core_inv = _dense_symmetric_inverse(
-            probe(lambda x: apply_laplacian_approx(on, operators, x, k)), CORE_TOL)
+            probe(lambda x: apply_laplacian_approx(on, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
         mass_core = probe(lambda x: on.M[k] @ x)
         stiffness_core = probe(lambda x: on.S[k] @ x)
@@ -602,8 +602,7 @@ class MetricLumpingMass(_Atom):
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
                  for c, rows, vals, (r0, nr), shape in raw_blocks]
-        core_inv = _dense_symmetric_inverse(
-            probe(lambda x: on.M[k] @ x), CORE_TOL)
+        core_inv = _dense_symmetric_inverse(probe(lambda x: on.M[k] @ x), f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 
