@@ -44,7 +44,9 @@ from mrx.symmetry import mirror_component, mirror_zeta_1d
 #: Relative eigenvalue cut-off of the dense inverses of the axis blocks, which are probed in the residual
 #: precision: 4096 eps in float64 (9e-13) and 16 eps in float32 (2e-6). With 4096 eps of float32 (5e-4) the
 #: mass k = 1 and Laplacian k = 1, 2 blocks lost real modes and the plain float32 Laplacian solves stalled on
-#: li383 (48,64,24).
+#: li383 (48,64,24). The blocks have no near-zero eigenvalues: at p = 2 the smallest is 4e-5 to 4e-4 of the largest
+#: on li383 (32,44,20) to (80,104,40) and W7-X (32,64,36), (40,80,48), and at p = 3 it is 2e-5, 1e-5 and 9e-6 on li383
+#: (32,44,20), (48,64,24), (64,80,32). So the cut-off removes nothing there, with a margin of 5 at p = 3 in float32.
 CORE_TOL = (4096.0 if RESIDUAL_DTYPE == jnp.dtype("float64") else 16.0) * float(jnp.finfo(RESIDUAL_DTYPE).eps)
 
 #: Axis rows probed per batch when the dense axis block is built. It bounds the memory of the batched applies:
