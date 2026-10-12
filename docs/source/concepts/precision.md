@@ -62,8 +62,9 @@ The residual operator is `seq.residual`: a copy of the sequence with the
 geometry, quadrature, extraction and polar stencils in float64 and
 everything else shared. The constructor builds it, and every `set_geometry_from_map` hands
 it the new geometry. It is `None` when the solves do
-not refine. The harmonic forms are built on it and stored in the working
-dtype.
+not refine. The harmonic forms are built on it and stored in float64:
+a form rounded to float32 is `1e-7` from the kernel, and the deflated
+solves do not converge below that.
 
 Results come back in the working dtype. A caller that keeps computing with
 the accurate solution asks for it with `dtype=RESIDUAL_DTYPE`:

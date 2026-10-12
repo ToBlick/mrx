@@ -23,7 +23,6 @@ from typing import Optional
 import equinox as eqx
 import jax.numpy as jnp
 
-import mrx
 from mrx.mass import sumfact_apply
 from mrx.precision import RESIDUAL_DTYPE, inner_tol
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
@@ -66,7 +65,7 @@ def init_nullspaces(seq, operators):
     ``seq.betti_numbers`` gives."""
     return _replace(operators, "nullspaces", {
         (k, d): jnp.zeros((n_vectors(seq.betti_numbers, k, d), seq.extraction[(k, d)].forward_shape[0]),
-                          dtype=mrx.DTYPE)
+                          dtype=RESIDUAL_DTYPE)
         for k in range(4) for d in (False, True)})
 
 
@@ -491,6 +490,7 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         norm_lower=dual_norm(seq, 2),
         inner_tol=inner, inner_dtype=seq.dtype,
         parity_upper=parity_upper, parity_lower=parity_lower,
+        mass_upper_res=None if seq.residual is None else (lambda x: _mass(res, x, 3)),
     )
 
 

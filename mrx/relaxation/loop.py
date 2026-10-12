@@ -174,7 +174,7 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         # with stellarator symmetry the harmonic form is odd and the force even, so this is empty
         even = self.seq.even
-        hs = even.nullspace(2)
+        hs = jnp.asarray(even.nullspace(2), dtype=DTYPE)      # the loop works in the working dtype
         self.harmonic = hs
         self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=hs.dtype)
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
