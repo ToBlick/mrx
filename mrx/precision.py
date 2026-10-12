@@ -69,10 +69,10 @@ EPS = float(np.finfo(DTYPE).eps)
 
 def default_tol(dtype, refine) -> float:
     """The default relative tolerance of a solve on a sequence of ``dtype``. It is 1e-8 for refined
-    (mixed) solves, 1e-10 for plain float64 solves and 1e-5 for plain float32 solves."""
+    (mixed) solves and for plain float64 solves, and 1e-5 for plain float32 solves."""
     if refine:
         return 1e-8
-    return 1e-10 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-5
+    return 1e-8 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-5
 
 
 #: The default relative tolerance of a solve on a sequence, :func:`default_tol` of the configuration.
