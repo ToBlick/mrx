@@ -41,10 +41,11 @@ from mrx.precision import DTYPE, sqrt_eps
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
-#: Axis rows probed per batch when the dense axis block is built. It bounds the memory of the batched applies:
-#: lower it with the environment variable ``MRX_PROBE_BATCH`` when the build runs out of device memory on a
-#: fine mesh.
-PROBE_BATCH = int(os.environ.get("MRX_PROBE_BATCH", "64"))
+#: Axis rows probed per batch when the dense axis block is built. The probe holds one field at every
+#: quadrature point per row, so the batch sets the peak device memory of the setup: on li383 (64,80,32),
+#: p = 2, float64 it is 15.1 GiB at 64, 4.4 GiB at 8 and 3.0 GiB at 1, with the same build time, and 2.2 GiB
+#: stay in use afterwards (2026-10-12). Set it with the environment variable ``MRX_PROBE_BATCH``.
+PROBE_BATCH = int(os.environ.get("MRX_PROBE_BATCH", "8"))
 
 #: Empirical factor on the boundary term of the Laplacian preconditioner under natural boundary
 #: conditions. Three times the exact surface integral gave the smallest condition number.
