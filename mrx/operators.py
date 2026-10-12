@@ -379,6 +379,7 @@ def _hat_solve(seq, b, k: int, tol):
         vs=_harmonic(seq, k),
         tol=tol,
         maxiter=seq.maxiter,
+        norm=dual_norm(seq, k),
         parity=parity_projectors(seq, k, b),
     )
 
@@ -415,13 +416,15 @@ def _hodge_split(seq, b, k, guess, on, inner):
         S_{k-1} a = M_{k-1} g - G^T M_k x_perp,   x = x_perp + G a
 
     Each singular ``S`` is solved through :func:`_hat_solve` (or :func:`_k0_solve` for degree 0),
-    and :func:`_pair_loop` repeats the split until the residual is small.
+    and :func:`_pair_loop` repeats the split until the residual is small. Each of the three stops at a
+    third of the pass tolerance.
     """
 
+    # the residual of the split is at most the sum of those of its three solves, so each gets a third
     def solve(b, j):
         if j == 0:
-            return _k0_solve(seq, b, inner)
-        return _hat_solve(seq, b, j, inner)
+            return _k0_solve(seq, b, inner / 3.0)
+        return _hat_solve(seq, b, j, inner / 3.0)
 
     def split(b):
         # g equals M_{k-1}^-1 G^T M x of the returned x, the second unknown of _pair_loop

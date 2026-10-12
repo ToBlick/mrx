@@ -287,10 +287,11 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype):
     def solve(_):
         rnorm = norm(r0)
         d, info, npc = minres(A, (r0 / rnorm).astype(inner_dtype), M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
-                              npc_exit=True)
+                              npc_exit=True, norm=norm)
 
         def from_zero(_):
-            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True)
+            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True,
+                                  norm=norm)
             return d0.astype(RESIDUAL_DTYPE) * bnorm, jnp.abs(info0).astype(jnp.int32)
 
         x_new, its_npc = jax.lax.cond(npc, from_zero,
