@@ -1,8 +1,8 @@
 # Testing strategy
 
 MRX has one lean test tier in three configurations. Bare `pytest` runs the suite in the
-configuration `import mrx` gives, mixed precision. `MRX_DTYPE=float64` and
-plain float32 (`MRX_RESIDUAL_DTYPE=float32`) are the other two ([Precision](precision.md)). A change to the solvers,
+configuration `import mrx` gives, float64. Mixed precision (`MRX_DTYPE=float32`) and
+plain float32 (also `MRX_RESIDUAL_DTYPE=float32`) are the other two ([Precision](precision.md)). A change to the solvers,
 the precision module or the atoms is verified in all three:
 `bash slurm/suite.sh` submits the three GPU jobs. The GitHub workflow runs
 the suite in mixed precision and in float64. The suite reads only files tracked in the

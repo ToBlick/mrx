@@ -139,7 +139,7 @@ def main(cfg):
 if __name__ == "__main__":
     # The precision must be in the environment before mrx is imported. The full parse follows.
     pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--geometry.precision", dest="precision", default="mixed", choices=tuple(PRECISIONS))
+    pre.add_argument("--geometry.precision", dest="precision", default="float64", choices=tuple(PRECISIONS))
     os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[pre.parse_known_args()[0].precision]
     import tyro
     from mrx.relaxation.config import RelaxConfig

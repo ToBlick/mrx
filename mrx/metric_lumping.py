@@ -27,6 +27,8 @@ entries are neglected.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 import equinox as eqx
@@ -35,15 +37,15 @@ import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
-from mrx.precision import DTYPE, RESIDUAL_DTYPE, sqrt_eps
+from mrx.precision import DTYPE, sqrt_eps
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
-#: Relative eigenvalue cut-off of the dense inverses of the axis blocks (in the residual precision).
-CORE_TOL = 4096.0 * float(jnp.finfo(RESIDUAL_DTYPE).eps)
-
-#: Axis rows probed per batch when the dense axis block is built (bounds the memory of the batched applies).
-PROBE_BATCH = 64
+#: Axis rows probed per batch when the dense axis block is built. The probe holds one field at every
+#: quadrature point per row, so the batch sets the peak device memory of the setup: on li383 (64,80,32),
+#: p = 2, float64 it is 15.1 GiB at 64, 4.4 GiB at 8 and 3.0 GiB at 1, with the same build time, and 2.2 GiB
+#: stay in use afterwards (2026-10-12). Set it with the environment variable ``MRX_PROBE_BATCH``.
+PROBE_BATCH = int(os.environ.get("MRX_PROBE_BATCH", "8"))
 
 #: Empirical factor on the boundary term of the Laplacian preconditioner under natural boundary
 #: conditions. Three times the exact surface integral gave the smallest condition number.
@@ -318,23 +320,30 @@ def _probe_rows(apply, size, rows, dtype, split):
     return 0.5 * (block + block.T)
 
 
-def _dense_symmetric_inverse(block, tol):
-    """Pseudoinverse of a symmetric ``block`` dropping ``|w| <= tol max|w|``."""
+def _dense_symmetric_inverse(block, name):
+    """The inverse of the symmetric positive definite axis block ``block``, by its eigenvalues.
+
+    The axis blocks are an operator restricted to the axis rows and have no small eigenvalues: the
+    smallest is 9e-6 to 4e-4 of the largest on li383 (32,44,20) to (80,104,40) and W7-X (32,64,36),
+    (40,80,48) at p = 2 and 3 (2026-10-11). So nothing is cut off. A block whose smallest eigenvalue
+    is not above the round-off of its largest raises, with ``name`` in the message."""
     if block.size == 0:
         return block
     w, v = jnp.linalg.eigh(block)
-    keep = jnp.abs(w) > tol * jnp.max(jnp.abs(w))
-    inv_w = jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)
-    return (v * inv_w) @ v.T
+    if not isinstance(w, jax.core.Tracer):
+        floor = block.shape[0] * float(jnp.finfo(block.dtype).eps) * float(w[-1])
+        if not float(w[0]) > floor:
+            raise ValueError(f"the axis block of {name} is not positive definite: its eigenvalues span "
+                             f"[{float(w[0]):.3e}, {float(w[-1]):.3e}]")
+    return (v / w) @ v.T
 
 
 def _tensor_blocks(seq, k):
     """Split the degrees of freedom into the axis rows (``core``) and, per vector component, the
-    tensor-product rows away from the axis, as ``(c, rows, vals, (r0, nr), shape, offset)``.
+    tensor-product rows away from the axis, as ``(c, rows, vals, (r0, nr), shape)``.
 
     ``rows`` and ``vals`` map the component's radial slab ``[r0, r0 + nr)`` of shape
-    ``(nr, n_t, n_z)`` to the free degrees of freedom. ``offset >= 0`` marks a slab that is just a
-    contiguous range starting at ``offset``.
+    ``(nr, n_t, n_z)`` to the free degrees of freedom.
     """
     shapes = [tuple(int(s) for s in sh) for sh in getattr(seq, f"basis_{k}").shape]
     starts = np.cumsum([0] + [int(np.prod(s)) for s in shapes])
@@ -356,11 +365,7 @@ def _tensor_blocks(seq, k):
         r0 = int((lidx // (shape[1] * shape[2])).min())
         nr = int((lidx // (shape[1] * shape[2])).max()) + 1 - r0
         order = np.argsort(lidx - r0 * shape[1] * shape[2])
-        rows_t, vals_t = rows_b[sel][order], vals_b[sel][order]
-        selector = (np.array_equal(rows_t, rows_t[0] + np.arange(rows_t.size))
-                    and np.all(vals_t == 1.0))
-        blocks.append((c, rows_t, vals_t, (r0, nr), (nr, shape[1], shape[2]),
-                       int(rows_t[0]) if selector else -1))
+        blocks.append((c, rows_b[sel][order], vals_b[sel][order], (r0, nr), (nr, shape[1], shape[2])))
     return core, blocks
 
 # --------------------------------------------------------------------------- #
@@ -550,7 +555,7 @@ class MetricLumpingLaplacian(_Atom):
         from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
         core, raw_blocks, on, probe = self._prologue(seq, k)
         specs, strong = [], []
-        for c, rows, vals, (r0, nr), shape, offset in raw_blocks:
+        for c, rows, vals, (r0, nr), shape in raw_blocks:
             masses, stiffs = component_factors(seq, k, c, (r0, nr))
             v, lam = zip(*map(_simultaneous_diagonalize_pair, masses, stiffs))
             # D_i is a ratio of two positive integrals
@@ -561,7 +566,7 @@ class MetricLumpingLaplacian(_Atom):
             strong.append([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)])
         self._strong = jnp.asarray(strong, dtype=DTYPE)
         core_inv = _dense_symmetric_inverse(
-            probe(lambda x: apply_laplacian_approx(on, operators, x, k)), CORE_TOL)
+            probe(lambda x: apply_laplacian_approx(on, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
         mass_core = probe(lambda x: on.M[k] @ x)
         stiffness_core = probe(lambda x: on.S[k] @ x)
@@ -597,9 +602,8 @@ class MetricLumpingMass(_Atom):
                       post=1.0 / lam[c][r0:r0 + nr],
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
-                 for c, rows, vals, (r0, nr), shape, offset in raw_blocks]
-        core_inv = _dense_symmetric_inverse(
-            probe(lambda x: on.M[k] @ x), CORE_TOL)
+                 for c, rows, vals, (r0, nr), shape in raw_blocks]
+        core_inv = _dense_symmetric_inverse(probe(lambda x: on.M[k] @ x), f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 

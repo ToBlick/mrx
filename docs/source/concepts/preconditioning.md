@@ -93,8 +93,8 @@ by `PRODUCTION_BC_SCALE`.
 
 **Core.** The polar rows ([polar.md](polar.md)) are not tensor-product
 functions. The operator is probed on them in the residual precision, in
-batches of `PROBE_BATCH` rows per call, and the block is inverted densely,
-eigenvalues below `CORE_TOL` relative to the largest dropped.
+batches of `PROBE_BATCH` rows per call, and the block is inverted densely.
+It is positive definite, and the build raises if it is not.
 
 **Shifted stiffness.** The same atom preconditions `M_k + eps S_k` for an
 `eps` known only at the solve: the bulk Kronecker terms are shifted, and
@@ -117,7 +117,7 @@ how little it computes, so doing fewer of them halved the cost of an apply
 ## 3. Building and invalidation
 
 ```python
-seq.set_map(Phi)                # installs the geometry, drops seq.operators
+seq.set_geometry_from_map(Phi)                # installs the geometry, drops seq.operators
 seq.build_preconditioners()     # both atoms for every k, Dirichlet and free
 compute_nullspaces(seq)         # the harmonic forms, onto the bundle
 ```

@@ -2,14 +2,14 @@
 
 Both are read once, when :mod:`mrx` is imported, so set them before the import.
 
-- ``MRX_DTYPE`` (``float32``, the default, or ``float64``) is the working dtype :data:`DTYPE`. Every
+- ``MRX_DTYPE`` (``float64``, the default, or ``float32``) is the working dtype :data:`DTYPE`. Every
   array stored on a sequence, its geometry and its operators is in this dtype.
 - ``MRX_RESIDUAL_DTYPE`` (``float64``, the default, or ``float32``) is the dtype in which solves measure
-  their residual. With a float32 working dtype the default gives the mixed configuration. Every solve is
-  then an iterative refinement (:func:`mrx.solvers.refine`) that computes the residual in float64 and the
-  corrections with float32 Krylov solves, and so reaches a float64-level tolerance.
-  ``MRX_RESIDUAL_DTYPE=float32`` gives plain float32, which is faster but can stall on strongly shaped
-  geometries.
+  their residual. The default configuration is float64 throughout, where every solve is a plain Krylov
+  solve. ``MRX_DTYPE=float32`` alone gives the mixed configuration. Every solve is then an iterative
+  refinement (:func:`mrx.solvers.refine`) that computes the residual in float64 and the corrections with
+  float32 Krylov solves. ``MRX_DTYPE=float32`` with ``MRX_RESIDUAL_DTYPE=float32`` gives plain float32,
+  whose Laplacian solves do not reach their tolerance on production meshes.
 
 The module also sets the default solve tolerance :data:`SOLVE_TOL` and provides :func:`eps` and
 :func:`sqrt_eps`, round-off scales of the working dtype. Importing it turns on JAX 64-bit mode, which the
@@ -25,7 +25,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-_NAME = os.environ.get("MRX_DTYPE", "float32")
+_NAME = os.environ.get("MRX_DTYPE", "float64")
 if _NAME not in ("float32", "float64"):
     raise ValueError(
         f"MRX_DTYPE={_NAME!r}, expected 'float32' or 'float64'")
@@ -69,10 +69,10 @@ EPS = float(np.finfo(DTYPE).eps)
 
 def default_tol(dtype, refine) -> float:
     """The default relative tolerance of a solve on a sequence of ``dtype``. It is 1e-8 for refined
-    (mixed) solves, 1e-10 for plain float64 solves and 1e-5 for plain float32 solves."""
+    (mixed) solves and for plain float64 solves, and 1e-5 for plain float32 solves."""
     if refine:
         return 1e-8
-    return 1e-10 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-5
+    return 1e-8 if jnp.dtype(dtype) == jnp.dtype("float64") else 1e-5
 
 
 #: The default relative tolerance of a solve on a sequence, :func:`default_tol` of the configuration.

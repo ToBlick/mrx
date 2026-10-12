@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The test suite in the three precision configurations, three GPU jobs:
 #
-#   refined float32   MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float64   (mixed, the default, tol 1e-8)
-#   plain float64     MRX_DTYPE=float64                              (tol 1e-10)
+#   refined float32   MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float64   (mixed, tol 1e-8)
+#   plain float64     MRX_DTYPE=float64                              (the default, tol 1e-8)
 #   plain float32     MRX_DTYPE=float32 MRX_RESIDUAL_DTYPE=float32   (tol 1e-5)
 #
 # A change to the solvers, the precision module or the atoms is verified by

@@ -14,7 +14,7 @@ and space and reuse the compiled program for every new right-hand side and every
 
 The solves need the preconditioners and harmonic forms of the installed geometry, a
 :class:`SequenceOperators` bundle that ``seq.build_preconditioners()`` builds and that must be
-built again after every ``set_map``.
+built again after every ``set_geometry_from_map``.
 """
 from __future__ import annotations
 
@@ -23,7 +23,6 @@ from typing import Optional
 import equinox as eqx
 import jax.numpy as jnp
 
-import mrx
 from mrx.mass import sumfact_apply
 from mrx.precision import RESIDUAL_DTYPE, inner_tol
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
@@ -66,7 +65,7 @@ def init_nullspaces(seq, operators):
     ``seq.betti_numbers`` gives."""
     return _replace(operators, "nullspaces", {
         (k, d): jnp.zeros((n_vectors(seq.betti_numbers, k, d), seq.extraction[(k, d)].forward_shape[0]),
-                          dtype=mrx.DTYPE)
+                          dtype=RESIDUAL_DTYPE)
         for k in range(4) for d in (False, True)})
 
 
@@ -85,7 +84,7 @@ def set_nullspace(operators, k, dirichlet, values):
 
 def _bundle(operators):
     if operators is None:
-        raise ValueError("no operator bundle: call seq.build_preconditioners() after set_map")
+        raise ValueError("no operator bundle: call seq.build_preconditioners() after set_geometry_from_map")
     return operators
 
 
@@ -128,7 +127,7 @@ def assemble_preconditioners(seq, operators):
 
 def _geometry(seq):
     if seq.geometry is None:
-        raise ValueError("no geometry installed: call seq.set_map first")
+        raise ValueError("no geometry installed: call seq.set_geometry_from_map first")
     return seq.geometry
 
 
@@ -491,6 +490,7 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         norm_lower=dual_norm(seq, 2),
         inner_tol=inner, inner_dtype=seq.dtype,
         parity_upper=parity_upper, parity_lower=parity_lower,
+        mass_upper_res=None if seq.residual is None else (lambda x: _mass(res, x, 3)),
     )
 
 

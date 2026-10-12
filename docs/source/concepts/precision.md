@@ -7,17 +7,19 @@ every solve. Both are fixed once per process from the environment, before
 
 | configuration | `MRX_DTYPE` | `MRX_RESIDUAL_DTYPE` | default tolerance |
 |---|---|---|---|
-| mixed (the default) | `float32` (default) | `float64` (default) | `1e-8` |
+| float64 (the default) | `float64` (default) | `float64` (default) | `1e-8` |
+| mixed | `float32` | `float64` (default) | `1e-8` |
 | float32 | `float32` | `float32` | `1e-5` |
-| float64 | `float64` | `float64` (default) | `1e-10` |
 
 In float32 and float64 every solve is a plain Krylov solve. In mixed
 precision every solve is an iterative refinement: the Krylov iteration runs
 in float32, the residual is formed in float64 and the correction
-accumulated there. Mixed reaches double-precision tolerances at a cost
-between float32 and float64, and it is the default because plain float32
-can stall on strongly shaped geometries ([Sharp bits](../sharp_bits.md)).
-Plain float32 runs on hardware without float64 (a TPU) and is the fastest.
+accumulated there. Float64 is the default. On li383 (48,64,24), one H200 (2026-10-11), a Newton
+step costs 6.02 s in float64 against 5.62 s in mixed precision, and a
+gradient step 1.05 s against 0.75 s, both at tolerance `1e-8`.
+`div B` stays at round-off in float64, where mixed precision leaves `1e-6`. Plain float32 runs on hardware without float64 (a TPU), but its
+Laplacian solves do not reach their tolerance on production meshes
+([Sharp bits](../sharp_bits.md)).
 
 `scripts/relax.py --geometry.precision {float32,mixed,float64}` and the other
 scripts export both variables before importing `mrx`.
@@ -58,10 +60,11 @@ unknowns their inner solves produce, with the saddle-point residual.
 
 The residual operator is `seq.residual`: a copy of the sequence with the
 geometry, quadrature, extraction and polar stencils in float64 and
-everything else shared. The constructor builds it, and every `set_map` hands
+everything else shared. The constructor builds it, and every `set_geometry_from_map` hands
 it the new geometry. It is `None` when the solves do
-not refine. The harmonic forms are built on it and stored in the working
-dtype.
+not refine. The harmonic forms are built on it and stored in float64:
+a form rounded to float32 is `1e-7` from the kernel, and the deflated
+solves do not converge below that.
 
 Results come back in the working dtype. A caller that keeps computing with
 the accurate solution asks for it with `dtype=RESIDUAL_DTYPE`:

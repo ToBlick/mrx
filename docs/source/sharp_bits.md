@@ -14,19 +14,19 @@ variables before the first `import mrx`:
 
 ```python
 import os
-os.environ["MRX_RESIDUAL_DTYPE"] = "float32"   # plain float32 instead of the default mixed precision
+os.environ["MRX_DTYPE"] = "float32"   # mixed precision instead of the default float64
 import mrx
 ```
 
 ## Plain float32 can stall on strongly shaped devices
 
-Plain float32 (`MRX_RESIDUAL_DTYPE=float32`) is the fastest configuration, but on a
+Plain float32 (`MRX_DTYPE=float32` and `MRX_RESIDUAL_DTYPE=float32`) is the fastest configuration, but on a
 strongly shaped map a Krylov solve can stop improving long before its
 tolerance. On the QA stellarator of the tutorials at (12, 16, 16) the solve
 behind the vacuum field stalls near a relative residual of `5e-5`, with 2000,
 20000 or 100000 iterations alike, while li383 at the same mesh converges.
 More iterations do not help, only more precision in the residual does: mixed
-precision, the default, converges in about 300 iterations. Use plain float32
+precision converges in about 300 iterations. Use plain float32
 only for quick looks.
 
 ## A negative iteration count means the solve did not converge
@@ -103,7 +103,7 @@ slow and the first chunk of a relaxation takes much longer than the rest.
 Python numbers stored in `equinox` modules are static: changing one of them,
 for example a step size held as a Python `float`, compiles the function again.
 A new geometry of the same mesh reuses every compiled solve when its map is
-a pytree, as the `CylindricalMap` of `build_map` is: after `seq.set_map` and
+a pytree, as the `CylindricalMap` of `build_map` is: after `seq.set_geometry_from_map` and
 `build_preconditioners` the first Laplacian solve takes 0.14 s, not the 18 s
 of its compile (li383 at (12, 16, 16)). A map given as a plain Python
 function is a static part of the sequence, so every function of the sequence

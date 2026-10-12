@@ -66,7 +66,8 @@ def compute_nullspaces(seq, *, verbose=True):
     - k = 0 without boundary conditions: the constant.
     - k = 1 without boundary conditions: the Leray projection of ``d zeta``, found with one ``L_0`` solve.
 
-    In the mixed precision configuration they are computed in float64 and stored in the working dtype.
+    In the mixed precision configuration they are computed and stored in float64: a form rounded to
+    float32 is 1e-7 from the kernel, which the deflated solves cannot tolerate below that level.
     The float64 view and the parity views of ``seq`` get their forms as well. With ``verbose`` the
     :func:`harmonic_rayleigh` of each form is printed.
     """
@@ -75,7 +76,7 @@ def compute_nullspaces(seq, *, verbose=True):
 
     def store(space, k, v):
         v = v / space.l2_norm(v, k)
-        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v.astype(mrx.DTYPE)[None, :]))
+        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v.astype(RESIDUAL_DTYPE)[None, :]))
 
     if op.n_vectors(seq.betti_numbers, 3, True):
         operators = store(build, 3, build.M[3].solve(jnp.ones(build.n(3), dtype=mrx.DTYPE)))
@@ -119,9 +120,11 @@ def _reduce_to_view(seq, view, verbose):
         if not op.n_vectors(view.betti_numbers, k, dirichlet):
             continue
         base, space = (seq, view) if dirichlet else (seq.free, view.free)
-        v = view.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
-        v = v / space.l2_norm(v, k)
-        operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v.astype(mrx.DTYPE)[None, :]))
+        # reduced and normalised on the float64 copy of the view when there is one
+        src = view if view.residual is None else view.residual
+        v = src.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
+        v = v / (src if dirichlet else src.free).l2_norm(v, k)
+        operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v.astype(RESIDUAL_DTYPE)[None, :]))
         if verbose:
             print(f"[nullspace] {'odd' if view.parity == -1 else 'even'} view k={k} "
                   f"{'dbc' if dirichlet else 'free'}: v^T L v / v^T M v = "

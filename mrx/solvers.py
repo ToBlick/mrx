@@ -350,7 +350,7 @@ def solve_saddle_point_minres(
         mass_lower_matvec, b_upper, n_upper, n_lower, *,
         precond_upper, precond_lower, mass_upper_matvec, vs_upper,
         tol, maxiter, saddle_res, norm_upper, norm_lower, inner_tol, inner_dtype,
-        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None):
+        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None, mass_upper_res=None):
     """Solve the saddle-point system of a Hodge Laplacian by refined MINRES and return ``(u, sigma, info)``::
 
         | S    D   | | u     |   | f |
@@ -368,8 +368,18 @@ def solve_saddle_point_minres(
     ``x0_lower``, since ``u`` alone leaves ``D^T x0_upper`` in the lower residual.
     """
     dtype = b_upper.dtype
+    # with ``mass_upper_res`` the harmonic forms are removed in the residual precision from the residual, the
+    # right-hand side and the solution (``outer_*``), and in the working precision inside MINRES. A float32
+    # projection of the right-hand side leaves a harmonic part that the refinement cannot remove. Without
+    # ``mass_upper_res`` one pair of projectors serves both.
+    vs_upper = jnp.asarray(vs_upper)
     project_primal_upper, project_dual_upper = _compose_parity(
-        deflation_projectors(jnp.asarray(vs_upper), mass_upper_matvec), parity_upper)
+        deflation_projectors(vs_upper.astype(inner_dtype) if mass_upper_res is not None else vs_upper,
+                             mass_upper_matvec), parity_upper)
+    outer_primal_upper, outer_dual_upper = (project_primal_upper, project_dual_upper) if mass_upper_res is None \
+        else _compose_parity(deflation_projectors(vs_upper.astype(RESIDUAL_DTYPE), mass_upper_res), parity_upper)
+    if mass_upper_res is not None:
+        b_upper = b_upper.astype(RESIDUAL_DTYPE)
     # The lower block has no kernel. parity_lower has the sign of the upper block, since sigma follows u.
     project_primal_lower, project_dual_lower = _compose_parity(((lambda x: x), (lambda f: f)), parity_lower)
 
@@ -397,17 +407,17 @@ def solve_saddle_point_minres(
         ps = precond_lower(project_dual_lower(s))
         return pack(project_primal_upper(pu), project_primal_lower(ps))
 
-    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
+    b = pack(outer_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
     if x0_upper is None:
         x0_upper = jnp.zeros(n_upper, dtype=dtype)
     if x0_lower is None:
         x0_lower = jnp.zeros(n_lower, dtype=dtype)
-    x0 = pack(project_primal_upper(x0_upper), x0_lower)
+    x0 = pack(outer_primal_upper(x0_upper), x0_lower)
 
     def apply_res(x):
         u, s = unpack(x)
-        r_upper, r_lower = saddle_res(project_primal_upper(u), project_primal_lower(s))
-        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
+        r_upper, r_lower = saddle_res(outer_primal_upper(u), project_primal_lower(s))
+        return pack(outer_dual_upper(r_upper), project_dual_lower(r_lower))
 
     def solve(r):
         return minres(A_matvec, r, M=precond, tol=inner_tol, maxiter=maxiter)
@@ -417,5 +427,5 @@ def solve_saddle_point_minres(
         return jnp.sqrt(norm_upper(r_u) ** 2 + norm_lower(r_l) ** 2)
 
     x, info = refine(apply_res, solve, b, x0=x0, tol=tol, norm=norm, inner_dtype=inner_dtype)
-    u, sigma = unpack(project_primal(x))
-    return u, sigma, info
+    u, sigma = unpack(x)
+    return outer_primal_upper(u), project_primal_lower(sigma), info

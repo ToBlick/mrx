@@ -116,7 +116,7 @@ B = seq.restrict(seq.free.G[1] @ A, 2)
 ```
 
 The free view is a snapshot of what is installed on the sequence, so take it
-anew after `set_map`, `build_preconditioners` or `compute_nullspaces`.
+anew after `set_geometry_from_map`, `build_preconditioners` or `compute_nullspaces`.
 
 ## 4. Harmonic forms
 
@@ -145,7 +145,7 @@ of it under `eqx.filter_jit` takes its arrays as inputs.
 **`SequenceGeometry`** (`mrx/geometry.py`), an `eqx.Module`: the map and,
 at the quadrature points, the metric `metric_jkl = DPhi^T DPhi`, its inverse
 `metric_inv_jkl` and `jacobian_j = det DPhi`, with the mass weights derived
-from them. `seq.set_map(Phi)` builds it from `Phi` by autodiff and installs it
+from them. `seq.set_geometry_from_map(Phi)` builds it from `Phi` by autodiff and installs it
 as `seq.geometry`. A map that folds (`det DPhi <= 0`) is refused.
 
 **`SequenceOperators`** (`mrx/operators.py`), an `eqx.Module` keyed
@@ -183,7 +183,7 @@ itself. The parity views compose with the free view: `seq.odd.free` and
 geometry file:
 
 1. Topology: `DeRhamSequence`, everything static.
-2. Geometry: `set_map` with the map of the file (`mrx.equilibria.build_map`).
+2. Geometry: `set_geometry_from_map` with the map of the file (`mrx.equilibria.build_map`).
    Drops the operator bundle.
 3. Preconditioners: `build_preconditioners`, the mass atoms, then the
    Laplacian atoms, on the base sequence and both parity views.
@@ -195,4 +195,4 @@ compute_nullspaces(seq)                                                         
 ```
 
 Nothing on the bundle is built on first use, and nothing on it survives a
-geometry change. After a new `set_map`, run steps 3 and 4 again.
+geometry change. After a new `set_geometry_from_map`, run steps 3 and 4 again.
