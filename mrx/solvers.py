@@ -365,7 +365,8 @@ def solve_saddle_point_minres(
         mass_lower_matvec, b_upper, n_upper, n_lower, *,
         precond_upper, precond_lower, mass_upper_matvec, vs_upper,
         tol, maxiter, saddle_res, norm_upper, norm_lower, inner_tol, inner_dtype,
-        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None, mass_upper_res=None):
+        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None, mass_upper_res=None,
+        eliminate_lower=None):
     """Solve the saddle-point system of a Hodge Laplacian by refined MINRES and return ``(u, sigma, info)``::
 
         | S    D   | | u     |   | f |
@@ -378,7 +379,10 @@ def solve_saddle_point_minres(
 
     MINRES runs inside :func:`refine`. ``saddle_res(u, sigma)`` returns the two residual blocks in
     the residual precision, each pass solves to ``inner_tol``, and convergence at ``tol`` is
-    judged in the norm ``sqrt(norm_upper^2 + norm_lower^2)``, by MINRES as well. ``u`` and ``sigma`` are returned in
+    judged in the norm ``sqrt(norm_upper^2 + norm_lower^2)``, by MINRES as well. With
+    ``eliminate_lower`` (``r_lower -> D M^{-1} r_lower``) the upper part is the residual of the
+    equation for ``u`` alone, ``f - (S + D M^{-1} D^T) u``, which is ``r_upper + D M^{-1} r_lower``
+    once ``sigma`` is eliminated. The lower part stays, because ``sigma`` is returned as well. ``u`` and ``sigma`` are returned in
     the residual precision. An initial guess ``x0_upper`` should come with a matching
     ``x0_lower``, since ``u`` alone leaves ``D^T x0_upper`` in the lower residual.
     """
@@ -439,6 +443,8 @@ def solve_saddle_point_minres(
 
     def norm(r):
         r_u, r_l = unpack(r)
+        if eliminate_lower is not None:
+            r_u = r_u + eliminate_lower(r_l)
         return jnp.sqrt(norm_upper(r_u) ** 2 + norm_lower(r_l) ** 2)
 
     x, info = refine(apply_res, solve, b, x0=x0, tol=tol, norm=norm, inner_dtype=inner_dtype)

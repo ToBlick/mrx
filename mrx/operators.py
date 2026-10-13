@@ -313,7 +313,7 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
         upper = b - S_k x - eps M_k x - M_k G w,   lower = G^T M_k x - M_{k-1} w
 
     The solve is judged on the residual of ``(eps M_k + L_k) x = b`` itself, in the norm of the
-    ``k``-forms (:func:`dual_norm`): with ``w`` eliminated it is ``upper + M_k G M_{k-1}^{-1} lower``.
+    ``k``-forms (:func:`dual_norm`): with ``w`` eliminated it is ``upper - M_k G M_{k-1}^{-1} lower``.
 
     ``split(r)`` must return ``(dx, dw, info)``, an approximate solution of
     ``(eps M_k + L_k) dx = r`` and its ``dw``. The kernel ``vs`` is removed from the upper residual.
@@ -341,9 +341,9 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
         return project_dual(jnp.concatenate([upper, lower]))
 
     def norm(r):
-        # the residual of (eps M_k + L_k) x = b, which is upper + M_k G M_{k-1}^-1 lower once w is eliminated,
+        # the residual of (eps M_k + L_k) x = b, which is upper - M_k G M_{k-1}^-1 lower once w is eliminated,
         # with the preconditioner of M_{k-1} for its inverse as in dual_norm
-        return nu(r[:n_k] + _mass(on, _grad(on, P_lower(r[n_k:]), k - 1), k))
+        return nu(r[:n_k] - _mass(on, _grad(on, P_lower(r[n_k:]), k - 1), k))
 
     def solve(r):
         r_u, r_l = r[:n_k], r[n_k:]
@@ -476,6 +476,12 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         return (_stiffness(res, u, 3) + _weak_derivative(res, s, 2),
                 _weak_derivative(res, u, 2, transpose=True) - _mass(res, s, 2))
 
+    P_lower = _seq_atom(seq, "mass", 2).apply
+
+    def eliminate_lower(r):
+        # D_2 M_2^-1 r on the sequence of the precision of r, with the preconditioner of M_2 for its inverse
+        return _weak_derivative(res if r.dtype == res.dtype else seq, P_lower(r), 2)
+
     parity_upper, parity_lower = _parity_pair(seq, 3, rhs)
     return solve_saddle_point_minres(
         stiffness_matvec=lambda x: _stiffness(seq, x, 3),
@@ -499,6 +505,7 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         inner_tol=inner, inner_dtype=seq.dtype,
         parity_upper=parity_upper, parity_lower=parity_lower,
         mass_upper_res=None if seq.residual is None else (lambda x: _mass(res, x, 3)),
+        eliminate_lower=eliminate_lower,
     )
 
 
