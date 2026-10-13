@@ -21,11 +21,10 @@ from __future__ import annotations
 from typing import Optional
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 
 from mrx.mass import sumfact_apply
-from mrx.precision import MAX_PASSES, RESIDUAL_DTYPE, inner_tol
+from mrx.precision import RESIDUAL_DTYPE, inner_tol
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
 from mrx.symmetry import symmetrize_like
 
@@ -360,32 +359,38 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
     return p[:n_k], info
 
 
-def _hat_solve(seq, b, k: int, tol):
+def _hat_solve(seq, b, k: int, tol, on=None, inner=None):
     """Solve ``L^_k x = b`` by conjugate gradients to tolerance ``tol``, harmonic forms removed.
 
     ``L^_k = S_k + M_k G W G^T M_k`` (``G = G_{k-1}``), with ``W`` the preconditioner of
     ``M_{k-1}``, is symmetric positive definite, while ``S_k`` alone is singular on the exact forms.
-    For a ``b`` orthogonal to the exact forms both have the same solution, for any SPD ``W``.
+    For a ``b`` orthogonal to the exact forms both have the same solution, for any SPD ``W``. For any
+    other ``b`` the co-exact part of ``x`` solves ``S_k x = b`` with the part of ``b`` that the exact
+    forms see left out, and ``G_k x`` only depends on that part.
+
+    With ``on`` given, the residual is checked on ``on`` (mixed precision) and each working-precision
+    pass stops at ``inner``. Without it the solve stops at ``tol`` in its own precision, as it does
+    inside :func:`_hodge_split`.
     """
-    b, = _plain(seq, b)
+    if on is None:
+        b, = _plain(seq, b)
 
-    def M(v):
-        return _mass(seq, v, k)
-
-    # W is part of the operator, so it must run in the precision of seq
-    W = _seq_atom(seq, "mass", k - 1).apply_in(seq.dtype)
-
-    def L_hat(x):
-        return _stiffness(seq, x, k) + M(_grad(seq, W(_grad(seq, M(x), k - 1, transpose=True)), k - 1))
+    def L_hat(s, x):
+        # W is part of the operator, so it runs in the precision of s
+        W = _seq_atom(seq, "mass", k - 1).apply_in(s.dtype)
+        Mx = _mass(s, x, k)
+        return _stiffness(s, x, k) + _mass(s, _grad(s, W(_grad(s, Mx, k - 1, transpose=True)), k - 1), k)
 
     return solve_singular_cg(
-        L_hat, b,
-        mass_matvec=M,
+        lambda x: L_hat(seq, x), b,
+        mass_matvec=lambda v: _mass(seq, v, k),
         precond_matvec=_seq_atom(seq, "laplacian", k).apply,
         vs=_harmonic(seq, k),
         tol=tol,
         maxiter=seq.maxiter,
+        A_res=None if on is None else (lambda x: L_hat(on, x)),
         norm=dual_norm(seq, k),
+        inner_tol=inner, inner_dtype=seq.dtype,
         parity=parity_projectors(seq, k, b),
     )
 
@@ -459,11 +464,6 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, dt
     return (u, info) if return_info else u
 
 
-#: A pass of :func:`_coclosed_solve` aims this factor below what the stopping test still needs. The pass stops
-#: in the preconditioner's norm and the test uses the 2-norm, so the two do not agree exactly.
-COCLOSED_PASS_MARGIN = 0.1
-
-
 def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
     """``(x, info)`` with ``S_k x = b`` for a right-hand side ``b`` in the range of ``G_k^T``.
 
@@ -473,59 +473,26 @@ def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
     formed in the residual precision. A right-hand side that is only approximately in that range, as inside
     the Hodge split, makes the iteration diverge. Use :func:`_laplacian_solve` for those.
 
-    These are the steps of the Hodge split that such a right-hand side leaves. The harmonic part of ``b`` is
-    removed first. Each pass then runs conjugate gradients in the working precision with the preconditioner
-    of ``L_k`` on the residual of the previous one, and the harmonic part of ``x`` is removed after every pass.
-    The residual and both projections are formed in the residual precision. The residual is measured in the
-    2-norm, and the passes end when it is below ``seq.tol`` times that of ``b``. A pass only goes as far as
-    this test still needs, and never below the inner tolerance. ``info`` is the signed iteration count of all
-    passes.
-
-    Without a finer residual precision (plain float32 or float64) there are no passes: it is one conjugate
-    gradient solve to ``seq.tol`` with its own stopping test. A second pass would ask the working precision
-    for a residual it cannot resolve.
+    These are the steps of the Hodge split that such a right-hand side leaves. It is solved like every other
+    system (:func:`mrx.solvers.solve_singular_cg`): conjugate gradients with the preconditioner of ``L_k``,
+    harmonic forms removed, stopped on the residual in :func:`dual_norm` at ``tol`` (``seq.tol`` by default),
+    and refined against the residual precision when the sequence has one. ``info`` is the signed iteration
+    count.
     """
     on, inner = _outer(seq)
-    tol = seq.tol if tol is None else tol
-    P, vs = _seq_atom(seq, "laplacian", k).apply, _harmonic(seq, k)
-    project_primal, project_dual = deflation_projectors(jnp.asarray(vs, dtype=on.dtype), lambda v: _mass(on, v, k))
-    b = project_dual(b.astype(on.dtype))
-    b_norm = jnp.linalg.norm(b)
-
-    def residual(x):
-        return b - _stiffness(on, x, k)
-
-    def unconverged(carry):
-        _, rho, passes, _ = carry
-        return (rho > tol * b_norm) & (passes < MAX_PASSES)
-
-    def one_pass(carry):
-        x, rho, passes, its = carry
-        r = (residual(x) / rho).astype(seq.dtype)
-        dx, info = solve_singular_cg(
-            lambda v: _stiffness(seq, v, k), r, vs,
-            precond_matvec=P,
-            tol=jnp.maximum(inner, COCLOSED_PASS_MARGIN * tol * b_norm / rho),
-            maxiter=seq.maxiter,
-            mass_matvec=lambda v: _mass(seq, v, k),
-            parity=parity_projectors(seq, k, r),
-        )
-        x = project_primal(x + rho * dx.astype(on.dtype))
-        return x, jnp.linalg.norm(residual(x)), passes + 1, its + jnp.abs(info)
-
-    if seq.residual is None:
-        # without a finer residual there is nothing to refine against: one solve with its own stopping test
-        x, info = solve_singular_cg(
-            lambda v: _stiffness(seq, v, k), b, vs,
-            precond_matvec=P, tol=tol, maxiter=seq.maxiter, mass_matvec=lambda v: _mass(seq, v, k),
-            x0=None if guess is None else guess.astype(seq.dtype), parity=parity_projectors(seq, k, b),
-        )
-        return project_primal(x), info
-
-    x0 = jnp.zeros_like(b) if guess is None else project_primal(guess.astype(on.dtype))
-    x, rho, _, its = jax.lax.while_loop(
-        unconverged, one_pass, (x0, jnp.linalg.norm(residual(x0)), jnp.int32(0), jnp.int32(0)))
-    return x, jnp.where(rho <= tol * b_norm, its, -its)
+    b, guess = _plain(seq, b, guess)
+    return solve_singular_cg(
+        lambda v: _stiffness(seq, v, k), b, _harmonic(seq, k),
+        precond_matvec=_seq_atom(seq, "laplacian", k).apply,
+        tol=seq.tol if tol is None else tol,
+        maxiter=seq.maxiter,
+        mass_matvec=lambda v: _mass(seq, v, k),
+        x0=guess,
+        A_res=None if seq.residual is None else (lambda v: _stiffness(on, v, k)),
+        norm=dual_norm(seq, k),
+        inner_tol=inner, inner_dtype=seq.dtype,
+        parity=parity_projectors(seq, k, b),
+    )
 
 
 @eqx.filter_jit
@@ -557,7 +524,8 @@ def _coexact_solve(seq, c, j: int, gauge: bool = True):
         return y.astype(on.dtype), info
     y, info = _coclosed_solve(seq, c, j)
     if gauge:
-        q, info_q = _coexact_solve(seq, -_grad(on, _mass(on, y, j), j - 1, transpose=True), j - 1)
+        # only G q enters, so q needs no gauge of its own
+        q, info_q = _coexact_solve(seq, -_grad(on, _mass(on, y, j), j - 1, transpose=True), j - 1, gauge=False)
         y = y + _grad(on, q, j - 1)
         info = _merge_info(info, info_q)
     return y, info
@@ -571,21 +539,31 @@ def _merge_info(a, b):
 @eqx.filter_jit
 def _part_solve(seq, b, k: int, part: str, return_info: bool = False, dtype=None):
     """``L_k^{-1} b`` for a ``b`` that has only the co-exact or only the exact part (:meth:`Laplacian.solve`),
-    k = 1, 2, 3. Every solve is one of the stiffness alone on a consistent right-hand side, as in
-    :func:`_coclosed_solve`::
+    k = 1, 2, 3::
 
         coexact:  S_k x = b,   x co-exact
-        exact:    S_{k-1} g = G^T b,   g co-exact,   S_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
+        exact:    S_{k-1} g = G^T b,   S_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
+
+    The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
+    right-hand side (:func:`_coclosed_solve`). ``M_{k-1} g`` is consistent only as far as ``g`` is co-exact,
+    and a stiffness solve does not get below what is left. So for ``k >= 2`` the second solve is one of
+    ``L^_{k-1}`` (:func:`_hat_solve`), whose solution has the same ``G a`` for any right-hand side. Then
+    ``g`` needs no gauge. For ``k = 1`` both are solves of ``S_0``, whose kernel are the constants.
     """
-    on, _ = _outer(seq)
+    on, inner = _outer(seq)
     b, = _plain(seq, b)
     b = b.astype(on.dtype)
     if part == "coexact":
         x, info = _coexact_solve(seq, b, k)
+    elif k == 1:
+        g, info_g = _coexact_solve(seq, _grad(on, b, 0, transpose=True), 0)
+        a, info_a = _coexact_solve(seq, _mass(on, g, 0), 0)
+        x, info = _grad(on, a, 0), _merge_info(info_g, info_a)
     else:
-        g, info_g = _coexact_solve(seq, _grad(on, b, k - 1, transpose=True), k - 1)
-        a, info_a = _coexact_solve(seq, _mass(on, g, k - 1), k - 1, gauge=False)
-        x, info = _grad(on, a, k - 1), _merge_info(info_g, info_a)
+        g, info_g = _coclosed_solve(seq, _grad(on, b, k - 1, transpose=True), k - 1)
+        a, info_a = _hat_solve(seq, _mass(on, g.astype(on.dtype), k - 1), k - 1, seq.tol,
+                               on=None if seq.residual is None else on, inner=inner)
+        x, info = _grad(on, a.astype(on.dtype), k - 1), _merge_info(info_g, info_a)
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
 
