@@ -13,7 +13,9 @@ with ``x`` in the L2 norm of its degree. The cases are every solve of :mod:`mrx.
 
 A co-exact solution is ``x_c = M_k^{-1} G_k^T w`` and an exact one ``x_e = G_{k-1} c``. Both are orthogonal to
 the harmonic forms, and the full solve recovers their sum. The right-hand side of a co-exact part solve is
-``S_k x_c``, which is orthogonal to the closed forms without a mass solve. The shifted stiffness solve of
+``S_k x_c``, which is orthogonal to the closed forms without a mass solve. Every right-hand side is the apply of the
+lifted solution, ``A @ lift(x)``, so in float32 it is formed in double-single and lies in the range of its operator
+to that accuracy. The shifted stiffness solve of
 ``(M_k + eps L_k) x`` differs from ``x`` by a closed form, so it is compared after ``G_k``. The cases run on the production
 spaces: the Dirichlet odd view of li383 (``B``, ``A``, ``J``), with its harmonic 2-form, and the even view for
 the Leray projection (``u``, ``F``). The free spaces are solved by ``test_poisson.py``.
@@ -30,6 +32,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import mrx
+from mrx.precision import lift
 from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
 from mrx.solvers import minres, preconditioned_cg
 
@@ -37,6 +41,8 @@ from mrx.solvers import minres, preconditioned_cg
 #: (L[1] coexact), except the exact parts, 55 to 617 (L[3] exact), whose two solves of degree k - 1 amplify the
 #: solve error.
 ROUND_TRIP = 1e3
+# the Krylov stopping tests are statements about the recurrences at float64 round-off
+FLOAT64 = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 N = 60
 
 
@@ -71,19 +77,21 @@ def test_every_solve_inverts_its_operator(seq):
 
     for k in range(4):
         x = rand(odd, k)
-        add(f"M[{k}]", odd, k, x, odd.M[k].solve(odd.M[k] @ x, return_info=True))
+        add(f"M[{k}]", odd, k, x, odd.M[k].solve(odd.M[k] @ lift(x), return_info=True))
     for k in range(4):
-        add(f"L[{k}] full", odd, k, x_full[k], odd.L[k].solve(odd.L[k] @ x_full[k], return_info=True))
+        add(f"L[{k}] full", odd, k, x_full[k], odd.L[k].solve(odd.L[k] @ lift(x_full[k]), return_info=True))
     for k in (0, 1, 2):
         add(f"L[{k}] coexact", odd, k, x_c[k],
-            odd.L[k].solve(odd.S[k] @ x_c[k], return_info=True, part="coexact"))
+            odd.L[k].solve(odd.S[k] @ lift(x_c[k]), return_info=True, part="coexact"))
     for k in (1, 2, 3):
-        add(f"L[{k}] exact", odd, k, x_e[k], odd.L[k].solve(odd.L[k] @ x_e[k], return_info=True, part="exact"))
+        add(f"L[{k}] exact", odd, k, x_e[k],
+            odd.L[k].solve(odd.L[k] @ lift(x_e[k]), return_info=True, part="exact"))
     for k in (1, 2):
-        add(f"S[{k}]", odd, k + 1, x_c[k], odd.S[k].solve(odd.S[k] @ x_c[k], return_info=True), apply=odd.G[k])
+        add(f"S[{k}]", odd, k + 1, x_c[k], odd.S[k].solve(odd.S[k] @ lift(x_c[k]), return_info=True),
+            apply=odd.G[k])
     for k, eps in [(k, smoothing) for k in range(4)] + [(1, jnp.asarray(1.0))]:
         x, at = x_full[k], f"eps {float(eps):.0e}"
-        b = odd.M[k] @ x + eps * (odd.L[k] @ x)
+        b = odd.M[k] @ lift(x) + (odd.L[k] @ lift(x)) * eps
         add(f"shifted[{k}], {at}", odd, k, x, odd.shifted(k, eps).solve(b, return_info=True))
         if k in (1, 2):
             add(f"shifted_stiffness[{k}], {at}", odd, k + 1, x,
@@ -118,6 +126,7 @@ def _system(indefinite):
     return (lambda v: A @ v), (lambda v: P @ v), (lambda r: jnp.sqrt(r @ (G @ r))), b
 
 
+@FLOAT64
 @pytest.mark.parametrize("solver", ["minres", "cg"])
 def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
     A, P, norm, b = _system(indefinite=solver == "minres")
@@ -134,6 +143,7 @@ def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
         assert int(run(tol, 10 * N)[1]) == first
 
 
+@FLOAT64
 def test_reorthogonalised_minres_terminates():
     """With its Lanczos vectors reorthogonalised, MINRES on a system of size ``N`` reaches the solution within ``N``
     iterations up to round-off, which the three-term recurrence alone does not on a spectrum over several decades.

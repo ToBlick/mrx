@@ -26,6 +26,7 @@ Output (in ``--output.out``):
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import time
@@ -39,7 +40,7 @@ def main(cfg):
     from mrx.relaxation.seeding import energy_seed
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
-    print(f"[env] mrx from {mrx.__file__}  batch {g.max_batch or 'all'}", flush=True)
+    print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
     out = cfg.output.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -122,6 +123,10 @@ def main(cfg):
 
 
 if __name__ == "__main__":
+    # The precision must be in the environment before mrx is imported. The full parse follows.
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--geometry.precision", dest="precision", default="float64", choices=("float64", "float32"))
+    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
     import tyro
     from mrx.relaxation.config import RelaxConfig
     main(tyro.cli(RelaxConfig, description=__doc__))

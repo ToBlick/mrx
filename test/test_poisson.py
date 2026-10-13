@@ -29,11 +29,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from mrx.precision import lift, to_working
+
 #: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
-#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
+#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20 in float64: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
 #: 3.989e-2.
 ERROR_BAND = {0: 0.0105, 1: 0.0147, 2: 0.0303, 3: 0.0499}
-#: The relative spread of the two representations' errors, which is below 3e-10.
+#: The relative spread of the two representations' errors: below 3e-10 in float64.
 SAME = 1e-3
 NAMES = ("half", "period")
 
@@ -88,7 +90,10 @@ def _error_sq(seq, parity, uh, f, k):
 
 
 def _converged(seq, info, residual, rhs, k_res):
-    """The solve's sign and its true residual in the norm of its stopping criterion."""
+    """The solve's sign and its true residual in the norm of its stopping criterion. The residual is formed
+    in the arithmetic of the solve (double-single in float32) and rounded."""
+    residual = to_working(residual)
+
     def norm(v):
         return float(jnp.sqrt(v @ seq.M[k_res].precondition(v)))
     assert int(info) >= 0, f"did not converge (info {int(info)})"
@@ -103,23 +108,25 @@ def _solve(seq, k):
         load = space.load(f, k)
         if k == 1:
             rhs = space.G[0].T @ load
-            phi, info = space.L[0].solve(rhs, return_info=True)
-            _converged(space, info, space.S[0] @ phi - rhs, rhs, 0)
+            phi, info = space.L[0].solve(rhs, return_info=True, accurate=True)
+            _converged(space, info, space.S[0] @ phi - lift(rhs), rhs, 0)
+            phi = to_working(phi)
             h = space.nullspace(1)[0]
             uh = space.G[0] @ phi + (float(load @ h) / float(h @ (space.M[1] @ h))) * h
         else:
             rhs = space.G[1].T @ load
-            A, info = space.L[1].solve(rhs, return_info=True)
-            _converged(space, info, space.L[1] @ A - rhs, rhs, 1)
-            uh = space.G[1] @ A
+            A, info = space.L[1].solve(rhs, return_info=True, accurate=True)
+            _converged(space, info, space.L[1] @ A - lift(rhs), rhs, 1)
+            uh = space.G[1] @ to_working(A)
         err_sq, target_sq = _error_sq(seq, "odd", uh, f, k)
     elif k == 0:
         space = seq.even.free                 # psi is even
         grad_psi = jax.grad(psi)
         load = space.load(lambda x: grad_psi(space.map(x)), 1)
         rhs = space.G[0].T @ load
-        u, info = space.L[0].solve(rhs, return_info=True)
-        _converged(space, info, space.S[0] @ u - rhs, rhs, 0)
+        u, info = space.L[0].solve(rhs, return_info=True, accurate=True)
+        _converged(space, info, space.S[0] @ u - lift(rhs), rhs, 0)
+        u = to_working(u)
         # psi is determined up to a constant, so the error is that of its gradient. (The error of psi itself
         # would be a small difference of large numbers, ||psi|| being dominated by its mean.)
         err_sq, target_sq = _error_sq(seq, "even", space.G[0] @ u, lambda x: grad_psi(space.map(x)), 1)
@@ -133,8 +140,9 @@ def _solve(seq, k):
             return jnp.linalg.solve(jax.jacfwd(space.map)(x).T, jax.grad(rho)(x))
         load = space.load(grad_rho, 2)
         rhs = -(space.M[3] @ (space.G[2] @ space.M[2].solve(load)))     # <grad rho*, delta Lambda_i>
-        r3, info = space.L[3].solve(rhs, return_info=True)
-        _converged(space, info, space.L[3] @ r3 - rhs, rhs, 3)
+        r3, info = space.L[3].solve(rhs, return_info=True, accurate=True)
+        _converged(space, info, space.L[3] @ r3 - lift(rhs), rhs, 3)
+        r3 = to_working(r3)
         g = -space.M[2].solve(space.D[2].T @ r3)
         err_sq, target_sq = _error_sq(seq, "even", g, grad_rho, 2)
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
@@ -169,9 +177,9 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
     try:
         s.set_geometry_from_map(lambda x: stretch * Phi(x), keep_preconditioners=True)
         assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-        x, info = s.M[1].solve(b, return_info=True)
-        r = b - s.M[1] @ x
+        assert not any(np.any(np.asarray(to_working(v))) for v in s.operators.nullspaces.values())
+        x, info = s.M[1].solve(b, return_info=True, accurate=True)
+        r = to_working(lift(b) - s.M[1] @ x)
 
         def norm(v):
             return float(jnp.sqrt(v @ s.M[1].precondition(v)))

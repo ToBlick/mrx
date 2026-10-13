@@ -1,8 +1,9 @@
 # Testing strategy
 
-MRX has one lean test tier. Bare `pytest` runs the suite, in float64
-([Precision](precision.md)). `bash slurm/suite.sh` submits it as a GPU job,
-and the GitHub workflow runs it on a CPU. The suite reads only files
+MRX has one lean test tier in two precisions. Bare `pytest` runs the suite
+in float64, and `MRX_DTYPE=float32 pytest` in float32 with 64-bit mode off
+([Precision](precision.md)). `bash slurm/suite.sh` submits both as GPU jobs,
+and the GitHub workflow runs both on a CPU. The suite reads only files
 tracked in the repository.
 
 ## Four statements

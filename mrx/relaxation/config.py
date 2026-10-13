@@ -14,7 +14,7 @@ import os
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 import tyro
 
@@ -55,6 +55,8 @@ class Geometry:
     """The graded polar space: fewer theta cells on the rings near the axis (see mrx.geometry.build_sequence)."""
     map_theta: Optional[int] = None
     """The theta cells of the map on every ring, n_theta / 2^l. Unset, n_theta (see mrx.geometry.build_sequence)."""
+    precision: Literal["float64", "float32"] = "float64"
+    """float64, or float32 for a device without float64. In float32 every linear solve is refined in double-single arithmetic."""
     solve_tol: Optional[float] = None
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000

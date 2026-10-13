@@ -11,6 +11,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
+
+import mrx
+
+# derivatives through the solves are taken in float64
+pytestmark = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 
 #: The finite differences below divide the error of two solves by 2 eps, so they are solved to 1e-10: at the default
 #: 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13).

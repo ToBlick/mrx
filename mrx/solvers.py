@@ -7,7 +7,9 @@ nonpositive curvature and reorthogonalise its Lanczos vectors, which the Newton 
 :func:`solve_singular_cg` solves a semidefinite system with a known kernel. :func:`lanczos_bounds`
 estimates the spectral interval of a preconditioned operator. :func:`refine` is the outer loop of a
 solve: it recomputes the true residual after each Krylov solve and corrects the solution until that
-residual meets the tolerance.
+residual meets the tolerance. In float32 it carries the solution as a double-single number and forms the
+residual in that arithmetic (:mod:`mrx.precision`), which is what lets a float32 Krylov solve reach a tolerance
+below its own round-off. The Krylov solvers and the preconditioners only ever see float arrays.
 
 Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
@@ -18,7 +20,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from mrx.precision import MAX_PASSES
+import mrx.double_single as ds
+from mrx.precision import DTYPE, MAX_PASSES, PAIRS, lift, pass_floor, to_working
 
 
 def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
@@ -102,11 +105,22 @@ def deflation_projectors(vs, mass_matvec):
     inner product ``M``. ``project_primal(x) = x - (vs M x) vs`` acts on coefficient vectors and
     ``project_dual(f) = f - (vs f) (M vs)`` on right-hand sides and residuals. With ``m = 0``
     both are the identity. ``M`` is symmetric, so ``vs M x`` is the product of the stored ``M vs``
-    with ``x``, and neither projection applies the mass matrix.
+    with ``x``, and neither projection applies the mass matrix. Double-single ``vs`` give double-single
+    projections.
     """
-    vs = jnp.asarray(vs)
     if vs.shape[0] == 0:
         return (lambda x: x), (lambda f: f)
+    if isinstance(vs, ds.DS):
+        rows = [vs[i] for i in range(vs.shape[0])]
+        mass_rows = [mass_matvec(v) for v in rows]
+
+        def remove(x, along, against):
+            x = ds.lift(x)
+            for v, w in zip(along, against):
+                x = x - v * ds.dot(w, x)
+            return x
+        return (lambda x: remove(x, rows, mass_rows)), (lambda f: remove(f, mass_rows, rows))
+    vs = jnp.asarray(vs)
     mass_vs = jax.vmap(mass_matvec)(vs)
 
     def project_primal(x):
@@ -118,29 +132,47 @@ def deflation_projectors(vs, mass_matvec):
     return project_primal, project_dual
 
 
-def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=None):
+#: The weakest reduction of the residual that a pass of :func:`refine` asks for.
+PASS_CAP = 1e-2
+
+
+def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
     """Solve ``A x = b`` by repeated corrections and return ``(x, info)``.
 
     Each pass computes the residual ``r = b - A x`` with ``apply`` (``x -> A x``), solves
-    ``A d = r`` approximately with ``solve(r) -> (d, info)`` and adds ``d`` to ``x``. It stops
+    ``A d = r`` approximately with ``solve(r, rtol) -> (d, info)`` and adds ``d`` to ``x``. It stops
     when ``norm(r) <= tol norm(b)`` or after
     :data:`~mrx.precision.MAX_PASSES` passes. ``info`` counts the inner iterations of all passes.
 
+    ``rtol`` aims at half the target: it is ``tol norm(b) / (2 norm(r))``, between
+    :func:`~mrx.precision.pass_floor` and :data:`PASS_CAP`. So a pass does not ask for much more than the
+    stopping test needs, however good the starting guess: an iteration pushed far past that runs into its
+    round-off, where conjugate gradients on a singular system diverge. The cap keeps a pass from asking for
+    almost nothing: the composite solves deliver several times less than ``rtol`` in ``norm``, and a pass that
+    asks for a factor 10 then hardly moves.
+
+    In float32 ``x`` is a :class:`~mrx.double_single.DS` and so is ``apply(x)``. The residual is formed in
+    double-single, where the cancellation of ``b`` against ``A x`` loses nothing, and then rounded: ``solve``,
+    ``norm`` and ``project`` see float arrays. ``b`` may be a float array or a :class:`~mrx.double_single.DS`.
+
     ``norm`` measures residuals. The callers pass the norm given by the mass preconditioner of the
-    residual's space. ``project_dual`` removes the kernel of a singular system from the residual.
-    A solve whose residual is not of the form ``b - A x`` passes ``residual(x)`` and ``x0``
+    residual's space. ``project`` is applied to every residual, to keep it in the range of ``A``. It acts on
+    the rounded residual, so a part of ``b`` outside that range has to be removed from ``b`` beforehand, to the
+    accuracy of ``b``. A solve whose residual is not of the form ``b - A x`` passes ``residual(x)`` and ``x0``
     instead of ``apply``, and ``b`` is then used only for its norm.
     """
-    if project_dual is None:
-        def project_dual(r): return r
+    if project is None:
+        def project(r): return r
     if residual is None:
-        x = jnp.zeros_like(b) if x0 is None else x0
+        x0 = jnp.zeros(b.shape, dtype=DTYPE) if x0 is None else x0
 
         def residual(x):
-            return project_dual(b - apply(x))
-    else:
-        x = x0
-    bnorm = norm(project_dual(b))
+            return b - apply(x)
+    x = lift(x0)
+
+    def rounded(x):
+        return project(to_working(residual(x)))
+    bnorm = norm(project(to_working(b)))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     def cond(carry):
@@ -149,13 +181,14 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=N
 
     def body(carry):
         x, r, k, its = carry
-        # The inner solve gets the residual scaled to unit norm. s > 0 inside the loop.
+        # The inner solve gets the residual scaled to unit norm, so the range of float32 never limits the
+        # tolerance. s > 0 inside the loop.
         s = norm(r)
-        d, info = solve(r / s)
+        d, info = solve(r / s, jnp.clip(0.5 * tol * bnorm_safe / s, pass_floor(tol), PASS_CAP))
         x = x + s * d
-        return x, residual(x), k + 1, its + jnp.abs(info)
+        return x, rounded(x), k + 1, its + jnp.abs(info)
 
-    x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
+    x, r, _, its = jax.lax.while_loop(cond, body, (x, rounded(x), 0, 0))
     converged = norm(r) <= tol * bnorm_safe
     return x, jnp.where(converged, its, -its)
 
@@ -172,10 +205,11 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
     Without ``norm`` it is measured in the norm of the preconditioner, ``sqrt(r^T P r)``, which the
     PCG has at no cost: pass no ``norm`` when it would be that norm anyway (a mass solve).
     Without ``check_residual`` this is a plain PCG that stops at ``tol`` on the residual of its
-    recurrence. With it the PCG runs inside :func:`refine`: each pass solves to ``tol`` and the
-    true residual measured in ``norm`` decides convergence.
+    recurrence. With it the PCG runs inside :func:`refine` and the true residual measured in ``norm``
+    decides convergence. ``A_matvec`` and ``mass_matvec`` must then follow their argument: a
+    :class:`~mrx.double_single.DS` in, a :class:`~mrx.double_single.DS` out.
     """
-    project_primal, project_dual = deflation_projectors(vs, mass_matvec)
+    project_primal, project_dual = deflation_projectors(to_working(vs), mass_matvec)
 
     def A(x):
         return project_dual(A_matvec(project_primal(x)))
@@ -191,10 +225,13 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
         x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm)
         return project_primal(x), info
 
-    x, info = refine(lambda x: A_matvec(project_primal(x)),
-                     lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm),
-                     b, x0=x0, tol=tol, project_dual=project_dual, norm=outer_norm)
-    return project_primal(x), info
+    # The kernel leaves b and the solution once each, to their own accuracy. The corrections come out of the
+    # conjugate gradients in the projected space already.
+    exact_primal, exact_dual = deflation_projectors(vs, mass_matvec) if PAIRS else (project_primal, project_dual)
+    x, info = refine(A_matvec, lambda r, rtol: preconditioned_cg(A, r, P, rtol, maxiter, norm=norm),
+                     exact_dual(lift(b)), x0=None if x0 is None else project_primal(x0), tol=tol,
+                     project=project_dual, norm=outer_norm)
+    return exact_primal(x), info
 
 
 class _MinresState(NamedTuple):

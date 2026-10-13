@@ -1,9 +1,10 @@
 """MRX: magnetic relaxation with finite element exterior calculus on spline de Rham complexes.
 
-Importing the package turns on JAX's 64-bit mode: MRX runs in float64 throughout. See :mod:`mrx.precision`.
+Importing the package fixes the precision from ``MRX_DTYPE``: float64 (the default), or float32 for a device
+without float64. Set it before the first import. See :mod:`mrx.precision`.
 """
 # Imported first because it configures JAX before anything else creates arrays.
-from .precision import EPS, eps, sqrt_eps  # noqa: F401
+from .precision import DTYPE, EPS, eps, sqrt_eps  # noqa: F401
 
 __version__ = "0.1.0"
 

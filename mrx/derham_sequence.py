@@ -61,7 +61,7 @@ from mrx.geometry import SYMMETRIES, SequenceGeometry, map_jacobian_at
 from mrx.incidence import build_matrixfree_incidence, build_polar_derivative
 from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
-from mrx.precision import SOLVE_TOL
+from mrx.precision import SOLVE_TOL, to_working
 from mrx.projectors import greville_axes, interpolate as _interpolate, ring_projections
 from mrx.pytree import register_arrays
 from mrx.quadrature import QuadratureRule, evaluate_at_xq, integrate_against
@@ -136,7 +136,7 @@ class DeRhamSequence():
         self.map_theta = self.ns[1]
         self.operators = None
         self.betti_numbers = SOLID_TORUS_BETTI
-        Ts = [None if T is None else jnp.asarray(T, dtype=jnp.float64)
+        Ts = [None if T is None else jnp.asarray(T, dtype=float)
               for T in (knots if knots is not None else (None,) * 3)]
         #: the theta count of every primal radial basis function (graded space), or ``None`` (uniform)
         self.theta_counts = None if theta_counts is None else tuple(int(m) for m in theta_counts)
@@ -279,7 +279,7 @@ class DeRhamSequence():
     def nullspace(self, k):
         """The harmonic ``k``-forms of the space, shape ``(n_vectors, n_k)``. They are zero until
         :func:`mrx.nullspace.compute_nullspaces` has run."""
-        return self._require_operators().nullspaces[(int(k), self.dirichlet)]
+        return to_working(self._require_operators().nullspaces[(int(k), self.dirichlet)])
 
     @property
     def free(self):
@@ -513,7 +513,7 @@ class DeRhamSequence():
         if k == 2:
             p_guess = jnp.zeros(self.n(3)) if p_guess is None else p_guess
             q, sigma, _ = op._hodge_split(self, self.D[2] @ v, 3, -p_guess, guess_lower=sigma_guess)
-            return v - sigma, -q
+            return to_working(v - sigma), to_working(-q)
         p_guess = jnp.zeros(self.n(0)) if p_guess is None else p_guess
         q = self.L[0].solve(-(self.D[0].T @ v), guess=-p_guess)
         return v + self.G[0] @ q, -q

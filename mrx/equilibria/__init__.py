@@ -121,8 +121,8 @@ class StateField:
         self.basis = SplineBasis(block["cos"].shape[1], block["deg"], "clamped", T=jnp.asarray(block["T"]))
         self.C_cos = jnp.asarray(block["cos"])                           # (n_modes, n_base)
         self.C_sin = jnp.asarray(block["sin"])
-        self.m = jnp.asarray(block["m"], dtype=jnp.float64)
-        self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp          # per field period
+        self.m = jnp.asarray(block["m"], dtype=float)
+        self.n_per = jnp.asarray(block["n"], dtype=float) / nfp          # per field period
 
     def __call__(self, x):
         # r is not clipped to [0, 1]. A clip halves the autodiff radial derivative at r = 1 (JAX splits
@@ -158,8 +158,8 @@ def state_position(st):
 
 def _frame_arrays(frame, nfp):
     """The coefficients of a state's ``frame`` and its mode numbers per field period of ``nfp``, as JAX arrays."""
-    return (jnp.asarray(frame["cos"], dtype=jnp.float64), jnp.asarray(frame["sin"], dtype=jnp.float64),
-            jnp.asarray(frame["n"], dtype=jnp.float64) / nfp)
+    return (jnp.asarray(frame["cos"], dtype=float), jnp.asarray(frame["sin"], dtype=float),
+            jnp.asarray(frame["n"], dtype=float) / nfp)
 
 
 def _frame_at(cos, sin, n_per, zeta):
