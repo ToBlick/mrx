@@ -231,6 +231,17 @@ def test_parts_of_the_laplacian_solve(domains, k):
     assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
 
 
+def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
+    """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
+    s = domains("period")
+    on = s if s.residual is None else s.residual
+    b = on.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)), dtype=RESIDUAL_DTYPE)
+    x, info = s.L[0].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact")
+    x_full = s.L[0].solve(b, dtype=RESIDUAL_DTYPE)
+    assert info > 0
+    assert float(s.l2_norm(x - x_full, 0) / s.l2_norm(x_full, 0)) <= 1e3 * s.tol
+
+
 def test_parts_that_do_not_exist_are_refused(domains):
     s = domains("period")
     with pytest.raises(ValueError):
