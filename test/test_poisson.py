@@ -29,10 +29,10 @@ import pytest
 import mrx
 from mrx.precision import RESIDUAL_DTYPE, eps
 
-#: 1.25x the relative L2 errors on li383 (8, 12, 12 per period) p = 2, measured 2026-09-30 in every precision:
-#: 1.825e-2 (k = 0, of grad psi), 1.520e-2, 3.777e-2 and 1.136e-1.
-ERROR_BAND = {0: 0.023, 1: 0.019, 2: 0.047, 3: 0.142}
-#: The relative spread of the three representations' errors: below 1e-12 in float64 and 4e-4 in plain float32.
+#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13 in float64 and in mixed
+#: precision: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
+ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
+#: The relative spread of the three representations' errors: below 3e-12 in float64 and 2.1e-4 in mixed precision.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
 _ERRORS = {}

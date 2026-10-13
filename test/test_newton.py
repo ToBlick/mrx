@@ -33,10 +33,11 @@ from mrx.relaxation.newton import MassChebyshev, newton_direction, second_variat
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
-# ||F||_end / ||F||_0 after 10 Newton steps on li383 (8, 12, 12) p=2.
+# ||F||_end / ||F||_0 after 10 Newton steps on li383 (12, 20, 12) p=2: measured 4.9e-3 (2026-10-13).
 NEWTON_FORCE_DROP = 0.5
-# |H_end - H_0| / (2 E_0) over the 10 steps: grid-scale reconnection, about 4e-6 in float64. 5x that.
-HELICITY_DRIFT = 2e-5
+# |H_end - H_0| / (2 E_0) over the 10 steps: grid-scale reconnection, 1.05e-6 in float64 and 1.07e-6 in mixed
+# precision (2026-10-13). 5x that.
+HELICITY_DRIFT = 5e-6
 
 
 def _divergence_free(seq, key):

@@ -36,7 +36,7 @@ if _CACHE:
 #: The wout geometry, tracked in the repository.
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
 #: Resolution (r, theta, zeta) per field period and the spline degree.
-NS, P = (8, 12, 12), 2
+NS, P = (12, 20, 12), 2
 #: The three representations of the li383 domain: (symmetry, nfp override, toroidal splines).
 DOMAINS = {"half": ("stellarator", None, NS[2]), "period": ("field-period", None, NS[2]),
            "full": ("none", 1, 3 * NS[2])}

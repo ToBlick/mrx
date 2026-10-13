@@ -240,6 +240,12 @@ to 6e-7 or better.
   With the stopping change alone the gradient step is 0.69 and 1.44 s on the two li383 meshes. The gradient step
   on (48,64,24) read between 0.33 and 0.42 s on identical code.
 - Not run: Newton in mixed precision on the final code, W7-X above (32,64,36), (64,80,32) at p = 3.
+- Plain float32 on the suite's mesh li383 (12,20,12), tol 1e-5 (2026-10-13): 7 of 46 tests fail, `main` passes its
+  35 on the same mesh. Leray of a random field: the first MINRES pass stops after 270 iterations on the residual
+  it carries, the residual formed from the solution reads 1.17e-5, and the second pass, asked for another 1e-5
+  at the float32 floor, runs to maxiter 10000 and returns NaN. `L_3` random: 6 passes, 50278 iterations, ends at
+  1.1e-5. Harmonic 1-form: Rayleigh quotient 1.3e-8 against 1.2e-10 on `main`. On (8,12,12) plain float32 passed.
+  Not fixed.
 
 ### Where the harmonic deflation lives (2026-10-10, reasoned from the code, not measured)
 

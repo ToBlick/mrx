@@ -1,6 +1,6 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
-On QA at (8, 12, 12) p=2 the field, which comes from the co-closed solve on ``S_1`` alone, is the harmonic 2-form
+On QA at (12, 20, 12) p=2 the field, which comes from the co-closed solve on ``S_1`` alone, is the harmonic 2-form
 of :func:`mrx.nullspace.compute_nullspaces` up to its scale and equals the field of the full Laplacian solve, a
 gradient added to the potential does not change it, and the derivative of the mean rotational transform with respect to every map coefficient matches
 central differences. Shape gradients need float64 (see tutorial 6), so the test is skipped in float32.
@@ -27,7 +27,7 @@ def test_vacuum_field_and_its_shape_derivative():
 
     # the finite difference below divides the error of two solves by 2 eps = 2e-3, so they are solved to 1e-10:
     # at the default 1e-8 the comparison sits at its bound of 1e-6 (1.15e-6 and 0.9e-6 in two runs, 2026-10-13)
-    seq, _ = build_sequence(QA, (8, 12, 12), 2, tol=1e-10)
+    seq, _ = build_sequence(QA, (12, 20, 12), 2, tol=1e-10)
     seed = sa.flux_seed(seq)
     h, info = sa.vacuum_two_form(seq, seed)
     assert info > 0
