@@ -549,8 +549,9 @@ def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False)
 
     def split(b):
         # z equals M_{k-1}^-1 G^T M x of the returned x (as G^T S_k = 0), the second unknown of _pair_loop
-        x, info = shifted_cg(k, b, inner)
-        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), inner)
+        # the residual of the split is at most the sum of those of its two solves, so each gets a half
+        x, info = shifted_cg(k, b, inner / 2.0)
+        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), inner / 2.0)
         x = x - eps * _grad(seq, z, k - 1)
         total = jnp.abs(info) + jnp.abs(info_lower)
         return x, z, jnp.where((info >= 0) & (info_lower >= 0), total, -total)
