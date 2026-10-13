@@ -182,14 +182,16 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
         compute_nullspaces(s, verbose=False)
 
 
-def test_coclosed_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
-    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve_coclosed`` and ``L[1].solve``
-    converge and differ by a closed form only, so their curls agree. With ``gauge`` they agree themselves."""
+def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq, b0):
+    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve(part="coexact", gauge=False)``
+    and ``L[1].solve`` converge and differ by a closed form only, so their curls agree. With the gauge solve they
+    agree themselves."""
     odd = seq.odd
-    w = odd.M[2] @ b0
-    a, info = odd.L[1].solve_coclosed(w, return_info=True, dtype=RESIDUAL_DTYPE)
-    a_g = odd.L[1].solve_coclosed(w, dtype=RESIDUAL_DTYPE, gauge=True)
-    a_L, info_L = odd.L[1].solve(odd.G[1].T @ w, return_info=True, dtype=RESIDUAL_DTYPE)
+    on = odd if odd.residual is None else odd.residual
+    b = on.G[1].T @ (odd.M[2] @ b0)
+    a, info = odd.L[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False)
+    a_g = odd.L[1].solve(b, dtype=RESIDUAL_DTYPE, part="coexact")
+    a_L, info_L = odd.L[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
     diff_g = float(odd.l2_norm(a_g - a_L, 1) / odd.l2_norm(a_L, 1))
     print(f"\n  co-closed {int(info)} iterations, Hodge split {int(info_L)}, ||curl (a - a_L)|| / ||curl a_L|| {diff:.2e}, "
@@ -239,3 +241,5 @@ def test_parts_that_do_not_exist_are_refused(domains):
         s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
     with pytest.raises(ValueError):
         s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")
+    with pytest.raises(ValueError):
+        s.L[1].solve(jnp.zeros(s.n(1)), gauge=False)

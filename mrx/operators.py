@@ -495,34 +495,20 @@ def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
     )
 
 
-@eqx.filter_jit
-def _coclosed_solve_of(seq, w, k: int, guess=None, return_info: bool = False, dtype=None, gauge: bool = False,
-                       tol=None):
-    """``x`` with ``S_k x = G_k^T w`` (see :func:`_coclosed_solve`). ``G_k^T w`` is formed in the residual
-    precision. With ``gauge`` the closed part of ``x`` is removed by the last solve of the Hodge split,
-    ``S_{k-1} a = -G_{k-1}^T M_k x`` and ``x + G_{k-1} a``, which makes ``x`` the solution of ``L_k``."""
-    on, inner = _outer(seq)
-    x, info = _coclosed_solve(seq, _grad(on, w.astype(on.dtype), k, transpose=True), k, guess, tol)
-    if gauge:
-        c = -_grad(on, _mass(on, x, k), k - 1, transpose=True)
-        a = _k0_solve(seq, c, seq.tol, on=on, inner=inner)[0] if k == 1 else _coclosed_solve(seq, c, k - 1)[0]
-        x = x + _grad(on, a.astype(on.dtype), k - 1)
-    x = _out(seq, x, dtype)
-    return (x, info) if return_info else x
-
-
 #: The parts of a Laplacian solve (:meth:`Laplacian.solve`).
 PARTS = ("full", "coexact", "exact")
 
 
-def _coexact_solve(seq, c, j: int, gauge: bool = True):
+def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
     """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, in the residual precision.
-    With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Degree 0 has no exact forms."""
+    With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Without it ``y`` is left with a
+    closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms."""
     on, inner = _outer(seq)
     if j == 0:
-        y, info = _k0_solve(seq, c, seq.tol, on=on, inner=inner)
+        y, info = _k0_solve(seq, c, seq.tol if tol is None else tol, guess=guess, on=on, inner=inner)
         return y.astype(on.dtype), info
-    y, info = _coclosed_solve(seq, c, j)
+    y, info = _coclosed_solve(seq, c, j, guess, tol)
+    y = y.astype(on.dtype)
     if gauge:
         # only G q enters, so q needs no gauge of its own
         q, info_q = _coexact_solve(seq, -_grad(on, _mass(on, y, j), j - 1, transpose=True), j - 1, gauge=False)
@@ -537,11 +523,12 @@ def _merge_info(a, b):
 
 
 @eqx.filter_jit
-def _part_solve(seq, b, k: int, part: str, return_info: bool = False, dtype=None):
+def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=None, return_info: bool = False,
+                dtype=None):
     """``L_k^{-1} b`` for a ``b`` that has only the co-exact or only the exact part (:meth:`Laplacian.solve`),
-    k = 1, 2, 3::
+    k = 0 to 3::
 
-        coexact:  S_k x = b,   x co-exact
+        coexact:  S_k x = b,   x co-exact (with ``gauge``)
         exact:    S_{k-1} g = G^T b,   S_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
 
     The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
@@ -554,7 +541,7 @@ def _part_solve(seq, b, k: int, part: str, return_info: bool = False, dtype=None
     b, = _plain(seq, b)
     b = b.astype(on.dtype)
     if part == "coexact":
-        x, info = _coexact_solve(seq, b, k)
+        x, info = _coexact_solve(seq, b, k, gauge, guess, tol)
     elif k == 1:
         g, info_g = _coexact_solve(seq, _grad(on, b, 0, transpose=True), 0)
         a, info_a = _coexact_solve(seq, _mass(on, g, 0), 0)
@@ -716,7 +703,7 @@ class Laplacian(_Symmetric):
     def __matmul__(self, v):
         return _laplacian(self.seq, v, self.k)
 
-    def solve(self, b, guess=None, return_info=False, dtype=None, part="full"):
+    def solve(self, b, guess=None, return_info=False, dtype=None, part="full", gauge=True, tol=None):
         """``L_k^{-1} b``, the solution orthogonal (in ``M_k``) to the harmonic forms.
 
         The harmonic forms come from :func:`mrx.nullspace.compute_nullspaces`. While they are still
@@ -726,39 +713,33 @@ class Laplacian(_Symmetric):
         The solution is the sum of a co-exact form (``G_{k-1}^T M_k x = 0``) and an exact one
         (``x = G_{k-1} a``). ``part`` says which of them ``b`` has, and leaves out the solves of the other:
 
-        - ``"full"``: any ``b``.
+        - ``"full"``: any ``b``. Three solves for k = 1, 2.
         - ``"coexact"``: ``b`` is orthogonal to the closed forms, as ``b = G_k^T w`` is. The solution
-          is co-exact.
-        - ``"exact"``: ``b = M_k G_{k-1} c``. The solution is exact.
+          is co-exact: one solve of the stiffness ``S_k x = b`` and a gauge solve of degree ``k - 1``.
+        - ``"exact"``: ``b = M_k G_{k-1} c``. The solution is exact: two solves of degree ``k - 1``.
 
-        The parts solve the stiffness alone, which only converges on a right-hand side of that kind,
-        formed in the residual precision. A ``b`` with the other part as well returns a negative info.
-        They take no ``guess``. Every 0-form solution is co-exact and every 3-form solution is exact:
-        asking for the other part raises. :meth:`solve_coclosed` is the co-exact part for ``b = G_k^T w``
-        without the gauge solve."""
+        With ``part="coexact"`` and ``gauge=False`` the gauge solve is left out. What comes back is then
+        NOT the solution: it is the solution plus a closed form that nothing controls, and only its
+        derivative ``G_k x`` is the same. Use it where only ``G_k x`` enters. ``guess`` then starts the
+        stiffness solve, and ``tol`` replaces ``seq.tol`` as its relative residual.
+
+        The stiffness solve only converges on a right-hand side of that kind. In mixed precision form
+        ``b`` with the operators of ``seq.residual``: ``G_k^T w`` from the float32 operators is
+        inconsistent at 1e-7 and the solve does not get below that. A ``b`` with the other part as well
+        returns a negative info. Every 0-form solution is co-exact and every 3-form solution is exact:
+        asking for the other part raises."""
         if part not in PARTS:
             raise ValueError(f"part must be one of {PARTS}, got {part!r}")
         if (self.k, part) in ((0, "exact"), (3, "coexact")):
             raise ValueError(f"the solution of L_{self.k} has no {part} part")
-        if part == "full" or (self.k, part) == (0, "coexact"):
+        if part != "coexact" and (not gauge or tol is not None):
+            raise ValueError("gauge=False and tol belong to part='coexact'")
+        if part == "full":
             return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
-        if guess is not None:
-            raise ValueError("the part solves take no guess")
-        return _part_solve(self.seq, b, self.k, part, return_info=return_info, dtype=dtype)
-
-    def solve_coclosed(self, w, guess=None, return_info=False, dtype=None, gauge=False, tol=None):
-        """A solution ``x`` of ``S_k x = G_k^T w``, for a dual ``(k+1)``-form ``w``.
-
-        This is the part of the Laplacian solve that ``G_k x`` depends on, by one conjugate-gradient solve on
-        the stiffness ``S_k`` instead of the three of :meth:`solve`. ``x`` differs from
-        ``solve(G_k^T w)`` by a closed form, which is left uncontrolled, so use it where only ``G_k x``
-        enters. The method takes ``w`` and not the right-hand side because the solve only converges for a
-        right-hand side that is exactly a transposed derivative, formed in the residual precision. With
-        ``gauge`` one more solve of degree ``k - 1`` removes the closed part, and ``x`` is ``solve(G_k^T w)``.
-        ``guess``, ``return_info`` and ``dtype`` work as in :meth:`MassMatrix.solve`. ``tol`` replaces
-        ``seq.tol`` as the relative residual of this solve."""
-        return _coclosed_solve_of(self.seq, w, self.k, guess=guess, return_info=return_info, dtype=dtype,
-                                  gauge=gauge, tol=tol)
+        if part == "exact" and guess is not None:
+            raise ValueError("the exact part takes no guess")
+        return _part_solve(self.seq, b, self.k, part, guess=guess, gauge=gauge, tol=tol, return_info=return_info,
+                           dtype=dtype)
 
     def precondition(self, v):
         """The preconditioner of ``L_k`` that the Laplacian solves use, applied to ``v``."""

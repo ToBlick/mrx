@@ -32,7 +32,8 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     """
     seq = seq.odd
     # A enters the helicity up to a gradient, which pairs to zero with the divergence-free B + B_harm
-    A = seq.L[1].solve_coclosed(seq.M[2] @ B, guess=A_guess)
+    on = seq if seq.residual is None else seq.residual      # the right-hand side in the residual precision
+    A = seq.L[1].solve(on.G[1].T @ (seq.M[2] @ B), part="coexact", gauge=False, guess=A_guess)
     B_harm = B - seq.G[1] @ A
     helicity = A @ (seq.P[2, 1] @ (B + B_harm))
     return helicity, A

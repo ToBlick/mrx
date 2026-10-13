@@ -202,7 +202,9 @@ class TimeStepper(eqx.Module):
         """
         seq = self.seq.even
         J, JxB_dual = self._lorentz(B, J_guess)
-        a = seq.L[1].solve_coclosed(JxB_dual, guess=a_guess)
+        on = seq if seq.residual is None else seq.residual      # the right-hand side in the residual precision
+        # only curl a enters, so a keeps a gradient that nothing controls
+        a = seq.L[1].solve(on.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         if not smooth:

@@ -109,7 +109,8 @@ Decided against:
 
 ### Co-closed solve: S_k alone for a right-hand side G_k^T w (2026-10-09/10)
 
-`seq.L[k].solve_coclosed(w)`, branch `laplacian-solvers`. Scripts and logs: `outputs/hodge_gamma/`,
+`seq.L[k].solve(G_k^T w, part="coexact", gauge=False)` (named `solve_coclosed(w)` when these notes were
+written, and in the tables below), branch `laplacian-solvers`. Scripts and logs: `outputs/hodge_gamma/`,
 `outputs/laplacian_solvers/` (main checkout), bench notes `boxes_and_exact_forms_2026-10-09.md`.
 
 - The atom preconditions `S_k` well and the exact-form term `M G W G^T M` of `L^_k` badly (dense spectra of the

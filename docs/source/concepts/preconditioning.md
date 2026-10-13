@@ -16,7 +16,7 @@ is called on, `seq` (Dirichlet) or `seq.free`.
 | `M_k u = f` | `seq.M[k].solve(f)` | PCG | the mass atom |
 | `L_0 u = f` | `seq.L[0].solve(f)` | PCG on `S_0`, kernel deflated | the k = 0 Laplacian atom |
 | `L_k u = f`, k = 1, 2 | `seq.L[k].solve(f)` | the Hodge split: three SPD PCGs | the Laplacian atoms of levels k and k-1 |
-| `S_k u = G_k^T w` | `seq.L[k].solve_coclosed(w)` | PCG on the singular `S_k`, restarted on the true residual | the Laplacian atom of level k |
+| `S_k u = b`, `b = G_k^T w` | `seq.L[k].solve(b, part="coexact", gauge=False)` | PCG on the singular `S_k` | the Laplacian atom of level k |
 | `L_3 u = f` | `seq.L[3].solve(f)` and `seq.leray(v, k=2)` | saddle-point MINRES | the k = 3 Laplacian atom, the k = 2 mass atom |
 | `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | two SPD PCGs | the shifted-stiffness atoms |
 
@@ -36,7 +36,7 @@ middle solve runs on `S_k + M_k G W G^T M_k` (`W` the level-(k-1) mass
 atom), which has the same exact-orthogonal solution for any SPD `W`.
 
 **Co-closed solve.** When the right-hand side is a transposed derivative, `b = G_k^T w`, the first solve of
-the split is zero and `G_k x` only needs `S_k x = b`. `seq.L[k].solve_coclosed(w)` solves that system alone.
+the split is zero and `G_k x` only needs `S_k x = b`. `seq.L[k].solve(b, part="coexact", gauge=False)` solves that system alone. What it returns is the solution up to a closed form, of which only `G_k x` is determined. Without `gauge=False` one more solve of degree `k - 1` removes the closed form.
 Conjugate gradients converge on the singular `S_k` because `b` lies exactly in its range, and each iteration
 drops the two mass applies and the atom of the exact-form term. Two things keep it there. `G_k^T w` is formed
 in the residual precision, since in float32 it is inconsistent at about `1e-7`. And the solve restarts on the

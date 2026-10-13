@@ -91,7 +91,8 @@ def compute_nullspaces(seq, *, verbose=True):
         # the closed seed has no coexact part, so removing its exact part (the image of curl, one
         # curl-curl solve) leaves the harmonic form
         seed2 = _closed_seed(build, (0.0, 0.0, 1.0), 2)
-        a = build.L[1].solve_coclosed(build.M[2] @ seed2, tol=HARMONIC_TOL * build.tol)
+        a = build.L[1].solve(build.G[1].T @ (build.M[2] @ seed2), part="coexact", gauge=False,
+                             tol=HARMONIC_TOL * build.tol)
         operators = store(build, 2, seed2 - build.G[1] @ a)
 
     # build.free is taken anew after every store: a view copies the operators it sees
