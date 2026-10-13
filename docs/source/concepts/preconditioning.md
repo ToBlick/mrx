@@ -35,16 +35,29 @@ S_{k-1} g = G^T b,   S_k x_perp = b - M_k G g,   S_{k-1} a = M_{k-1} g - G^T M_k
 middle solve runs on `S_k + M_k G W G^T M_k` (`W` the level-(k-1) mass
 atom), which has the same exact-orthogonal solution for any SPD `W`.
 
-**Co-closed solve.** When the right-hand side is a transposed derivative, `b = G_k^T w`, the first solve of
-the split is zero and `G_k x` only needs `S_k x = b`. `seq.L[k].solve(b, part="coexact", gauge=False)` solves that system alone. What it returns is the solution up to a closed form, of which only `G_k x` is determined. Without `gauge=False` one more solve of degree `k - 1` removes the closed form.
-Conjugate gradients converge on the singular `S_k` because `b` lies exactly in its range, and each iteration
-drops the two mass applies and the atom of the exact-form term. Two things keep it there. `G_k^T w` is formed
-in the residual precision, since in float32 it is inconsistent at about `1e-7`. And the solve restarts on the
-2-norm of the same residual that each pass reduces, with a pass tolerance that never asks for more than the
-stopping test needs. `x` keeps a closed part that no one controls, so the method is for callers that only use
-`G_k x`: the force potential, the vector potential of the helicity, the harmonic 2-form and the vacuum field of
-the shape optimisation. A right-hand side that is only approximately in the range of `G_k^T`, such as the
-middle one of the Hodge split, makes the iteration diverge.
+**Part solves.** The solution of `L_k x = b` is the sum of a co-exact and an exact form, and a right-hand
+side that has only one of them needs fewer solves. `seq.L[k].solve(b, part=...)` says which:
+
+```
+coexact (b = G_k^T w):       S_k x = b,   then a gauge solve of degree k - 1
+exact (b = M_k G_{k-1} c):   S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = G a
+```
+
+For a co-exact right-hand side the first solve of the split is zero and conjugate gradients run on the
+singular `S_k` alone. They converge because `b` lies exactly in its range, and each iteration drops the two
+mass applies and the atom of the exact-form term. The solve is stopped and refined like every other one
+([Precision](precision.md)). With `gauge=False` the gauge solve is left out. What comes back is then the
+solution plus a closed form that nothing controls, of which only `G_k x` is determined. This is what the
+force potential, the vector potential of the helicity, the harmonic 2-form and the vacuum field of the
+shape optimisation use, since only `G_k x` enters them.
+
+The stiffness solve needs a consistent right-hand side. `G_k^T w` is formed in the residual precision, since
+in float32 it is inconsistent at about `1e-7`. A right-hand side that is only approximately in the range of
+`G_k^T`, such as the middle one of the Hodge split, makes the iteration diverge. For the same reason the
+second solve of the exact part is one of the regularised `L^_{k-1}` and not of `S_{k-1}`: `M_{k-1} g` is
+consistent only as far as `g` is co-exact, and `G a` is the same for either operator. A 0-form solution has
+no exact part and a 3-form solution no co-exact part. For k = 3 the exact part is the whole solve, an
+alternative to the saddle MINRES below that nothing uses: the Leray projection needs `sigma`.
 
 **Saddle point** (k = 3). With `S_3 = 0` there is nothing to split:
 

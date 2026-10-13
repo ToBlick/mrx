@@ -126,6 +126,8 @@ written, and in the tables below), branch `laplacian-solvers`. Scripts and logs:
      against 1e-3.
   2. Restart on the 2-norm of the residual that the pass reduces. `solve_singular_cg` with `A_res` (`refine`,
      dual-norm test) diverges even in float64: `|a|_M` 2e14, curl error 18. This was the 2026-10-07 failure.
+     No longer the case since conjugate gradients stop on `dual_norm` themselves (2026-10-12, section below):
+     the solve is one call of `solve_singular_cg` and the 2-norm restart is gone.
 - Inside the Hodge split it does not work: the middle right-hand side `b - M G g` is consistent only to the
   tolerance of the `g` solve. `S_k` alone there: count -60000, error 1e59. With the stop tied to a measured
   inconsistency `L_1` converges, `L_2` does not (inconsistent at 0.1 and 2 in the atom's norm).
@@ -160,6 +162,84 @@ written, and in the tables below), branch `laplacian-solvers`. Scripts and logs:
   the pass tolerance below the inner tolerance, more than 400 steps of the gauge share.
 - A closed-only shortcut (`b = M_k G c`, one solve `S_{k-1} a = M_{k-1} c`) was not built. `M_{k-1} c` is
   consistent only for a co-closed `c`, and no caller holds one.
+
+### Stopping on the M^-1 norm of the residual of the equation (2026-10-12/13)
+
+li383 1.4 m, p = 2, float64, tol 1e-8, one H200, second call. Before: `main` at `11f93d81` (conjugate gradients
+stopped on the norm of their own preconditioner, MINRES on `phibar`, the splits on their block residuals).
+
+- Before, a pass that met its own test was judged in `dual_norm`, missed, and ran again: every Laplacian and
+  saddle solve took two passes and ended at 1e-13 to 1e-16.
+- Krylov iterations stopping on `dual_norm`, Hodge sub-solves at tol / 3, iterations and s, before -> after:
+
+  | | (48,64,24) | (64,80,32) |
+  |---|---|---|
+  | `L_0` random | 324 -> 167 | 399 -> 204 |
+  | `L_1` force potential | 1346, 0.96 -> 768, 0.57 | 1644, 2.18 -> 963, 1.34 |
+  | `L_3` random | 3086, 1.64 -> 1491, 0.87 | 4038, 3.55 -> 1925, 1.82 |
+  | Leray of `J x B` | 2912, 1.57 -> 1398, 0.82 | 3724, 3.28 -> 1759, 1.67 |
+
+  One pass each. MINRES costs 0.54 -> 0.59 ms and 0.88 -> 0.95 ms per iteration for carrying the residual.
+- With only that change the residual of `L_k x = b` computed outside the solve ended above the tolerance where
+  `b` has an exact part: `L_1` random 1.2e-8, `L_2` random 3.8e-8, `L_2` odd (`M_2 B`) 1.0e-6 on (48,64,24).
+  The block test did not control it: the lower residual counts about 1 / h times.
+- Judged on `upper - M_k G M_{k-1}^-1 lower` these end at 2.2e-14, 1.1e-13 and 3.4e-12 in two passes (`L_1`
+  random 679 -> 1432 iterations, 0.52 -> 1.06 s). A right-hand side `G_k^T w` stays at one pass.
+- With the saddle solve judged on `r_u + D_2 M_2^-1 r_sigma` and on `r_sigma`, the number the loop stops on
+  against the outside residual: `L_0` random 9.0e-9 / 9.0e-9, force potential 2.2e-9 / 2.2e-9, `L_3` random
+  9.7e-9 / 1.1e-8, `L_2` odd 2.3e-12 / 3.3e-12 on (48,64,24). On (64,80,32): 9.2e-9 / 9.2e-9, 2.2e-9 / 2.2e-9,
+  9.7e-9 / 1.1e-8, 5.0e-12 / 5.7e-12. Leray of `J x B` then takes 1433 iterations, 0.92 s and 1800, 1.86 s.
+- Mixed on (48,64,24): 2 to 3 passes per solve as before, `L_2` random and odd 4 (3 before), ending at 3.9e-11
+  and 7.2e-9.
+- Newton solve at the li383 start field (review of 2026-10-10): on (12,16,16) MINRES met its own test after 26
+  iterations and `newton_mr` returned -26. It returns +48 now. On (32,44,20) and (48,64,24) the solve ends at
+  maxiter before and after.
+
+### Part solves against the full solve (2026-10-13)
+
+Same setting. The full solve of the same right-hand side -> the part, in s. The parts agree with the full solve
+to 6e-7 or better.
+
+| | (48,64,24) | (64,80,32) |
+|---|---|---|
+| `L_1` co-exact, `gauge=False` | 0.78 -> 0.094 | 1.75 -> 0.197 |
+| `L_1` co-exact | 0.78 -> 0.150 | 1.75 -> 0.324 |
+| `L_2` co-exact, `gauge=False` | 2.08 -> 0.054 | 4.67 -> 0.087 |
+| `L_2` co-exact | 2.08 -> 0.148 | 4.74 -> 0.304 |
+| `L_1` exact | 1.77 -> 0.105 | 4.08 -> 0.228 |
+| `L_2` exact | 4.28 -> 0.801 | 9.55 -> 1.789 |
+| `L_3` exact | 1.07 -> 0.722 | 2.30 -> 1.545 |
+
+- Mixed, co-exact and exact with the gauge: `L_1` 0.62 -> 0.119 and 1.02 -> 0.078, `L_2` 1.54 -> 0.136 and
+  3.51 -> 0.864, `L_3` exact 1.34 -> 0.802 on (48,64,24).
+- The exact part as two stiffness solves (`S_{k-1} a = M_{k-1} g` second) ran to maxiter and drifted for k = 2, 3
+  once it was stopped on its residual (about 10000 iterations, wrong by 1e9): `M_{k-1} g` is consistent only to
+  the tolerance. The second solve is one of `L^_{k-1}`.
+- The gauge solve of an already co-exact guess has only round-off on its right-hand side: a restart from its own
+  result ran to maxiter. Only the co-exact solve without its gauge takes a guess.
+- What that guess is worth, relax.py, gradient, 100 steps, force-potential solve with / without the potential
+  of the step before: 199 / 235 iterations per solve on (48,64,24), 237 / 286 on (64,80,32), 0.39 / 0.40 and
+  0.76 / 0.78 s/step.
+- Harmonic 2-form by the co-exact solve at `HARMONIC_TOL` = 0.1 of the tolerance (2026-10-11). Rayleigh quotient
+  at tol / at 0.1 tol / with the `L_1` solve of `main`: float64 (48,64,24) 1.5e-14 / 1.6e-16 / 8.1e-25, mixed
+  3.5e-13 / 2.4e-13 / 2.4e-13, plain float32 (48,64,24) 1.1e-3 / 4.7e-5 / 1.2 and (32,44,20) 5.5e-4 / 3.7e-6 /
+  3.5e-3. In plain float32 the solve no longer converges at 0.03 tol on (48,64,24).
+- relax.py, `main` -> branch, s/step and `E_0 - E`:
+
+  | | s/step | `E_0 - E` |
+  |---|---|---|
+  | li383 (48,64,24), gradient, 200 steps | 1.09 -> 0.33 | 1.1500e-6 both |
+  | li383 (64,80,32), gradient, 200 steps | 2.38 -> 0.68 | 1.1250e-6 both |
+  | li383 (48,64,24), p = 3, gradient, 200 steps | 2.28 -> 0.97 | 1.0797e-6 both |
+  | W7-X (32,64,36), gradient, 200 steps | 0.56 -> 0.19 | 2.6208e-7 both |
+  | li383 (48,64,24), Newton, 40 steps | 5.90 -> 5.35 | 1.6694e-6 -> 1.6692e-6 |
+  | li383 (64,80,32), Newton, 40 steps | 9.41 -> 8.22 | 1.6374e-6 -> 1.6365e-6 |
+  | li383 (48,64,24), p = 3, Newton, 40 steps | 8.70 -> 7.76 | 1.5652e-6 -> 1.5659e-6 |
+  | W7-X (32,64,36), Newton, 40 steps | 3.89 -> 3.44 | 3.2689e-7 both |
+
+  With the stopping change alone the gradient step is 0.69 and 1.44 s on the two li383 meshes. The gradient step
+  on (48,64,24) read between 0.33 and 0.42 s on identical code.
+- Not run: Newton in mixed precision on the final code, W7-X above (32,64,36), (64,80,32) at p = 3.
 
 ### Where the harmonic deflation lives (2026-10-10, reasoned from the code, not measured)
 

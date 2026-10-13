@@ -51,12 +51,28 @@ every stored floating array to the working dtype.
 configuration: the true residual `b - A x` of the outer operator, measured
 in the norm of the metric-lumped mass atom of the residual's space (a
 cheap proxy of the `M^{-1}` norm, so the criterion is mesh-independent),
-corrected by the Krylov solve until `norm(b - A x) <= tol norm(b)`. In a
-plain configuration the loop checks that the Krylov iteration's own
-preconditioned criterion did not stop short. In mixed precision each pass
-solves to `inner_tol(tol)`, two passes per solve. The composite solves (the
-Hodge split and the shifted split) run under one outer loop on the pair of
-unknowns their inner solves produce, with the saddle-point residual.
+corrected by the Krylov solve until `norm(b - A x) <= tol norm(b)`. The
+Krylov iteration inside stops on the same norm of its own residual, so in a
+plain configuration a pass that meets its test also meets the outer one and
+a single Krylov solve takes one pass. In mixed precision each pass solves to
+`inner_tol(tol)`, two passes per solve.
+
+The residual that is judged is that of the equation posed, not of the
+blocks a composite solve works with. The Hodge split runs under one outer
+loop on the pair `(x, w)` with block residuals `upper` and `lower`. With
+`w` eliminated the residual of `(eps M_k + L_k) x = b` is
+`upper - M_k G M_{k-1}^{-1} lower`, and that is what the loop measures. Its
+three solves stop at a third of the pass tolerance and the two of the
+shifted split at a half, because the residual of a split is at most the sum
+of those of its solves. The saddle solve of `L_3` is judged on the residual
+of the equation for `u`, `r_u + D_2 M_2^{-1} r_sigma`, and on `r_sigma`,
+because `sigma` is returned as well. The mass atom stands for each inverse
+mass in these expressions. The number the loop stops on and the residual
+computed outside the solve then differ by up to a factor 1.6
+(li383 (48,64,24) and (64,80,32), 2026-10-12). A Hodge solve whose
+right-hand side has an exact part takes two passes in float64: the first
+leaves a lower residual at the tolerance, which counts about `1 / h` times
+in the residual of the equation.
 
 The residual operator is `seq.residual`: a copy of the sequence with the
 geometry, quadrature, extraction and polar stencils in float64 and
