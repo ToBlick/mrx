@@ -502,7 +502,8 @@ PARTS = ("full", "coexact", "exact")
 def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
     """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, in the residual precision.
     With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Without it ``y`` is left with a
-    closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms."""
+    closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms. ``guess``
+    starts the stiffness solve."""
     on, inner = _outer(seq)
     if j == 0:
         y, info = _k0_solve(seq, c, seq.tol if tol is None else tol, guess=guess, on=on, inner=inner)
@@ -518,8 +519,9 @@ def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
 
 
 def _merge_info(a, b):
-    """The signed iteration count of two solves: the sum, negative if either did not converge."""
-    return jnp.where((a > 0) & (b > 0), 1, -1) * (jnp.abs(a) + jnp.abs(b))
+    """The signed iteration count of two solves: the sum, negative if either did not converge. A solve that
+    starts converged counts zero."""
+    return jnp.where((a >= 0) & (b >= 0), 1, -1) * (jnp.abs(a) + jnp.abs(b))
 
 
 @eqx.filter_jit
@@ -529,30 +531,38 @@ def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=N
     k = 0 to 3::
 
         coexact:  S_k x = b,   x co-exact (with ``gauge``)
-        exact:    S_{k-1} g = G^T b,   S_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
+        exact:    S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
 
     The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
     right-hand side (:func:`_coclosed_solve`). ``M_{k-1} g`` is consistent only as far as ``g`` is co-exact,
-    and a stiffness solve does not get below what is left. So for ``k >= 2`` the second solve is one of
-    ``L^_{k-1}`` (:func:`_hat_solve`), whose solution has the same ``G a`` for any right-hand side. Then
-    ``g`` needs no gauge. For ``k = 1`` both are solves of ``S_0``, whose kernel are the constants.
+    and a stiffness solve does not get below what is left. So the second solve is one of the regularised
+    ``L^_{k-1}`` (:func:`_hat_solve`), whose solution has the same ``G a`` for any right-hand side, and ``g``
+    needs no gauge. At degree 0 there is nothing to regularise against: ``L^_0`` is ``S_0``, and for k = 1
+    both solves are of ``S_0``.
     """
     on, inner = _outer(seq)
     b, = _plain(seq, b)
     b = b.astype(on.dtype)
     if part == "coexact":
         x, info = _coexact_solve(seq, b, k, gauge, guess, tol)
-    elif k == 1:
-        g, info_g = _coexact_solve(seq, _grad(on, b, 0, transpose=True), 0)
-        a, info_a = _coexact_solve(seq, _mass(on, g, 0), 0)
-        x, info = _grad(on, a, 0), _merge_info(info_g, info_a)
     else:
-        g, info_g = _coclosed_solve(seq, _grad(on, b, k - 1, transpose=True), k - 1)
-        a, info_a = _hat_solve(seq, _mass(on, g.astype(on.dtype), k - 1), k - 1, seq.tol,
-                               on=None if seq.residual is None else on, inner=inner)
-        x, info = _grad(on, a.astype(on.dtype), k - 1), _merge_info(info_g, info_a)
+        j = k - 1
+        g, info_g = _coexact_solve(seq, _grad(on, b, j, transpose=True), j, gauge=False)
+        a, info_a = _regularised_solve(seq, _mass(on, g, j), j)
+        x, info = _grad(on, a, j), _merge_info(info_g, info_a)
     x = _out(seq, x, dtype)
     return (x, info) if return_info else x
+
+
+def _regularised_solve(seq, c, j: int):
+    """``(a, info)`` with ``L^_j a = c`` in the residual precision (:func:`_hat_solve`), which is ``S_0 a = c`` at
+    degree 0."""
+    on, inner = _outer(seq)
+    if j == 0:
+        a, info = _k0_solve(seq, c, seq.tol, on=on, inner=inner)
+    else:
+        a, info = _hat_solve(seq, c, j, seq.tol, on=None if seq.residual is None else on, inner=inner)
+    return a.astype(on.dtype), info
 
 
 @eqx.filter_jit
@@ -720,8 +730,13 @@ class Laplacian(_Symmetric):
 
         With ``part="coexact"`` and ``gauge=False`` the gauge solve is left out. What comes back is then
         NOT the solution: it is the solution plus a closed form that nothing controls, and only its
-        derivative ``G_k x`` is the same. Use it where only ``G_k x`` enters. ``guess`` then starts the
-        stiffness solve, and ``tol`` replaces ``seq.tol`` as its relative residual.
+        derivative ``G_k x`` is the same. Use it where only ``G_k x`` enters. ``tol`` replaces ``seq.tol``
+        as the relative residual of the stiffness solve.
+
+        ``guess`` starts the full solve, and the co-exact solve without its gauge (an earlier result of
+        the same call; 15 % fewer iterations from one relaxation step to the next on li383 (48,64,24)).
+        The other part solves take none: the exact part does not iterate on ``x``, and the gauge solve
+        of an already co-exact guess has nothing but round-off on its right-hand side.
 
         The stiffness solve only converges on a right-hand side of that kind. In mixed precision form
         ``b`` with the operators of ``seq.residual``: ``G_k^T w`` from the float32 operators is
@@ -736,8 +751,8 @@ class Laplacian(_Symmetric):
             raise ValueError("gauge=False and tol belong to part='coexact'")
         if part == "full":
             return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
-        if part == "exact" and guess is not None:
-            raise ValueError("the exact part takes no guess")
+        if guess is not None and (part == "exact" or (gauge and self.k > 0)):
+            raise ValueError("of the part solves only part='coexact' with gauge=False takes a guess")
         return _part_solve(self.seq, b, self.k, part, guess=guess, gauge=gauge, tol=tol, return_info=return_info,
                            dtype=dtype)
 

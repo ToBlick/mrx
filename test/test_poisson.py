@@ -231,6 +231,18 @@ def test_parts_of_the_laplacian_solve(domains, k):
     assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
 
 
+@pytest.mark.parametrize("k", [1, 2])
+def test_the_coexact_solve_without_its_gauge_takes_a_guess(domains, k):
+    """Started from its own result, the co-exact solve without the gauge is converged at once."""
+    s = domains("period")
+    on = s if s.residual is None else s.residual
+    b = on.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)), dtype=RESIDUAL_DTYPE)
+    y, info = s.L[k].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False)
+    y2, info2 = s.L[k].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False, guess=y)
+    assert 0 <= info2 < info
+    assert float(s.l2_norm(on.G[k] @ (y2 - y), k + 1) / s.l2_norm(on.G[k] @ y, k + 1)) <= 1e3 * s.tol
+
+
 def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
     """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
     s = domains("period")
@@ -252,5 +264,7 @@ def test_parts_that_do_not_exist_are_refused(domains):
         s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
     with pytest.raises(ValueError):
         s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")
+    with pytest.raises(ValueError):
+        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="coexact")
     with pytest.raises(ValueError):
         s.L[1].solve(jnp.zeros(s.n(1)), gauge=False)

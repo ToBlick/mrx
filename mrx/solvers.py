@@ -42,7 +42,7 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
     r0 = b - A_matvec(x0)
     z0 = M(r0)
     rz0 = jnp.dot(r0, z0)
-    bnorm = size(b, jnp.dot(b, M(b))) if norm is None else norm(b)
+    bnorm = jnp.sqrt(jnp.dot(b, M(b))) if norm is None else norm(b)
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     # state: (x, r, z, p, rz, k, converged)
@@ -341,8 +341,12 @@ def minres(A_matvec, b, *, M, tol, maxiter, x0=None, npc_exit=False, norm=None):
         x_new = jnp.where(npc_new, x, x + phi * w_new)
         # the residual of the new iterate (frozen with it at the NPC exit)
         safe_beta_new = jnp.where(beta_new > 0, beta_new, 1.0)
-        res_new = jnp.where(npc_new, res, sn_new**2 * res - (cs_new * phibar_new / safe_beta_new) * y_new)
-        converged_new = (phibar_new if norm is None else norm(res_new)) < tol * bnorm_safe
+        if norm is None:
+            res_new, size = res, phibar_new
+        else:
+            res_new = jnp.where(npc_new, res, sn_new**2 * res - (cs_new * phibar_new / safe_beta_new) * y_new)
+            size = norm(res_new)
+        converged_new = size < tol * bnorm_safe
 
         return _MinresState(
             x=x_new, y=y_prec, r1=r2, r2=y_new, beta=beta_new, oldbeta=beta,

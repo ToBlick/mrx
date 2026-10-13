@@ -25,14 +25,16 @@ def test_vacuum_field_and_its_shape_derivative():
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
-    seq, _ = build_sequence(QA, (8, 12, 12), 2)
+    # the finite difference below divides the error of two solves by 2 eps = 2e-3, so they are solved to 1e-10:
+    # at the default 1e-8 the comparison sits at its bound of 1e-6 (1.15e-6 and 0.9e-6 in two runs, 2026-10-13)
+    seq, _ = build_sequence(QA, (8, 12, 12), 2, tol=1e-10)
     seed = sa.flux_seed(seq)
     h, info = sa.vacuum_two_form(seq, seed)
     assert info > 0
     compute_nullspaces(seq)
     harmonic = seq.nullspace(2)[0]
     scale = (h @ harmonic) / (harmonic @ harmonic)
-    # two solves at seq.tol each: measured 1.3 seq.tol in float64 at tol 1e-8 (2026-10-12)
+    # two solves at seq.tol each: measured 1.3 seq.tol at tol 1e-8 (2026-10-12)
     assert jnp.linalg.norm(h - scale * harmonic) <= 1e2 * seq.tol * jnp.linalg.norm(h)
     # The same field as the full Hodge-Laplacian solve
     h_L = seed - seq.G[1] @ seq.L[1].solve(seq.D[1].T @ seed)
