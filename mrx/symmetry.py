@@ -17,13 +17,16 @@ preconditioners. The sequence builds all of these itself when it is created.
 from __future__ import annotations
 
 import functools
+from typing import Optional
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+import mrx.double_single as ds
 from mrx.extraction_operators import build_extraction, core_gram_inverse, get_xi, row_products, summed_coo
+from mrx.precision import PAIRS, to_working
 
 
 def reflection_permutation(n: int, p: int) -> np.ndarray:
@@ -86,7 +89,7 @@ def reflect(x, plan, signed=True):
         RX = X[:, jnp.asarray(perm_t), :][:, :, jnp.asarray(perm_z)]
         out.append(((sign if signed else 1.0) * RX).ravel())
         off += n_c
-    return jnp.concatenate(out)
+    return ds.concatenate(out)
 
 
 def symmetrize(x, plan, parity, signed=True):
@@ -98,6 +101,7 @@ def symmetrize(x, plan, parity, signed=True):
 def parity_of(x, plan):
     """The parity ``+1.0`` or ``-1.0`` of a raw coefficient vector ``x`` of definite parity, as a
     traced scalar. It is the sign of ``x . R x``, which equals ``+-|x|^2``."""
+    x = to_working(x)
     return jnp.where(jnp.vdot(x, reflect(x, plan)) >= 0.0, 1.0, -1.0)
 
 
@@ -283,7 +287,8 @@ class FreeProjector(eqx.Module):
     it gives ``Pi P Pi^T``, with ``s`` read off the input. This is symmetric, positive on the
     vectors of that parity and ignores the round-off of the other parity in a residual, so the
     residual norm of a CG preconditioned with it measures only what the half-period operators
-    can reduce.
+    can reduce. The projections follow their argument: a :class:`~mrx.double_single.DS` is projected in
+    double-single, which the solves use once on the right-hand side and once on the solution.
 
     Obtain it from ``seq.free_projector(k)``. The sequence builds one per space."""
 
@@ -294,6 +299,8 @@ class FreeProjector(eqx.Module):
     block: jnp.ndarray
     blockT: jnp.ndarray
     has_core: bool = eqx.field(static=True)
+    block_pair: Optional[ds.DS] = None
+    blockT_pair: Optional[ds.DS] = None
 
     def __init__(self, seq, k, dirichlet):
         e = seq.extraction[(k, dirichlet)]
@@ -304,34 +311,43 @@ class FreeProjector(eqx.Module):
             core_block = np.zeros((0, 0))
         self.perm = jnp.asarray(perm_free)
         self.inv_perm = jnp.asarray(np.argsort(perm_free))
-        self.sign = jnp.asarray(sign_free, dtype=jnp.float64)
+        self.sign = jnp.asarray(sign_free, dtype=float)
         self.core = jnp.asarray(core)
         self.block = jnp.asarray(core_block)
         self.blockT = jnp.asarray(core_block.T)
         self.has_core = bool(core.size)
+        if PAIRS and core.size:
+            self.block_pair, self.blockT_pair = ds.from_host(core_block), ds.from_host(core_block.T)
 
     def reflect_free(self, y):
         """``R_free y`` for an extracted DoF vector ``y``."""
-        r = self.sign * y[self.perm]
-        return r.at[self.core].set(self.block @ y[self.core]) if self.has_core else r
+        r = y[self.perm] * self.sign
+        if not self.has_core:
+            return r
+        block = self.block_pair if isinstance(y, ds.DS) else self.block
+        return ds.set_at(r, self.core, ds.matvec(block, y[self.core]))
 
     def reflect_free_T(self, r):
         """``R_free^T r`` for a dual vector ``r``."""
-        y = (self.sign * r)[self.inv_perm]
-        return y.at[self.core].set(self.blockT @ r[self.core]) if self.has_core else y
+        y = (r * self.sign)[self.inv_perm]
+        if not self.has_core:
+            return y
+        block = self.blockT_pair if isinstance(r, ds.DS) else self.blockT
+        return ds.set_at(y, self.core, ds.matvec(block, r[self.core]))
 
     def post(self, y, s):
         """The projection ``(I + s R_free) y / 2`` of the DoF vector ``y``."""
-        return 0.5 * (y + s * self.reflect_free(y))
+        return (y + self.reflect_free(y) * s) * 0.5
 
     def dual(self, r, s):
         """The projection ``(I + s R_free^T) r / 2`` of the dual vector ``r``."""
-        return 0.5 * (r + s * self.reflect_free_T(r))
+        return (r + self.reflect_free_T(r) * s) * 0.5
 
     def parity(self, r):
         """The parity ``+1.0`` or ``-1.0`` of ``r``: the sign of ``r . R_free r``, which is
         ``+-|r|^2`` for a vector of definite parity. This works for dual vectors too, since the
         rows away from the polar core decide the sign."""
+        r = to_working(r)
         return jnp.where(jnp.vdot(r, self.reflect_free(r)) >= 0.0, 1.0, -1.0)
 
     def projectors(self, b):

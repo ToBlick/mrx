@@ -11,17 +11,19 @@ depend only on the mesh, not on the geometry, and the sequence builds them once 
   ``curl grad = 0`` holds exactly.
 """
 import equinox as eqx
-import jax.numpy as jnp
 import numpy as np
 
+import mrx.double_single as ds
 from mrx.extraction_operators import summed_coo
 
 
 def _diff_fwd(V, axis: int, typ: str):
     """1-D incidence along ``axis``: ``c_{j+1} - c_j``, wrapped on a periodic axis."""
     if typ == 'clamped':
-        return jnp.diff(V, axis=axis)
-    return jnp.roll(V, -1, axis=axis) - V
+        upper, lower = [slice(None)] * V.ndim, [slice(None)] * V.ndim
+        upper[axis], lower[axis] = slice(1, None), slice(None, -1)
+        return V[tuple(upper)] - V[tuple(lower)]
+    return ds.roll(V, -1, axis=axis) - V
 
 
 def _diff_adj(Y, axis: int, typ: str):
@@ -31,8 +33,8 @@ def _diff_adj(Y, axis: int, typ: str):
         pad_end[axis] = (0, 1)
         pad_start = [(0, 0)] * Y.ndim
         pad_start[axis] = (1, 0)
-        return jnp.pad(-Y, pad_end) + jnp.pad(Y, pad_start)
-    return jnp.roll(Y, 1, axis=axis) - Y
+        return ds.pad(-Y, pad_end) + ds.pad(Y, pad_start)
+    return ds.roll(Y, 1, axis=axis) - Y
 
 
 def _prod3(shape) -> int:
@@ -55,7 +57,7 @@ def _apply_incidence_mf(op, x):
     if op.k == 0 and not op.transpose:
         # grad: 0-form -> (d_r, d_t, d_z)
         V = x.reshape(op.s0)
-        return jnp.concatenate([
+        return ds.concatenate([
             _diff_fwd(V, 0, tr).ravel(),
             _diff_fwd(V, 1, tt).ravel(),
             _diff_fwd(V, 2, tz).ravel(),
@@ -69,19 +71,19 @@ def _apply_incidence_mf(op, x):
         P = -_diff_fwd(b, 2, tz) + _diff_fwd(c, 1, tt)
         Q = _diff_fwd(a, 2, tz) - _diff_fwd(c, 0, tr)
         R = -_diff_fwd(a, 1, tt) + _diff_fwd(b, 0, tr)
-        return jnp.concatenate([P.ravel(), Q.ravel(), R.ravel()])
+        return ds.concatenate([P.ravel(), Q.ravel(), R.ravel()])
     if op.k == 1:
         P, Q, R = _split3(x, op.s2)
         a = _diff_adj(Q, 2, tz) - _diff_adj(R, 1, tt)
         b = -_diff_adj(P, 2, tz) + _diff_adj(R, 0, tr)
         c = _diff_adj(P, 1, tt) - _diff_adj(Q, 0, tr)
-        return jnp.concatenate([a.ravel(), b.ravel(), c.ravel()])
+        return ds.concatenate([a.ravel(), b.ravel(), c.ravel()])
     if not op.transpose:
         # div: (a, b, c) -> d_r a + d_t b + d_z c
         a, b, c = _split3(x, op.s2)
         return (_diff_fwd(a, 0, tr) + _diff_fwd(b, 1, tt) + _diff_fwd(c, 2, tz)).ravel()
     Y = x.reshape(op.s3)
-    return jnp.concatenate([
+    return ds.concatenate([
         _diff_adj(Y, 0, tr).ravel(),
         _diff_adj(Y, 1, tt).ravel(),
         _diff_adj(Y, 2, tz).ravel(),

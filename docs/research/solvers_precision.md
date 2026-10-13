@@ -1,8 +1,10 @@
 # Solvers and precision: measurements
 
 The solve routes (Hodge split, shifted split, saddle MINRES at k = 3, refinement) are described in
-the Sphinx docs. This file keeps the numbers behind them. Default precision since 2026-09-25 is
-plain float32 with tol 1e-5. "mixed" = float64 residual + refinement, tol 1e-8 (the paper's runs).
+the Sphinx docs. This file keeps the numbers behind them. Since 2026-10-13 there are two precisions, float64 and
+float32 with double-single residuals (section 6, "float32 on a device without float64"). The float32 and mixed
+rows below are from the removed configurations: plain float32 with tol 1e-5, and "mixed" = float32 solves refined
+against a float64 residual, tol 1e-8 (the paper's runs).
 Rows marked "tol 3.5e-4" are from the 2026-09-05..24 plain-float32 default sqrt(eps).
 
 ## 1. Hodge split for L_k^-1, k = 1, 2 (QA p=3, tol 1.5e-8, 2026-09-02)
@@ -365,6 +367,36 @@ to 6e-7 or better.
   decrease <F,u>/2 while the induction step gains ~<F,u>).
 - Newton-MR nonpositive-curvature exit never fired on li383 or W7-X (results identical to 3 digits).
   Pass loop 3 x 100 it at tol 0.1 = fixed 200 it to 3 digits (2026-09-18).
+
+### float32 on a device without float64 (2026-10-13)
+
+MRX_DTYPE=float32, JAX 64-bit mode off, solutions and residuals as double-single pairs (mrx/double_single.py).
+One H200, li383 (8,12,12) p=2, tol 1e-8. Not run on a TPU or on Metal.
+
+- Error-free transformations under jit: TwoSum and Dekker TwoProd exact on 1e6 of 1e6 random pairs.
+- Kernels against the float64 twin of the old mixed mode (same float32 data): sum-factorised mass apply 3-4e-15
+  for k = 0..3 (float32 6e-8), extraction and its transpose 1e-15, dot product 3e-14 (float32 4.5e-8).
+- Harmonic forms, Rayleigh quotient: base sequence 3e-15 (k=2 dbc), 2e-14 (k=1 free), 1e-14 (k=3). Parity views
+  5e-11 (odd k=2), 2e-12 (odd k=1): the view operators differ from the base's by the 1e-7 asymmetry of the
+  float32 geometry, as they did with the float64 twin.
+- Solves on the parity views, true residual in double-single (Euclidean): mass 2e-10..6e-8, stiffness on
+  G^T w 5e-9..7e-9, L_0 3e-9, L_1 4e-9, L_2 2e-8, L_3 saddle 2e-8..3e-8. Rounding the solution to float32 gives
+  2e-7..5e-7.
+- Relaxation against float64: 20 Newton steps residual 5.618e-8 against 5.626e-8, energy to 5e-8, 4.29 against
+  3.12 s/step, MINRES unconverged on 1 of 20 steps (0 in float64). 400 gradient steps residual 5.786e-6 against
+  5.761e-6, energy to 7e-8, 0.12 against 0.05 s/step. No step with dE > 0. div B 1.7e-6 (the field is float32).
+- Suite: float64 48 passed. float32 45 passed, 3 skipped (shape derivative and the two recurrence tests, float64
+  statements).
+- What stalls a pair refinement at 1e-7, each met on the way: a part of b outside the range of the operator
+  projected in float32 (harmonic form, other parity), polar weights computed on the device, a G^T w formed in
+  float32, a seed interpolated in float32 (not closed), a form normalised in float32, and the float32
+  preconditioner inside L^ when its term does not vanish (the exact part with an ungauged g).
+- Pass rule of refine: a pass asking for tol relative to the current residual over-solves a warm-started singular
+  stiffness solve into round-off (float64 Newton test: |F| 0.055 -> 0.42 in 10 steps). Asking for exactly the
+  missing reduction stalls the shifted split just above tol. Kept: half the target, between the precision's floor
+  and a cap of 1e-2.
+- Ozaki scheme (exact float32 matmuls of 8-bit slices) on a prototype apply: 2.6e-15, also under TF32, but 8x the
+  gather form and slow to compile. Not used.
 
 ### Decided against / removed
 

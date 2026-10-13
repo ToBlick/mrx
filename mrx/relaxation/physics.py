@@ -17,6 +17,7 @@ import equinox as eqx
 import jax.numpy as jnp
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.precision import lift, to_working
 
 # With stellarator symmetry, B, A, E and J live on the odd view ``seq.odd`` and the velocity, the force and the
 # pressures on the even view ``seq.even``. A product is assembled on its own view from factors on theirs.
@@ -31,7 +32,8 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     """
     seq = seq.odd
     # A enters the helicity up to a gradient, which pairs to zero with the divergence-free B + B_harm
-    A = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ B), part="coexact", gauge=False, guess=A_guess)
+    # the right-hand side is formed in the arithmetic of the solve, so that it lies in the range of G^T to its accuracy
+    A = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ lift(B)), part="coexact", gauge=False, guess=A_guess)
     B_harm = B - seq.G[1] @ A
     helicity = A @ (seq.P[2, 1] @ (B + B_harm))
     return helicity, A
@@ -58,10 +60,11 @@ def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | No
     J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
     JxB_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                               odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
-    JxB = even.M[2].solve(JxB_dual, guess=JxB_guess)
+    # kept as the solve accumulated it, because F = JxB - grad p is a small difference of large fields
+    JxB = even.M[2].solve(JxB_dual, guess=JxB_guess, accurate=True)
     sigma_guess = None if F_guess is None else JxB_guess - F_guess
     F, p = even.leray(JxB, k=2, p_guess=p_guess, sigma_guess=sigma_guess)
-    return F, p, J, JxB
+    return F, p, J, to_working(JxB)
 
 
 @eqx.filter_jit

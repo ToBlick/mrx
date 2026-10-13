@@ -48,7 +48,7 @@ def _fixed_points(field, dof, y0s, periods, steps_per_period, iters, step_cap):
     ``(y, |poincare_map(y) - y|, D poincare_map(y))``. ``m = periods`` and the field coefficients ``dof`` are traced arguments, so one
     compile serves every chain and every field on a sequence."""
     one = _period_map(field, steps_per_period)
-    eye = jnp.eye(2, dtype=jnp.float64)
+    eye = jnp.eye(2, dtype=float)
     step = jax.jacfwd(lambda y: (one(y, dof),) * 2, has_aux=True)      # (Jacobian, value) in one pass
 
     def phi(y):
@@ -90,7 +90,7 @@ def fixed_points(seq, dof, periods, guesses, *, steps_per_period=TANGENT_STEPS_P
     divergence-free field, and its distance from 1 measures the integration error.
     """
     field, dof = logical_field(seq), jnp.asarray(dof)
-    guesses = jnp.asarray(guesses, dtype=jnp.float64).reshape(-1, 2)
+    guesses = jnp.asarray(guesses, dtype=float).reshape(-1, 2)
     y0 = to_uv(guesses[:, 0], guesses[:, 1])
     ys, defect, S = _fixed_points(field, dof, y0, jnp.asarray(int(periods)), int(steps_per_period), int(iters),
                                   float(step_cap))

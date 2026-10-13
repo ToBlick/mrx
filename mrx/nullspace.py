@@ -4,12 +4,20 @@ The Laplacian and Leray solves on a sequence use these forms to remove the null 
 Run :func:`compute_nullspaces` once the preconditioners are built. The forms depend on the geometry, so
 installing a new map drops them together with the preconditioners, and both must be built again.
 :func:`harmonic_rayleigh` checks how harmonic a given form is.
+
+In float32 the forms are computed and stored as :class:`~mrx.double_single.DS`. A form rounded to float32 is
+1e-7 from the kernel, and a solve that removes it does not get below that.
 """
 
+import jax
 import jax.numpy as jnp
 
 import mrx
+import mrx.double_single as ds
 import mrx.operators as op
+from mrx.differential_forms import DERIV_AXES
+from mrx.extraction_operators import conforming_restriction
+from mrx.precision import PAIRS, inner, lift, to_working
 
 
 #: The co-closed solve of the harmonic 2-form stops this factor below the tolerance of the sequence. The Rayleigh
@@ -29,17 +37,40 @@ def harmonic_rayleigh(seq, v, k):
     in the space of ``seq``. It is zero for a harmonic form and of the order of the smallest nonzero
     eigenvalue otherwise. It takes a mass solve, so it is meant as a diagnostic.
     """
-    v = jnp.asarray(v)
-    lv = seq.L[k] @ v
-    mv = seq.M[k] @ v
-    return float(jnp.dot(v, lv) / jnp.dot(v, mv))
+    v = lift(v)
+    return inner(v, seq.L[k] @ v) / inner(v, seq.M[k] @ v)
 
 
-def _closed_seed(seq, components, k):
-    """The form with constant logical components ``components``, checked to be closed up to round-off."""
-    components = jnp.asarray(components)
-    seed = seq.interpolate(lambda x_hat: components, k, frame='logical')
-    closed = float(seq.l2_norm(seq.G[k] @ seed, k + 1) / seq.l2_norm(seed, k))
+def _normalised(space, v, k):
+    """``v`` scaled to unit norm in ``M_k``. The projections that remove a form assume that norm to the
+    accuracy of the form."""
+    if PAIRS:
+        return v * ds.rsqrt(ds.dot(v, space.M[k] @ v))
+    return v / space.l2_norm(v, k)
+
+
+def _constant_seed(seq, k):
+    """The 1-form ``d zeta`` (k = 1) or the 2-form ``dr ^ dtheta`` (k = 2) in the space of ``seq``.
+
+    Its third component is the constant 1 and the others vanish. The coefficients of a constant are 1 along an
+    axis with the spline basis and the cell integrals of the unit-integral splines along an axis with the
+    derivative basis. They are written down rather than interpolated, so that along the spline axes they are
+    exactly equal and the form is closed to the round-off of the derivative, in float32 as well.
+    """
+    form = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
+    shapes = [tuple(int(n) for n in s) for s in form.shape]
+    factors = []
+    for a in range(3):
+        if a in DERIV_AXES[k][2]:
+            d = seq.basis_0.dLambda[a]
+            factors.append(1.0 / jax.vmap(d._scale)(jnp.arange(d.n)))
+        else:
+            factors.append(jnp.ones(shapes[2][a]))
+    third = jnp.einsum('i,j,k->ijk', *factors).ravel()
+    raw = jnp.concatenate([jnp.zeros(shapes[0][0] * shapes[0][1] * shapes[0][2]),
+                           jnp.zeros(shapes[1][0] * shapes[1][1] * shapes[1][2]), third])
+    seed = conforming_restriction(seq.E(k), lift(raw), seq.core_rows(k))
+    closed = float(seq.l2_norm(to_working(seq.G[k] @ seed), k + 1) / seq.l2_norm(to_working(seed), k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(
             f"compute_nullspaces: the k={k} seed is not closed (|G seed| / |seed| = {closed:.2e})")
@@ -65,18 +96,17 @@ def compute_nullspaces(seq, *, verbose=True):
     operators = _commit(seq, op.init_nullspaces(seq, seq._require_operators()))
 
     def store(space, k, v):
-        v = v / space.l2_norm(v, k)
-        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v[None, :]))
+        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, _normalised(space, lift(v), k)[None, :]))
 
     if op.n_vectors(seq.betti_numbers, 3, True):
-        operators = store(seq, 3, seq.M[3].solve(jnp.ones(seq.n(3))))
+        operators = store(seq, 3, seq.M[3].solve(jnp.ones(seq.n(3)), accurate=True))
 
     if op.n_vectors(seq.betti_numbers, 2, True):
         # the closed seed has no coexact part, so removing its exact part (the image of curl, one
         # curl-curl solve) leaves the harmonic form
-        seed2 = _closed_seed(seq, (0.0, 0.0, 1.0), 2)
+        seed2 = _constant_seed(seq, 2)
         a = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ seed2), part="coexact", gauge=False,
-                           tol=HARMONIC_TOL * seq.tol)
+                           tol=HARMONIC_TOL * seq.tol, accurate=True)
         operators = store(seq, 2, seed2 - seq.G[1] @ a)
 
     # seq.free is taken anew after every store: a view copies the operators it sees
@@ -84,15 +114,18 @@ def compute_nullspaces(seq, *, verbose=True):
         operators = store(seq.free, 0, jnp.ones(seq.free.n(0)))
 
     if op.n_vectors(seq.betti_numbers, 1, False):
-        # curl-free since the seed is closed, weakly divergence-free by the projection
-        v1, _ = seq.free.leray(_closed_seed(seq.free, (0.0, 0.0, 1.0), 1), k=1)
-        operators = store(seq.free, 1, v1)
+        # curl-free since the seed is closed, weakly divergence-free by the Leray projection
+        free = seq.free
+        seed1 = _constant_seed(free, 1)
+        q = free.L[0].solve(-(free.D[0].T @ seed1), accurate=True)
+        operators = store(free, 1, seed1 + free.G[0] @ q)
 
     if verbose:
         for space, k in ((seq, 3), (seq, 2), (seq.free, 0), (seq.free, 1)):
-            for i, v in enumerate(space.nullspace(k)):
+            forms = op._harmonic(space, k)
+            for i in range(forms.shape[0]):
                 print(f"[nullspace] k={k} {'dbc' if space.dirichlet else 'free'} "
-                      f"form {i}: v^T L v / v^T M v = {harmonic_rayleigh(space, v, k):.2e}", flush=True)
+                      f"form {i}: v^T L v / v^T M v = {harmonic_rayleigh(space, forms[i], k):.2e}", flush=True)
 
     if seq.half_period and seq.parity is None:
         for view in (seq.odd, seq.even):
@@ -111,8 +144,7 @@ def _reduce_to_view(seq, view, verbose):
         if not op.n_vectors(view.betti_numbers, k, dirichlet):
             continue
         base, space = (seq, view) if dirichlet else (seq.free, view.free)
-        v = view.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
-        v = v / space.l2_norm(v, k)
+        v = _normalised(space, view.reduction[(k, dirichlet)].T @ op._harmonic(base, k)[0], k)
         operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v[None, :]))
         if verbose:
             print(f"[nullspace] {'odd' if view.parity == -1 else 'even'} view k={k} "

@@ -111,8 +111,8 @@ class StateField:
         self.basis = SplineBasis(block["cos"].shape[1], block["deg"], "clamped", T=jnp.asarray(block["T"]))
         self.C_cos = jnp.asarray(block["cos"])                           # (n_modes, n_base)
         self.C_sin = jnp.asarray(block["sin"])
-        self.m = jnp.asarray(block["m"], dtype=jnp.float64)
-        self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp          # per field period
+        self.m = jnp.asarray(block["m"], dtype=float)
+        self.n_per = jnp.asarray(block["n"], dtype=float) / nfp          # per field period
 
     def __call__(self, x):
         # r is not clipped to [0, 1]. A clip halves the autodiff radial derivative at r = 1 (JAX splits

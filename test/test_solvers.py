@@ -10,7 +10,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import mrx
 from mrx.solvers import minres, preconditioned_cg
+
+# statements about the recurrences at float64 round-off
+pytestmark = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 
 N = 60
 

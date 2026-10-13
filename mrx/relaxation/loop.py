@@ -20,6 +20,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
                                    newton_direction)
 from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
@@ -175,11 +176,11 @@ class TimeStepper(eqx.Module):
         even = self.seq.even
         hs = even.nullspace(2)
         self.harmonic = hs
-        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=jnp.float64)
+        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=float)
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
         self.resistive = bool(self.resistivity != 0)
-        self.resistivity = jnp.asarray(self.resistivity, dtype=jnp.float64)
+        self.resistivity = jnp.asarray(self.resistivity, dtype=float)
         self.cfl_weights = logical_cfl_weights(self.seq)
         if self.newton and self.newton_mass_tol is not None:
             self.mass_inverse = MassChebyshev.build(self.seq, self.newton_mass_tol)
@@ -202,7 +203,7 @@ class TimeStepper(eqx.Module):
         seq = self.seq.even
         J, JxB_dual = self._lorentz(B, J_guess)
         # only curl a enters, so a keeps a gradient that nothing controls
-        a = seq.L[1].solve(seq.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
+        a = seq.L[1].solve(seq.G[1].T @ lift(JxB_dual), part="coexact", gauge=False, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         if not smooth:
@@ -287,7 +288,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
                         A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2))),
         last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2)), v_norm=zero,
                       newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
-        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=jnp.float64), step=jnp.int32(step)),
+        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=float), step=jnp.int32(step)),
     )
 
 
@@ -361,7 +362,8 @@ def make_sampler(ts: TimeStepper):
         w = state.warm
         p, JxB, J, A, p_w, h, JoverB, JB, beta = f(seq, state.B_n, w.p, w.JxB, w.J, state.last.F, pw_guess, w.A)
         state = eqx.tree_at(lambda s: (s.warm.p, s.warm.JxB, s.warm.J, s.warm.A), state, (p, JxB, J, A))
-        E = 0.5 * float(odd.l2_norm_sq(state.B_n, 2))
+        B = lift(state.B_n)
+        E = 0.5 * inner(B, odd.M[2] @ B)
         scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB), beta_vol=float(beta))
         return state, p_w, scalars
 
@@ -386,7 +388,7 @@ _probe_jit = eqx.filter_jit(_probe)
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.p``, ...).
 
-    The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
+    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, precision and the knots) are
     stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence. The attribute
     ``angles = "right-handed"`` marks the convention of :func:`mrx.equilibria.read_equilibrium`, see
     :func:`check_checkpoint`.
@@ -400,6 +402,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(axes[0].p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
+        fh.attrs["precision"] = DTYPE.name
         fh.attrs["angles"] = "right-handed"
         for name, basis in zip(("r", "theta", "zeta"), axes):
             T = np.asarray(basis.T, dtype=np.float64)
@@ -450,14 +453,13 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    # a checkpoint written by a float32 run of an earlier version is read into float64
-    skeleton = initial_state(jnp.asarray(data["B_n"], dtype=jnp.float64), ts, step=step)
+    skeleton = initial_state(jnp.asarray(data["B_n"], dtype=float), ts, step=step)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
     for keypath, leaf in leaves:
         v = data.get(jax.tree_util.keystr(keypath).lstrip("."))
         new.append(leaf if v is None else
-                   jnp.asarray(v, dtype=jnp.float64 if np.issubdtype(v.dtype, np.floating) else v.dtype))
+                   jnp.asarray(v, dtype=float if np.issubdtype(v.dtype, np.floating) else v.dtype))
     return jax.tree_util.tree_unflatten(treedef, new), step
 
 

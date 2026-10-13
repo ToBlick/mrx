@@ -16,7 +16,7 @@ import typing
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 import tyro
 
@@ -53,6 +53,8 @@ class Geometry:
     """The cell boundaries in theta, increasing from 0 to 1, instead of a uniform grid."""
     knots_zeta: Optional[tuple[float, ...]] = None
     """The cell boundaries in zeta, increasing from 0 to 1, instead of a uniform grid."""
+    precision: Literal["float64", "float32"] = "float64"
+    """float64, or float32 for a device without float64. In float32 every linear solve is refined in double-single arithmetic."""
     solve_tol: Optional[float] = None
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000

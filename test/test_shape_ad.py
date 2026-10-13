@@ -11,6 +11,12 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
+
+import mrx
+
+# derivatives through the solves are taken in float64
+pytestmark = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 
 
 QA = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "wout_LandremanPaul2021_QA_lowres.nc")

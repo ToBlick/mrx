@@ -37,7 +37,7 @@ import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
-from mrx.precision import eps, sqrt_eps
+from mrx.precision import eps, lift, sqrt_eps, to_working
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
@@ -306,13 +306,15 @@ def _parity_split(seq, k):
 
 
 def _probe_rows(apply, size, rows, split):
-    """The dense, symmetrised block of the operator ``apply`` on ``rows``, one apply per row."""
+    """The dense, symmetrised block of the operator ``apply`` on ``rows``, one apply per row. In float32 the
+    operator is applied in double-single and the block is its rounded value."""
     if rows.size == 0:
         return jnp.zeros((0, 0))
     rows_j = jnp.asarray(rows)
 
     def column(e):
-        return (apply(e) if split is None else sum(apply(part) for part in split(e)))[rows_j]
+        parts = (e,) if split is None else split(e)
+        return to_working(sum(apply(lift(part)) for part in parts))[rows_j]
 
     # the columns in batches of PROBE_BATCH inside one call: one host dispatch instead of one per axis row
     units = jnp.zeros((rows.size, size)).at[jnp.arange(rows.size), rows_j].set(1.0)

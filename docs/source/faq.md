@@ -47,8 +47,12 @@ share them.
 
 ## Which precision does MRX use?
 
-Float64 throughout ([Precision](concepts/precision.md)). There is no float32
-or mixed configuration, so MRX needs a CPU or a GPU with float64.
+Float64 by default. On a device without float64 set `MRX_DTYPE=float32`
+before importing `mrx` (`scripts/relax.py --geometry.precision float32`):
+the arrays are then float32 and every solve is refined in double-single
+arithmetic, which reaches the same tolerance
+([Precision](concepts/precision.md)). Derivatives through the solves (the
+shape optimization) need float64.
 
 ## Which equilibrium files can MRX read?
 

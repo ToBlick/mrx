@@ -20,7 +20,8 @@ pip install "jax[cuda12]"
 
 Without it, JAX runs on the CPU.
 
-MRX runs in float64 ([Precision](concepts/precision.md)).
+MRX runs in float64, or with `MRX_DTYPE=float32` on a device without
+float64 ([Precision](concepts/precision.md)).
 
 ## Run the tests
 
