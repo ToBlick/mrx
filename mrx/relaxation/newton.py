@@ -33,8 +33,13 @@ from mrx.solvers import chebyshev, lanczos_bounds, minres
 #: :class:`MassChebyshev` that replaces the mass solves in the Hessian. At 1e-3 (degree 20 to 23) li383 (12, 16, 16)
 #: and W7-X (16, 32, 32) reach the floor of the mass solves at 2.7 to 3.9 times less cost per step, at 1e-2 li383
 #: stalls at 1e-6.
+#: The tolerance is in the norm the solve is judged in (the M_1^-1 norm of the residual), which does not follow the
+#: Newton decrement: on li383 (48,64,24), (64,80,32) and W7-X (32,64,36) at p = 2 no solve meets even 0.1 within
+#: ``NEWTON_MAXITER``, which is then the control. At 0.1 a solve can be met by the warm start of a state that
+#: barely moved, and the old direction is taken again: li383 (48,64,24) at p = 3 then stops moving after 10 steps.
+#: At 1e-2 and 1e-3 it does not (2026-10-13).
 NEWTON_PENALTY = 3.0
-NEWTON_TOL = 0.1
+NEWTON_TOL = 1e-3
 NEWTON_MAXITER = 200
 NEWTON_MASS_TOL = 1e-4
 #: PCG iterations of the spectral estimate of :meth:`MassChebyshev.build`. At 20 the lower end came out 20 %
@@ -287,10 +292,11 @@ def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype):
     def solve(_):
         rnorm = norm(r0)
         d, info, npc = minres(A, (r0 / rnorm).astype(inner_dtype), M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
-                              npc_exit=True)
+                              npc_exit=True, norm=norm)
 
         def from_zero(_):
-            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True)
+            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True,
+                                  norm=norm)
             return d0.astype(RESIDUAL_DTYPE) * bnorm, jnp.abs(info0).astype(jnp.int32)
 
         x_new, its_npc = jax.lax.cond(npc, from_zero,

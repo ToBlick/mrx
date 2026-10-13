@@ -312,12 +312,15 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
 
         upper = b - S_k x - eps M_k x - M_k G w,   lower = G^T M_k x - M_{k-1} w
 
+    The solve is judged on the residual of ``(eps M_k + L_k) x = b`` itself, in the norm of the
+    ``k``-forms (:func:`dual_norm`): with ``w`` eliminated it is ``upper - M_k G M_{k-1}^{-1} lower``.
+
     ``split(r)`` must return ``(dx, dw, info)``, an approximate solution of
     ``(eps M_k + L_k) dx = r`` and its ``dw``. The kernel ``vs`` is removed from the upper residual.
     ``x`` is returned in the residual precision.
     """
     n_k, n_l = seq.n(k), seq.n(k - 1)
-    nu, nl = dual_norm(seq, k), dual_norm(seq, k - 1)
+    nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
     b64 = b.astype(RESIDUAL_DTYPE)
 
     _, project_dual_k = deflation_projectors(jnp.asarray(vs, dtype=RESIDUAL_DTYPE),
@@ -338,7 +341,9 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
         return project_dual(jnp.concatenate([upper, lower]))
 
     def norm(r):
-        return jnp.sqrt(nu(r[:n_k]) ** 2 + nl(r[n_k:]) ** 2)
+        # the residual of (eps M_k + L_k) x = b, which is upper - M_k G M_{k-1}^-1 lower once w is eliminated,
+        # with the preconditioner of M_{k-1} for its inverse as in dual_norm
+        return nu(r[:n_k] - _mass(on, _grad(on, P_lower(r[n_k:]), k - 1), k))
 
     def solve(r):
         r_u, r_l = r[:n_k], r[n_k:]
@@ -354,31 +359,38 @@ def _pair_loop(seq, on, k, eps, split, b, guess, vs):
     return p[:n_k], info
 
 
-def _hat_solve(seq, b, k: int, tol):
+def _hat_solve(seq, b, k: int, tol, on=None, inner=None):
     """Solve ``L^_k x = b`` by conjugate gradients to tolerance ``tol``, harmonic forms removed.
 
     ``L^_k = S_k + M_k G W G^T M_k`` (``G = G_{k-1}``), with ``W`` the preconditioner of
     ``M_{k-1}``, is symmetric positive definite, while ``S_k`` alone is singular on the exact forms.
-    For a ``b`` orthogonal to the exact forms both have the same solution, for any SPD ``W``.
+    For a ``b`` orthogonal to the exact forms both have the same solution, for any SPD ``W``. For any
+    other ``b`` the co-exact part of ``x`` solves ``S_k x = b`` with the part of ``b`` that the exact
+    forms see left out, and ``G_k x`` only depends on that part.
+
+    With ``on`` given, the residual is checked on ``on`` (mixed precision) and each working-precision
+    pass stops at ``inner``. Without it the solve stops at ``tol`` in its own precision, as it does
+    inside :func:`_hodge_split`.
     """
-    b, = _plain(seq, b)
+    if on is None:
+        b, = _plain(seq, b)
 
-    def M(v):
-        return _mass(seq, v, k)
-
-    # W is part of the operator, so it must run in the precision of seq
-    W = _seq_atom(seq, "mass", k - 1).apply_in(seq.dtype)
-
-    def L_hat(x):
-        return _stiffness(seq, x, k) + M(_grad(seq, W(_grad(seq, M(x), k - 1, transpose=True)), k - 1))
+    def L_hat(s, x):
+        # W is part of the operator, so it runs in the precision of s
+        W = _seq_atom(seq, "mass", k - 1).apply_in(s.dtype)
+        Mx = _mass(s, x, k)
+        return _stiffness(s, x, k) + _mass(s, _grad(s, W(_grad(s, Mx, k - 1, transpose=True)), k - 1), k)
 
     return solve_singular_cg(
-        L_hat, b,
-        mass_matvec=M,
+        lambda x: L_hat(seq, x), b,
+        mass_matvec=lambda v: _mass(seq, v, k),
         precond_matvec=_seq_atom(seq, "laplacian", k).apply,
         vs=_harmonic(seq, k),
         tol=tol,
         maxiter=seq.maxiter,
+        A_res=None if on is None else (lambda x: L_hat(on, x)),
+        norm=dual_norm(seq, k),
+        inner_tol=inner, inner_dtype=seq.dtype,
         parity=parity_projectors(seq, k, b),
     )
 
@@ -415,13 +427,15 @@ def _hodge_split(seq, b, k, guess, on, inner):
         S_{k-1} a = M_{k-1} g - G^T M_k x_perp,   x = x_perp + G a
 
     Each singular ``S`` is solved through :func:`_hat_solve` (or :func:`_k0_solve` for degree 0),
-    and :func:`_pair_loop` repeats the split until the residual is small.
+    and :func:`_pair_loop` repeats the split until the residual is small. Each of the three stops at a
+    third of the pass tolerance.
     """
 
+    # the residual of the split is at most the sum of those of its three solves, so each gets a third
     def solve(b, j):
         if j == 0:
-            return _k0_solve(seq, b, inner)
-        return _hat_solve(seq, b, j, inner)
+            return _k0_solve(seq, b, inner / 3.0)
+        return _hat_solve(seq, b, j, inner / 3.0)
 
     def split(b):
         # g equals M_{k-1}^-1 G^T M x of the returned x, the second unknown of _pair_loop
@@ -450,6 +464,107 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, dt
     return (u, info) if return_info else u
 
 
+def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
+    """``(x, info)`` with ``S_k x = b`` for a right-hand side ``b`` in the range of ``G_k^T``.
+
+    ``S_k`` is singular. Its kernel are the closed forms, so ``x`` is only fixed up to a closed form and no
+    gauge is imposed. Use this where only ``G_k x`` is needed. Conjugate gradients converge on the singular
+    system because ``b`` is consistent, which holds when ``b`` is literally ``G_k^T`` of something and was
+    formed in the residual precision. A right-hand side that is only approximately in that range, as inside
+    the Hodge split, makes the iteration diverge. Use :func:`_laplacian_solve` for those.
+
+    These are the steps of the Hodge split that such a right-hand side leaves. It is solved like every other
+    system (:func:`mrx.solvers.solve_singular_cg`): conjugate gradients with the preconditioner of ``L_k``,
+    harmonic forms removed, stopped on the residual in :func:`dual_norm` at ``tol`` (``seq.tol`` by default),
+    and refined against the residual precision when the sequence has one. ``info`` is the signed iteration
+    count.
+    """
+    on, inner = _outer(seq)
+    b, guess = _plain(seq, b, guess)
+    return solve_singular_cg(
+        lambda v: _stiffness(seq, v, k), b, _harmonic(seq, k),
+        precond_matvec=_seq_atom(seq, "laplacian", k).apply,
+        tol=seq.tol if tol is None else tol,
+        maxiter=seq.maxiter,
+        mass_matvec=lambda v: _mass(seq, v, k),
+        x0=guess,
+        A_res=None if seq.residual is None else (lambda v: _stiffness(on, v, k)),
+        norm=dual_norm(seq, k),
+        inner_tol=inner, inner_dtype=seq.dtype,
+        parity=parity_projectors(seq, k, b),
+    )
+
+
+#: The parts of a Laplacian solve (:meth:`Laplacian.solve`).
+PARTS = ("full", "coexact", "exact")
+
+
+def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
+    """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, in the residual precision.
+    With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Without it ``y`` is left with a
+    closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms. ``guess``
+    starts the stiffness solve."""
+    on, inner = _outer(seq)
+    if j == 0:
+        y, info = _k0_solve(seq, c, seq.tol if tol is None else tol, guess=guess, on=on, inner=inner)
+        return y.astype(on.dtype), info
+    y, info = _coclosed_solve(seq, c, j, guess, tol)
+    y = y.astype(on.dtype)
+    if gauge:
+        # only G q enters, so q needs no gauge of its own
+        q, info_q = _coexact_solve(seq, -_grad(on, _mass(on, y, j), j - 1, transpose=True), j - 1, gauge=False)
+        y = y + _grad(on, q, j - 1)
+        info = _merge_info(info, info_q)
+    return y, info
+
+
+def _merge_info(a, b):
+    """The signed iteration count of two solves: the sum, negative if either did not converge. A solve that
+    starts converged counts zero."""
+    return jnp.where((a >= 0) & (b >= 0), 1, -1) * (jnp.abs(a) + jnp.abs(b))
+
+
+@eqx.filter_jit
+def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=None, return_info: bool = False,
+                dtype=None):
+    """``L_k^{-1} b`` for a ``b`` that has only the co-exact or only the exact part (:meth:`Laplacian.solve`),
+    k = 0 to 3::
+
+        coexact:  S_k x = b,   x co-exact (with ``gauge``)
+        exact:    S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
+
+    The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
+    right-hand side (:func:`_coclosed_solve`). ``M_{k-1} g`` is consistent only as far as ``g`` is co-exact,
+    and a stiffness solve does not get below what is left. So the second solve is one of the regularised
+    ``L^_{k-1}`` (:func:`_hat_solve`), whose solution has the same ``G a`` for any right-hand side, and ``g``
+    needs no gauge. At degree 0 there is nothing to regularise against: ``L^_0`` is ``S_0``, and for k = 1
+    both solves are of ``S_0``.
+    """
+    on, inner = _outer(seq)
+    b, = _plain(seq, b)
+    b = b.astype(on.dtype)
+    if part == "coexact":
+        x, info = _coexact_solve(seq, b, k, gauge, guess, tol)
+    else:
+        j = k - 1
+        g, info_g = _coexact_solve(seq, _grad(on, b, j, transpose=True), j, gauge=False)
+        a, info_a = _regularised_solve(seq, _mass(on, g, j), j)
+        x, info = _grad(on, a, j), _merge_info(info_g, info_a)
+    x = _out(seq, x, dtype)
+    return (x, info) if return_info else x
+
+
+def _regularised_solve(seq, c, j: int):
+    """``(a, info)`` with ``L^_j a = c`` in the residual precision (:func:`_hat_solve`), which is ``S_0 a = c`` at
+    degree 0."""
+    on, inner = _outer(seq)
+    if j == 0:
+        a, info = _k0_solve(seq, c, seq.tol, on=on, inner=inner)
+    else:
+        a, info = _hat_solve(seq, c, j, seq.tol, on=None if seq.residual is None else on, inner=inner)
+    return a.astype(on.dtype), info
+
+
 @eqx.filter_jit
 def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     """``L_3^{-1} rhs`` by MINRES on the saddle-point system, returning ``(u, sigma, info)``::
@@ -467,6 +582,12 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     def saddle_res(u, s):
         return (_stiffness(res, u, 3) + _weak_derivative(res, s, 2),
                 _weak_derivative(res, u, 2, transpose=True) - _mass(res, s, 2))
+
+    P_lower = _seq_atom(seq, "mass", 2).apply
+
+    def eliminate_lower(r):
+        # D_2 M_2^-1 r on the sequence of the precision of r, with the preconditioner of M_2 for its inverse
+        return _weak_derivative(res if r.dtype == res.dtype else seq, P_lower(r), 2)
 
     parity_upper, parity_lower = _parity_pair(seq, 3, rhs)
     return solve_saddle_point_minres(
@@ -491,6 +612,7 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         inner_tol=inner, inner_dtype=seq.dtype,
         parity_upper=parity_upper, parity_lower=parity_lower,
         mass_upper_res=None if seq.residual is None else (lambda x: _mass(res, x, 3)),
+        eliminate_lower=eliminate_lower,
     )
 
 
@@ -534,8 +656,9 @@ def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False)
 
     def split(b):
         # z equals M_{k-1}^-1 G^T M x of the returned x (as G^T S_k = 0), the second unknown of _pair_loop
-        x, info = shifted_cg(k, b, inner)
-        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), inner)
+        # the residual of the split is at most the sum of those of its two solves, so each gets a half
+        x, info = shifted_cg(k, b, inner / 2.0)
+        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), inner / 2.0)
         x = x - eps * _grad(seq, z, k - 1)
         total = jnp.abs(info) + jnp.abs(info_lower)
         return x, z, jnp.where((info >= 0) & (info_lower >= 0), total, -total)
@@ -590,13 +713,48 @@ class Laplacian(_Symmetric):
     def __matmul__(self, v):
         return _laplacian(self.seq, v, self.k)
 
-    def solve(self, b, guess=None, return_info=False, dtype=None):
+    def solve(self, b, guess=None, return_info=False, dtype=None, part="full", gauge=True, tol=None):
         """``L_k^{-1} b``, the solution orthogonal (in ``M_k``) to the harmonic forms.
 
         The harmonic forms come from :func:`mrx.nullspace.compute_nullspaces`. While they are still
         zero nothing is removed. ``guess``, ``return_info`` and ``dtype`` work as in
-        :meth:`MassMatrix.solve`."""
-        return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
+        :meth:`MassMatrix.solve`.
+
+        The solution is the sum of a co-exact form (``G_{k-1}^T M_k x = 0``) and an exact one
+        (``x = G_{k-1} a``). ``part`` says which of them ``b`` has, and leaves out the solves of the other:
+
+        - ``"full"``: any ``b``. Three solves for k = 1, 2.
+        - ``"coexact"``: ``b`` is orthogonal to the closed forms, as ``b = G_k^T w`` is. The solution
+          is co-exact: one solve of the stiffness ``S_k x = b`` and a gauge solve of degree ``k - 1``.
+        - ``"exact"``: ``b = M_k G_{k-1} c``. The solution is exact: two solves of degree ``k - 1``.
+
+        With ``part="coexact"`` and ``gauge=False`` the gauge solve is left out. What comes back is then
+        NOT the solution: it is the solution plus a closed form that nothing controls, and only its
+        derivative ``G_k x`` is the same. Use it where only ``G_k x`` enters. ``tol`` replaces ``seq.tol``
+        as the relative residual of the stiffness solve.
+
+        ``guess`` starts the full solve, and the co-exact solve without its gauge (an earlier result of
+        the same call; 15 % fewer iterations from one relaxation step to the next on li383 (48,64,24)).
+        The other part solves take none: the exact part does not iterate on ``x``, and the gauge solve
+        of an already co-exact guess has nothing but round-off on its right-hand side.
+
+        The stiffness solve only converges on a right-hand side of that kind. In mixed precision form
+        ``b`` with the operators of ``seq.residual``: ``G_k^T w`` from the float32 operators is
+        inconsistent at 1e-7 and the solve does not get below that. A ``b`` with the other part as well
+        returns a negative info. Every 0-form solution is co-exact and every 3-form solution is exact:
+        asking for the other part raises."""
+        if part not in PARTS:
+            raise ValueError(f"part must be one of {PARTS}, got {part!r}")
+        if (self.k, part) in ((0, "exact"), (3, "coexact")):
+            raise ValueError(f"the solution of L_{self.k} has no {part} part")
+        if part != "coexact" and (not gauge or tol is not None):
+            raise ValueError("gauge=False and tol belong to part='coexact'")
+        if part == "full":
+            return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info, dtype=dtype)
+        if guess is not None and (part == "exact" or (gauge and self.k > 0)):
+            raise ValueError("of the part solves only part='coexact' with gauge=False takes a guess")
+        return _part_solve(self.seq, b, self.k, part, guess=guess, gauge=gauge, tol=tol, return_info=return_info,
+                           dtype=dtype)
 
     def precondition(self, v):
         """The preconditioner of ``L_k`` that the Laplacian solves use, applied to ``v``."""

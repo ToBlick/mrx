@@ -13,6 +13,12 @@ import mrx.operators as op
 from mrx.precision import RESIDUAL_DTYPE
 
 
+#: The co-closed solve of the harmonic 2-form stops this factor below the tolerance of the sequence. The Rayleigh
+#: quotient of the form is quadratic in the error of that solve times an eigenvalue of the stiffness, which grows
+#: with the mesh. In plain float32 a factor 0.03 no longer converges on li383 (48,64,24).
+HARMONIC_TOL = 0.1
+
+
 def _builder(seq):
     """The sequence the forms are built and checked on, which is its float64 view when it has one."""
     return seq.residual if seq.residual is not None else seq
@@ -62,7 +68,7 @@ def compute_nullspaces(seq, *, verbose=True):
 
     - k = 3 with Dirichlet conditions: ``M_3^{-1}`` applied to the constant.
     - k = 2 with Dirichlet conditions: the toroidal flux form ``dr ^ dtheta`` minus its exact part, found
-      with one ``L_1`` solve.
+      with one curl-curl solve.
     - k = 0 without boundary conditions: the constant.
     - k = 1 without boundary conditions: the Leray projection of ``d zeta``, found with one ``L_0`` solve.
 
@@ -82,10 +88,11 @@ def compute_nullspaces(seq, *, verbose=True):
         operators = store(build, 3, build.M[3].solve(jnp.ones(build.n(3), dtype=mrx.DTYPE)))
 
     if op.n_vectors(seq.betti_numbers, 2, True):
-        # the closed seed has no coexact part, so removing its exact part (the image of curl, one L_1
-        # Dirichlet solve) leaves the harmonic form
+        # the closed seed has no coexact part, so removing its exact part (the image of curl, one
+        # curl-curl solve) leaves the harmonic form
         seed2 = _closed_seed(build, (0.0, 0.0, 1.0), 2)
-        a = build.L[1].solve(build.D[1].T @ seed2)
+        a = build.L[1].solve(build.G[1].T @ (build.M[2] @ seed2), part="coexact", gauge=False,
+                             tol=HARMONIC_TOL * build.tol)
         operators = store(build, 2, seed2 - build.G[1] @ a)
 
     # build.free is taken anew after every store: a view copies the operators it sees

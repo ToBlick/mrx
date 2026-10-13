@@ -32,6 +32,7 @@ from mrx.equilibria import CylindricalMap
 from mrx.geometry import SequenceGeometry, _tp_evaluate, grad_1d
 from mrx.mappings import stellarator_symmetric_scalar
 from mrx.mass import attach_weights
+from mrx.operators import _coclosed_solve
 from mrx.precision import RESIDUAL_DTYPE, cast_arrays
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
@@ -238,7 +239,9 @@ def vacuum_two_form(seq, seed):
             # h is odd. The adjoint right-hand side has an even part, which pairs to zero with every odd
             # tangent but would otherwise decide the parity the solver reads off it.
             r = parity.dual(r, -1.0)
-        return seq.L[1].solve(r, return_info=True)
+        # both right-hand sides are G_1^T of something: the forward one by construction, the adjoint one
+        # because a enters h only through G_1 a
+        return _coclosed_solve(seq, r, 1)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - seq.G[1] @ a, info

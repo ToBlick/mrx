@@ -255,6 +255,14 @@ Results with the penalty (2026-09-17/18), vs the previous released configuration
 
 - Until 2026-10-05 newton_mr ran MINRES with tol = 0, so every solve took maxiter iterations and
   --newton.tol only set the sign of the count. Now MINRES stops at its residual estimate of --newton.tol.
+- Since 2026-10-13 MINRES stops on the M_1^-1 norm of the residual, the norm newton_mr judges the solve in, and
+  the default --newton.tol is 1e-3 (was 0.1). At 0.1 the warm start of a state that barely moved meets the test,
+  newton_mr returns the old direction and the step is zero: li383 (48,64,24) at p = 3 stops moving after 10
+  steps (E_0 - E 1.3833e-6 against 1.5652e-6 on main, float64, 40 steps). At p = 2 no solve meets 0.1 within
+  maxiter = 200 on li383 (48,64,24), (64,80,32) and W7-X (32,64,36). At 1e-3 none meets it on these four cases
+  and maxiter is the control, as before. The M_1^-1 norm does not follow the Newton decrement, so this is a
+  stopgap and the skip logic of newton_mr is unchanged.
+- A cold start of every Newton solve removes 0.4 to 5 % less energy on the same four cases (2026-10-13).
 - Fixed states (W7-X, li383 1.4m (16,32,32)): energy removed by one step vs maxiter 800. li383 from step 5 on:
   25 iterations = 800. W7-X late: 25-200 iterations 0.78-0.90, 400-800 +20 % at 2-4x cost.
 - tol sweep, 200 steps (to 1e-9 in steps / compute s, best): li383 0.5 never / 1.9e-9, 0.3 101 / 64 /

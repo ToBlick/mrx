@@ -4,7 +4,9 @@ MRX has one lean test tier in three configurations. Bare `pytest` runs the suite
 configuration `import mrx` gives, float64. Mixed precision (`MRX_DTYPE=float32`) and
 plain float32 (also `MRX_RESIDUAL_DTYPE=float32`) are the other two ([Precision](precision.md)). A change to the solvers,
 the precision module or the atoms is verified in all three:
-`bash slurm/suite.sh` submits the three GPU jobs. The GitHub workflow runs
+`bash slurm/suite.sh` submits the three GPU jobs. On the fixture mesh below the suite passes in float64 and in
+mixed precision. In plain float32 seven tests fail (2026-10-13): the saddle solve behind the Leray projection
+and `L_3` does not reach its stopping test there, and the harmonic 1-form misses its bound. The GitHub workflow runs
 the suite in mixed precision and in float64. The suite reads only files tracked in the
 repository.
 
@@ -21,7 +23,7 @@ the code, plus the readers:
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
 
 The fixtures of `test/conftest.py` build the li383 equilibrium
-(`data/wout_li383_low_res_reference.nc`) at `(8, 12, 12)` per field period,
+(`data/wout_li383_low_res_reference.nc`) at `(12, 20, 12)` per field period,
 `p = 2`, in three representations with the same mesh per period: `half`
 (the production sequence, stellarator symmetry, half a period integrated),
 `period` (one field period without the reflection) and `full` (the whole

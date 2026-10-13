@@ -107,6 +107,166 @@ Decided against:
 - Inverse-iteration polish of a computed form (6 steps, eps 1e-4) walks away: W7-X p3 3.0e-4 ->
   1.4e-2, quasr9983 4.5e-7 -> 1.8e-5 (2026-08-24).
 
+### Co-closed solve: S_k alone for a right-hand side G_k^T w (2026-10-09/10)
+
+`seq.L[k].solve(G_k^T w, part="coexact", gauge=False)` (named `solve_coclosed(w)` when these notes were
+written, and in the tables below), branch `laplacian-solvers`. Scripts and logs: `outputs/hodge_gamma/`,
+`outputs/laplacian_solvers/` (main checkout), bench notes `boxes_and_exact_forms_2026-10-09.md`.
+
+- The atom preconditions `S_k` well and the exact-form term `M G W G^T M` of `L^_k` badly (dense spectra of the
+  multigrid session, 12x20x20: condition 1903 / 1130 with the term, 93 / 103 for `S_1` alone, li383 / W7-X).
+- Weighting the term by gamma is worse the smaller gamma gets (24x42x42, `b = S_1 x`, float64 to 1e-8: 467 / 384
+  iterations at 1, 698 / 633 at 0.1, none at 0.001). gamma = 0, the singular `S_k`: 147 / 148 (k = 1), 145 / 142
+  (k = 2). Scaling the atom's own model of the term up is worse too.
+- Condition: the right-hand side must be consistent. PCG on a singular `S_k` converges for any SPD preconditioner
+  on a consistent right-hand side, with a bounded kernel part in the iterate (Kaasschieter 1988). An inconsistent
+  share delta stays in the residual, and the iterate blows up once the residual reaches about delta.
+- Two requirements, each measured on the 2026-10-07 case (li383 (12,16,16), start field, `G_1^T JxB`):
+  1. `G^T w` formed in the residual precision. Formed in float32 the second pass runs to maxiter, `|a|_M` 3e5
+     against 1e-3.
+  2. Restart on the 2-norm of the residual that the pass reduces. `solve_singular_cg` with `A_res` (`refine`,
+     dual-norm test) diverges even in float64: `|a|_M` 2e14, curl error 18. This was the 2026-10-07 failure.
+     No longer the case since conjugate gradients stop on `dual_norm` themselves (2026-10-12, section below):
+     the solve is one call of `solve_singular_cg` and the 2-norm restart is gone.
+- Inside the Hodge split it does not work: the middle right-hand side `b - M G g` is consistent only to the
+  tolerance of the `g` solve. `S_k` alone there: count -60000, error 1e59. With the stop tied to a measured
+  inconsistency `L_1` converges, `L_2` does not (inconsistent at 0.1 and 2 in the atom's norm).
+- Ladder meshes M, start field, real `J x B`, second identical call, solve time in s (signed count):
+
+  | | li383 (48,64,24) mixed | float64 | W7-X (32,64,36) mixed | float64 |
+  |---|---|---|---|---|
+  | force potential, `L[1].solve` | 0.709 (+1105) | 1.399 (+1692) | 0.356 (+567) | 0.688 (+890) |
+  | `solve_coclosed` | 0.072 (+289) | 0.100 (+336) | 0.040 (+162) | 0.062 (+221) |
+  | `solve_coclosed`, gauge | 0.122 | 0.200 | 0.072 | 0.124 |
+  | Leray k=2, saddle MINRES | 1.067 (+2255) | 2.157 (+3700) | 0.334 (+729) | 1.067 (+1953) |
+  | `L[2].solve_coclosed(M_3 G_2 v, gauge=True)` | 0.105 (+229) | 0.146 (+290) | 0.067 (+145) | 0.088 (+169) |
+
+  The Hodge-split count is that of its middle solve only. `curl a` agrees with the Hodge split to 4e-7 (mixed)
+  and 5e-12 (float64), with the gauge solve `a` itself to 2e-7 / 3e-7 and 2e-12 / 4e-12. The gauge part without
+  it is 0.41 / 0.46 of the co-closed potential in the M norm.
+- Leray by the co-closed route (`sigma` with `S_2 sigma = G_2^T M_3 G_2 v`, closed part removed by a co-closed
+  solve on `S_1`, `F = v - sigma`, no pressure): `F` agrees with the saddle's to 2e-7 / 7e-7 (mixed) and
+  4e-10 / 7e-9 (float64). Its divergence is larger: `|div F| / |F|` 1.1e-5 / 9.0e-6 against 9.7e-9 / 3.2e-5 in
+  mixed, 2.8e-8 / 2.2e-7 against 1e-12 in float64. The stop is on the 2-norm residual of `S_2`, relative to `|v|`,
+  and `|F|` is 0.05 `|v|`. NOT wired into `leray`.
+- In a relaxation (main 732f824 with the solve patched in, (24,32,32), a mesh now retired): li383 gradient
+  descent 400 steps, same energy change (-1.35e-6) and residual trace, 47.8 -> 19.7 s per 200 steps. Newton 20
+  steps li383 and W7-X: same energies, no gain (the force potential is a small share of a step). The gauge share
+  `|G_0^T M_1 a| / |M_1 a|` stays between 0.17 and 0.41 over 400 steps.
+- Run to 6000 steps on the branch, li383 (48,48,28) gradient descent, mixed: residual 2.4e-4 -> 3.2e-7, still
+  falling as a power law (no floor reached), 0.21 s/step, helicity drift 2.9e-6 relative, `|dE - dE_ls| / E0`
+  median 3.7e-10. Energy increases on 1098 steps (all below 6e-10, float32 round-off of `E`) and `||div B||`
+  grows to 1.7e-4. Both also occur with the Hodge split (33 of 400 steps and 4e-6 after 400 steps in both arms
+  of the pair above), no production run of this length on this mesh was made for comparison.
+- Not covered: plain float32, seeded or driven runs, p = 3, the Newton solve (same kernel, different operator),
+  the pass tolerance below the inner tolerance, more than 400 steps of the gauge share.
+- A closed-only shortcut (`b = M_k G c`, one solve `S_{k-1} a = M_{k-1} c`) was not built. `M_{k-1} c` is
+  consistent only for a co-closed `c`, and no caller holds one.
+
+### Stopping on the M^-1 norm of the residual of the equation (2026-10-12/13)
+
+li383 1.4 m, p = 2, float64, tol 1e-8, one H200, second call. Before: `main` at `11f93d81` (conjugate gradients
+stopped on the norm of their own preconditioner, MINRES on `phibar`, the splits on their block residuals).
+
+- Before, a pass that met its own test was judged in `dual_norm`, missed, and ran again: every Laplacian and
+  saddle solve took two passes and ended at 1e-13 to 1e-16.
+- Krylov iterations stopping on `dual_norm`, Hodge sub-solves at tol / 3, iterations and s, before -> after:
+
+  | | (48,64,24) | (64,80,32) |
+  |---|---|---|
+  | `L_0` random | 324 -> 167 | 399 -> 204 |
+  | `L_1` force potential | 1346, 0.96 -> 768, 0.57 | 1644, 2.18 -> 963, 1.34 |
+  | `L_3` random | 3086, 1.64 -> 1491, 0.87 | 4038, 3.55 -> 1925, 1.82 |
+  | Leray of `J x B` | 2912, 1.57 -> 1398, 0.82 | 3724, 3.28 -> 1759, 1.67 |
+
+  One pass each. MINRES costs 0.54 -> 0.59 ms and 0.88 -> 0.95 ms per iteration for carrying the residual.
+- With only that change the residual of `L_k x = b` computed outside the solve ended above the tolerance where
+  `b` has an exact part: `L_1` random 1.2e-8, `L_2` random 3.8e-8, `L_2` odd (`M_2 B`) 1.0e-6 on (48,64,24).
+  The block test did not control it: the lower residual counts about 1 / h times.
+- Judged on `upper - M_k G M_{k-1}^-1 lower` these end at 2.2e-14, 1.1e-13 and 3.4e-12 in two passes (`L_1`
+  random 679 -> 1432 iterations, 0.52 -> 1.06 s). A right-hand side `G_k^T w` stays at one pass.
+- With the saddle solve judged on `r_u + D_2 M_2^-1 r_sigma` and on `r_sigma`, the number the loop stops on
+  against the outside residual: `L_0` random 9.0e-9 / 9.0e-9, force potential 2.2e-9 / 2.2e-9, `L_3` random
+  9.7e-9 / 1.1e-8, `L_2` odd 2.3e-12 / 3.3e-12 on (48,64,24). On (64,80,32): 9.2e-9 / 9.2e-9, 2.2e-9 / 2.2e-9,
+  9.7e-9 / 1.1e-8, 5.0e-12 / 5.7e-12. Leray of `J x B` then takes 1433 iterations, 0.92 s and 1800, 1.86 s.
+- Mixed on (48,64,24): 2 to 3 passes per solve as before, `L_2` random and odd 4 (3 before), ending at 3.9e-11
+  and 7.2e-9.
+- Newton solve at the li383 start field (review of 2026-10-10): on (12,16,16) MINRES met its own test after 26
+  iterations and `newton_mr` returned -26. It returns +48 now. On (32,44,20) and (48,64,24) the solve ends at
+  maxiter before and after.
+
+### Part solves against the full solve (2026-10-13)
+
+Same setting. The full solve of the same right-hand side -> the part, in s. The parts agree with the full solve
+to 6e-7 or better.
+
+| | (48,64,24) | (64,80,32) |
+|---|---|---|
+| `L_1` co-exact, `gauge=False` | 0.78 -> 0.094 | 1.75 -> 0.197 |
+| `L_1` co-exact | 0.78 -> 0.150 | 1.75 -> 0.324 |
+| `L_2` co-exact, `gauge=False` | 2.08 -> 0.054 | 4.67 -> 0.087 |
+| `L_2` co-exact | 2.08 -> 0.148 | 4.74 -> 0.304 |
+| `L_1` exact | 1.77 -> 0.105 | 4.08 -> 0.228 |
+| `L_2` exact | 4.28 -> 0.801 | 9.55 -> 1.789 |
+| `L_3` exact | 1.07 -> 0.722 | 2.30 -> 1.545 |
+
+- Mixed, co-exact and exact with the gauge: `L_1` 0.62 -> 0.119 and 1.02 -> 0.078, `L_2` 1.54 -> 0.136 and
+  3.51 -> 0.864, `L_3` exact 1.34 -> 0.802 on (48,64,24).
+- The exact part as two stiffness solves (`S_{k-1} a = M_{k-1} g` second) ran to maxiter and drifted for k = 2, 3
+  once it was stopped on its residual (about 10000 iterations, wrong by 1e9): `M_{k-1} g` is consistent only to
+  the tolerance. The second solve is one of `L^_{k-1}`.
+- The gauge solve of an already co-exact guess has only round-off on its right-hand side: a restart from its own
+  result ran to maxiter. Only the co-exact solve without its gauge takes a guess.
+- What that guess is worth, relax.py, gradient, 100 steps, force-potential solve with / without the potential
+  of the step before: 199 / 235 iterations per solve on (48,64,24), 237 / 286 on (64,80,32), 0.39 / 0.40 and
+  0.76 / 0.78 s/step.
+- Harmonic 2-form by the co-exact solve at `HARMONIC_TOL` = 0.1 of the tolerance (2026-10-11). Rayleigh quotient
+  at tol / at 0.1 tol / with the `L_1` solve of `main`: float64 (48,64,24) 1.5e-14 / 1.6e-16 / 8.1e-25, mixed
+  3.5e-13 / 2.4e-13 / 2.4e-13, plain float32 (48,64,24) 1.1e-3 / 4.7e-5 / 1.2 and (32,44,20) 5.5e-4 / 3.7e-6 /
+  3.5e-3. In plain float32 the solve no longer converges at 0.03 tol on (48,64,24).
+- relax.py, `main` -> branch, s/step and `E_0 - E`:
+
+  | | s/step | `E_0 - E` |
+  |---|---|---|
+  | li383 (48,64,24), gradient, 200 steps | 1.09 -> 0.33 | 1.1500e-6 both |
+  | li383 (64,80,32), gradient, 200 steps | 2.38 -> 0.68 | 1.1250e-6 both |
+  | li383 (48,64,24), p = 3, gradient, 200 steps | 2.28 -> 0.97 | 1.0797e-6 both |
+  | W7-X (32,64,36), gradient, 200 steps | 0.56 -> 0.19 | 2.6208e-7 both |
+  | li383 (48,64,24), Newton, 40 steps | 5.90 -> 5.35 | 1.6694e-6 -> 1.6692e-6 |
+  | li383 (64,80,32), Newton, 40 steps | 9.41 -> 8.22 | 1.6374e-6 -> 1.6365e-6 |
+  | li383 (48,64,24), p = 3, Newton, 40 steps | 8.70 -> 7.76 | 1.5652e-6 -> 1.5659e-6 |
+  | W7-X (32,64,36), Newton, 40 steps | 3.89 -> 3.44 | 3.2689e-7 both |
+
+  With the stopping change alone the gradient step is 0.69 and 1.44 s on the two li383 meshes. The gradient step
+  on (48,64,24) read between 0.33 and 0.42 s on identical code.
+- Not run: Newton in mixed precision on the final code, W7-X above (32,64,36), (64,80,32) at p = 3.
+- Plain float32 on the suite's mesh li383 (12,20,12), tol 1e-5 (2026-10-13): 7 of 46 tests fail, `main` passes its
+  35 on the same mesh. Leray of a random field: the first MINRES pass stops after 270 iterations on the residual
+  it carries, the residual formed from the solution reads 1.17e-5, and the second pass, asked for another 1e-5
+  at the float32 floor, runs to maxiter 10000 and returns NaN. `L_3` random: 6 passes, 50278 iterations, ends at
+  1.1e-5. Harmonic 1-form: Rayleigh quotient 1.3e-8 against 1.2e-10 on `main`. On (8,12,12) plain float32 passed.
+  Not fixed.
+
+### Where the harmonic deflation lives (2026-10-10, reasoned from the code, not measured)
+
+- `solve_singular_cg` wraps the operator as `project_dual . A . project_primal` and the preconditioner as
+  `project_primal . P . project_dual`: 4 projections per CG iteration. The saddle MINRES does the same on its
+  upper block. With m = 0 harmonic forms the projections are the identity.
+- Until this change `project_primal` applied the mass matrix (`vs @ M x`). With m >= 1 that was 2 mass applies
+  per iteration on top of the matvec: the odd Dirichlet 2-forms, the free 1-forms, the even free 0-forms and
+  Dirichlet 3-forms, and so 2 `M_3` applies per iteration of the Leray saddle solve. An `L^_2` iteration had 5
+  mass-type applies where the operator needs 3. The force potential (even, Dirichlet k = 1) has m = 0.
+- Now `project_primal(x) = x - ((M vs) @ x) @ vs` with the stored `M vs` (M symmetric). Same projection in exact
+  arithmetic. The suite was NOT rerun with it on this cluster (branch `deflation-mass-apply`): run it first.
+- Moving the deflation out of the inner solves into the split (steps 1 and 5 of the Hodge solve) would then save
+  only 4 m dot products per iteration. It stays per iteration.
+- If it were moved: `L^_k` is singular on the harmonic forms, so the inner solve converges only on a deflated
+  right-hand side, like the co-closed solve. Steps 1 and 5 alone are not enough. The degree-(k-1) solution `g`
+  must be deflated between steps 2 and 4, because `M_{k-1} g` carries its harmonic part into step 4's right-hand
+  side and makes it inconsistent. These are per-pass projections in the residual precision.
+- An undeflated working-precision pass sees a harmonic part of about 1e-7 of its right-hand side (the float64
+  residual cast to float32). It must not stop below about 1e-6.
+
 ## 5. Operator identities at round-off
 
 - quasr44970, tol 1e-12 (2026-08-25): curl adjointness 4.0e-13, div(P_Leray v) 4.7e-12, Leray
