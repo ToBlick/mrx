@@ -86,10 +86,13 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
   | 1e-1 | unconverged, 24.8 s -> 703, 0.27 s | unconverged, 35.5 s -> 1205, 0.50 s |
   | 1 | unconverged, 24.9 s -> 984, 0.40 s | unconverged, 43.5 s -> 2538, 0.99 s |
 
-  - Gradient relaxation, 200 steps, paired twice on one node: 0.262 / 0.261 -> 0.307 / 0.307 s/step, the same energy
-    and residual.
-  - At the smoothing shift the warm-started solve takes one pass either way: 449 iterations before, 556 after. The
-    extra cost is the correction (+13 % per k-form iteration) and the third solve.
+  - The Laplacian and the shifted solve share the split: delta M + L with delta = None (static, the Laplacian) or
+    1 / eps. L_1, L_2 solve times unchanged against main (1.10 -> 1.11 s, 2.58 -> 2.59 s, even view). The
+    reported count now sums the three solves.
+  - The velocity smoothing only needs curl of the result, and (M + mu L)^-1 and (M + mu S)^-1 differ by an exact
+    form: it is one solve of M_1 + mu S_1 (`part="coexact"`). Gradient relaxation, 200 steps, paired twice on one
+    node: 0.260 / 0.260 -> 0.228 / 0.226 s/step, the same energy and residual. With the full three-solve
+    smoothing it was 0.307.
 
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 

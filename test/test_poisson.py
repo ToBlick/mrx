@@ -19,7 +19,8 @@ one field period with stellarator symmetry, ``period``: one field period, ``full
 same mesh per period, and ``B*`` and ``psi`` have the period and the parity of li383. So the three must give the
 same error to the solver tolerance: this checks the half-period quadrature, the parity views and the field-period
 reduction end to end. The Leray projection, the k = 3 saddle solve of the relaxation, is divergence-free,
-idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve.
+idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve,
+and the one solve of ``M_1 + eps S_1`` the same curl as the shifted solve ``(M_1 + eps L_1)^-1``.
 """
 import jax
 import jax.numpy as jnp
@@ -195,6 +196,24 @@ def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq
     assert info > 0 and info_L > 0
     assert diff <= 1e3 * seq.tol
     assert diff_g <= 1e3 * seq.tol
+
+
+@pytest.mark.parametrize("shift", ["smoothing", "one"])
+def test_coexact_shifted_solve_has_the_curl_of_the_shifted_solve(seq, shift):
+    """For a right-hand side ``M_1 z`` with every part, ``shifted(1, eps).solve(part="coexact")`` (one solve of
+    ``M_1 + eps S_1``) and the full shifted solve converge and differ by an exact form, so their curls agree. At the
+    velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
+    from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
+    odd = seq.odd
+    eps = SMOOTHING_C * radial_cell_sq(seq) if shift == "smoothing" else jnp.asarray(1.0)
+    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(4), (odd.n(1),), dtype=jnp.float64)
+    a, info = odd.shifted(1, eps).solve(b, return_info=True, part="coexact")
+    a_f, info_f = odd.shifted(1, eps).solve(b, return_info=True)
+    diff = float(odd.l2_norm(odd.G[1] @ (a - a_f), 2) / odd.l2_norm(odd.G[1] @ a_f, 2))
+    print(f"\n  eps {float(eps):.2e}: one solve {int(info)} iterations, full {int(info_f)}, "
+          f"||curl (a - a_f)|| / ||curl a_f|| {diff:.2e}")
+    assert info > 0 and info_f > 0
+    assert diff <= 1e3 * seq.tol
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])

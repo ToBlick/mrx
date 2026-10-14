@@ -207,7 +207,8 @@ class TimeStepper(eqx.Module):
         F = seq.G[1] @ a + ch
         if not smooth:
             return F, seq.M[2] @ F, None, J, a
-        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a)
+        # only curl a_s enters, and (M + mu L)^-1 and (M + mu S)^-1 differ by an exact form: one solve
+        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a, part="coexact")
         Fs = seq.G[1] @ a_s + ch
         return F, seq.M[2] @ F, Fs, J, a
 

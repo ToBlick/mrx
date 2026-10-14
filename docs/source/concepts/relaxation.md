@@ -36,7 +36,10 @@ is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
    `u = curl (M_1 + mu L_1)^{-1} M_1 a = (M_2 + mu L_2)^{-1} M_2 F`, with
    `mu = SMOOTHING_C h_r^2` (`h_r^2` = `radial_cell_sq(seq)`, the squared
    physical radial cell). The smoothing damps the radial two-cell mode on
-   any mesh and commutes with the divergence.
+   any mesh and commutes with the divergence. Only the curl enters, and
+   `(M_1 + mu L_1)^{-1}` and `(M_1 + mu S_1)^{-1}` differ by an exact form,
+   so it is one solve of `M_1 + mu S_1`
+   (`seq.shifted(1, mu).solve(..., part="coexact")`).
 2. **Electric field** `E = M_1^{-1} load(u x B)`, one k = 1 mass solve.
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
