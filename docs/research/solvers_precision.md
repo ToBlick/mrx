@@ -60,6 +60,27 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
   383 it/step, 1e-2 612 mean / 1938 max, eta 1e-1 and 1 hit maxiter 10000 on 8-10 of the first steps
   (energy +3e-7, div B 6e-6).
 
+- Shifted solve on li383 (48,64,24) p=2 float64, one H200, against PR #33 (2026-10-14). Three changes:
+  - The shifted atom models M + eps L and is too small on gradients by 1 / (1 + eps lambda). The preconditioner of
+    M_j + eps S_j adds G P_{j-1} G^T.
+  - Each split solve stops on what its residual leaves in the posed residual: r + eps M G M_{k-1}^-1 G^T r for the
+    k-form solve, eps M G M_{k-1}^-1 r for the (k-1)-form solve. Judged on its own residual the second was off by
+    eps: at eps = 1 every pass gained a factor 8.
+  - That norm costs an M_k apply, so it is tested every 16 iterations.
+
+  Iterations and time, PR #33 -> changes:
+
+  | eps | k = 1 | k = 2 |
+  |---|---|---|
+  | 7.4e-6 | 901, 0.36 s -> 512, 0.22 s | 1254, 0.48 s -> 784, 0.33 s |
+  | 1e-3 | 3032, 1.23 s -> 528, 0.21 s | 4321, 1.53 s -> 624, 0.26 s |
+  | 1e-2 | 15533, 6.3 s -> 640, 0.26 s | 23315, 8.0 s -> 816, 0.34 s |
+  | 1e-1 | unconverged, 24.8 s -> 784, 0.32 s | unconverged, 35.5 s -> 1424, 0.56 s |
+  | 1 | unconverged, 24.9 s -> 2336, 0.98 s | unconverged, 43.5 s -> 6688, 2.58 s |
+
+  Gradient relaxation, 200 steps: 0.259 -> 0.305 s/step. The warm-started smoothing solve takes one pass either way:
+  449 iterations before, 512 slightly heavier ones after.
+
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 
 - The saddle lower block was silently a per-DoF diagonal (the default mass preconditioner was gated

@@ -554,6 +554,12 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     )
 
 
+#: The split solves of :func:`_shifted_solve` test their norm every this many iterations. The norm costs an
+#: ``M_k`` apply, 35 % and 70 % of an iteration of the two solves on li383 (48,64,24): at 16 it costs below
+#: 5 %, and a solve overshoots by at most 15 iterations of several hundred.
+SPLIT_CHECK_EVERY = 16
+
+
 @eqx.filter_jit
 def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False):
     """``(M_k + eps L_k)^{-1} rhs``, by two symmetric positive definite solves.
@@ -564,30 +570,67 @@ def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False)
                                - eps G_{k-1} (M_{k-1} + eps S_{k-1})^{-1} G_{k-1}^T
 
     and each part is solved by conjugate gradients. For k = 0 only the first part is present.
+
+    The preconditioner of ``M_j + eps S_j`` is the shifted atom plus, for ``j >= 1``, the ``(j-1)``-form
+    Laplacian atom on gradients, ``G P_{j-1} G^T``. In the ``M``-orthogonal Hodge decomposition
+    ``x = G phi + y`` the operator is block-diagonal, because ``S_j G = 0``: on gradients it is
+    ``G^T M_j G = S_{j-1}`` for every ``eps``. The shifted atom is a model of ``M_j + eps L_j`` and is
+    too small there by ``1 / (1 + eps lambda)``. Without the gradient part the 1-form solve on li383
+    (48,64,24) takes 4228 iterations at ``eps = 1e-2`` and does not converge in 5000 at ``eps = 1``,
+    with it 220 and 274 (2026-10-14).
     """
-    def shifted_cg(j, b, tol, x0=None, check_residual=False):
+    def precondition(j):
+        shifted = _seq_atom(seq, "laplacian", j).shifted_stiffness_apply(eps)
+        if j == 0:
+            return shifted
+        lower = _seq_atom(seq, "laplacian", j - 1)
+        return lambda x: shifted(x) + _grad(seq, lower.apply(_grad(seq, x, j - 1, transpose=True)), j - 1)
+
+    def shifted_cg(j, b, tol, x0=None, check_residual=False, norm=None, check_every=1):
         return solve_singular_cg(
             lambda x: _mass(seq, x, j) + eps * _stiffness(seq, x, j),
             b,
             jnp.zeros((0, b.shape[0])),
-            precond_matvec=_seq_atom(seq, "laplacian", j).shifted_stiffness_apply(eps),
+            precond_matvec=precondition(j),
             x0=x0,
             tol=tol,
             maxiter=seq.maxiter,
             check_residual=check_residual,
-            norm=dual_norm(seq, j),
+            norm=dual_norm(seq, j) if norm is None else norm,
             parity=parity_projectors(seq, j, b),
+            check_every=check_every,
         )
 
     if k == 0:
         x, info = shifted_cg(0, rhs, seq.tol, x0=guess, check_residual=True)
         return (x, info) if return_info else x
 
+    nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
+
+    def lift(r):
+        # M_k G M_{k-1}^-1 r, with the preconditioner of M_{k-1} for its inverse as in dual_norm
+        return _mass(seq, _grad(seq, P_lower(r), k - 1), k)
+
+    # Each solve is judged on what its residual leaves in the residual of (M_k + eps L_k) x = b. With
+    # x = x_k - eps G z, a residual r of the k-form solve leaves r + eps M G M_{k-1}^-1 G^T r there (as
+    # G^T M e = G^T r for its error e, since G^T S_k = 0), and a residual r of the (k-1)-form solve leaves
+    # eps M G M_{k-1}^-1 r. Judged in their own norms the second one was off by eps: at eps = 1 on li383
+    # (48,64,24) every pass gained only a factor 8 and the solve stopped unconverged (2026-10-14).
+    def norm_k(r):
+        return nu(r + eps * lift(_grad(seq, r, k - 1, transpose=True)))
+
+    def norm_lower(r):
+        return eps * nu(lift(r))
+
     def split(b):
         # z equals M_{k-1}^-1 G^T M x of the returned x (as G^T S_k = 0), the second unknown of _pair_loop
-        # the residual of the split is at most the sum of those of its two solves, so each gets a half
-        x, info = shifted_cg(k, b, seq.tol / 2.0)
-        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), seq.tol / 2.0)
+        # the residual of the split is at most the sum of what the two solves leave, so each gets a half of the
+        # tolerance times |b|
+        target = seq.tol / 2.0 * nu(b)
+        gb = _grad(seq, b, k - 1, transpose=True)
+        x, info = shifted_cg(k, b, target / norm_k(b), norm=norm_k, check_every=SPLIT_CHECK_EVERY)
+        z, info_lower = shifted_cg(k - 1, gb, target / norm_lower(gb), norm=norm_lower,
+                                   check_every=SPLIT_CHECK_EVERY)
         x = x - eps * _grad(seq, z, k - 1)
         total = jnp.abs(info) + jnp.abs(info_lower)
         return x, z, jnp.where((info >= 0) & (info_lower >= 0), total, -total)

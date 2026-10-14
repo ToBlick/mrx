@@ -18,7 +18,7 @@ is called on, `seq` (Dirichlet) or `seq.free`.
 | `L_k u = f`, k = 1, 2 | `seq.L[k].solve(f)` | the Hodge split: three SPD PCGs | the Laplacian atoms of levels k and k-1 |
 | `S_k u = b`, `b = G_k^T w` | `seq.L[k].solve(b, part="coexact", gauge=False)` | PCG on the singular `S_k` | the Laplacian atom of level k |
 | `L_3 u = f` | `seq.L[3].solve(f)` and `seq.leray(v, k=2)` | saddle-point MINRES | the k = 3 Laplacian atom, the k = 2 mass atom |
-| `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | two SPD PCGs | the shifted-stiffness atoms |
+| `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | two SPD PCGs | the shifted-stiffness atoms plus the Laplacian atom of level k - 1 on gradients |
 
 Every solve takes a warm start `guess` and returns the signed iteration
 count with `return_info=True`. `seq.M[k].precondition(r)` and
@@ -76,6 +76,11 @@ block-diagonal.
 ```
 
 that is, two SPD solves. This is the resistive step and the velocity smoothing.
+Each of the two solves stops on what its residual leaves in the residual of
+`(M_k + eps L_k) x = b`, not on its own: a residual `r` of the first leaves
+`r + eps M_k G M_{k-1}^{-1} G^T r`, one of the second `eps M_k G M_{k-1}^{-1} r`.
+Judged on their own residuals the second solve was off by the factor `eps`,
+and above `eps` of about 0.1 the solve did not converge.
 
 **Leray projection.** `seq.leray(v, k=2)` removes the gradient part of a
 Dirichlet 2-form by the k = 3 saddle solve. `seq.leray(v, k=1)` splits a
@@ -123,7 +128,13 @@ It is positive definite, and the build raises if it is not.
 **Shifted stiffness.** The same atom preconditions `M_k + eps S_k` for an
 `eps` known only at the solve: the bulk Kronecker terms are shifted, and
 the core pair `(M_k, S_k)` is diagonalised once so the block is
-`V diag(1 / (1 + eps mu)) V^T`.
+`V diag(1 / (1 + eps mu)) V^T`. The Kronecker terms model the whole
+Laplacian `L_k`, while `S_k` vanishes on gradients. On gradients the operator is
+`M_k`, and in the `M`-orthogonal Hodge decomposition it is exactly
+`G^T M_k G = S_{k-1}` there for every `eps`. So the solve adds the Laplacian
+atom of level k - 1 on gradients, `G_{k-1} P_{k-1} G_{k-1}^T`. Without it the
+atom is too small on gradients by `1 / (1 + eps lambda)`, and the iteration
+count grows with `eps`.
 
 On a half-period sequence the parity views reduce the base atoms
 (`ReducedAtom`, `X^T P X` with the view's expansion `X`).
