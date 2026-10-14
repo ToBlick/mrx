@@ -554,22 +554,21 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     )
 
 
-#: The split solves of :func:`_shifted_solve` test their norm every this many iterations. The norm costs an
-#: ``M_k`` apply, 35 % and 70 % of an iteration of the two solves on li383 (48,64,24): at 16 it costs below
-#: 5 %, and a solve overshoots by at most 15 iterations of several hundred.
-SPLIT_CHECK_EVERY = 16
-
-
 @eqx.filter_jit
 def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False):
-    """``(M_k + eps L_k)^{-1} rhs``, by two symmetric positive definite solves.
+    """``(M_k + eps L_k)^{-1} rhs``, by three symmetric positive definite solves, as the Hodge split.
 
-    Because ``G_k G_{k-1} = 0`` the inverse splits exactly into::
+    With ``G = G_{k-1}``, ``M = M_k``, ``M' = M_{k-1}``, and because ``G^T S_k = 0`` and ``G^T M G = S_{k-1}``::
 
-        (M_k + eps L_k)^{-1} = (M_k + eps S_k)^{-1}
-                               - eps G_{k-1} (M_{k-1} + eps S_{k-1})^{-1} G_{k-1}^T
+        (M' + eps S_{k-1}) z = G^T b,      (M + eps S_k) x_perp = b - eps M G z,
+        (M' + eps S_{k-1}) a = eps (M' z - G^T M x_perp),      x = x_perp + G a
 
-    and each part is solved by conjugate gradients. For k = 0 only the first part is present.
+    solves ``(M + eps L_k) x = b`` whatever the error of ``z``: it enters the right-hand sides of the second and
+    the third solve so that it cancels, as ``g`` does in :func:`_hodge_split`. The third solve also takes up the
+    gradient part ``G^T r`` of the residual ``r`` of the second, which ``S_k`` does not see. So every solve can be
+    judged on its own residual, at a third of the tolerance, and :func:`_pair_loop` judges the result on the
+    residual of the posed equation. With exact solves ``a = 0`` and ``x_perp`` is
+    ``(M + eps S_k)^{-1} b - eps G (M' + eps S_{k-1})^{-1} G^T b``. For k = 0 only one solve is present.
 
     The preconditioner of ``M_j + eps S_j`` is the shifted atom plus, for ``j >= 1``, the ``(j-1)``-form
     Laplacian atom on gradients, ``G P_{j-1} G^T``. In the ``M``-orthogonal Hodge decomposition
@@ -586,7 +585,7 @@ def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False)
         lower = _seq_atom(seq, "laplacian", j - 1)
         return lambda x: shifted(x) + _grad(seq, lower.apply(_grad(seq, x, j - 1, transpose=True)), j - 1)
 
-    def shifted_cg(j, b, tol, x0=None, check_residual=False, norm=None, check_every=1):
+    def shifted_cg(j, b, tol, x0=None, check_residual=False):
         return solve_singular_cg(
             lambda x: _mass(seq, x, j) + eps * _stiffness(seq, x, j),
             b,
@@ -596,44 +595,25 @@ def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False)
             tol=tol,
             maxiter=seq.maxiter,
             check_residual=check_residual,
-            norm=dual_norm(seq, j) if norm is None else norm,
+            norm=dual_norm(seq, j),
             parity=parity_projectors(seq, j, b),
-            check_every=check_every,
         )
 
     if k == 0:
         x, info = shifted_cg(0, rhs, seq.tol, x0=guess, check_residual=True)
         return (x, info) if return_info else x
 
-    nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
-
-    def lift(r):
-        # M_k G M_{k-1}^-1 r, with the preconditioner of M_{k-1} for its inverse as in dual_norm
-        return _mass(seq, _grad(seq, P_lower(r), k - 1), k)
-
-    # Each solve is judged on what its residual leaves in the residual of (M_k + eps L_k) x = b. With
-    # x = x_k - eps G z, a residual r of the k-form solve leaves r + eps M G M_{k-1}^-1 G^T r there (as
-    # G^T M e = G^T r for its error e, since G^T S_k = 0), and a residual r of the (k-1)-form solve leaves
-    # eps M G M_{k-1}^-1 r. Judged in their own norms the second one was off by eps: at eps = 1 on li383
-    # (48,64,24) every pass gained only a factor 8 and the solve stopped unconverged (2026-10-14).
-    def norm_k(r):
-        return nu(r + eps * lift(_grad(seq, r, k - 1, transpose=True)))
-
-    def norm_lower(r):
-        return eps * nu(lift(r))
-
     def split(b):
-        # z equals M_{k-1}^-1 G^T M x of the returned x (as G^T S_k = 0), the second unknown of _pair_loop
-        # the residual of the split is at most the sum of what the two solves leave, so each gets a half of the
-        # tolerance times |b|
-        target = seq.tol / 2.0 * nu(b)
-        gb = _grad(seq, b, k - 1, transpose=True)
-        x, info = shifted_cg(k, b, target / norm_k(b), norm=norm_k, check_every=SPLIT_CHECK_EVERY)
-        z, info_lower = shifted_cg(k - 1, gb, target / norm_lower(gb), norm=norm_lower,
-                                   check_every=SPLIT_CHECK_EVERY)
-        x = x - eps * _grad(seq, z, k - 1)
-        total = jnp.abs(info) + jnp.abs(info_lower)
-        return x, z, jnp.where((info >= 0) & (info_lower >= 0), total, -total)
+        # the residual of the split is at most the sum of those of its three solves, so each gets a third
+        z, info_z = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), seq.tol / 3.0)
+        x_perp, info = shifted_cg(k, b - eps * _mass(seq, _grad(seq, z, k - 1), k), seq.tol / 3.0)
+        a, info_a = shifted_cg(k - 1, eps * (_mass(seq, z, k - 1)
+                                             - _grad(seq, _mass(seq, x_perp, k), k - 1, transpose=True)),
+                               seq.tol / 3.0)
+        # w = M'^-1 G^T M x of the returned x, the second unknown of _pair_loop: G^T M x = M' (z - a / eps)
+        total = jnp.abs(info_z) + jnp.abs(info) + jnp.abs(info_a)
+        ok = (info_z >= 0) & (info >= 0) & (info_a >= 0)
+        return x_perp + _grad(seq, a, k - 1), z - a / eps, jnp.where(ok, total, -total)
 
     # solve (1/eps) M x + L x = b / eps. This operator is SPD, so there is no kernel to remove
     x, info = _pair_loop(seq, k, 1.0 / eps, lambda r: split(eps * r), rhs / eps, guess,

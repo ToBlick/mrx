@@ -93,7 +93,7 @@ inverse.
 `dB/dt = -eta curl(curl B - J_ref)` over `eps = eta dt`, `J_ref` the current of
 `B_ref`, solved for the increment,
 `(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`
-(`seq.shifted(2, eps).solve`, two SPD solves). It is
+(`seq.shifted(2, eps).solve`, three SPD solves). It is
 unconditionally stable and keeps `div B` at the solver tolerance. The drive
 of `scripts/relax.py --drive.resistivity C` applies it after every ideal
 step with `eps = C h_r^2` towards the reference field's current. The field

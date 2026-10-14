@@ -60,26 +60,36 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
   383 it/step, 1e-2 612 mean / 1938 max, eta 1e-1 and 1 hit maxiter 10000 on 8-10 of the first steps
   (energy +3e-7, div B 6e-6).
 
-- Shifted solve on li383 (48,64,24) p=2 float64, one H200, against PR #33 (2026-10-14). Three changes:
-  - The shifted atom models M + eps L and is too small on gradients by 1 / (1 + eps lambda). The preconditioner of
-    M_j + eps S_j adds G P_{j-1} G^T.
-  - Each split solve stops on what its residual leaves in the posed residual: r + eps M G M_{k-1}^-1 G^T r for the
-    k-form solve, eps M G M_{k-1}^-1 r for the (k-1)-form solve. Judged on its own residual the second was off by
-    eps: at eps = 1 every pass gained a factor 8.
-  - That norm costs an M_k apply, so it is tested every 16 iterations.
+- Shifted solve on li383 (48,64,24) p=2 float64, one H200, against PR #33 (2026-10-14). Two changes:
+  - **Gradient correction.** The shifted atom models M + eps L and is too small on gradients by 1 / (1 + eps lambda),
+    where M + eps S is S_{k-1}. The preconditioner of M_j + eps S_j adds G P_{j-1} G^T.
+    - Single CG on M_1 + eps S_1, odd view: eps 1e-2 4228 -> 220, eps 1 > 5000 -> 274. An exact 0-form solve in
+      its place gains little: 211, 247.
+  - **Three solves as the Hodge split** (z, x_perp, a), in place of x = x_k - eps G z.
+    - With two solves the error of z reached the residual as eps M G M_{k-1}^-1 r_z. At eps = 1 every pass gained
+      only a factor 8 and the solve stopped at the pass limit. Tightening the (k-1)-form solve 1000 times made it
+      converge in 2 passes, the k-form solve did not matter.
+    - With three, the error of z cancels and each solve stops on its own residual at tol / 3. Every eps below
+      converges in one pass.
+    - Tried and dropped: judging the two solves on their contribution to the posed residual (an M_k apply per
+      iteration, +50 %, then tested every 16 iterations), and the same in refine (two passes per solve, 0.49
+      s/step).
 
-  Iterations and time, PR #33 -> changes:
+  seq.shifted(k, eps).solve on M_k z, iterations and time, PR #33 -> both changes:
 
-  | eps | k = 1 | k = 2 |
+  | eps | k = 1 (even view) | k = 2 (odd view) |
   |---|---|---|
-  | 7.4e-6 | 901, 0.36 s -> 512, 0.22 s | 1254, 0.48 s -> 784, 0.33 s |
-  | 1e-3 | 3032, 1.23 s -> 528, 0.21 s | 4321, 1.53 s -> 624, 0.26 s |
-  | 1e-2 | 15533, 6.3 s -> 640, 0.26 s | 23315, 8.0 s -> 816, 0.34 s |
-  | 1e-1 | unconverged, 24.8 s -> 784, 0.32 s | unconverged, 35.5 s -> 1424, 0.56 s |
-  | 1 | unconverged, 24.9 s -> 2336, 0.98 s | unconverged, 43.5 s -> 6688, 2.58 s |
+  | 7.4e-6 | 901, 0.36 s -> 548, 0.22 s | 1254, 0.48 s -> 1015, 0.44 s |
+  | 1e-4 | 1190, 0.47 s -> 491, 0.18 s | 1629, 0.60 s -> 631, 0.28 s |
+  | 1e-3 | 3032, 1.23 s -> 568, 0.21 s | 4321, 1.53 s -> 695, 0.30 s |
+  | 1e-2 | 15533, 6.3 s -> 622, 0.23 s | 23315, 8.0 s -> 821, 0.35 s |
+  | 1e-1 | unconverged, 24.8 s -> 703, 0.27 s | unconverged, 35.5 s -> 1205, 0.50 s |
+  | 1 | unconverged, 24.9 s -> 984, 0.40 s | unconverged, 43.5 s -> 2538, 0.99 s |
 
-  Gradient relaxation, 200 steps: 0.259 -> 0.305 s/step. The warm-started smoothing solve takes one pass either way:
-  449 iterations before, 512 slightly heavier ones after.
+  - Gradient relaxation, 200 steps, paired twice on one node: 0.262 / 0.261 -> 0.307 / 0.307 s/step, the same energy
+    and residual.
+  - At the smoothing shift the warm-started solve takes one pass either way: 449 iterations before, 556 after. The
+    extra cost is the correction (+13 % per k-form iteration) and the third solve.
 
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 

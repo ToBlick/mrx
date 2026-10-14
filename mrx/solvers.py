@@ -23,7 +23,7 @@ import jax.numpy as jnp
 from mrx.precision import MAX_PASSES
 
 
-def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None, check_every=1):
+def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
     """Solve the SPD system ``A x = b`` by preconditioned CG and return ``(x, info)``.
 
     ``M`` is an SPD approximation of ``A^{-1}``. The solve stops when ``norm(r) < tol norm(b)``
@@ -31,9 +31,7 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None, check_ev
     (:func:`mrx.operators.dual_norm`, the ``M_k^{-1}`` norm), the one every solve is judged in.
     Without it the residual is measured in the norm of the preconditioner, ``sqrt(r^T M r)``, which
     is the same number when ``M`` is the mass preconditioner. If ``A`` or ``M`` is not SPD the
-    result becomes NaN. With ``check_every = m`` the test runs only every ``m`` iterations and once
-    at the end, for a ``norm`` that costs a fraction of an iteration: the solve then overshoots by at
-    most ``m - 1`` iterations.
+    result becomes NaN.
     """
     if x0 is None:
         x0 = jnp.zeros_like(b)
@@ -63,16 +61,9 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None, check_ev
         z_new = M(r_new)
         rz_new = jnp.dot(r_new, z_new)
         p_new = z_new + (rz_new / rz) * p
-        if check_every == 1:
-            converged = size(r_new, rz_new) < tol * bnorm_safe
-        else:
-            converged = jax.lax.cond((k + 1) % check_every == 0,
-                                     lambda: size(r_new, rz_new) < tol * bnorm_safe, lambda: jnp.zeros((), bool))
-        return (x_new, r_new, z_new, p_new, rz_new, k + 1, converged)
+        return (x_new, r_new, z_new, p_new, rz_new, k + 1, size(r_new, rz_new) < tol * bnorm_safe)
 
-    x_final, r_final, _, _, rz_final, k_final, converged_final = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    if check_every != 1:
-        converged_final = size(r_final, rz_final) < tol * bnorm_safe
+    x_final, _, _, _, _, k_final, converged_final = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return x_final, jnp.where(converged_final, k_final, -k_final)
 
 
@@ -208,7 +199,7 @@ def _compose_parity(projectors, parity):
 
 
 def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None,
-                      x0=None, check_residual=False, norm=None, parity=None, check_every=1):
+                      x0=None, check_residual=False, norm=None, parity=None):
     """Solve the symmetric semidefinite system ``A x = b`` by PCG and return ``(x, info)``.
 
     The rows of ``vs`` (shape ``(m, n)``, ``m`` may be 0) span the kernel of ``A`` and are
@@ -231,11 +222,11 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
 
     if not check_residual:
         x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
-        x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm, check_every=check_every)
+        x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm)
         return project_primal(x), info
 
     x, info = refine(lambda x: A_matvec(project_primal(x)),
-                     lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm, check_every=check_every),
+                     lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm),
                      b, x0=x0, tol=tol, project_dual=project_dual, norm=norm)
     return project_primal(x), info
 
