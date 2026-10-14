@@ -70,6 +70,12 @@ def _constant_seed(seq, k):
     raw = jnp.concatenate([jnp.zeros(shapes[0][0] * shapes[0][1] * shapes[0][2]),
                            jnp.zeros(shapes[1][0] * shapes[1][1] * shapes[1][2]), third])
     seed = conforming_restriction(seq.E(k), lift(raw), seq.core_rows(k))
+    # The cell integrals come from the knots, which in float32 are uniform only to their rounding, so the seed
+    # has the parity of the form only that far. Its part of that parity is closed as well, since the reflection
+    # commutes with the derivative, and it is what the parity views reduce exactly.
+    projector = seq.free_projector(k)
+    if projector is not None:
+        seed = projector.post(seed, projector.parity(seed))
     closed = float(seq.l2_norm(to_working(seq.G[k] @ seed), k + 1) / seq.l2_norm(to_working(seed), k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(
