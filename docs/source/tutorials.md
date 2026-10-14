@@ -15,8 +15,8 @@ script explains itself in its docstring and its comments.
 QA is `data/wout_LandremanPaul2021_QA_lowres.nc`, the quasi-axisymmetric
 vacuum equilibrium of Landreman & Paul (2021). li383 is
 `data/wout_li383_low_res_reference.nc`, the NCSX configuration. All
-tutorials run on the mesh (12, 16, 16) at spline degree 2 in the default
-mixed precision, except Tutorial 6 (degree 3, float64). They take, in
+tutorials run on the mesh (12, 16, 16) at spline degree 2, except
+Tutorial 6 (degree 3). They take, in
 minutes and including about a minute of setup:
 
 | tutorial | 1 | 2 | 3 | 4 | 5 | 6 | all |

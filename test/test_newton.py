@@ -26,7 +26,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mrx.precision import DTYPE, eps
+from mrx.precision import eps
 from mrx.relaxation.loop import (TimeStepper, check_checkpoint, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
 from mrx.relaxation.newton import MassChebyshev, newton_direction, second_variation
@@ -35,15 +35,14 @@ from mrx.relaxation.physics import compute_force
 STEPS, CHUNK = 10, 5
 # ||F||_end / ||F||_0 after 10 Newton steps on li383 (12, 20, 12) p=2: measured 4.9e-3 (2026-10-13).
 NEWTON_FORCE_DROP = 0.5
-# |H_end - H_0| / (2 E_0) over the 10 steps: grid-scale reconnection, 1.05e-6 in float64 and 1.07e-6 in mixed
-# precision (2026-10-13). 5x that.
+# |H_end - H_0| / (2 E_0) over the 10 steps: grid-scale reconnection, 1.05e-6 (2026-10-13). 5x that.
 HELICITY_DRIFT = 5e-6
 
 
 def _divergence_free(seq, key):
     """A random divergence-free velocity, an even 2-form of unit norm."""
     even = seq.even
-    w, _ = even.leray(jax.random.normal(key, (even.n(2),), dtype=DTYPE), k=2)
+    w, _ = even.leray(jax.random.normal(key, (even.n(2),)), k=2)
     return w / even.l2_norm(w, 2)
 
 
@@ -90,7 +89,7 @@ def test_parallel_penalty_is_positive_semidefinite(seq, b0):
     """The penalised Hessian minus the bare one is ``int w (u . B)^2 / |B|^2 dx >= 0`` for a positive weight
     ``w``."""
     _, _, J, _ = compute_force(b0, seq)
-    w = jnp.ones(seq.quad.shape[0], dtype=DTYPE)
+    w = jnp.ones(seq.quad.shape[0])
     H, H_pen = second_variation(seq, b0, J), second_variation(seq, b0, J, penalty=w)
     u = _divergence_free(seq, jax.random.PRNGKey(3))
     extra = float(u @ H_pen(u)) - float(u @ H(u))
@@ -106,7 +105,7 @@ def test_chebyshev_mass_hessian_is_symmetric(seq, b0):
     S = MassChebyshev.build(seq, 0.3)
     lmin, lmax = (float(x) for x in S.bounds)
     rate = (np.sqrt(lmax / lmin) - 1) / (np.sqrt(lmax / lmin) + 1)
-    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(5), (odd.n(1),), dtype=DTYPE)
+    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(5), (odd.n(1),))
     x = odd.M[1].solve(b)
     err = float(odd.l2_norm(S(odd, b) - x, 1) / odd.l2_norm(x, 1))
     H = second_variation(seq, b0, J, mass_inverse=S)
@@ -123,7 +122,7 @@ def test_newton_direction_is_divergence_free_and_descends(seq, b0):
     even = seq.even
     F, _, J, JxB = compute_force(b0, seq)
     MF = even.M[2] @ F
-    u, _, info = newton_direction(seq, b0, J, even.M[2] @ JxB, jnp.zeros(even.n(1), dtype=DTYPE), tol=1e-2,
+    u, _, info = newton_direction(seq, b0, J, even.M[2] @ JxB, jnp.zeros(even.n(1)), tol=1e-2,
                                   maxiter=40)
     div = float(even.l2_norm(even.G[2] @ u, 3))
     cos = float(u @ MF) / float(even.l2_norm(u, 2) * jnp.sqrt(F @ MF))

@@ -33,7 +33,6 @@ from mrx.geometry import SequenceGeometry, _tp_evaluate, grad_1d
 from mrx.mappings import stellarator_symmetric_scalar
 from mrx.mass import attach_weights
 from mrx.operators import _coclosed_solve
-from mrx.precision import RESIDUAL_DTYPE, cast_arrays
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
 
@@ -44,9 +43,6 @@ def with_geometry(seq, geometry):
     ``seq`` itself is not changed, and the copy keeps the preconditioners of ``seq``'s geometry."""
     out = copy.copy(seq)
     out.geometry = attach_weights(seq, geometry)
-    if seq.residual is not None:          # the float64 copy of the mixed configuration gets the geometry too
-        out.residual = copy.copy(seq.residual)
-        out.residual.geometry = cast_arrays(out.geometry, RESIDUAL_DTYPE)
     return out
 
 
@@ -219,7 +215,7 @@ def flux_seed(seq):
     """The seed ``s`` of :func:`vacuum_two_form`: the 2-form ``dr ^ dtheta`` interpolated into the Dirichlet
     2-form space. It carries the toroidal flux, is closed and does not depend on the geometry, so it can be
     computed once and reused for every shape."""
-    flux = jnp.asarray((0.0, 0.0, 1.0), dtype=seq.dtype)
+    flux = jnp.asarray((0.0, 0.0, 1.0))
     return seq.interpolate(lambda x_hat: flux, 2, frame='logical')
 
 

@@ -26,8 +26,7 @@ print("[tutorial 1] the geometry of the QA stellarator: importing JAX and MRX", 
 
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Geometry, Precision
+from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -37,7 +36,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 1: load the equilibrium of a stellarator and draw the Jacobian of its map."""
     geometry: Geometry = Geometry(path="data/wout_LandremanPaul2021_QA_lowres.nc", resolution=(12, 16, 16),
-                                  spline_degree=2, precision=Precision(current_precision()))
+                                  spline_degree=2)
     cuts: int = 6
     """The number of poloidal cuts per field period."""
     out: str = "outputs/tutorials/1_qa_geometry"
@@ -46,10 +45,6 @@ class Options:
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
 g = cli.geometry
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if g.precision != current_precision():
-    sys.exit(f"--geometry.precision {g.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before mrx is "
-             f"imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%

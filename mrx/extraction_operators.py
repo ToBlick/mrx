@@ -26,7 +26,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import mrx
 
 
 @functools.partial(jax.jit, static_argnames=("num_segments",))
@@ -52,13 +51,12 @@ class MatrixFreeExtraction(eqx.Module):
     transposed: bool = eqx.field(static=True)
 
     @classmethod
-    def from_coo(cls, rows, cols, vals, shape, dtype=None):
-        """The matrix of shape ``(n_row, n_col)`` with the given entries. The values are stored
-        in ``dtype``, the working dtype by default."""
+    def from_coo(cls, rows, cols, vals, shape):
+        """The matrix of shape ``(n_row, n_col)`` with the given entries."""
         return cls(
             rows=jnp.asarray(np.asarray(rows, dtype=np.int32)),
             cols=jnp.asarray(np.asarray(cols, dtype=np.int32)),
-            vals=jnp.asarray(np.asarray(vals), dtype=mrx.DTYPE if dtype is None else dtype),
+            vals=jnp.asarray(np.asarray(vals), dtype=jnp.float64),
             forward_shape=(int(shape[0]), int(shape[1])),
             transposed=False,
         )
@@ -88,11 +86,10 @@ class MatrixFreeExtraction(eqx.Module):
                           num_segments=self.forward_shape[0])
 
     def entries(self, rows=None):
-        """The entries ``(rows, cols, values)`` of the untransposed matrix as NumPy arrays, the
-        values in float64. With ``rows``, only the entries of those rows, renumbered
+        """The entries ``(rows, cols, values)`` of the untransposed matrix as NumPy arrays. With ``rows``, only the entries of those rows, renumbered
         ``0 .. len(rows) - 1``."""
         r, c = np.asarray(self.rows), np.asarray(self.cols)
-        v = np.asarray(self.vals, dtype=np.float64)
+        v = np.asarray(self.vals)
         if rows is None:
             return r, c, v
         pos = np.full(self.forward_shape[0], -1)
@@ -101,13 +98,13 @@ class MatrixFreeExtraction(eqx.Module):
         return pos[r[keep]], c[keep], v[keep]
 
 
-def summed_coo(rows, cols, vals, shape, dtype=None):
+def summed_coo(rows, cols, vals, shape):
     """A :class:`MatrixFreeExtraction` of ``shape`` from the given entries, with duplicate
     entries summed into one and the entries sorted by row."""
     key = np.asarray(rows, dtype=np.int64) * shape[1] + np.asarray(cols, dtype=np.int64)
     uniq, inv = np.unique(key, return_inverse=True)
     return MatrixFreeExtraction.from_coo(uniq // shape[1], uniq % shape[1],
-                                         np.bincount(inv, weights=vals, minlength=uniq.size), shape, dtype=dtype)
+                                         np.bincount(inv, weights=vals, minlength=uniq.size), shape)
 
 
 def row_products(a, b, shape):
@@ -141,7 +138,7 @@ def conforming_restriction(e, c, core):
     a = e @ c
     if len(core) == 0:
         return a
-    return a.at[core].set(jnp.asarray(core_gram_inverse(e, core), dtype=a.dtype) @ a[core])
+    return a.at[core].set(jnp.asarray(core_gram_inverse(e, core)) @ a[core])
 
 
 def dirichlet_dofs(e_free, e_dirichlet):
@@ -180,7 +177,7 @@ _SURGERY = {0: (("rings", 0),), 1: (("pair", 1, 0, 1.0), ("rings", 2)),
             2: (("pair", 0, 1, -1.0),), 3: ()}
 
 
-def build_extraction(form, xi, dirichlet, dtype=None):
+def build_extraction(form, xi, dirichlet):
     """The extraction ``E`` of the k-form space ``form`` and the indices of its polar core rows.
 
     The first rows of ``E`` are the axis functions, built with the polar weights ``xi`` of
@@ -190,9 +187,8 @@ def build_extraction(form, xi, dirichlet, dtype=None):
     radial basis is dropped, which imposes homogeneous Dirichlet conditions at ``r = 1``.
 
     Returns ``(E, core_rows)``, ``E`` a :class:`MatrixFreeExtraction` of shape
-    ``(n_extracted, form.n)`` with values in ``dtype`` (the working dtype by default).
+    ``(n_extracted, form.n)``.
     """
-    dtype = mrx.DTYPE if dtype is None else dtype
     xi = np.asarray(xi)
     o = 1 if dirichlet else 0
     offsets = np.cumsum([0] + [math.prod(s) for s in form.shape])
@@ -247,7 +243,7 @@ def build_extraction(form, xi, dirichlet, dtype=None):
     e = MatrixFreeExtraction(
         rows=jnp.asarray(np.concatenate(rows), dtype=jnp.int32),
         cols=jnp.asarray(np.concatenate(cols), dtype=jnp.int32),
-        vals=jnp.asarray(np.concatenate(data), dtype=dtype),
+        vals=jnp.asarray(np.concatenate(data), dtype=jnp.float64),
         forward_shape=(row0, form.n), transposed=False)
     return e, np.unique(np.asarray(core, dtype=np.int32))
 
