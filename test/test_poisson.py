@@ -29,13 +29,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mrx.precision import lift, to_working
+from mrx.precision import inner, lift, to_working
 
 #: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
 #: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20 in float64: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
 #: 3.989e-2.
 ERROR_BAND = {0: 0.0105, 1: 0.0147, 2: 0.0303, 3: 0.0499}
-#: The relative spread of the two representations' errors: below 3e-10 in float64.
+#: The relative spread of the two representations' errors: below 3e-10 in float64. In float32, whose data (map,
+#: quadrature, tables) differ by rounding, at most 2.5e-4 (k = 0), 1.3e-4, 2.7e-5, 1.2e-5, measured 2026-10-14 over
+#: three representations with p + 1 points per axis.
 SAME = 1e-3
 NAMES = ("half", "period")
 
@@ -62,7 +64,7 @@ def vacuum_field(seq):
 
 
 def _integral(seq, values):
-    return float(jnp.sum(seq.quad.w * seq.jacobian_j * values))
+    return inner(lift(seq.quad.w * seq.jacobian_j), lift(values))
 
 
 _FINE = {}
@@ -83,10 +85,12 @@ def _fine(seq):
 
 def _error_sq(seq, parity, uh, f, k):
     """``(||u_h - f||^2, ||f||^2)`` for the free k-form ``u_h`` of the ``parity`` view (``"odd"``, ``"even"``) of
-    ``seq`` and the physical field ``f`` of logical points, integrated on :func:`_fine`."""
+    ``seq`` and the physical field ``f`` of logical points, integrated on :func:`_fine`. The error is a difference of
+    order-one numbers, so its sums are taken in the arithmetic of the solves (double-single in float32)."""
     fine = getattr(_fine(seq), parity).free
     target_sq = _integral(fine, jnp.sum(jax.vmap(f)(fine.quad.x) ** 2, axis=1))
-    return float(uh @ (fine.M[k] @ uh)) - 2.0 * float(uh @ fine.load(f, k)) + target_sq, target_sq
+    uh = lift(uh)
+    return inner(uh, fine.M[k] @ uh) - 2.0 * inner(uh, lift(fine.load(f, k))) + target_sq, target_sq
 
 
 def _converged(seq, info, residual, rhs, k_res):
