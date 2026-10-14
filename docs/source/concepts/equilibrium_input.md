@@ -50,6 +50,25 @@ is 1 (sine), 2 (cosine) or 3 (both). With both, the sine modes are listed
 first (`m = 0`, `n = 1..n_max`, then `m = 1..m_max`, `n = -n_max..n_max`),
 and the cosine modes follow in the same order with `m = n = 0` in front.
 
+**GVEC G-frame.** The state's `hmap` (the last number of its `global`
+line) says how `X1`, `X2` place a point in space. `hmap = 1` is
+cylindrical (`X1 = R`, `X2 = Z`). `hmap = 21` is GVEC's G-frame
+(`hmap_axisNB`), for devices whose axis is too 3D for planar
+cross-sections, such as a figure-8 stellarator:
+
+```
+x = a(zeta) + X1 N(zeta) + X2 B(zeta)
+```
+
+with the curve `a` and the vectors `N`, `B` sampled in a netCDF file. The
+state does not name that file. The GVEC parameter file next to it does
+(`hmap_ncfile` in `*.ini`), and `read_state` follows it. Like GVEC, the
+reader rotates the samples back by `zeta` about the `z` axis
+(`R_z(-zeta) a` is periodic in one field period) and keeps the
+trigonometric series of one field period with modes up to
+`(nzeta - 1) / 2`. The state's `frame` holds that series. Any other `hmap`
+is refused.
+
 **VMEC.** The wout holds `rmnc`, `zmns` on the full radial mesh
 `s_j = j / (ns - 1)` and `lmns` on the half mesh, and with `lasym = 1` the
 other parities `rmns`, `zmnc`, `lmnc` on the same meshes. `read_wout` interpolates
@@ -100,6 +119,16 @@ the periodic splines. With `stellarator_symmetric` they are projected onto
 `R` even and `Z` odd. `info` holds `nfp`, the sampled `det_range` (checked
 to be positive), the `symmetry_defect` and the raw coefficients `raw_R`,
 `raw_Z`.
+
+A G-frame state gives a `FrameMap`, `Phi = R_z(phi) P` with
+`P = a + X1 N + X2 B` the position in the frame that turns with the field
+periods. `P` is periodic in one field period whatever the axis does, and
+a `CylindricalMap` is the case `P = (R, 0, Z)`. Each Cartesian component of
+`P` is a sum of the state's modes times the frame's modes
+(`frame_blocks`), projected as above. With `stellarator_symmetric`, `P_x`
+is projected like `R` and `P_y`, `P_z` like `Z`. `info` holds `raw_P`.
+`state_position(st)` is the state's own map, cylindrical or G-frame, as a
+JAX function, the reference the spline map approximates.
 
 ## 4. Conventions that must be stated
 

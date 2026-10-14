@@ -1,0 +1,37 @@
+# GVEC vacuum (beta 0, no toroidal current) of GVEC's test-CI case axisNB_N2-12 (gitlab.mpcdf.mpg.de/gvec-group/gvec,
+# commit c0dc66f, MIT). Run with GVEC 1.5.0: pygvec run parameters.toml
+ProjectName = "gframe_N2-12"
+
+which_hmap = 21
+hmap_ncfile = "N2.12-v3.1-hi.nc"
+getBoundaryFromFile = 1
+boundary_filename = "N2.12-v3.1-hi.nc"
+
+X1X2_deg = 5
+LA_deg = 5
+X1_mn_max = [4, 10]
+X2_mn_max = [4, 10]
+LA_mn_max = [4, 10]
+X1_sin_cos = "_cos_"
+X2_sin_cos = "_sin_"
+LA_sin_cos = "_sin_"
+
+minimize_tol = 1e-07
+totalIter = 100000
+logIter = 100
+
+phiedge = 0.03141592654
+picard_current = "auto"
+
+[sgrid]
+grid_type = 0
+nElems = 5
+
+[pres]
+type = "polynomial"
+coefs = [0.0]
+scale = 0.0
+
+[I_tor]
+type = "polynomial"
+coefs = [0.0]

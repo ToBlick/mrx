@@ -25,6 +25,7 @@ data/*
 !data/wout_LandremanPaul2021_QA_lowres.nc
 !data/desc_li383_low_res_reference.h5
 !data/desc_LandremanPaul2021_QA.h5
+!data/gvec_gframe/
 outputs
 out
 logs
