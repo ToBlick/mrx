@@ -38,7 +38,6 @@ from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
 from mrx.mappings import stellarator_symmetric_scalar, stellarator_symmetry_defect
-from mrx.precision import DTYPE
 from mrx.extraction_operators import conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -112,8 +111,8 @@ class StateField:
         self.basis = SplineBasis(block["cos"].shape[1], block["deg"], "clamped", T=jnp.asarray(block["T"]))
         self.C_cos = jnp.asarray(block["cos"])                           # (n_modes, n_base)
         self.C_sin = jnp.asarray(block["sin"])
-        self.m = jnp.asarray(block["m"], dtype=DTYPE)
-        self.n_per = jnp.asarray(block["n"], dtype=DTYPE) / nfp          # per field period
+        self.m = jnp.asarray(block["m"], dtype=jnp.float64)
+        self.n_per = jnp.asarray(block["n"], dtype=jnp.float64) / nfp          # per field period
 
     def __call__(self, x):
         # r is not clipped to [0, 1]. A clip halves the autodiff radial derivative at r = 1 (JAX splits
@@ -205,7 +204,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        dofs = conforming_restriction(E, jnp.asarray(C.reshape(-1)), free.core_rows(0)).astype(E.dtype)
+        dofs = conforming_restriction(E, jnp.asarray(C.reshape(-1)), free.core_rows(0))
         return (E.T @ dofs).reshape(seq.basis_0.shape[0])
 
     raw_R, raw_Z = raw(st["X1"]), raw(st["X2"])

@@ -137,8 +137,7 @@ change is a pytree.
 the four `DifferentialForm`s `basis_0..basis_3` (clamped in `r`, periodic in
 `theta` and `zeta`, degree `p`), the quadrature rule (`p + 1` Gauss points per
 span), the extractions, the incidence stencils, the 1-D basis tables at the
-quadrature points, the plans of the mass applies, the parity views and the
-float64 copy `seq.residual` of the mixed configuration, all built in the
+quadrature points, the plans of the mass applies and the parity views, all built in the
 constructor. `seq.free` is taken on demand. It is registered as a pytree (`mrx/pytree.py`), so a function
 of it under `eqx.filter_jit` takes its arrays as inputs.
 

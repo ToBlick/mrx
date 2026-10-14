@@ -30,13 +30,6 @@ class Symmetry(StrEnum):
     NONE = "none"                   # no symmetry: zeta in [0, 1] covers the whole torus and nfp = 1
 
 
-class Precision(StrEnum):
-    """The floating-point precision of a run."""
-    FLOAT32 = "float32"             # float32 throughout (solve tolerance 1e-5). Its Laplacian solves do not reach it on production meshes
-    MIXED = "mixed"                 # float32 fields and solves, refined against a float64 residual (tol 1e-8)
-    FLOAT64 = "float64"             # float64 throughout (tol 1e-8). The default
-
-
 class Method(StrEnum):
     """How the relaxation step is computed."""
     NEWTON = "newton"               # Newton steps with the energy Hessian (mrx.relaxation.newton)
@@ -60,10 +53,8 @@ class Geometry:
     """The cell boundaries in theta, increasing from 0 to 1, instead of a uniform grid."""
     knots_zeta: Optional[tuple[float, ...]] = None
     """The cell boundaries in zeta, increasing from 0 to 1, instead of a uniform grid."""
-    precision: Precision = Precision.FLOAT64
-    """float32 or float64 use that precision everywhere. mixed keeps fields and solves in float32 and refines them against a float64 residual."""
     solve_tol: Optional[float] = None
-    """The relative residual tolerance of every linear solve. Unset, it follows the precision: float32 1e-5, mixed 1e-8, float64 1e-8."""
+    """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000
     """The maximum number of iterations of every linear solve."""
     max_batch: int = 262144
@@ -177,7 +168,7 @@ class Output:
     out: Optional[str] = None
     """The directory the run writes to. Unset, it is outputs/relax/<date>/<time>."""
     restart: Optional[str] = None
-    """Continue from a checkpoint file checkpoints/state_<step>.h5 written with the same geometry, resolution, spline degree and precision."""
+    """Continue from a checkpoint file checkpoints/state_<step>.h5 written with the same geometry, resolution and spline degree."""
 
 
 @tyro.conf.configure(tyro.conf.EnumChoicesFromValues)

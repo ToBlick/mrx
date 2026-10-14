@@ -33,8 +33,7 @@ print("[tutorial 2] the vacuum field of the QA stellarator: importing JAX and MR
 
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Geometry, Precision
+from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -44,7 +43,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 2: the vacuum field of the QA domain as a harmonic 2-form, and its Poincare sections."""
     geometry: Geometry = Geometry(path="data/wout_LandremanPaul2021_QA_lowres.nc", resolution=(12, 16, 16),
-                                  spline_degree=2, precision=Precision(current_precision()))
+                                  spline_degree=2)
     cuts: int = 6
     """The number of poloidal cuts per field period in the torus figure."""
     periods: int = 400
@@ -57,10 +56,6 @@ class Options:
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
 g = cli.geometry
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if g.precision != current_precision():
-    sys.exit(f"--geometry.precision {g.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before mrx is "
-             f"imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%

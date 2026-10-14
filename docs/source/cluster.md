@@ -37,14 +37,14 @@ The job activates the virtualenv, exports `PYTHONPATH=$MRX_ROOT`, prints
 | `TIMEOUT_MIN` | wall time in minutes | 60 |
 | `MEM_GB` | host memory | 64 |
 | `CPUS` | CPUs per task | 32 |
-| `EXTRA_ENV` | space-separated `VAR=VALUE` pairs exported in the job, for example `MRX_DTYPE=float64` | |
+| `EXTRA_ENV` | space-separated `VAR=VALUE` pairs exported in the job, for example `MRX_XLA_CACHE=/tmp/cache` | |
 | `DEPENDENCY` | an `sbatch --dependency` spec | |
 | `MRX_ROOT` | the checkout to run | the repository containing `run.sh` |
 | `MRX_VENV` | the virtualenv | `$MRX_ROOT/.venv`, then the main checkout's |
 
 `bash slurm/waitjob.sh <JOBID> <log>` blocks until the job leaves the
 queue and prints the head and tail of the log. `bash slurm/suite.sh`
-submits the test suite in its three precision configurations
+submits the test suite as one GPU job
 ([Testing strategy](concepts/testing_strategy.md)).
 
 ## Worktrees

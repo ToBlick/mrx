@@ -39,8 +39,7 @@ print("[tutorial 5] the resistive drive on li383: importing JAX and MRX", flush=
 
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Budget, Geometry, Precision
+from mrx.relaxation.config import Budget, Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -49,7 +48,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 5: drive the seeded field of Tutorial 4 towards the current of the unseeded floor, on li383."""
     geometry: Geometry = Geometry(path="data/wout_li383_low_res_reference.nc", resolution=(12, 16, 16),
-                                  spline_degree=2, precision=Precision(current_precision()))
+                                  spline_degree=2)
     seeded: str = "outputs/tutorials/4_li383_island_seed"
     """The run directory of Tutorial 4 (with checkpoints/ and reference.h5)."""
     resistivity: float = 0.064
@@ -65,10 +64,6 @@ class Options:
 
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if cli.geometry.precision != current_precision():
-    sys.exit(f"--geometry.precision {cli.geometry.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before "
-             f"mrx is imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
@@ -92,7 +87,6 @@ from mrx.relaxation.config import Drive, RelaxConfig
 from mrx.relaxation.loop import check_checkpoint, initial_state, radial_cell_sq, relax, write_checkpoint
 from mrx.relaxation.seeding import energy_seed
 
-print(f"[env] mrx precision {current_precision()}")
 
 geometry = cli.geometry
 mesh = f"{geometry.resolution} p={geometry.spline_degree}"

@@ -11,11 +11,10 @@ the map Phi is built, no operators, so the script is quick.
 """
 from __future__ import annotations
 
-import argparse
 import os
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Optional
+from typing import Optional
 
 import tyro
 
@@ -43,8 +42,6 @@ class PlotMesh:
     """2d draws the poloidal cross-sections, 3d the cut-open torus."""
     planes: tuple[float, ...] = (0.0, 0.5)
     """The logical toroidal planes of the cross-sections (2d only)."""
-    precision: Literal["float32", "float64"] = "float32"
-    """The floating-point precision of the map."""
 
 
 def main(cli):
@@ -137,8 +134,4 @@ def main(cli):
 
 
 if __name__ == "__main__":
-    # The precision must be in the environment before mrx is imported. The full parse follows.
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--precision", default="float64", choices=("float32", "float64"))
-    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
     main(tyro.cli(PlotMesh, description=__doc__))

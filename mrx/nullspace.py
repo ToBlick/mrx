@@ -10,49 +10,36 @@ import jax.numpy as jnp
 
 import mrx
 import mrx.operators as op
-from mrx.precision import RESIDUAL_DTYPE
 
 
 #: The co-closed solve of the harmonic 2-form stops this factor below the tolerance of the sequence. The Rayleigh
 #: quotient of the form is quadratic in the error of that solve times an eigenvalue of the stiffness, which grows
-#: with the mesh. In plain float32 a factor 0.03 no longer converges on li383 (48,64,24).
+#: with the mesh.
 HARMONIC_TOL = 0.1
 
 
-def _builder(seq):
-    """The sequence the forms are built and checked on, which is its float64 view when it has one."""
-    return seq.residual if seq.residual is not None else seq
-
-
 def _commit(seq, operators):
-    """Install ``operators`` on ``seq`` and its float64 view and return it. The next solve then removes
-    the forms stored so far."""
+    """Install ``operators`` on ``seq`` and return it. The next solve then removes the forms stored so far."""
     seq.operators = operators
-    if seq.residual is not None:
-        seq.residual.operators = operators
     return operators
 
 
 def harmonic_rayleigh(seq, v, k):
     """The Rayleigh quotient ``v^T L_k v / v^T M_k v`` (``M_k`` the mass matrix) of a ``k``-form ``v``
     in the space of ``seq``. It is zero for a harmonic form and of the order of the smallest nonzero
-    eigenvalue otherwise.
-
-    It is evaluated in the residual precision, since ``L_k v`` of a nearly harmonic ``v`` cancels two
-    large terms. It takes a mass solve, so it is meant as a diagnostic.
+    eigenvalue otherwise. It takes a mass solve, so it is meant as a diagnostic.
     """
-    on = _builder(seq)
-    v = jnp.asarray(v).astype(RESIDUAL_DTYPE)
-    lv = op.laplacian_with(on, v, k, lambda w, j: seq.M[j].solve(w, dtype=RESIDUAL_DTYPE))
-    mv = on.M[k] @ v
+    v = jnp.asarray(v)
+    lv = seq.L[k] @ v
+    mv = seq.M[k] @ v
     return float(jnp.dot(v, lv) / jnp.dot(v, mv))
 
 
-def _closed_seed(build, components, k):
+def _closed_seed(seq, components, k):
     """The form with constant logical components ``components``, checked to be closed up to round-off."""
-    components = jnp.asarray(components, dtype=mrx.DTYPE)
-    seed = build.interpolate(lambda x_hat: components, k, frame='logical')
-    closed = float(build.l2_norm(build.G[k] @ seed, k + 1) / build.l2_norm(seed, k))
+    components = jnp.asarray(components)
+    seed = seq.interpolate(lambda x_hat: components, k, frame='logical')
+    closed = float(seq.l2_norm(seq.G[k] @ seed, k + 1) / seq.l2_norm(seed, k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(
             f"compute_nullspaces: the k={k} seed is not closed (|G seed| / |seed| = {closed:.2e})")
@@ -72,37 +59,34 @@ def compute_nullspaces(seq, *, verbose=True):
     - k = 0 without boundary conditions: the constant.
     - k = 1 without boundary conditions: the Leray projection of ``d zeta``, found with one ``L_0`` solve.
 
-    In the mixed precision configuration they are computed and stored in float64: a form rounded to
-    float32 is 1e-7 from the kernel, which the deflated solves cannot tolerate below that level.
-    The float64 view and the parity views of ``seq`` get their forms as well. With ``verbose`` the
+    The parity views of ``seq`` get their forms as well. With ``verbose`` the
     :func:`harmonic_rayleigh` of each form is printed.
     """
     operators = _commit(seq, op.init_nullspaces(seq, seq._require_operators()))
-    build = _builder(seq)
 
     def store(space, k, v):
         v = v / space.l2_norm(v, k)
-        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v.astype(RESIDUAL_DTYPE)[None, :]))
+        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v[None, :]))
 
     if op.n_vectors(seq.betti_numbers, 3, True):
-        operators = store(build, 3, build.M[3].solve(jnp.ones(build.n(3), dtype=mrx.DTYPE)))
+        operators = store(seq, 3, seq.M[3].solve(jnp.ones(seq.n(3))))
 
     if op.n_vectors(seq.betti_numbers, 2, True):
         # the closed seed has no coexact part, so removing its exact part (the image of curl, one
         # curl-curl solve) leaves the harmonic form
-        seed2 = _closed_seed(build, (0.0, 0.0, 1.0), 2)
-        a = build.L[1].solve(build.G[1].T @ (build.M[2] @ seed2), part="coexact", gauge=False,
-                             tol=HARMONIC_TOL * build.tol)
-        operators = store(build, 2, seed2 - build.G[1] @ a)
+        seed2 = _closed_seed(seq, (0.0, 0.0, 1.0), 2)
+        a = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ seed2), part="coexact", gauge=False,
+                           tol=HARMONIC_TOL * seq.tol)
+        operators = store(seq, 2, seed2 - seq.G[1] @ a)
 
-    # build.free is taken anew after every store: a view copies the operators it sees
+    # seq.free is taken anew after every store: a view copies the operators it sees
     if op.n_vectors(seq.betti_numbers, 0, False):
-        operators = store(build.free, 0, jnp.ones(build.free.n(0), dtype=mrx.DTYPE))
+        operators = store(seq.free, 0, jnp.ones(seq.free.n(0)))
 
     if op.n_vectors(seq.betti_numbers, 1, False):
         # curl-free since the seed is closed, weakly divergence-free by the projection
-        v1, _ = build.free.leray(_closed_seed(build.free, (0.0, 0.0, 1.0), 1), k=1)
-        operators = store(build.free, 1, v1)
+        v1, _ = seq.free.leray(_closed_seed(seq.free, (0.0, 0.0, 1.0), 1), k=1)
+        operators = store(seq.free, 1, v1)
 
     if verbose:
         for space, k in ((seq, 3), (seq, 2), (seq.free, 0), (seq.free, 1)):
@@ -127,11 +111,9 @@ def _reduce_to_view(seq, view, verbose):
         if not op.n_vectors(view.betti_numbers, k, dirichlet):
             continue
         base, space = (seq, view) if dirichlet else (seq.free, view.free)
-        # reduced and normalised on the float64 copy of the view when there is one
-        src = view if view.residual is None else view.residual
-        v = src.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
-        v = v / (src if dirichlet else src.free).l2_norm(v, k)
-        operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v.astype(RESIDUAL_DTYPE)[None, :]))
+        v = view.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
+        v = v / space.l2_norm(v, k)
+        operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v[None, :]))
         if verbose:
             print(f"[nullspace] {'odd' if view.parity == -1 else 'even'} view k={k} "
                   f"{'dbc' if dirichlet else 'free'}: v^T L v / v^T M v = "

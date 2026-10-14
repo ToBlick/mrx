@@ -35,9 +35,7 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.12']
-        dtype: ['float64', 'float32']
     env:
-      MRX_DTYPE: ${{ matrix.dtype }}
       # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
       # the persistent compilation cache is the main lever on wall time.
       JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
@@ -60,11 +58,11 @@ jobs:
       uses: actions/cache@v4
       with:
         path: .jax_cache
-        key: jax-cache-${{ runner.os }}-${{ matrix.dtype }}-${{ github.sha }}
+        key: jax-cache-${{ runner.os }}-${{ github.sha }}
         restore-keys: |
-          jax-cache-${{ runner.os }}-${{ matrix.dtype }}-
+          jax-cache-${{ runner.os }}-
 
-    - name: Run the test suite (${{ matrix.dtype }})
+    - name: Run the test suite
       run: |
         pytest
 

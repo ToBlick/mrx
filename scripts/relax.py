@@ -26,15 +26,9 @@ Output (in ``--output.out``):
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import time
-
-#: Maps --geometry.precision to (MRX_DTYPE, MRX_RESIDUAL_DTYPE). They must be set before mrx is imported, because mrx.precision fixes the dtypes at import.
-PRECISIONS = {"mixed": ("float32", "float64"), "float32": ("float32", "float32"),
-              "float64": ("float64", "float64")}
-
 
 def main(cfg):
     import equinox as eqx
@@ -50,8 +44,7 @@ def main(cfg):
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     mrx.MAP_BATCH_SIZE_INNER = g.max_batch
-    print(f"[env] mrx from {mrx.__file__}  precision {g.precision} ({mrx.DTYPE} solves, "
-          f"{mrx.precision.RESIDUAL_DTYPE} residual)  batch {g.max_batch or 'all'}", flush=True)
+    print(f"[env] mrx from {mrx.__file__}  batch {g.max_batch or 'all'}", flush=True)
     out = cfg.output.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
@@ -93,7 +86,7 @@ def main(cfg):
     if dr:
         check_checkpoint(dr.reference, seq)
         with h5py.File(dr.reference, "r") as fh:
-            B_star = jnp.asarray(fh["B_n"][()], dtype=state.B_n.dtype)
+            B_star = jnp.asarray(fh["B_n"][()], dtype=jnp.float64)
             ref_step = int(fh.attrs["step"])
         print(f"[drive] B* from {dr.reference} (step {ref_step})", flush=True)
         if dr.reference_smoothing:
@@ -137,10 +130,6 @@ def main(cfg):
 
 
 if __name__ == "__main__":
-    # The precision must be in the environment before mrx is imported. The full parse follows.
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--geometry.precision", dest="precision", default="float64", choices=tuple(PRECISIONS))
-    os.environ["MRX_DTYPE"], os.environ["MRX_RESIDUAL_DTYPE"] = PRECISIONS[pre.parse_known_args()[0].precision]
     import tyro
     from mrx.relaxation.config import RelaxConfig
     main(tyro.cli(RelaxConfig, description=__doc__))

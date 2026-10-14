@@ -5,7 +5,7 @@ We take a VMEC equilibrium, load it into MRX, and relax it to a chosen tolerance
 The relaxation is done with Newton-MR, a preconditioned MINRES solve of Newton's equations.
 
 The tutorial takes ``--budget.steps`` Newton steps (20 by default) from the Clebsch initial field on the
-``(12, 16, 16) p = 2`` mesh in mixed precision. It prints the traces, draws ``||F||`` and the energy
+``(12, 16, 16) p = 2`` mesh. It prints the traces, draws ``||F||`` and the energy
 released against the step, and writes the run in the layout of ``scripts/relax.py``. Tutorial 4 can re-use
 the result.
 
@@ -28,8 +28,7 @@ print("[tutorial 3] Newton relaxation of li383: importing JAX and MRX", flush=Tr
 
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Budget, Geometry, Newton, Precision
+from mrx.relaxation.config import Budget, Geometry, Newton
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -38,7 +37,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 3: Newton steps from the equilibrium field of li383."""
     geometry: Geometry = Geometry(path="data/wout_li383_low_res_reference.nc", resolution=(12, 16, 16),
-                                  spline_degree=2, precision=Precision(current_precision()))
+                                  spline_degree=2)
     newton: Newton = Newton()
     budget: Budget = Budget(steps=20, chunk=5, floor_tol=0.0)
     """The step budget of the Newton run."""
@@ -47,10 +46,6 @@ class Options:
 
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if cli.geometry.precision != current_precision():
-    sys.exit(f"--geometry.precision {cli.geometry.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before "
-             f"mrx is imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
@@ -68,7 +63,6 @@ from mrx.diagnostics.plotting import plot_twin_axis
 from mrx.relaxation.config import RelaxConfig
 from mrx.relaxation.loop import initial_state, radial_cell_sq, relax, write_checkpoint
 
-print(f"[env] mrx precision {current_precision()}")
 
 # The configuration is the same object that scripts/relax.py builds from its command line
 # (mrx.relaxation.config).

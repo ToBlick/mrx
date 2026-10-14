@@ -37,7 +37,7 @@ import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
-from mrx.precision import DTYPE, sqrt_eps
+from mrx.precision import eps, sqrt_eps
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
@@ -66,8 +66,8 @@ def _assemble_weighted_1d_mass(B, weights):
 
 def _simultaneous_diagonalize_pair(M, A):
     """``(V, lam)`` with ``V^T M V = I`` and ``V^T A V = diag(lam)`` for SPD ``M``, symmetric ``A``."""
-    M_sym = _symmetrize(jnp.asarray(M, dtype=DTYPE))
-    A_sym = _symmetrize(jnp.asarray(A, dtype=DTYPE))
+    M_sym = _symmetrize(jnp.asarray(M))
+    A_sym = _symmetrize(jnp.asarray(A))
     L = jnp.linalg.cholesky(M_sym)
     Linv_A = jax.scipy.linalg.solve_triangular(L, A_sym, lower=True)
     B = jax.scipy.linalg.solve_triangular(L, Linv_A.T, lower=True).T
@@ -81,11 +81,11 @@ def _dense_incidence_1d(n0, typ):
     periodic, zero if constant)."""
     if typ == 'clamped':
         j = jnp.arange(n0 - 1)
-        return jnp.zeros((n0 - 1, n0), dtype=DTYPE).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
+        return jnp.zeros((n0 - 1, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
     if typ == 'periodic':
         j = jnp.arange(n0)
-        return jnp.zeros((n0, n0), dtype=DTYPE).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
-    return jnp.zeros((n0, n0), dtype=DTYPE)
+        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
+    return jnp.zeros((n0, n0))
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +166,7 @@ def _fd_stiffness_degree0(seq, axis, profile):
     k = d.T @ (trans[:, None] * d)
     # on the D-spline coefficients: they have unit integral, value_i = u_i / h_i
     k = k / np.outer(h, h)
-    return jnp.asarray(0.5 * (k + k.T), dtype=DTYPE)
+    return jnp.asarray(0.5 * (k + k.T))
 
 
 def _h_last(seq):
@@ -305,17 +305,17 @@ def _parity_split(seq, k):
     return lambda x: (projector.post(x, 1.0), projector.post(x, -1.0))
 
 
-def _probe_rows(apply, size, rows, dtype, split):
+def _probe_rows(apply, size, rows, split):
     """The dense, symmetrised block of the operator ``apply`` on ``rows``, one apply per row."""
     if rows.size == 0:
-        return jnp.zeros((0, 0), dtype=dtype)
+        return jnp.zeros((0, 0))
     rows_j = jnp.asarray(rows)
 
     def column(e):
         return (apply(e) if split is None else sum(apply(part) for part in split(e)))[rows_j]
 
     # the columns in batches of PROBE_BATCH inside one call: one host dispatch instead of one per axis row
-    units = jnp.zeros((rows.size, size), dtype=dtype).at[jnp.arange(rows.size), rows_j].set(1.0)
+    units = jnp.zeros((rows.size, size)).at[jnp.arange(rows.size), rows_j].set(1.0)
     block = jax.lax.map(column, units, batch_size=PROBE_BATCH).T
     return 0.5 * (block + block.T)
 
@@ -331,7 +331,7 @@ def _dense_symmetric_inverse(block, name):
         return block
     w, v = jnp.linalg.eigh(block)
     if not isinstance(w, jax.core.Tracer):
-        floor = block.shape[0] * float(jnp.finfo(block.dtype).eps) * float(w[-1])
+        floor = eps(block.shape[0]) * float(w[-1])
         if not float(w[0]) > floor:
             raise ValueError(f"the axis block of {name} is not positive definite: its eigenvalues span "
                              f"[{float(w[0]):.3e}, {float(w[-1]):.3e}]")
@@ -459,12 +459,12 @@ def _batch(specs, core, core_inv, n_full, X=None):
     o_cols, o_vals = _rows_table(*out_rows, n_out)
 
     def dev(arrays):
-        return tuple(jnp.asarray(m, DTYPE) for m in arrays)
-    return _Batched(jnp.asarray(in_idx), jnp.asarray(in_w, DTYPE), jnp.asarray(pre, DTYPE),
-                    jnp.asarray(post, DTYPE), dev(left), dev(right) if laplacian else None,
-                    dev(lam) if laplacian else None, jnp.asarray(x_cols[core]), jnp.asarray(x_vals[core], DTYPE),
-                    jnp.asarray(core_inv, DTYPE), jnp.asarray(source[o_cols, 0].astype(np.int64)),
-                    jnp.asarray(o_vals * source[o_cols, 1], DTYPE), N)
+        return tuple(jnp.asarray(m) for m in arrays)
+    return _Batched(jnp.asarray(in_idx), jnp.asarray(in_w), jnp.asarray(pre),
+                    jnp.asarray(post), dev(left), dev(right) if laplacian else None,
+                    dev(lam) if laplacian else None, jnp.asarray(x_cols[core]), jnp.asarray(x_vals[core]),
+                    jnp.asarray(core_inv), jnp.asarray(source[o_cols, 0].astype(np.int64)),
+                    jnp.asarray(o_vals * source[o_cols, 1]), N)
 
 
 @eqx.filter_jit
@@ -491,30 +491,23 @@ def _apply_batched(p, x, core_inv, alpha, shift):
     return jnp.sum(p.out_w * z[p.out_idx], axis=-1)
 
 
-def _cast(p, dtype):
-    """``p`` with its floating-point arrays in ``dtype``."""
-    return jax.tree_util.tree_map(lambda a: a.astype(dtype) if jnp.issubdtype(a.dtype, jnp.floating) else a, p)
-
-
 class _Atom:
     """What the mass and the Laplacian preconditioner share: the split into axis and off-axis
     rows, the dense axis block, and the apply."""
 
     def _prologue(self, seq, k):
-        """Return the axis rows, the off-axis blocks, the sequence to probe on and ``probe``.
-        ``probe(apply)`` is the dense block of ``apply`` on the axis rows, computed in the
-        residual precision."""
+        """Return the axis rows, the off-axis blocks and ``probe``. ``probe(apply)`` is the dense
+        block of ``apply`` on the axis rows."""
         self.parity_projector = seq.free_projector(k)   # None on a full-period sequence
         core, raw_blocks = _tensor_blocks(seq, k)
-        on = seq if seq.residual is None else seq.residual
-        size, split = seq.n(k), _parity_split(on, k)
+        size, split = seq.n(k), _parity_split(seq, k)
         self._n = size
-        return core, raw_blocks, on, lambda apply: _probe_rows(apply, size, core, on.dtype, split)
+        return core, raw_blocks, lambda apply: _probe_rows(apply, size, core, split)
 
     def _install(self, core, specs, core_inv):
         # device arrays, not NumPy: NumPy attributes are static and a new geometry would recompile
         self._core = jnp.asarray(core)
-        self._specs = [dict(s, rows=jnp.asarray(s["rows"]), vals=jnp.asarray(s["vals"], dtype=DTYPE)) for s in specs]
+        self._specs = [dict(s, rows=jnp.asarray(s["rows"]), vals=jnp.asarray(s["vals"])) for s in specs]
         self._payload = _batch(self._specs, core, core_inv, self._n)
 
     def reduced(self, X):
@@ -528,20 +521,6 @@ class _Atom:
             return _apply_batched(p, jnp.asarray(x), None, None, None)
         return self.parity_projector(lambda v: _apply_batched(p, v, None, None, None), jnp.asarray(x))
 
-    def apply_in(self, dtype):
-        """Return :meth:`apply` computed in ``dtype``, for use inside an operator of that
-        precision."""
-        dtype = jnp.dtype(dtype)
-        p = _cast(self._payload, dtype)
-        project = self.parity_projector
-
-        def apply(x):
-            if project is None:
-                return _apply_batched(p, jnp.asarray(x, dtype), None, None, None)
-            return project(lambda v: _apply_batched(p, jnp.asarray(v, dtype), None, None, None),
-                           jnp.asarray(x, dtype))
-        return apply
-
 
 @register_arrays
 class MetricLumpingLaplacian(_Atom):
@@ -553,7 +532,7 @@ class MetricLumpingLaplacian(_Atom):
 
     def __init__(self, seq, operators, k):
         from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
-        core, raw_blocks, on, probe = self._prologue(seq, k)
+        core, raw_blocks, probe = self._prologue(seq, k)
         specs, strong = [], []
         for c, rows, vals, (r0, nr), shape in raw_blocks:
             masses, stiffs = component_factors(seq, k, c, (r0, nr))
@@ -564,14 +543,14 @@ class MetricLumpingLaplacian(_Atom):
                               left=tuple(m.T for m in v), right=v, lam=lam))
             # the strong half S_k: the Kronecker terms of the primal axes
             strong.append([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)])
-        self._strong = jnp.asarray(strong, dtype=DTYPE)
+        self._strong = jnp.asarray(strong)
         core_inv = _dense_symmetric_inverse(
-            probe(lambda x: apply_laplacian_approx(on, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
+            probe(lambda x: apply_laplacian_approx(seq, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
-        mass_core = probe(lambda x: on.M[k] @ x)
-        stiffness_core = probe(lambda x: on.S[k] @ x)
+        mass_core = probe(lambda x: seq.M[k] @ x)
+        stiffness_core = probe(lambda x: seq.S[k] @ x)
         self._core_pair = (_simultaneous_diagonalize_pair(mass_core, stiffness_core) if core.size
-                           else (mass_core, jnp.zeros(0, dtype=DTYPE)))
+                           else (mass_core, jnp.zeros(0)))
         self._install(core, specs, core_inv)
 
     def shifted_stiffness_apply(self, eps, payload=None):
@@ -596,14 +575,14 @@ class MetricLumpingMass(_Atom):
     """
 
     def __init__(self, seq, operators, k):
-        core, raw_blocks, on, probe = self._prologue(seq, k)
+        core, raw_blocks, probe = self._prologue(seq, k)
         mass_1d, lam = _kron_mass_model_1d(seq, k)
         specs = [dict(rows=rows, vals=vals, shape=shape, pre=1.0 / lam[c][r0:r0 + nr],
                       post=1.0 / lam[c][r0:r0 + nr],
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
                  for c, rows, vals, (r0, nr), shape in raw_blocks]
-        core_inv = _dense_symmetric_inverse(probe(lambda x: on.M[k] @ x), f"the mass preconditioner, k = {k}")
+        core_inv = _dense_symmetric_inverse(probe(lambda x: seq.M[k] @ x), f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 
@@ -621,15 +600,6 @@ class ReducedAtom(eqx.Module):
 
     def apply(self, x):
         return _apply_batched(self.payload, jnp.asarray(x), None, None, None)
-
-    def apply_in(self, dtype):
-        """Return :meth:`apply` computed in ``dtype``."""
-        dtype = jnp.dtype(dtype)
-        p = _cast(self.payload, dtype)
-
-        def apply(x):
-            return _apply_batched(p, jnp.asarray(x, dtype), None, None, None)
-        return apply
 
     def shifted_stiffness_apply(self, eps):
         """The restricted :meth:`MetricLumpingLaplacian.shifted_stiffness_apply`, ``x -> X^T (M + eps S)^{-1} X x``."""

@@ -24,7 +24,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.extraction_operators import build_extraction, core_gram_inverse, get_xi, row_products, summed_coo
-from mrx.precision import RESIDUAL_DTYPE
 
 
 def reflection_permutation(n: int, p: int) -> np.ndarray:
@@ -99,7 +98,7 @@ def symmetrize(x, plan, parity, signed=True):
 def parity_of(x, plan):
     """The parity ``+1.0`` or ``-1.0`` of a raw coefficient vector ``x`` of definite parity, as a
     traced scalar. It is the sign of ``x . R x``, which equals ``+-|x|^2``."""
-    return jnp.where(jnp.vdot(x, reflect(x, plan)) >= 0.0, 1.0, -1.0).astype(x.dtype)
+    return jnp.where(jnp.vdot(x, reflect(x, plan)) >= 0.0, 1.0, -1.0)
 
 
 def mirror_zeta_1d(seq, M, derivative):
@@ -188,9 +187,8 @@ def _orbits(seq, k, dirichlet, parity):
     ``e_i`` for a fixed point of sign ``s``. The reduced DoFs built from the polar core rows
     (``core_red``) come last."""
     s = int(parity)
-    # rebuilt in float64 from the host data, so the working sequence and its float64 twin get the same basis
     basis = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
-    e, _ = build_extraction(basis, get_xi(seq.ns[1], basis.Lambda[1].p), dirichlet, dtype=np.float64)
+    e, _ = build_extraction(basis, get_xi(seq.ns[1], basis.Lambda[1].p), dirichlet)
     perm_free, sign_free, core, ERE_core = _free_reflection(seq, k, dirichlet, e)
     if core.size:
         # a signed permutation on the core rows too: the surgery weights sit at the splines' centres (get_xi)
@@ -235,17 +233,16 @@ def parity_extraction(seq, k, dirichlet, parity):
     ``X`` maps reduced DoFs to extracted DoFs and has orthonormal columns, so ``X.T`` reduces an
     extracted vector of this parity. ``E_red = X^T E`` is the extraction of the reduced space and
     satisfies ``E_red R = parity E_red``. ``core_red`` are the reduced DoFs built from the polar
-    core rows. Both operators are :class:`~mrx.extraction_operators.MatrixFreeExtraction` in the
-    sequence's dtype. :meth:`~mrx.derham_sequence.DeRhamSequence.parity_view` builds its spaces
+    core rows. Both operators are :class:`~mrx.extraction_operators.MatrixFreeExtraction`. :meth:`~mrx.derham_sequence.DeRhamSequence.parity_view` builds its spaces
     with this function."""
     col, weight, n_red, core = _orbits(seq, k, dirichlet, parity)
     e = seq.extraction[(k, dirichlet)]
     rows, cols, vals = e.entries()
     keep = col[rows] >= 0
     E_red = summed_coo(col[rows[keep]], cols[keep], weight[rows[keep]] * vals[keep],
-                       (n_red, e.forward_shape[1]), dtype=e.dtype)
+                       (n_red, e.forward_shape[1]))
     free = np.flatnonzero(col >= 0)
-    X = summed_coo(free, col[free], weight[free], (col.size, n_red), dtype=e.dtype)
+    X = summed_coo(free, col[free], weight[free], (col.size, n_red))
     return E_red, X, core
 
 
@@ -264,7 +261,7 @@ def reduced_dirichlet_dofs(X_free, X_dirichlet, index):
     return reduced
 
 
-def reduce_operator(X_out, S, X_in, dtype):
+def reduce_operator(X_out, S, X_in):
     """``X_out^T S X_in``: an operator ``S`` between extracted spaces (the grad or curl stencil)
     restricted to the parity-reduced spaces of :func:`parity_extraction`. The restriction is exact
     because the exterior derivative commutes with the reflection."""
@@ -273,7 +270,7 @@ def reduce_operator(X_out, S, X_in, dtype):
     rows, cols, vals = S.entries()
     keep = (col_out[rows] >= 0) & (col_in[cols] >= 0)
     return summed_coo(col_out[rows[keep]], col_in[cols[keep]], w_out[rows[keep]] * vals[keep] * w_in[cols[keep]],
-                      (X_out.forward_shape[1], X_in.forward_shape[1]), dtype=dtype)
+                      (X_out.forward_shape[1], X_in.forward_shape[1]))
 
 
 class FreeProjector(eqx.Module):
@@ -286,10 +283,7 @@ class FreeProjector(eqx.Module):
     it gives ``Pi P Pi^T``, with ``s`` read off the input. This is symmetric, positive on the
     vectors of that parity and ignores the round-off of the other parity in a residual, so the
     residual norm of a CG preconditioned with it measures only what the half-period operators
-    can reduce. The projections run in the residual precision :data:`mrx.precision.RESIDUAL_DTYPE`
-    and return the input's dtype. In the mixed precision configuration that is float64, so the
-    float64 residuals and the float64 probes of the preconditioners' axis blocks
-    (:mod:`mrx.metric_lumping`) are split into their parities without float32 round-off.
+    can reduce.
 
     Obtain it from ``seq.free_projector(k)``. The sequence builds one per space."""
 
@@ -310,10 +304,10 @@ class FreeProjector(eqx.Module):
             core_block = np.zeros((0, 0))
         self.perm = jnp.asarray(perm_free)
         self.inv_perm = jnp.asarray(np.argsort(perm_free))
-        self.sign = jnp.asarray(sign_free, dtype=RESIDUAL_DTYPE)
+        self.sign = jnp.asarray(sign_free, dtype=jnp.float64)
         self.core = jnp.asarray(core)
-        self.block = jnp.asarray(core_block, dtype=RESIDUAL_DTYPE)
-        self.blockT = jnp.asarray(core_block.T, dtype=RESIDUAL_DTYPE)
+        self.block = jnp.asarray(core_block)
+        self.blockT = jnp.asarray(core_block.T)
         self.has_core = bool(core.size)
 
     def reflect_free(self, y):
@@ -327,23 +321,18 @@ class FreeProjector(eqx.Module):
         return y.at[self.core].set(self.blockT @ r[self.core]) if self.has_core else y
 
     def post(self, y, s):
-        """The projection ``(I + s R_free) y / 2`` of the DoF vector ``y``, computed in the
-        residual precision and returned in ``y``'s dtype."""
-        y_res = jnp.asarray(y, RESIDUAL_DTYPE)
-        return (0.5 * (y_res + s * self.reflect_free(y_res))).astype(jnp.asarray(y).dtype)
+        """The projection ``(I + s R_free) y / 2`` of the DoF vector ``y``."""
+        return 0.5 * (y + s * self.reflect_free(y))
 
     def dual(self, r, s):
-        """The projection ``(I + s R_free^T) r / 2`` of the dual vector ``r``, computed in the
-        residual precision and returned in ``r``'s dtype."""
-        r_res = jnp.asarray(r, RESIDUAL_DTYPE)
-        return (0.5 * (r_res + s * self.reflect_free_T(r_res))).astype(jnp.asarray(r).dtype)
+        """The projection ``(I + s R_free^T) r / 2`` of the dual vector ``r``."""
+        return 0.5 * (r + s * self.reflect_free_T(r))
 
     def parity(self, r):
         """The parity ``+1.0`` or ``-1.0`` of ``r``: the sign of ``r . R_free r``, which is
         ``+-|r|^2`` for a vector of definite parity. This works for dual vectors too, since the
         rows away from the polar core decide the sign."""
-        r_res = jnp.asarray(r, RESIDUAL_DTYPE)
-        return jnp.where(jnp.vdot(r_res, self.reflect_free(r_res)) >= 0.0, 1.0, -1.0)
+        return jnp.where(jnp.vdot(r, self.reflect_free(r)) >= 0.0, 1.0, -1.0)
 
     def projectors(self, b):
         """The functions ``(project_primal, project_dual)`` at the parity of the right-hand side

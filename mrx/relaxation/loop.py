@@ -24,7 +24,6 @@ from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENAL
                                    newton_direction)
 from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
                                    weak_pressure, beta_vol)
-from mrx.precision import DTYPE, RESIDUAL_DTYPE
 
 
 def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
@@ -54,7 +53,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     Multiplied with the components of a 2-form velocity at the quadrature points they give the number of
     logical cells crossed per unit time, the CFL number of each direction.
     """
-    h = jnp.asarray(knot_spacing(seq), dtype=DTYPE)
+    h = jnp.asarray(knot_spacing(seq))
     weights = 1.0 / (seq.jacobian_j[:, None] * h[None, :])
     # the theta cell degenerates in the first radial span
     return weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])
@@ -174,13 +173,13 @@ class TimeStepper(eqx.Module):
     def __post_init__(self):
         # with stellarator symmetry the harmonic form is odd and the force even, so this is empty
         even = self.seq.even
-        hs = jnp.asarray(even.nullspace(2), dtype=DTYPE)      # the loop works in the working dtype
+        hs = even.nullspace(2)
         self.harmonic = hs
-        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=hs.dtype)
+        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=jnp.float64)
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
         self.resistive = bool(self.resistivity != 0)
-        self.resistivity = jnp.asarray(self.resistivity, dtype=DTYPE)
+        self.resistivity = jnp.asarray(self.resistivity, dtype=jnp.float64)
         self.cfl_weights = logical_cfl_weights(self.seq)
         if self.newton and self.newton_mass_tol is not None:
             self.mass_inverse = MassChebyshev.build(self.seq, self.newton_mass_tol)
@@ -202,9 +201,8 @@ class TimeStepper(eqx.Module):
         """
         seq = self.seq.even
         J, JxB_dual = self._lorentz(B, J_guess)
-        on = seq if seq.residual is None else seq.residual      # the right-hand side in the residual precision
         # only curl a enters, so a keeps a gradient that nothing controls
-        a = seq.L[1].solve(on.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
+        a = seq.L[1].solve(seq.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         if not smooth:
@@ -262,7 +260,6 @@ class TimeStepper(eqx.Module):
             B_nplus1, res_it, res_moved = resistive_step(B_ideal, self.seq, self.resistivity,
                                                          self.resistive_reference, guess=res_delta)
             res_delta = B_nplus1 - B_ideal
-            res_moved = res_moved.astype(state.last.resistive_moved.dtype)
 
         warm = WarmStarts(p=inc.p, JxB=inc.JxB, J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=state.warm.A,
                           resistive_delta=res_delta)
@@ -277,20 +274,20 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
     a restart). This evaluates the force once."""
     seq = ts.seq
     odd, even = seq.odd, seq.even
-    F0, MF0, _, J0, a_F0 = ts._potential_force(B_dof, jnp.zeros(even.n(1), dtype=DTYPE), None, smooth=False)
+    F0, MF0, _, J0, a_F0 = ts._potential_force(B_dof, jnp.zeros(even.n(1)), None, smooth=False)
     # the pressure warm starts only feed the sampler's diagnostic Leray solve
-    p0, JxB0 = jnp.zeros(even.n(3), dtype=DTYPE), jnp.zeros(even.n(2), dtype=DTYPE)
+    p0, JxB0 = jnp.zeros(even.n(3)), jnp.zeros(even.n(2))
     resid0 = (jnp.sqrt(F0 @ MF0) / force_scale_jit(seq, B_dof)) ** 2
-    zero = jnp.zeros((), dtype=DTYPE)       # scalars as dtype arrays: one carry signature for the scan
-    zeros1_odd = jnp.zeros(odd.n(1), dtype=DTYPE)
+    zero = jnp.zeros(())       # scalars as arrays: one carry signature for the scan
+    zeros1_odd = jnp.zeros(odd.n(1))
     return State(
-        B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones((), dtype=DTYPE), dt_star=jnp.ones((), dtype=DTYPE), cfl_max=zero,
-        warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1), dtype=DTYPE),
+        B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones(()), dt_star=jnp.ones(()), cfl_max=zero,
+        warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1)),
                         a_F=a_F0,
-                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2), dtype=DTYPE)),
-        last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2), dtype=DTYPE), v_norm=zero,
+                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2))),
+        last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2)), v_norm=zero,
                       newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
-        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=DTYPE), step=jnp.int32(step)),
+        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=jnp.float64), step=jnp.int32(step)),
     )
 
 
@@ -352,20 +349,19 @@ def make_sampler(ts: TimeStepper):
     """Return a function ``sample(state, pw_guess) -> (state, p_w, scalars)`` that computes the diagnostics of
     the current field.
 
-    ``scalars`` is a dict of Python floats: the energy ``E`` (computed in the residual precision), the
+    ``scalars`` is a dict of Python floats: the energy ``E``, the
     ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and ``beta_vol``. ``p_w`` is the weak
     pressure, to be passed back as ``pw_guess`` next time. The returned state has refreshed starting guesses.
     """
     seq = ts.seq
     odd = seq.odd
-    on = odd if odd.residual is None else odd.residual
 
     def sample(state: State, pw_guess: jnp.ndarray):
         f = _probe_jit
         w = state.warm
         p, JxB, J, A, p_w, h, JoverB, JB, beta = f(seq, state.B_n, w.p, w.JxB, w.J, state.last.F, pw_guess, w.A)
         state = eqx.tree_at(lambda s: (s.warm.p, s.warm.JxB, s.warm.J, s.warm.A), state, (p, JxB, J, A))
-        E = 0.5 * float(on.l2_norm_sq(state.B_n.astype(RESIDUAL_DTYPE), 2))
+        E = 0.5 * float(odd.l2_norm_sq(state.B_n, 2))
         scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB), beta_vol=float(beta))
         return state, p_w, scalars
 
@@ -390,13 +386,12 @@ _probe_jit = eqx.filter_jit(_probe)
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.p``, ...).
 
-    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, precision and the knots) are
+    The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
     stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence. The attribute
     ``angles = "right-handed"`` marks the convention of :func:`mrx.equilibria.read_equilibrium`, see
     :func:`check_checkpoint`.
     """
     import h5py  # noqa: PLC0415
-    from mrx.precision import current_precision  # noqa: PLC0415
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     axes = seq.basis_0.bases[0].bases
     with h5py.File(path, "w") as fh:
@@ -405,7 +400,6 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(axes[0].p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
-        fh.attrs["precision"] = current_precision()
         fh.attrs["angles"] = "right-handed"
         for name, basis in zip(("r", "theta", "zeta"), axes):
             T = np.asarray(basis.T, dtype=np.float64)
@@ -416,7 +410,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
 
 def checkpoint_attrs(path: str) -> dict:
     """Return the discretisation stored in a checkpoint as :func:`mrx.geometry.build_sequence` keywords (``ns``,
-    ``p``, ``knots``, ``symmetry``), together with ``nfp``, ``precision`` and ``step``."""
+    ``p``, ``knots``, ``symmetry``), together with ``nfp`` and ``step``."""
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
@@ -428,8 +422,7 @@ def checkpoint_attrs(path: str) -> dict:
 
     return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
                 knots=[breakpoints(name) for name in ("r", "theta", "zeta")],
-                symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), precision=str(a["precision"]),
-                step=int(a["step"]))
+                symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), step=int(a["step"]))
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
@@ -457,13 +450,14 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    skeleton = initial_state(jnp.asarray(data["B_n"]), ts, step=step)
+    # a checkpoint written by a float32 run of an earlier version is read into float64
+    skeleton = initial_state(jnp.asarray(data["B_n"], dtype=jnp.float64), ts, step=step)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
     for keypath, leaf in leaves:
         v = data.get(jax.tree_util.keystr(keypath).lstrip("."))
         new.append(leaf if v is None else
-                   jnp.asarray(v, dtype=DTYPE if np.issubdtype(v.dtype, np.floating) else v.dtype))
+                   jnp.asarray(v, dtype=jnp.float64 if np.issubdtype(v.dtype, np.floating) else v.dtype))
     return jax.tree_util.tree_unflatten(treedef, new), step
 
 
@@ -518,7 +512,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time spent in samples and callbacks, which wall excludes
-    pw = jnp.zeros(seq.even.n(0), dtype=DTYPE)
+    pw = jnp.zeros(seq.even.n(0))
     tq = time.perf_counter()
     state, pw, scalars = sample(state, pw)   # the start of THIS run
     E0, h0 = scalars["E"], scalars["helicity"]

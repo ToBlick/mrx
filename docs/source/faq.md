@@ -45,19 +45,10 @@ MRX runs on a CPU as well, which is fine for the tutorials (all six take about
 We do not yet have benchmark numbers on strong consumer laptops. Feel free to
 share them.
 
-## Which precision should I use?
+## Which precision does MRX use?
 
-The default. MRX fixes its precision when it is imported, from `MRX_DTYPE`
-and `MRX_RESIDUAL_DTYPE` ([Precision](concepts/precision.md)), and by default
-it runs in float64 throughout. Mixed precision (`MRX_DTYPE=float32`: the
-fields and the Krylov iterations in float32, every residual in float64) is
-what the paper's runs used. Plain float32 (`MRX_DTYPE=float32` and
-`MRX_RESIDUAL_DTYPE=float32`) can stall on a
-strongly shaped geometry. On the QA map of the tutorials the solve behind the
-vacuum field stops near a relative residual of `5e-5` however many
-iterations it gets, while mixed precision converges in a few hundred.
-Derivatives by finite differences and the shape optimization need float64,
-where the gradient needs the extra digits.
+Float64 throughout ([Precision](concepts/precision.md)). There is no float32
+or mixed configuration, so MRX needs a CPU or a GPU with float64.
 
 ## Which equilibrium files can MRX read?
 

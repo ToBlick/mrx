@@ -42,7 +42,7 @@ copies what is installed when it is taken, so take it anew after any of these ca
 
 The sequence is a JAX pytree. Under ``eqx.filter_jit`` its arrays, among them the geometry and the
 preconditioners, are traced inputs, and everything else (resolution, degree, symmetry, parity, the
-boundary condition of a view, dtype, tolerances) is compiled in. A new map of the same resolution
+boundary condition of a view, tolerances) is compiled in. A new map of the same resolution
 therefore reuses the compiled programs, while changing a static attribute during a run recompiles
 them. To change the resolution, build a new sequence.
 """
@@ -52,7 +52,6 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
-import mrx
 import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
@@ -60,7 +59,7 @@ from mrx.geometry import SYMMETRIES, SequenceGeometry
 from mrx.incidence import build_curl_stencil_g1, build_grad_stencil_g0, build_matrixfree_incidence
 from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
-from mrx.precision import REFINE, RESIDUAL_DTYPE, SOLVE_TOL, cast_arrays, default_tol
+from mrx.precision import SOLVE_TOL
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
 from mrx.pytree import register_arrays
 from mrx.quadrature import QuadratureRule, evaluate_at_xq, integrate_against
@@ -95,15 +94,12 @@ class DeRhamSequence():
         maxiter: iteration limit of every solve.
 
     The sequence has the Dirichlet spaces, :attr:`free` the free ones. The constructor also builds
-    the parity views :attr:`even` and :attr:`odd` of a half-period sequence and, in the mixed
-    precision configuration, the float64 copy :attr:`residual`.
+    the parity views :attr:`even` and :attr:`odd` of a half-period sequence.
 
     Attributes:
         basis_0 .. basis_3: the k-form bases (:class:`~mrx.differential_forms.DifferentialForm`).
         quad: the :class:`~mrx.quadrature.QuadratureRule`.
         half_period: whether the quadrature covers only half the zeta period (:mod:`mrx.symmetry`).
-        residual: the float64 copy of the sequence on which the solves evaluate their residuals in
-            the mixed precision configuration (:mod:`mrx.precision`), ``None`` otherwise.
         geometry: the installed geometry (:meth:`set_geometry_from_map`), ``None`` before the first map.
         operators: the preconditioners and harmonic forms (:meth:`build_preconditioners`),
             ``None`` after every :meth:`set_geometry_from_map`.
@@ -122,10 +118,8 @@ class DeRhamSequence():
         self.maxiter = maxiter
         self.geometry = None
         self.operators = None
-        #: the dtype of the arrays and of the solves' results
-        self.dtype = mrx.DTYPE
         self.betti_numbers = SOLID_TORUS_BETTI
-        Ts = [None if T is None else jnp.asarray(T, dtype=mrx.DTYPE)
+        Ts = [None if T is None else jnp.asarray(T, dtype=jnp.float64)
               for T in (knots if knots is not None else (None,) * 3)]
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
             DifferentialForm(i, self.ns, (self.p,) * 3, AXIS_TYPES, Ts) for i in range(0, 4)
@@ -164,38 +158,28 @@ class DeRhamSequence():
         self.mass_plan = {k: mass_plan(self, k) for k in range(4)}
         self.projection_plan = {pair: projection_plan(self, *pair)
                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
-        # 64-bit mode is always on: NumPy-built arrays are cast to the working dtype
-        cast_arrays(self)
-        # set after the cast: the parsed file keeps its own dtypes (scipy splines need float64)
         self.equilibrium = equilibrium
-        # built after the cast: the parity projectors hold their arrays in the residual dtype
         self._free_projectors = ({(k, d): FreeProjector(self, k, d) for k in range(4) for d in (False, True)}
                                  if self.half_period else {})
-        # The float64 copy and the parity views get each new geometry from set_geometry, so the
-        # programs compiled against them survive a new map.
-        self.residual = self._twin() if REFINE else None
+        # The parity views get each new geometry from set_geometry, so the programs compiled against
+        # them survive a new map.
         self._parity_views = {}
         if self.half_period:
-            if self.residual is not None:
-                self.residual._parity_views = {s: self.residual._parity_view(s) for s in (1, -1)}
             self._parity_views = {s: self._parity_view(s) for s in (1, -1)}
-            if self.residual is not None:
-                for s, view in self._parity_views.items():
-                    view.residual = self.residual._parity_views[s]
 
-    def _extractions(self, dtype=None):
-        """The extraction operators and their axis rows for every ``(k, dirichlet)``, in ``dtype``."""
+    def _extractions(self):
+        """The extraction operators and their axis rows for every ``(k, dirichlet)``."""
         xi = get_xi(self.ns[1], self.p)
-        built = {(k, d): build_extraction(form, xi, d, dtype)
+        built = {(k, d): build_extraction(form, xi, d)
                  for k, form in enumerate((self.basis_0, self.basis_1, self.basis_2, self.basis_3))
                  for d in (False, True)}
         return {key: e for key, (e, _) in built.items()}, {key: c for key, (_, c) in built.items()}
 
-    def _polar_stencils(self, dtype=None):
+    def _polar_stencils(self):
         """The grad and curl on the extracted DoFs of the free (``False``) and Dirichlet (``True``) spaces."""
         xi = get_xi(self.ns[1], self.p)
-        return ({d: build_grad_stencil_g0(self, xi, d, dtype=dtype) for d in (False, True)},
-                {d: build_curl_stencil_g1(self, xi, d, dtype=dtype) for d in (False, True)})
+        return ({d: build_grad_stencil_g0(self, xi, d) for d in (False, True)},
+                {d: build_curl_stencil_g1(self, xi, d) for d in (False, True)})
 
     def load(self, f, k: int, parity=None):
         """The vector of integrals of ``f`` (physical components) against the k-form basis functions,
@@ -261,8 +245,6 @@ class DeRhamSequence():
             return self
         view = copy.copy(self)
         view.dirichlet = False
-        if self.residual is not None:
-            view.residual = self.residual.free
         return view
 
     def restrict(self, v, k):
@@ -273,7 +255,7 @@ class DeRhamSequence():
     def extend(self, v, k):
         """The free ``k``-form equal to the Dirichlet ``k``-form ``v``, with zeros on the wall."""
         n_free = self.extraction[(int(k), False)].forward_shape[0]
-        return jnp.zeros(n_free, dtype=v.dtype).at[self._dirichlet_dofs[int(k)]].set(v)
+        return jnp.zeros(n_free).at[self._dirichlet_dofs[int(k)]].set(v)
 
     # --- the matrices of the complex (mrx.operators) ------------------------------------
     #
@@ -322,7 +304,7 @@ class DeRhamSequence():
         self.set_geometry(SequenceGeometry.from_map(Phi, self.quad.x), keep_preconditioners)
 
     def set_geometry(self, geometry: SequenceGeometry, keep_preconditioners=False):
-        """Install ``geometry`` on this sequence, its parity views and its float64 copy. Raises
+        """Install ``geometry`` on this sequence and its parity views. Raises
         ``ValueError`` if ``det DPhi`` is not positive at every quadrature point.
 
         The preconditioners and the harmonic forms belong to the old geometry and are discarded: call
@@ -343,13 +325,9 @@ class DeRhamSequence():
                 return None
             return op.init_nullspaces(seq, seq.operators)
 
-        self.geometry = attach_weights(self, cast_arrays(geometry))
+        self.geometry = attach_weights(self, geometry)
         self.operators = stale(self)
-        views = list(self._parity_views.values())
-        if self.residual is not None:
-            self.residual.geometry, self.residual.operators = cast_arrays(self.geometry, RESIDUAL_DTYPE), self.operators
-            views += list(self.residual._parity_views.values())
-        for view in views:
+        for view in self._parity_views.values():
             view.geometry, view.operators = view._base.geometry, stale(view)
 
     @property
@@ -379,7 +357,7 @@ class DeRhamSequence():
         """Build the view of parity ``s`` behind :meth:`parity_view`."""
         view = copy.copy(self)
         view.parity, view._base, view._parity_views, view.operators = s, self, {}, None
-        view.residual, view._free_projectors = None, {}
+        view._free_projectors = {}
         # the harmonic forms are odd, the constants (k=0 free, k=3 Dirichlet) even
         b0, b1, b2, b3 = self.betti_numbers
         view.betti_numbers = (0, b1, b2, b3) if s == -1 else (b0, 0, 0, 0)
@@ -387,25 +365,11 @@ class DeRhamSequence():
         for key in self.extraction:
             view.extraction[key], view.reduction[key], view.core[key] = parity_extraction(self, *key, s)
         X = view.reduction
-        view.g0_grad = {d: reduce_operator(X[(1, d)], g, X[(0, d)], self.dtype) for d, g in self.g0_grad.items()}
-        view.g1_curl = {d: reduce_operator(X[(2, d)], g, X[(1, d)], self.dtype) for d, g in self.g1_curl.items()}
+        view.g0_grad = {d: reduce_operator(X[(1, d)], g, X[(0, d)]) for d, g in self.g0_grad.items()}
+        view.g1_curl = {d: reduce_operator(X[(2, d)], g, X[(1, d)]) for d, g in self.g1_curl.items()}
         view._dirichlet_dofs = {
             k: jnp.asarray(reduced_dirichlet_dofs(X[(k, False)], X[(k, True)], np.asarray(index)))
             for k, index in self._dirichlet_dofs.items()}
-        return view
-
-    def _twin(self):
-        """Build the float64 copy :attr:`residual`, without geometry until :meth:`set_geometry`."""
-        view = copy.copy(self)
-        view.residual, view._parity_views = None, {}
-        view.dtype = RESIDUAL_DTYPE
-        view.tol = default_tol(RESIDUAL_DTYPE, refine=False)
-        view.quad = cast_arrays(copy.copy(self.quad), RESIDUAL_DTYPE)
-        # the extractions and the polar stencils are built again in float64 rather than cast: their
-        # weights are cosines and sines, and d d = 0 near the axis holds to the round-off of those
-        # weights. The geometry of the copy is cast (set_geometry).
-        view.extraction, _ = view._extractions(RESIDUAL_DTYPE)
-        view.g0_grad, view.g1_curl = view._polar_stencils(RESIDUAL_DTYPE)
         return view
 
     def build_preconditioners(self):
@@ -424,10 +388,8 @@ class DeRhamSequence():
                                {key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.laplacian_lumping.items()}),
                               is_leaf=lambda x: x is None or isinstance(x, dict))
             self.operators = ops
-            if self.residual is not None:          # the float64 copy shares the preconditioners
-                self.residual.operators = ops
             return ops
-        ops = cast_arrays(op.assemble_preconditioners(self, op.new_operators(self)))
+        ops = op.assemble_preconditioners(self, op.new_operators(self))
         self.operators = ops
         if self.half_period:
             for view in (self.odd, self.even):
@@ -488,12 +450,10 @@ class DeRhamSequence():
         """
         # The solves return q = -p (sigma = -grad q). p and p_guess carry the physical sign.
         if k == 2:
-            p_guess = jnp.zeros(self.n(3), dtype=self.dtype) if p_guess is None else p_guess
-            # a float64 v stays in float64 until v - sigma is rounded once at the end
-            on = self.residual if (self.residual is not None and v.dtype == RESIDUAL_DTYPE) else self
-            q, sigma, _ = op._saddle_solve(self, on.D[2] @ v, guess=-p_guess, sigma_guess=sigma_guess)
-            return (v - sigma).astype(self.dtype), (-q).astype(self.dtype)
-        p_guess = jnp.zeros(self.n(0), dtype=self.dtype) if p_guess is None else p_guess
+            p_guess = jnp.zeros(self.n(3)) if p_guess is None else p_guess
+            q, sigma, _ = op._saddle_solve(self, self.D[2] @ v, guess=-p_guess, sigma_guess=sigma_guess)
+            return v - sigma, -q
+        p_guess = jnp.zeros(self.n(0)) if p_guess is None else p_guess
         q = self.L[0].solve(-(self.D[0].T @ v), guess=-p_guess)
         return v + self.G[0] @ q, -q
 

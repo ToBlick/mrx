@@ -25,7 +25,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import dual_norm
-from mrx.precision import RESIDUAL_DTYPE
 from mrx.solvers import chebyshev, lanczos_bounds, minres
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
@@ -111,7 +110,7 @@ def harmonic_preconditioner(seq, profiles, penalty):
         m = np.fft.fftfreq(s2, d=1.0 / s2)
         nn = np.fft.fftfreq(s3, d=1.0 / s3)
         lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
-        scale.append((1.0 / jnp.sqrt(lam + floor)).astype(seq.dtype))
+        scale.append(1.0 / jnp.sqrt(lam + floor))
     return HarmonicAtom(scale=tuple(scale), shapes=tuple(shapes))
 
 
@@ -147,7 +146,7 @@ def _mass_interval(odd):
     """The Ritz interval of the mass atom times ``M_1`` on ``odd``, one compiled program that a new geometry
     reuses."""
     M = odd.M[1]
-    b = jax.random.normal(jax.random.PRNGKey(0), (odd.n(1),), dtype=odd.dtype)
+    b = jax.random.normal(jax.random.PRNGKey(0), (odd.n(1),))
     return lanczos_bounds(lambda x: M @ x, b, M.precondition, LANCZOS_STEPS)
 
 
@@ -166,11 +165,10 @@ class MassChebyshev(eqx.Module):
 
     @classmethod
     def build(cls, seq, tol):
-        """Estimate the interval on the residual view of ``seq.odd`` by :func:`mrx.solvers.lanczos_bounds` and take
+        """Estimate the interval on ``seq.odd`` by :func:`mrx.solvers.lanczos_bounds` and take
         the smallest degree whose error bound ``2 rho^steps`` is below ``tol``, with
         ``rho = (sqrt(kappa) - 1) / (sqrt(kappa) + 1)`` and ``kappa`` the ratio of the interval's ends."""
-        odd = seq.odd if seq.odd.residual is None else seq.odd.residual
-        lmin, lmax = _mass_interval(odd)
+        lmin, lmax = _mass_interval(seq.odd)
         bounds = jnp.stack([lmin * (1 - LANCZOS_MARGIN), lmax * (1 + LANCZOS_MARGIN)])
         root = np.sqrt(float(bounds[1] / bounds[0]))
         steps = int(np.ceil(np.log(tol / 2) / np.log((root - 1) / (root + 1))))
@@ -234,32 +232,25 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     projected: the right-hand side ``curl^T load`` is blind to its gradient and harmonic parts. ``a_guess`` is the warm start for the potential ``a`` (pass the previous step's ``a``) and
     ``kappa`` the weight of the parallel-flow penalty. The solve (:func:`newton_mr`) stops when its residual is
     below ``tol`` times the right-hand side or after ``maxiter`` MINRES iterations. ``mass_inverse`` (a
-    :class:`MassChebyshev`) replaces the mass solves inside the Hessian, ``None`` keeps them. The residual is measured in the residual precision, so in mixed precision it is float64. ``info`` is the number of MINRES iterations,
-    positive when ``tol`` was met and negative when not. ``u`` and ``a`` are in the sequence's dtype.
+    :class:`MassChebyshev`) replaces the mass solves inside the Hessian, ``None`` keeps them. ``info`` is the number of MINRES iterations,
+    positive when ``tol`` was met and negative when not.
     """
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
     # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
-    on = seq if seq.residual is None else seq.residual
     profiles = harmonic_atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
     curl, curl_t, A = _newton_system(seq, B, J, penalty, mass_inverse)
-    # the residual operator computes its own penalty from B in the residual precision
-    penalty_res = penalty if on is seq else parallel_penalty_profile(
-        harmonic_atom_profiles(on, B.astype(on.dtype)), kappa)
-    A_res = _newton_system(on, B, J, penalty_res, mass_inverse)[2]
     atom = harmonic_preconditioner(seq, profiles, penalty)
     rhs = curl_t(load)
-    a, info, _ = newton_mr(A_res, A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter,
-                           dual_norm(even, 1), inner_dtype=seq.dtype)
-    a = a.astype(seq.dtype)
+    a, info, _ = newton_mr(A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, dual_norm(even, 1))
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
 def _newton_system(seq, B, J, penalty, mass_inverse):
     """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Newton system on the even view of the full
     sequence ``seq``."""
-    Hs = second_variation(seq, B.astype(seq.dtype), J.astype(seq.dtype), penalty, mass_inverse)
+    Hs = second_variation(seq, B, J, penalty, mass_inverse)
     even = seq.even
 
     def curl(a):
@@ -273,36 +264,35 @@ def _newton_system(seq, B, J, penalty, mass_inverse):
     return curl, curl_t, A
 
 
-def newton_mr(A_res, A, P, b, x0, tol, maxiter, norm, inner_dtype):
+def newton_mr(A, P, b, x0, tol, maxiter, norm):
     """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info, npc)``.
 
-    If the warm start ``x0`` already meets ``norm(b - A_res x0) <= tol norm(b)`` it is returned unchanged.
+    If the warm start ``x0`` already meets ``norm(b - A x0) <= tol norm(b)`` it is returned unchanged.
     Otherwise one preconditioned MINRES solve computes the correction to ``x0``. It stops when its own residual
-    estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. ``A_res`` is the operator in the residual precision and ``A`` the one in ``inner_dtype``. MINRES
+    estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. MINRES
     stops early at a direction of nonpositive curvature (``npc`` is then true). Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
     from zero. ``info`` is the number
     of MINRES iterations, positive when the tolerance was met and negative when not.
     """
-    b = b.astype(RESIDUAL_DTYPE)
-    x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
+    x = jnp.zeros_like(b) if x0 is None else x0
     bnorm = norm(b)
-    r0 = b - A_res(x)
+    r0 = b - A(x)
 
     def solve(_):
         rnorm = norm(r0)
-        d, info, npc = minres(A, (r0 / rnorm).astype(inner_dtype), M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
+        d, info, npc = minres(A, r0 / rnorm, M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
                               npc_exit=True, norm=norm)
 
         def from_zero(_):
-            d0, info0, _ = minres(A, (b / bnorm).astype(inner_dtype), M=P, tol=tol, maxiter=maxiter, npc_exit=True,
+            d0, info0, _ = minres(A, b / bnorm, M=P, tol=tol, maxiter=maxiter, npc_exit=True,
                                   norm=norm)
-            return d0.astype(RESIDUAL_DTYPE) * bnorm, jnp.abs(info0).astype(jnp.int32)
+            return d0 * bnorm, jnp.abs(info0).astype(jnp.int32)
 
         x_new, its_npc = jax.lax.cond(npc, from_zero,
-                                      lambda _: (x + d.astype(RESIDUAL_DTYPE) * rnorm, jnp.zeros((), jnp.int32)),
+                                      lambda _: (x + d * rnorm, jnp.zeros((), jnp.int32)),
                                       None)
-        return x_new, b - A_res(x_new), (jnp.abs(info) + its_npc).astype(jnp.int32), npc
+        return x_new, b - A(x_new), (jnp.abs(info) + its_npc).astype(jnp.int32), npc
 
     def skip(_):
         return x, r0, jnp.zeros((), jnp.int32), jnp.zeros((), bool)

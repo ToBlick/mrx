@@ -151,14 +151,12 @@ class _StencilTriplets:
         self.cols.append(cols[keep])
         self.data.append(data[keep])
 
-    def operator(self, shape, dtype=None):
-        """The collected entries, duplicates summed, as a :class:`~mrx.extraction_operators.MatrixFreeExtraction`
-        with values in ``dtype`` (the working dtype by default)."""
-        return summed_coo(np.concatenate(self.rows), np.concatenate(self.cols), np.concatenate(self.data),
-                          shape, dtype=dtype)
+    def operator(self, shape):
+        """The collected entries, duplicates summed, as a :class:`~mrx.extraction_operators.MatrixFreeExtraction`."""
+        return summed_coo(np.concatenate(self.rows), np.concatenate(self.cols), np.concatenate(self.data), shape)
 
 
-def build_grad_stencil_g0(seq, xi, dirichlet: bool, dtype=None):
+def build_grad_stencil_g0(seq, xi, dirichlet: bool):
     """The gradient ``V0 -> V1`` on the extracted DoFs, as a sparse matrix.
 
     ``xi`` are the polar weights of :func:`~mrx.extraction_operators.get_xi`, and ``dirichlet``
@@ -225,10 +223,10 @@ def build_grad_stencil_g0(seq, xi, dirichlet: bool, dtype=None):
     expand(r, i + 2, j, k, -1.0)
 
     n0, n1 = (seq.extraction[(k, bool(dirichlet))].forward_shape[0] for k in (0, 1))
-    return out.operator((n1, n0), dtype=dtype)
+    return out.operator((n1, n0))
 
 
-def build_curl_stencil_g1(seq, xi, dirichlet: bool, dtype=None):
+def build_curl_stencil_g1(seq, xi, dirichlet: bool):
     """The curl ``V1 -> V2`` on the extracted DoFs, as a sparse matrix.
 
     The counterpart of :func:`build_grad_stencil_g0` one degree up. It equals
@@ -320,4 +318,4 @@ def build_curl_stencil_g1(seq, xi, dirichlet: bool, dtype=None):
     expand_v1(r, 1, i + 1, j, k, -1.0)
 
     n1, n2 = (seq.extraction[(k, bool(dirichlet))].forward_shape[0] for k in (1, 2))
-    return out.operator((n2, n1), dtype=dtype)
+    return out.operator((n2, n1))

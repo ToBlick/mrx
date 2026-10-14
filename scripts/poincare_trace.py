@@ -14,7 +14,7 @@ and one pressure scale.
     python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc outputs/run/checkpoints/state_*.h5
 
 The archive (numpy .npz) holds ``fields`` (the checkpoint names, in order), ``planes``, ``resolution``, ``p``,
-``nfp``, ``symmetry``, ``steps`` (per period), ``source`` and ``trace_precision``. Per field ``<f>`` it holds
+``nfp``, ``symmetry``, ``steps`` (per period) and ``source``. Per field ``<f>`` it holds
 ``<f>_label``, ``<f>_step``, ``<f>_bsq`` (the volume mean of |B|^2, which the plotter uses to normalise the
 pressure), ``<f>_iota``, ``<f>_seed_r``, ``<f>_keep``, ``<f>_chaotic``, ``<f>_shown`` and ``<f>_drift``. Per field
 and plane it holds ``<f>_zeta<plane>_{R,Z,axisR,axisZ,logr,logth}`` and ``<f>_zeta<plane>_pressure``, the weak
@@ -23,11 +23,10 @@ plotter.
 
 The integrator is compiled once per mesh and step schedule. The weak pressure costs two extra solves per field.
 """
-import argparse
 import os
 import sys
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Optional
 
 import numpy as np
 import tyro
@@ -48,8 +47,6 @@ class Trace:
     """The number of zeta planes spread over the part of the period the symmetry leaves distinct, or the planes themselves as fractions of a period (for example 0 0.25 0.5)."""
     seed: int = 0
     """The random seed for the poloidal start angles."""
-    precision: Literal["float32", "float64"] = "float32"
-    """The floating-point precision of the trace."""
     out: Optional[str] = None
     """The archive path. Unset, it is trace.npz in the parent of the first checkpoint's directory."""
 
@@ -73,8 +70,8 @@ def main(cli):
                                                                     int(fh.attrs["step"]))
     archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
                                       "trace.npz")
-    source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}, relaxed in {attrs['precision']}"
-    print(f"[trace] {source}: fields {list(fields)}, tracing in {cli.precision}", flush=True)
+    source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
+    print(f"[trace] {source}: fields {list(fields)}", flush=True)
 
     seq, _ = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
     planes = planes_for(seq, cli.planes)
@@ -90,8 +87,4 @@ def main(cli):
 
 
 if __name__ == "__main__":
-    # The precision must be in the environment before mrx is imported. The full parse follows.
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--precision", default="float64", choices=("float32", "float64"))
-    os.environ["MRX_DTYPE"] = pre.parse_known_args()[0].precision
     sys.exit(main(tyro.cli(Trace, description=__doc__)))
