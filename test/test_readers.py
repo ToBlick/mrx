@@ -1,4 +1,5 @@
-"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence.
+"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence, except the G-frame
+vacuum.
 
 GVEC: a synthetic state written by ``test/synthetic_gvec.py`` from closed formulas is read back and
 reproduces the formulas to round-off. VMEC: the tracked li383 wout file reads with the expected layout and
@@ -6,7 +7,9 @@ a plausible axis. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or c
 reproduces its formulas to round-off, and DESC's conversion of the li383 wout matches the wout.
 Without stellarator symmetry: the li383 wout and the synthetic GVEC state, shifted in both angles, read as
 the shifted series, and a synthetic DESC file with terms of the other parity reproduces its formulas.
-G-frame: the synthetic torus written in GVEC's axis-following frame reads as the same map.
+G-frame: the synthetic torus written in GVEC's axis-following frame reads as the same map, and a state
+computed by GVEC in its G-frame (data/gvec_gframe) reads as GVEC's own positions. Its vacuum field is
+MRX's harmonic field of the same domain.
 Orientation: ``read_equilibrium`` reverses the poloidal angle of the left-handed VMEC files and not of DESC's
 right-handed conversion, and the result is right-handed with the same R and Z at the mirrored angle.
 """
@@ -22,6 +25,9 @@ from mrx.equilibria.fit import axis_orders
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
+from mrx.geometry import build_sequence
+from mrx.nullspace import compute_nullspaces
+from mrx.relaxation.initial_conditions import initial_field
 from test.synthetic_desc import write_synthetic_desc
 from test.synthetic_gvec import TWO_PI, evaluate, write_synthetic_state
 
@@ -74,6 +80,45 @@ def test_gvec_gframe_state_is_the_same_torus(tmp_path):
     x = jnp.asarray(np.random.default_rng(0).uniform([0.0, 0.0, 0.0], [1.0, 1.0, 2.0], (64, 3)))
     got, want = jax.vmap(state_position(st_f))(x), jax.vmap(state_position(st_c))(x)
     assert jnp.abs(got - want).max() <= mrx.eps(64) * R0
+
+
+# A G-frame state computed by GVEC: its test case N2-12 (nfp 2), a current-free vacuum (data/gvec_gframe/README.md)
+GFRAME = "data/gvec_gframe/N2-12/gframe_N2-12_State_final.dat"
+# GVEC's own positions (pygvec ``pos``, GVEC 1.5.0) at the points (rho, theta, zeta), angles in radians
+GFRAME_POINTS = np.array([(0.0, 0.0, 0.0), (0.3, 1.1, 0.4), (0.5, 2.9, 1.3), (0.7, 4.4, 2.6), (1.0, 0.0, 0.0),
+                          (1.0, 1.7, 3.3), (0.9, 5.9, 5.1), (0.6, 3.6, 6.0)])
+GFRAME_XYZ = np.array([[1.072968422471356, 1.5472461330962447e-09, -5.079455516720585e-08],
+                       [1.0208762996509804, 0.25833887344331896, -0.1748819661487541],
+                       [0.2962344935381793, 0.606020011603455, -0.15820856864386193],
+                       [-1.0004982172882995, 0.46604761871839084, 0.13927129737243535],
+                       [1.0055731573301496, 2.428858629135289e-09, -4.312871167356669e-08],
+                       [-1.0787869629718936, -0.3667042139732026, 0.14599400123554163],
+                       [0.3768671392832109, -0.21534100146391882, 0.28066983497385767],
+                       [1.09599777941518, -0.25078171370039865, 0.08191811293532336]])
+
+
+def test_gvec_gframe_state_matches_gvec():
+    """The GVEC G-frame state reads as GVEC's own positions, over more than one field period. It is right-handed
+    as written. Its frame file is symmetric only to about 1e-6, so it does not count as stellarator-symmetric."""
+    st = read_equilibrium(GFRAME)
+    assert st["hmap"] == 21 and st["nfp"] == 2 and not st["theta_reversed"]
+    assert not is_stellarator_symmetric(st)
+    r, th, ze = GFRAME_POINTS.T
+    got = jax.vmap(state_position(st))(jnp.asarray(np.column_stack([r, th / TWO_PI, ze * st["nfp"] / TWO_PI])))
+    assert jnp.abs(got - GFRAME_XYZ).max() <= mrx.eps(4096) * np.abs(GFRAME_XYZ).max()
+
+
+def test_gvec_gframe_vacuum_is_the_harmonic_field():
+    """GVEC's vacuum field of the G-frame state is MRX's harmonic 2-form ``h`` of the same domain, computed from
+    the map alone: ``||B - c h|| / ||B||`` with ``c = <B, h> / <h, h>`` is 7.2e-4 at (8, 16, 32), the
+    discretisation error (4.9e-3 with 16 toroidal splines: the frame has modes up to n = 20 per period)."""
+    seq, _ = build_sequence(GFRAME, (8, 16, 32), 2, symmetry="field-period")
+    compute_nullspaces(seq, verbose=False)
+    odd = seq.odd
+    B, _ = initial_field(seq)
+    h = odd.nullspace(2)[0].astype(B.dtype)
+    c = (B @ (odd.M[2] @ h)) / (h @ (odd.M[2] @ h))
+    assert odd.l2_norm(B - c * h, 2) <= 2e-3 * odd.l2_norm(B, 2)
 
 
 def test_vmec_li383_reads_and_reproduces_the_file():
