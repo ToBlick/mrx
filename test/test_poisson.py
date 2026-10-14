@@ -26,12 +26,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mrx.precision import eps, lift, to_working
+from mrx.precision import eps, inner, lift, to_working
 
 #: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13 in float64:
 #: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
 ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
-#: The relative spread of the three representations' errors: below 3e-12 in float64.
+#: The relative spread of the three representations' errors, measured 2026-10-14: below 2e-12 in float64 and
+#: 2.5e-4 (k = 0), 1.3e-4, 2.7e-5, 1.2e-5 in float32, whose data (map, quadrature, tables) differ by rounding.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
 _ERRORS = {}
@@ -59,7 +60,14 @@ def vacuum_field(seq):
 
 
 def _integral(seq, values):
-    return float(jnp.sum(seq.quad.w * seq.jacobian_j * values))
+    return inner(lift(seq.quad.w * seq.jacobian_j), lift(values))
+
+
+def _error_sq(space, k, uh, load, target_sq):
+    """``|uh - u*|^2 = uh.M uh - 2 uh.load + |u*|^2``, a difference of order-one numbers, so its sums are
+    taken in the arithmetic of the solves (double-single in float32)."""
+    uh = lift(uh)
+    return inner(uh, space.M[k] @ uh) - 2.0 * inner(uh, lift(load)) + target_sq
 
 
 def _converged(seq, info, residual, rhs, k_res):
@@ -92,7 +100,7 @@ def _solve(seq, k):
             A, info = space.L[1].solve(rhs, return_info=True, accurate=True)
             _converged(space, info, space.L[1] @ A - lift(rhs), rhs, 1)
             uh = space.G[1] @ to_working(A)
-        err_sq = float(uh @ (space.M[k] @ uh)) - 2.0 * float(uh @ load) + target_sq
+        err_sq = _error_sq(space, k, uh, load, target_sq)
     elif k == 0:
         space = seq.even.free                 # psi is even
         grad_psi = jax.grad(psi)
@@ -105,7 +113,7 @@ def _solve(seq, k):
         # would be a small difference of large numbers, ||psi|| being dominated by its mean.)
         Gu = space.G[0] @ u
         target_sq = _integral(space, jnp.sum(jax.vmap(lambda x: grad_psi(space.map(x)))(space.quad.x) ** 2, axis=1))
-        err_sq = float(Gu @ (space.M[1] @ Gu)) - 2.0 * float(Gu @ load) + target_sq
+        err_sq = _error_sq(space, 1, Gu, load, target_sq)
     else:
         space = seq.even.free
 
@@ -121,7 +129,7 @@ def _solve(seq, k):
         r3 = to_working(r3)
         g = -space.M[2].solve(space.D[2].T @ r3)
         target_sq = _integral(space, jnp.sum(jax.vmap(grad_rho)(space.quad.x) ** 2, axis=1))
-        err_sq = float(g @ (space.M[2] @ g)) - 2.0 * float(g @ load) + target_sq
+        err_sq = _error_sq(space, 2, g, load, target_sq)
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
 
 
