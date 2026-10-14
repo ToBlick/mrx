@@ -93,6 +93,14 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
     form: it is one solve of M_1 + mu S_1 (`part="coexact"`). Gradient relaxation, 200 steps, paired twice on one
     node: 0.260 / 0.260 -> 0.228 / 0.226 s/step, the same energy and residual. With the full three-solve
     smoothing it was 0.307.
+  - W7-X FMM002 (32,64,36) and li383 (48,64,24) at p = 3, the same picture:
+    - shifted solve at eps 1e-2, k = 1: 1.17 -> 0.15 s and 15.8 -> 0.47 s.
+    - at eps 1 (unconverged before): 0.26 s and 0.73 s.
+    - gradient relaxation: 0.124 -> 0.096 s/step and 0.901 -> 0.652 s/step.
+  - Neumann (free) and Dirichlet spaces, li383 (48,64,24) and W7-X (36,48,48) field-period:
+    - L_1, L_2 solutions equal main's to 1e-12 .. 1e-14 in the same time.
+    - Shifted solutions within 1.2e-8 where main converged.
+    - li383 free k = 1 at eps 1: 29 s unconverged -> 0.39 s.
 
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 
