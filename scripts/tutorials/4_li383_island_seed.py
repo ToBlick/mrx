@@ -37,8 +37,7 @@ from typing import Optional
 
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Budget, Geometry, Precision
+from mrx.relaxation.config import Budget, Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -48,7 +47,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 4: seed island chains by the energy criterion and by hand, on li383."""
     geometry: Geometry = Geometry(path="data/wout_li383_low_res_reference.nc", resolution=(12, 16, 16),
-                                  spline_degree=2, precision=Precision(current_precision()))
+                                  spline_degree=2)
     warm_start: str = "outputs/tutorials/3_li383_newton"
     """The run directory of Tutorial 3 to start from."""
     iotas: tuple[float, ...] = (0.5,)
@@ -68,10 +67,6 @@ class Options:
 
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if cli.geometry.precision != current_precision():
-    sys.exit(f"--geometry.precision {cli.geometry.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before "
-             f"mrx is imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%
@@ -94,7 +89,6 @@ from mrx.relaxation.config import RelaxConfig, Seed
 from mrx.relaxation.loop import check_checkpoint, initial_state, radial_cell_sq, relax, write_checkpoint
 from mrx.relaxation.seeding import energy_seed
 
-print(f"[env] mrx precision {current_precision()}")
 
 # These are the configuration objects of scripts/relax.py (mrx.relaxation.config). The geometry builds the
 # sequence, a Seed group records what was seeded, and a Budget makes the Newton stepper.

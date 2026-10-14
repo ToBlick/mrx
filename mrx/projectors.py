@@ -21,7 +21,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from mrx.precision import DTYPE
 
 import mrx
 from mrx.differential_forms import adj33
@@ -63,7 +62,7 @@ def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
     halfwidths = 0.5 * (hi - lo)
     xs = (centers[:, :, None] + halfwidths[:, :, None] * xi_ref).reshape(len(spans), -1)
     ws = (halfwidths[:, :, None] * w_ref).reshape(len(spans), -1)
-    return jnp.asarray(xs, dtype=DTYPE), jnp.asarray(ws, dtype=DTYPE)
+    return jnp.asarray(xs), jnp.asarray(ws)
 
 
 class _GrevilleAxis(NamedTuple):
@@ -117,7 +116,7 @@ def _wrap_periodic_point(seq, xi):
         if basis.type == 'periodic':
             coord = jnp.mod(coord, 1.0)
         wrapped.append(coord)
-    return jnp.asarray(wrapped, dtype=DTYPE)
+    return jnp.asarray(wrapped)
 
 
 def _pullback(seq, v, k, frame):
@@ -191,4 +190,4 @@ def interpolate(seq: "DeRhamSequence", f, k: int, frame: str = 'physical'):
         for j, ax in enumerate(axes):
             m = _solve_tensor_collocation_axis(ax.hist if hist[j] else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))
-    return conforming_restriction(seq.E(k), jnp.concatenate(coeffs), seq.core_rows(k)).astype(DTYPE)
+    return conforming_restriction(seq.E(k), jnp.concatenate(coeffs), seq.core_rows(k))

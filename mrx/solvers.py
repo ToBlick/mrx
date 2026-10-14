@@ -7,9 +7,9 @@ nonpositive curvature, which the Newton-MR relaxation uses. :func:`solve_singula
 semidefinite system with a known kernel, and :func:`solve_saddle_point_minres` solves the
 saddle-point form of a Hodge Laplacian. :func:`chebyshev` is a fixed polynomial approximate inverse
 with no loop, for use where an inverse sits inside another iteration, and :func:`lanczos_bounds`
-estimates the spectral interval it needs. :func:`refine` wraps a solve in iterative refinement: the
-residual is computed in the residual precision (float64 in the mixed configuration) and each
-correction is solved in the working precision (see :mod:`mrx.precision`).
+estimates the spectral interval it needs. :func:`refine` is the outer loop of a solve: it
+recomputes the true residual after each Krylov solve and corrects the solution until that residual
+meets the tolerance.
 
 Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
@@ -20,7 +20,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from mrx.precision import DTYPE, MAX_PASSES, RESIDUAL_DTYPE
+from mrx.precision import MAX_PASSES
 
 
 def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
@@ -78,7 +78,7 @@ def chebyshev(A_matvec, b, M, bounds, steps):
     ``A``-norm falls like ``2 ((sqrt(kappa) - 1) / (sqrt(kappa) + 1))^steps`` with ``kappa = lmax / lmin``
     (Saad 2003, Algorithm 12.1).
     """
-    lmin, lmax = bounds[0].astype(b.dtype), bounds[1].astype(b.dtype)
+    lmin, lmax = bounds
     theta, delta = (lmax + lmin) / 2, (lmax - lmin) / 2
     sigma = theta / delta
     rho = 1 / sigma
@@ -116,8 +116,8 @@ def lanczos_bounds(A_matvec, b, M, steps):
         return (r, z_new, z_new + beta * p, rz_new), (alpha, beta)
 
     _, (alpha, beta) = jax.lax.scan(body, (b, z, z, rz), None, length=steps)
-    beta_prev = jnp.concatenate([jnp.zeros(1, alpha.dtype), beta[:-1]])
-    alpha_prev = jnp.concatenate([jnp.ones(1, alpha.dtype), alpha[:-1]])
+    beta_prev = jnp.concatenate([jnp.zeros(1), beta[:-1]])
+    alpha_prev = jnp.concatenate([jnp.ones(1), alpha[:-1]])
     diag = 1 / alpha + beta_prev / alpha_prev
     off = jnp.sqrt(beta[:-1]) / alpha[:-1]
     ritz = jnp.linalg.eigvalsh(jnp.diag(diag) + jnp.diag(off, 1) + jnp.diag(off, -1))
@@ -147,30 +147,28 @@ def deflation_projectors(vs, mass_matvec):
     return project_primal, project_dual
 
 
-def refine(apply_res, solve, b, *, tol, norm, inner_dtype, x0=None, project_dual=None,
-           residual=None):
-    """Solve ``A x = b`` by iterative refinement and return ``(x, info)``, ``x`` in the residual precision.
+def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=None):
+    """Solve ``A x = b`` by repeated corrections and return ``(x, info)``.
 
-    Each pass computes the residual ``r = b - A x`` with ``apply_res`` (``A`` in the residual
-    precision), solves ``A d = r`` approximately with ``solve(r) -> (d, info)`` in ``inner_dtype``
-    and adds ``d`` to ``x``. It stops when ``norm(r) <= tol norm(b)`` or after
+    Each pass computes the residual ``r = b - A x`` with ``apply`` (``x -> A x``), solves
+    ``A d = r`` approximately with ``solve(r) -> (d, info)`` and adds ``d`` to ``x``. It stops
+    when ``norm(r) <= tol norm(b)`` or after
     :data:`~mrx.precision.MAX_PASSES` passes. ``info`` counts the inner iterations of all passes.
 
     ``norm`` measures residuals. The callers pass the norm given by the mass preconditioner of the
     residual's space. ``project_dual`` removes the kernel of a singular system from the residual.
     A solve whose residual is not of the form ``b - A x`` passes ``residual(x)`` and ``x0``
-    instead of ``apply_res``, and ``b`` is then used only for its norm.
+    instead of ``apply``, and ``b`` is then used only for its norm.
     """
     if project_dual is None:
         def project_dual(r): return r
-    b = b.astype(RESIDUAL_DTYPE)
     if residual is None:
-        x = jnp.zeros_like(b) if x0 is None else x0.astype(RESIDUAL_DTYPE)
+        x = jnp.zeros_like(b) if x0 is None else x0
 
         def residual(x):
-            return project_dual(b - apply_res(x))
+            return project_dual(b - apply(x))
     else:
-        x = x0.astype(RESIDUAL_DTYPE)
+        x = x0
     bnorm = norm(project_dual(b))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
@@ -180,11 +178,10 @@ def refine(apply_res, solve, b, *, tol, norm, inner_dtype, x0=None, project_dual
 
     def body(carry):
         x, r, k, its = carry
-        # The inner solve gets the residual scaled to unit norm, so the range of the working
-        # precision never limits the tolerance. s > 0 inside the loop.
+        # The inner solve gets the residual scaled to unit norm. s > 0 inside the loop.
         s = norm(r)
-        d, info = solve((r / s).astype(inner_dtype))
-        x = x + s * d.astype(RESIDUAL_DTYPE)
+        d, info = solve(r / s)
+        x = x + s * d
         return x, residual(x), k + 1, its + jnp.abs(info)
 
     x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
@@ -202,8 +199,7 @@ def _compose_parity(projectors, parity):
 
 
 def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None,
-                      x0=None, A_res=None, norm=None, inner_tol=None, inner_dtype=DTYPE,
-                      parity=None):
+                      x0=None, check_residual=False, norm=None, parity=None):
     """Solve the symmetric semidefinite system ``A x = b`` by PCG and return ``(x, info)``.
 
     The rows of ``vs`` (shape ``(m, n)``, ``m`` may be 0) span the kernel of ``A`` and are
@@ -211,33 +207,27 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
     iterates and the residuals, so ``x`` is the solution orthogonal to it.
 
     The residual is measured in ``norm`` (:func:`mrx.operators.dual_norm`), by the PCG as well.
-    Without ``A_res`` this is a plain PCG that stops at ``tol``. With ``A_res`` (``A`` in the
-    residual precision) the PCG runs inside :func:`refine`: each pass solves to ``inner_tol`` in
-    ``inner_dtype``, the true residual measured in ``norm`` decides convergence at ``tol``, and
-    ``x`` is returned in the residual precision. ``parity``, the parity projections of a
+    Without ``check_residual`` this is a plain PCG that stops at ``tol`` on the residual of its
+    recurrence. With it the PCG runs inside :func:`refine`: each pass solves to ``tol`` and the
+    true residual measured in ``norm`` decides convergence. ``parity``, the parity projections of a
     half-period sequence, keeps the iterates at the parity of ``b``.
     """
-    dtype = b.dtype if A_res is None else inner_dtype
-    project_primal_in, project_dual_in = _compose_parity(
-        deflation_projectors(jnp.asarray(vs, dtype=dtype), mass_matvec), parity)
+    project_primal, project_dual = _compose_parity(deflation_projectors(vs, mass_matvec), parity)
 
     def A(x):
-        return project_dual_in(A_matvec(project_primal_in(x)))
+        return project_dual(A_matvec(project_primal(x)))
 
     def P(x):
-        return project_primal_in(precond_matvec(project_dual_in(x)))
+        return project_primal(precond_matvec(project_dual(x)))
 
-    if A_res is None:
-        x0 = jnp.zeros_like(b) if x0 is None else project_primal_in(x0)
-        x, info = preconditioned_cg(A, project_dual_in(b), P, tol, maxiter, x0=x0, norm=norm)
-        return project_primal_in(x), info
+    if not check_residual:
+        x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
+        x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm)
+        return project_primal(x), info
 
-    project_primal, project_dual = _compose_parity(deflation_projectors(
-        jnp.asarray(vs, dtype=RESIDUAL_DTYPE), mass_matvec), parity)
-    x, info = refine(lambda x: A_res(project_primal(x)),
-                     lambda r: preconditioned_cg(A, r, P, inner_tol, maxiter, norm=norm),
-                     b, x0=x0, tol=tol, project_dual=project_dual, norm=norm,
-                     inner_dtype=inner_dtype)
+    x, info = refine(lambda x: A_matvec(project_primal(x)),
+                     lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm),
+                     b, x0=x0, tol=tol, project_dual=project_dual, norm=norm)
     return project_primal(x), info
 
 
@@ -369,10 +359,10 @@ def solve_saddle_point_minres(
         stiffness_matvec, derivative_matvec, derivative_T_matvec,
         mass_lower_matvec, b_upper, n_upper, n_lower, *,
         precond_upper, precond_lower, mass_upper_matvec, vs_upper,
-        tol, maxiter, saddle_res, norm_upper, norm_lower, inner_tol, inner_dtype,
-        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None, mass_upper_res=None,
+        tol, maxiter, saddle_res, norm_upper, norm_lower,
+        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None,
         eliminate_lower=None):
-    """Solve the saddle-point system of a Hodge Laplacian by refined MINRES and return ``(u, sigma, info)``::
+    """Solve the saddle-point system of a Hodge Laplacian by MINRES and return ``(u, sigma, info)``::
 
         | S    D   | | u     |   | f |
         | D^T  -M  | | sigma | = | 0 |
@@ -382,28 +372,17 @@ def solve_saddle_point_minres(
     preconditioners of the two diagonal blocks. The rows of ``vs_upper`` span the harmonic
     k-forms, orthonormal in ``M_k``, and are removed from ``u``. The lower block has no kernel.
 
-    MINRES runs inside :func:`refine`. ``saddle_res(u, sigma)`` returns the two residual blocks in
-    the residual precision, each pass solves to ``inner_tol``, and convergence at ``tol`` is
+    MINRES runs inside :func:`refine`. ``saddle_res(u, sigma)`` returns the two blocks of the
+    operator applied to ``(u, sigma)``, each pass solves to ``tol``, and convergence is
     judged in the norm ``sqrt(norm_upper^2 + norm_lower^2)``, by MINRES as well. With
     ``eliminate_lower`` (``r_lower -> D M^{-1} r_lower``) the upper part is the residual of the
     equation for ``u`` alone, ``f - (S + D M^{-1} D^T) u``, which is ``r_upper + D M^{-1} r_lower``
-    once ``sigma`` is eliminated. The lower part stays, because ``sigma`` is returned as well. ``u`` and ``sigma`` are returned in
-    the residual precision. An initial guess ``x0_upper`` should come with a matching
+    once ``sigma`` is eliminated. The lower part stays, because ``sigma`` is returned as well.
+    An initial guess ``x0_upper`` should come with a matching
     ``x0_lower``, since ``u`` alone leaves ``D^T x0_upper`` in the lower residual.
     """
-    dtype = b_upper.dtype
-    # with ``mass_upper_res`` the harmonic forms are removed in the residual precision from the residual, the
-    # right-hand side and the solution (``outer_*``), and in the working precision inside MINRES. A float32
-    # projection of the right-hand side leaves a harmonic part that the refinement cannot remove. Without
-    # ``mass_upper_res`` one pair of projectors serves both.
-    vs_upper = jnp.asarray(vs_upper)
     project_primal_upper, project_dual_upper = _compose_parity(
-        deflation_projectors(vs_upper.astype(inner_dtype) if mass_upper_res is not None else vs_upper,
-                             mass_upper_matvec), parity_upper)
-    outer_primal_upper, outer_dual_upper = (project_primal_upper, project_dual_upper) if mass_upper_res is None \
-        else _compose_parity(deflation_projectors(vs_upper.astype(RESIDUAL_DTYPE), mass_upper_res), parity_upper)
-    if mass_upper_res is not None:
-        b_upper = b_upper.astype(RESIDUAL_DTYPE)
+        deflation_projectors(vs_upper, mass_upper_matvec), parity_upper)
     # The lower block has no kernel. parity_lower has the sign of the upper block, since sigma follows u.
     project_primal_lower, project_dual_lower = _compose_parity(((lambda x: x), (lambda f: f)), parity_lower)
 
@@ -431,20 +410,20 @@ def solve_saddle_point_minres(
         ps = precond_lower(project_dual_lower(s))
         return pack(project_primal_upper(pu), project_primal_lower(ps))
 
-    b = pack(outer_dual_upper(b_upper), jnp.zeros(n_lower, dtype=dtype))
+    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
     if x0_upper is None:
-        x0_upper = jnp.zeros(n_upper, dtype=dtype)
+        x0_upper = jnp.zeros(n_upper)
     if x0_lower is None:
-        x0_lower = jnp.zeros(n_lower, dtype=dtype)
-    x0 = pack(outer_primal_upper(x0_upper), x0_lower)
+        x0_lower = jnp.zeros(n_lower)
+    x0 = pack(project_primal_upper(x0_upper), x0_lower)
 
-    def apply_res(x):
+    def apply(x):
         u, s = unpack(x)
-        r_upper, r_lower = saddle_res(outer_primal_upper(u), project_primal_lower(s))
-        return pack(outer_dual_upper(r_upper), project_dual_lower(r_lower))
+        r_upper, r_lower = saddle_res(project_primal_upper(u), project_primal_lower(s))
+        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
 
     def solve(r):
-        return minres(A_matvec, r, M=precond, tol=inner_tol, maxiter=maxiter, norm=norm)
+        return minres(A_matvec, r, M=precond, tol=tol, maxiter=maxiter, norm=norm)
 
     def norm(r):
         r_u, r_l = unpack(r)
@@ -452,6 +431,6 @@ def solve_saddle_point_minres(
             r_u = r_u + eliminate_lower(r_l)
         return jnp.sqrt(norm_upper(r_u) ** 2 + norm_lower(r_l) ** 2)
 
-    x, info = refine(apply_res, solve, b, x0=x0, tol=tol, norm=norm, inner_dtype=inner_dtype)
+    x, info = refine(apply, solve, b, x0=x0, tol=tol, norm=norm)
     u, sigma = unpack(x)
-    return outer_primal_upper(u), project_primal_lower(sigma), info
+    return project_primal_upper(u), project_primal_lower(sigma), info

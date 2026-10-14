@@ -24,16 +24,16 @@ from mrx.nullspace import harmonic_rayleigh
 from mrx.precision import eps
 
 # The polar derivative involves an inverse near the axis, which costs accuracy:
-# 1e4 eps (2.2e-12 in float64, 1.2e-3 in float32).
+# 1e4 eps (2.2e-12).
 EXACT = mrx.eps(1e4)
-# Rayleigh quotient of a stored harmonic form: round-off is below 1e-9 in every configuration, an unconverged
+# Rayleigh quotient of a stored harmonic form: round-off is below 1e-9, an unconverged
 # solve leaves 1e-3.
 HARMONIC = 1e-8
 
 
 def _random(space, k, seed):
     rng = np.random.default_rng(seed)
-    return jnp.asarray(rng.standard_normal(space.n(k)), dtype=mrx.DTYPE)
+    return jnp.asarray(rng.standard_normal(space.n(k)))
 
 
 def _views(seq):

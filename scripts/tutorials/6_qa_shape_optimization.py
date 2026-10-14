@@ -23,15 +23,12 @@ The run stops when the criterion is back at the device's own value with both con
 Quasi-axisymmetry comes back, but the end boundary still differs from the device by a few percent of the
 minor radius, since these three scalars alone do not determine the shape.
 
-Unlike the other tutorials this one runs in float64 (the script sets ``MRX_DTYPE=float64``). In float32
-the round-off of the solves in the gradient stalls the optimizer far above the device's value.
-
     python -u scripts/tutorials/6_qa_shape_optimization.py
     python -u scripts/tutorials/6_qa_shape_optimization.py --perturb-mm 5 --seed 1
 """
 
 # %%
-# 1) Setup: CLI and input handling. The script asks for float64 before MRX is imported.
+# 1) Setup: CLI and input handling.
 from __future__ import annotations
 
 import os
@@ -40,12 +37,9 @@ from dataclasses import dataclass
 
 print("[tutorial 6] shape optimization of the QA stellarator: importing JAX and MRX", flush=True)
 
-os.environ.setdefault("MRX_DTYPE", "float64")
-
 import tyro
 
-from mrx.precision import current_precision
-from mrx.relaxation.config import Geometry, Precision
+from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
 
@@ -55,7 +49,7 @@ _INTERACTIVE = "ipykernel" in sys.modules
 class Options:
     """Tutorial 6: optimize the shape of the QA stellarator for quasi-axisymmetry."""
     geometry: Geometry = Geometry(path="data/wout_LandremanPaul2021_QA_lowres.nc", resolution=(12, 16, 16),
-                                  spline_degree=3, precision=Precision(current_precision()))
+                                  spline_degree=3)
     perturb_mm: float = 10.0
     """The RMS of the random displacement of the start's boundary, in mm."""
     seed: int = 0
@@ -72,10 +66,6 @@ class Options:
 
 cli = tyro.cli(Options, args=[] if _INTERACTIVE else None)
 g = cli.geometry
-# mrx fixes its precision when it is imported, from MRX_DTYPE and MRX_RESIDUAL_DTYPE
-if g.precision != current_precision():
-    sys.exit(f"--geometry.precision {g.precision} needs MRX_DTYPE and MRX_RESIDUAL_DTYPE set before mrx is "
-             f"imported (this run is {current_precision()})")
 os.makedirs(cli.out, exist_ok=True)
 
 # %%

@@ -26,13 +26,12 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import mrx
-from mrx.precision import RESIDUAL_DTYPE, eps
+from mrx.precision import eps
 
-#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13 in float64 and in mixed
-#: precision: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
+#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13:
+#: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
 ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
-#: The relative spread of the three representations' errors: below 3e-12 in float64 and 2.1e-4 in mixed precision.
+#: The relative spread of the three representations' errors, which is below 3e-12.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
 _ERRORS = {}
@@ -66,7 +65,7 @@ def _integral(seq, values):
 def _converged(seq, info, residual, rhs, k_res):
     """The solve's sign and its true residual in the norm of its stopping criterion."""
     def norm(v):
-        return float(jnp.sqrt(v @ seq.M[k_res].precondition(v.astype(mrx.DTYPE))))
+        return float(jnp.sqrt(v @ seq.M[k_res].precondition(v)))
     assert int(info) >= 0, f"did not converge (info {int(info)})"
     assert norm(residual) <= 1e2 * seq.tol * norm(rhs)
 
@@ -80,27 +79,26 @@ def _solve(seq, k):
         load = space.load(f, k)
         if k == 1:
             rhs = space.G[0].T @ load
-            phi, info = space.L[0].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
+            phi, info = space.L[0].solve(rhs, return_info=True)
             _converged(space, info, space.S[0] @ phi - rhs, rhs, 0)
             h = space.nullspace(1)[0]
-            uh = space.G[0] @ phi.astype(mrx.DTYPE) + (float(load @ h) / float(h @ (space.M[1] @ h))) * h
+            uh = space.G[0] @ phi + (float(load @ h) / float(h @ (space.M[1] @ h))) * h
         else:
             rhs = space.G[1].T @ load
-            A, info = space.L[1].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
-            on = space if space.residual is None else space.residual
-            _converged(space, info, on.L[1] @ A - rhs.astype(RESIDUAL_DTYPE), rhs, 1)
-            uh = space.G[1] @ A.astype(mrx.DTYPE)
+            A, info = space.L[1].solve(rhs, return_info=True)
+            _converged(space, info, space.L[1] @ A - rhs, rhs, 1)
+            uh = space.G[1] @ A
         err_sq = float(uh @ (space.M[k] @ uh)) - 2.0 * float(uh @ load) + target_sq
     elif k == 0:
         space = seq.even.free                 # psi is even
         grad_psi = jax.grad(psi)
         load = space.load(lambda x: grad_psi(space.map(x)), 1)
         rhs = space.G[0].T @ load
-        u, info = space.L[0].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
+        u, info = space.L[0].solve(rhs, return_info=True)
         _converged(space, info, space.S[0] @ u - rhs, rhs, 0)
         # psi is determined up to a constant, so the error is that of its gradient. (The error of psi itself
         # would be a small difference of large numbers, ||psi|| being dominated by its mean.)
-        Gu = space.G[0] @ u.astype(mrx.DTYPE)
+        Gu = space.G[0] @ u
         target_sq = _integral(space, jnp.sum(jax.vmap(lambda x: grad_psi(space.map(x)))(space.quad.x) ** 2, axis=1))
         err_sq = float(Gu @ (space.M[1] @ Gu)) - 2.0 * float(Gu @ load) + target_sq
     else:
@@ -113,10 +111,9 @@ def _solve(seq, k):
             return jnp.linalg.solve(jax.jacfwd(space.map)(x).T, jax.grad(rho)(x))
         load = space.load(grad_rho, 2)
         rhs = -(space.M[3] @ (space.G[2] @ space.M[2].solve(load)))     # <grad rho*, delta Lambda_i>
-        r3, info = space.L[3].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
-        on = space if space.residual is None else space.residual
-        _converged(space, info, on.L[3] @ r3 - rhs.astype(RESIDUAL_DTYPE), rhs, 3)
-        g = -space.M[2].solve(space.D[2].T @ r3.astype(mrx.DTYPE))
+        r3, info = space.L[3].solve(rhs, return_info=True)
+        _converged(space, info, space.L[3] @ r3 - rhs, rhs, 3)
+        g = -space.M[2].solve(space.D[2].T @ r3)
         target_sq = _integral(space, jnp.sum(jax.vmap(grad_rho)(space.quad.x) ** 2, axis=1))
         err_sq = float(g @ (space.M[2] @ g)) - 2.0 * float(g @ load) + target_sq
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
@@ -142,7 +139,7 @@ def test_leray_projection(seq):
     """The Leray projection of a random velocity is divergence-free to the solver tolerance, idempotent and
     non-expansive."""
     even = seq.even
-    v = jnp.asarray(np.random.default_rng(5).standard_normal(even.n(2)), dtype=mrx.DTYPE)
+    v = jnp.asarray(np.random.default_rng(5).standard_normal(even.n(2)))
     v = v / even.l2_norm(v, 2)
     Pv, p = even.leray(v, k=2)
     PPv, _ = even.leray(Pv, k=2, p_guess=p)
@@ -163,14 +160,14 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
 
     s = domains("period")
     Phi, _ = build_map(s.equilibrium, s, nfp=s.nfp, stellarator_symmetric=s.half_period)
-    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)), dtype=RESIDUAL_DTYPE)
-    x_ref = s.M[1].solve(b, dtype=RESIDUAL_DTYPE)
+    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
+    x_ref = s.M[1].solve(b)
     Pb = s.M[1].precondition(b)
     try:
         s.set_geometry_from_map(Phi, keep_preconditioners=True)
         assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
         assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-        x, info = s.M[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE)
+        x, info = s.M[1].solve(b, return_info=True)
         assert info > 0
         assert float(s.l2_norm(x - x_ref, 1) / s.l2_norm(x_ref, 1)) <= 1e3 * s.tol
         s.set_geometry_from_map(Phi)
@@ -187,11 +184,10 @@ def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq
     and ``L[1].solve`` converge and differ by a closed form only, so their curls agree. With the gauge solve they
     agree themselves."""
     odd = seq.odd
-    on = odd if odd.residual is None else odd.residual
-    b = on.G[1].T @ (odd.M[2] @ b0)
-    a, info = odd.L[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False)
-    a_g = odd.L[1].solve(b, dtype=RESIDUAL_DTYPE, part="coexact")
-    a_L, info_L = odd.L[1].solve(b, return_info=True, dtype=RESIDUAL_DTYPE)
+    b = odd.G[1].T @ (odd.M[2] @ b0)
+    a, info = odd.L[1].solve(b, return_info=True, part="coexact", gauge=False)
+    a_g = odd.L[1].solve(b, part="coexact")
+    a_L, info_L = odd.L[1].solve(b, return_info=True)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
     diff_g = float(odd.l2_norm(a_g - a_L, 1) / odd.l2_norm(a_L, 1))
     print(f"\n  co-closed {int(info)} iterations, Hodge split {int(info_L)}, ||curl (a - a_L)|| / ||curl a_L|| {diff:.2e}, "
@@ -208,16 +204,15 @@ def test_parts_of_the_laplacian_solve(domains, k):
     orthogonal to the exact forms, and the full solve of the sum is the sum of the parts. 3-forms only have the
     exact part."""
     s = domains("period")
-    on = s if s.residual is None else s.residual        # the right-hand sides are formed in the residual precision
     rng = np.random.default_rng(k)
-    c = jnp.asarray(rng.standard_normal(s.n(k - 1)), dtype=RESIDUAL_DTYPE)
-    b = {"exact": on.M[k] @ (on.G[k - 1] @ c)}
+    c = jnp.asarray(rng.standard_normal(s.n(k - 1)))
+    b = {"exact": s.M[k] @ (s.G[k - 1] @ c)}
     if k < 3:
-        b["coexact"] = on.G[k].T @ jnp.asarray(rng.standard_normal(s.n(k + 1)), dtype=RESIDUAL_DTYPE)
+        b["coexact"] = s.G[k].T @ jnp.asarray(rng.standard_normal(s.n(k + 1)))
     x = {}
     for part, rhs in b.items():
-        x[part], info = s.L[k].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE, part=part)
-        x_full, info_full = s.L[k].solve(rhs, return_info=True, dtype=RESIDUAL_DTYPE)
+        x[part], info = s.L[k].solve(rhs, return_info=True, part=part)
+        x_full, info_full = s.L[k].solve(rhs, return_info=True)
         diff = float(s.l2_norm(x[part] - x_full, k) / s.l2_norm(x_full, k))
         print(f"\n  L{k} {part}: {int(info)} iterations against {int(info_full)} of the full solve, "
               f"relative difference {diff:.2e}")
@@ -227,7 +222,7 @@ def test_parts_of_the_laplacian_solve(domains, k):
         return
     gauge = s.G[k - 1].T @ (s.M[k] @ x["coexact"])
     assert float(jnp.linalg.norm(gauge)) <= 1e3 * s.tol * float(jnp.linalg.norm(s.M[k] @ x["coexact"]))
-    x_sum = s.L[k].solve(b["coexact"] + b["exact"], dtype=RESIDUAL_DTYPE)
+    x_sum = s.L[k].solve(b["coexact"] + b["exact"])
     assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
 
 
@@ -235,21 +230,19 @@ def test_parts_of_the_laplacian_solve(domains, k):
 def test_the_coexact_solve_without_its_gauge_takes_a_guess(domains, k):
     """Started from its own result, the co-exact solve without the gauge is converged at once."""
     s = domains("period")
-    on = s if s.residual is None else s.residual
-    b = on.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)), dtype=RESIDUAL_DTYPE)
-    y, info = s.L[k].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False)
-    y2, info2 = s.L[k].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact", gauge=False, guess=y)
+    b = s.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)))
+    y, info = s.L[k].solve(b, return_info=True, part="coexact", gauge=False)
+    y2, info2 = s.L[k].solve(b, return_info=True, part="coexact", gauge=False, guess=y)
     assert 0 <= info2 < info
-    assert float(s.l2_norm(on.G[k] @ (y2 - y), k + 1) / s.l2_norm(on.G[k] @ y, k + 1)) <= 1e3 * s.tol
+    assert float(s.l2_norm(s.G[k] @ (y2 - y), k + 1) / s.l2_norm(s.G[k] @ y, k + 1)) <= 1e3 * s.tol
 
 
 def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
     """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
     s = domains("period")
-    on = s if s.residual is None else s.residual
-    b = on.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)), dtype=RESIDUAL_DTYPE)
-    x, info = s.L[0].solve(b, return_info=True, dtype=RESIDUAL_DTYPE, part="coexact")
-    x_full = s.L[0].solve(b, dtype=RESIDUAL_DTYPE)
+    b = s.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)))
+    x, info = s.L[0].solve(b, return_info=True, part="coexact")
+    x_full = s.L[0].solve(b)
     assert info > 0
     assert float(s.l2_norm(x - x_full, 0) / s.l2_norm(x_full, 0)) <= 1e3 * s.tol
 

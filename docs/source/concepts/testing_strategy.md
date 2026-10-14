@@ -1,14 +1,9 @@
 # Testing strategy
 
-MRX has one lean test tier in three configurations. Bare `pytest` runs the suite in the
-configuration `import mrx` gives, float64. Mixed precision (`MRX_DTYPE=float32`) and
-plain float32 (also `MRX_RESIDUAL_DTYPE=float32`) are the other two ([Precision](precision.md)). A change to the solvers,
-the precision module or the atoms is verified in all three:
-`bash slurm/suite.sh` submits the three GPU jobs. On the fixture mesh below the suite passes in float64 and in
-mixed precision. In plain float32 seven tests fail (2026-10-13): the saddle solve behind the Leray projection
-and `L_3` does not reach its stopping test there, and the harmonic 1-form misses its bound. The GitHub workflow runs
-the suite in mixed precision and in float64. The suite reads only files tracked in the
-repository.
+MRX has one lean test tier. Bare `pytest` runs the suite, in float64
+([Precision](precision.md)). `bash slurm/suite.sh` submits it as a GPU job,
+and the GitHub workflow runs it on a CPU. The suite reads only files
+tracked in the repository.
 
 ## Three statements
 
@@ -41,12 +36,11 @@ compiles, not the mesh. Compiled programs are cached on disk
 Mathematical statements, phrased so that they fail when the mathematics is
 wrong and not when an implementation detail moves:
 
-- exact identities to a multiple of `mrx.eps()`, so the same assertion
-  holds in every precision.
+- exact identities to a multiple of `mrx.eps()`.
 - solver-based quantities to a multiple of `seq.tol`.
 - measured bands, a fixed factor above a measured error, stated next to
   the value. A wrong metric factor or a broken preconditioner moves these
-  by a factor, precision and run-to-run noise by a few percent.
+  by a factor, run-to-run noise by a few percent.
 
 A new test states which mathematical claim it checks at which tolerance class, on the
 fixtures above.

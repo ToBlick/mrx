@@ -363,7 +363,7 @@ def trace_archive(seq, fields, *, lines=160, periods=400, planes=5, seed=0, sour
 
     archive = {"fields": np.array(list(fields)), "planes": np.array(planes), "resolution": np.array(seq.ns),
                "p": seq.p, "nfp": seq.nfp, "symmetry": np.array(seq.symmetry), "steps": steps_for(planes),
-               "source": np.array(source), "trace_precision": np.array(jnp.dtype(seq.dtype).name)}
+               "source": np.array(source)}
     results = {}
     for name, (B, step) in fields.items():
         B = jnp.asarray(B)

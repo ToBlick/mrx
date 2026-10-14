@@ -90,7 +90,7 @@ def attach_weights(seq, geometry):
     """
     metric, metric_inv, jac = geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
     q = tuple(int(n) for n in seq.quad.shape)
-    w = seq.quad.w.astype(jac.dtype)[:, None, None]
+    w = seq.quad.w[:, None, None]
 
     def grid(W):
         return (W * w).reshape(q + W.shape[1:])

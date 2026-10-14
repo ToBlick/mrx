@@ -3,32 +3,6 @@
 Things that behave differently from what one might expect, and how to notice
 them before they cost a run.
 
-## Precision is fixed when MRX is imported
-
-`MRX_DTYPE` and `MRX_RESIDUAL_DTYPE` are read once, when `mrx` is first
-imported ([Precision](concepts/precision.md)). Setting them later has no
-effect on the arrays. `scripts/relax.py` sets them from
-`--geometry.precision` before its import, and the tutorials stop with a
-message when `--geometry.precision` disagrees with them. In your own code, set the
-variables before the first `import mrx`:
-
-```python
-import os
-os.environ["MRX_DTYPE"] = "float32"   # mixed precision instead of the default float64
-import mrx
-```
-
-## Plain float32 can stall on strongly shaped devices
-
-Plain float32 (`MRX_DTYPE=float32` and `MRX_RESIDUAL_DTYPE=float32`) is the fastest configuration, but on a
-strongly shaped map a Krylov solve can stop improving long before its
-tolerance. On the QA stellarator of the tutorials at (12, 16, 16) the solve
-behind the vacuum field stalls near a relative residual of `5e-5`, with 2000,
-20000 or 100000 iterations alike, while li383 at the same mesh converges.
-More iterations do not help, only more precision in the residual does: mixed
-precision converges in about 300 iterations. Use plain float32
-only for quick looks.
-
 ## A negative iteration count means the solve did not converge
 
 Every solve returns a signed iteration count: positive when it reached its
@@ -46,8 +20,7 @@ after the build, before any relaxation (`scripts/relax.py` and the tutorials
 do).
 
 It prints the Rayleigh quotient `v^T L v / v^T M v` of every form. A harmonic
-form reads round-off, `1e-9` or smaller in float32 or mixed precision and
-`1e-20` or smaller in float64. A quotient near `1e-3` means the solve that
+form reads round-off, `1e-20` or smaller. A quotient near `1e-3` means the solve that
 produced the form did not converge (see the sections above), and the
 vacuum field and every projection built on it are off by that much.
 

@@ -136,7 +136,7 @@ the first step's solves start warm.
 `relax(state, ts, steps, chunk, it0, floor_tol, on_chunk)` runs the steps
 in compiled chunks (`chunk_runner`: one `lax.scan` of `chunk` steps,
 returning the per-step trace), samples the diagnostics once per chunk
-(`make_sampler`: energy in the residual precision, helicity, `||J||/||B||`,
+(`make_sampler`: energy, helicity, `||J||/||B||`,
 `int J . B`, `beta_vol`), calls `on_chunk`, and stops when the chunk mean of
 `resid` falls below `floor_tol` or after `steps`. It returns a
 `RelaxResult` (the state, the trace, the samples, the stopping reason).
