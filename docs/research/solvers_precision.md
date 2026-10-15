@@ -101,6 +101,15 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
     - L_1, L_2 solutions equal main's to 1e-12 .. 1e-14 in the same time.
     - Shifted solutions within 1.2e-8 where main converged.
     - li383 free k = 1 at eps 1: 29 s unconverged -> 0.39 s.
+  - Resistive step as a curl (2026-10-15). With the three-solve split the increment's divergence sat at the solver
+    tolerance (|div delta| / |delta| 6.4e-8 per step, |div B| 2.5e-10 after 30 driven steps, against round-off on
+    main, whose split took a second pass). For a divergence-free B - B_ref the backward-Euler increment is
+    delta = G_1 a with (M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref): one 1-form solve.
+    - It equals the full (M_2 + eps L_2) solve to 1e-8 at eps = h_r^2, 100 h_r^2 and 1e4 h_r^2. At 1e4 h_r^2 it
+      takes the field to the reference (6.928e-4 of a 6.937e-4 gap), while forward Euler is off by 4e4.
+    - |div delta| / |delta| 2.1e-12. 223 iterations against 1606.
+    - 30 Newton steps with the drive (C = 1), paired twice: |div B| 5.3e-15 (main) and 6.3e-15, resistive iterations
+      1565 -> 229, 3.95 -> 3.41 s/step. The same energy, residual and helicity drift.
 
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 

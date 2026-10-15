@@ -96,13 +96,22 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
 
     ``eps = eta dt`` is the step's dose (a length squared). ``J_ref`` is the current of ``B_ref``, or zero if
     ``B_ref`` is not given, so the field diffuses towards ``B_ref`` rather than towards a vacuum field. The step
-    solves ``(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)``, with ``M_2`` the 2-form mass matrix and ``L_2`` the
-    2-form Laplacian. Returns ``(B + delta, info, ||delta|| / ||B||)``, where ``info`` is the iteration count of
-    the solve (positive when converged, negative when not). ``guess`` is a starting guess for ``delta``.
+    is ``(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)``, with ``M_2`` the 2-form mass matrix and ``L_2`` the
+    2-form Laplacian. For a divergence-free ``B - B_ref`` its solution is a curl, ``delta = G_1 a`` with
+
+        (M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref),
+
+    because ``L_2 (B - B_ref) = M_2 G_1 M_1^{-1} G_1^T M_2 (B - B_ref)`` and
+    ``(M_2 + eps L_2) G_1 a = M_2 G_1 M_1^{-1} (M_1 + eps S_1) a``. That is one 1-form solve
+    (``seq.shifted(1, eps).solve(..., part="coexact")``), and ``div B`` stays at round-off, since ``G_2 G_1 = 0``.
+
+    Returns ``(B + delta, info, ||delta|| / ||B||, a)``, where ``info`` is the iteration count of the solve
+    (positive when converged, negative when not). ``guess`` is a starting guess for ``a``.
     """
     seq = seq.odd
     # solve for the small increment, not for B itself
-    rhs = -eps * (seq.L[2] @ (B if B_ref is None else B - B_ref))
-    delta, info = seq.shifted(2, eps).solve(rhs, guess=guess, return_info=True)
+    rhs = -eps * (seq.G[1].T @ (seq.M[2] @ (B if B_ref is None else B - B_ref)))
+    a, info = seq.shifted(1, eps).solve(rhs, guess=guess, return_info=True, part="coexact")
+    delta = seq.G[1] @ a
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
-    return B + delta, info.astype(jnp.int32), rel
+    return B + delta, info.astype(jnp.int32), rel, a
