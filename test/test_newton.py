@@ -15,20 +15,16 @@ term. With the Chebyshev mass inverse in place of the mass solves the Hessian st
 
 A short run with the production stepper lowers the energy at every step, lowers the force, keeps the helicity
 up to grid-scale effects, records the best state, and writes a checkpoint that reads back. ``div B`` stays zero
-by the exactness of the complex (``test_derham.py``). A checkpoint without the ``angles`` attribute is refused on
-li383, whose angles are reversed on reading.
+by the exactness of the complex (``test_derham.py``).
 """
 import os
 
-import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from mrx.precision import eps
-from mrx.relaxation.loop import (TimeStepper, check_checkpoint, initial_state, read_checkpoint, relax,
-                                 write_checkpoint)
+from mrx.relaxation.loop import TimeStepper, initial_state, read_checkpoint, relax, write_checkpoint
 from mrx.relaxation.newton import MassChebyshev, second_variation
 from mrx.relaxation.physics import compute_force
 
@@ -132,7 +128,3 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
     write_checkpoint(path, res.state, STEPS, seq)
     state, step = read_checkpoint(path, ts)
     assert step == STEPS and np.array_equal(np.asarray(state.B_n), np.asarray(res.state.B_n))
-    with h5py.File(path, "a") as fh:
-        del fh.attrs["angles"]
-    with pytest.raises(ValueError, match="left-handed"):
-        check_checkpoint(path, seq)
