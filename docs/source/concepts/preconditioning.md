@@ -18,7 +18,8 @@ is called on, `seq` (Dirichlet) or `seq.free`.
 | `L_k u = f`, k = 1, 2 | `seq.L[k].solve(f)` | the Hodge split: three SPD PCGs | the Laplacian atoms of levels k and k-1 |
 | `S_k u = b`, `b = G_k^T w` | `seq.L[k].solve(b, part="coexact", gauge=False)` | PCG on the singular `S_k` | the Laplacian atom of level k |
 | `L_3 u = f` | `seq.L[3].solve(f)` and `seq.leray(v, k=2)` | saddle-point MINRES | the k = 3 Laplacian atom, the k = 2 mass atom |
-| `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | two SPD PCGs | the shifted-stiffness atoms |
+| `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | three SPD PCGs, the Hodge split with `delta = 1 / eps` | the shifted-stiffness atoms plus the Laplacian atom of level k - 1 on gradients |
+| `G_k (M_k + eps L_k)^{-1} f` | `seq.shifted(k, eps).solve(f, part="coexact")` | one PCG on `M_k + eps S_k` | the same |
 
 Every solve takes a warm start `guess` and returns the signed iteration
 count with `return_info=True`. `seq.M[k].precondition(r)` and
@@ -69,13 +70,35 @@ whose Schur complement is `L_3`. `sigma = M_2^{-1} D_2^T u` is the weak
 gradient of `u`, which the Leray projection removes. The preconditioner is
 block-diagonal.
 
-**Shifted solve.** `G_k G_{k-1} = 0` gives exactly
+**Shifted solve.** This is the resistive step and the velocity smoothing.
+Divided by `eps`, `M_k + eps L_k` is `delta M_k + L_k` with `delta = 1 / eps`,
+and one routine solves both it and `L_k` itself (`delta = 0`). With
+`G = G_{k-1}`:
 
 ```
-(M_k + eps L_k)^{-1} = (M_k + eps S_k)^{-1} - eps G_{k-1} (M_{k-1} + eps S_{k-1})^{-1} G_{k-1}^T
+(delta M_{k-1} + S_{k-1}) z = G^T b
+(delta M_k + S_k) x_perp    = b - M_k G z
+(delta M_{k-1} + S_{k-1}) a = M_{k-1} z - G^T M_k x_perp
+x = x_perp + G a
 ```
 
-that is, two SPD solves. This is the resistive step and the velocity smoothing.
+These are three SPD solves, and at `delta = 0` they are the Hodge split above.
+Because `G^T S_k = 0` and `G^T M_k G = S_{k-1}`, `x` solves the system
+whatever the error of `z`. That error enters the second and the third
+right-hand side so that it cancels. The third solve also takes up the
+gradient part `G^T r` of the residual `r` of the second, which `S_k` does
+not see. So each solve stops on its own residual at a third of the
+tolerance, and the repetition judges the result on the residual of the posed
+equation. `delta = 0` is decided when the solve is compiled: the Laplacian
+forms no mass term, and its singular solves remove the harmonic forms. With
+two solves, `x = x_k - eps G z`, nothing cancelled the error of `z`. It
+reached the residual multiplied by `eps`, and above `eps` of about 0.1 the
+solve did not converge.
+
+`seq.shifted(k, eps).solve(b, part="coexact")` is the one solve of
+`M_k + eps S_k`. It is the solution for a `b` orthogonal to the closed forms.
+For any other `b` it differs from the solution by an exact form, so `G_k x`
+is the same. The velocity smoothing needs only that.
 
 **Leray projection.** `seq.leray(v, k=2)` removes the gradient part of a
 Dirichlet 2-form by the k = 3 saddle solve. `seq.leray(v, k=1)` splits a
@@ -123,7 +146,13 @@ It is positive definite, and the build raises if it is not.
 **Shifted stiffness.** The same atom preconditions `M_k + eps S_k` for an
 `eps` known only at the solve: the bulk Kronecker terms are shifted, and
 the core pair `(M_k, S_k)` is diagonalised once so the block is
-`V diag(1 / (1 + eps mu)) V^T`.
+`V diag(1 / (1 + eps mu)) V^T`. The Kronecker terms model the whole
+Laplacian `L_k`, while `S_k` vanishes on gradients. On gradients the operator is
+`M_k`, and in the `M`-orthogonal Hodge decomposition it is exactly
+`G^T M_k G = S_{k-1}` there for every `eps`. So the solve adds the Laplacian
+atom of level k - 1 on gradients, `G_{k-1} P_{k-1} G_{k-1}^T`. Without it the
+atom is too small on gradients by `1 / (1 + eps lambda)`, and the iteration
+count grows with `eps`.
 
 On a half-period sequence the parity views reduce the base atoms
 (`ReducedAtom`, `X^T P X` with the view's expansion `X`).

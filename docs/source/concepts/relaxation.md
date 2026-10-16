@@ -36,7 +36,10 @@ is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
    `u = curl (M_1 + mu L_1)^{-1} M_1 a = (M_2 + mu L_2)^{-1} M_2 F`, with
    `mu = SMOOTHING_C h_r^2` (`h_r^2` = `radial_cell_sq(seq)`, the squared
    physical radial cell). The smoothing damps the radial two-cell mode on
-   any mesh and commutes with the divergence.
+   any mesh and commutes with the divergence. Only the curl enters, and
+   `(M_1 + mu L_1)^{-1}` and `(M_1 + mu S_1)^{-1}` differ by an exact form,
+   so it is one solve of `M_1 + mu S_1`
+   (`seq.shifted(1, mu).solve(..., part="coexact")`).
 2. **Electric field** `E = M_1^{-1} load(u x B)`, one k = 1 mass solve.
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
@@ -92,9 +95,11 @@ inverse.
 `resistive_step(B, seq, eps, B_ref)` is one backward-Euler step of
 `dB/dt = -eta curl(curl B - J_ref)` over `eps = eta dt`, `J_ref` the current of
 `B_ref`, solved for the increment,
-`(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`
-(`seq.shifted(2, eps).solve`, two SPD solves). It is
-unconditionally stable and keeps `div B` at the solver tolerance. The drive
+`(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`.
+For a divergence-free `B - B_ref` the solution is a curl, `delta = G_1 a` with
+`(M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref)`, one 1-form solve
+(`seq.shifted(1, eps).solve(..., part="coexact")`). So `div B` stays at
+round-off, since `G_2 G_1 = 0`. It is unconditionally stable. The drive
 of `scripts/relax.py --drive.resistivity C` applies it after every ideal
 step with `eps = C h_r^2` towards the reference field's current. The field
 then goes to the resistive steady state of that current.

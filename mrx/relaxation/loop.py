@@ -65,7 +65,7 @@ class WarmStarts(eqx.Module):
     ``p`` is the pressure, ``JxB`` the Lorentz force before projection, ``J`` the current, ``E = u x B`` the
     electric field, ``a`` the vector potential of the step's direction, ``a_F`` the vector potential of the
     force (the same as ``a`` for gradient descent), ``A`` the vector potential of the helicity (updated only
-    when diagnostics are sampled) and ``resistive_delta`` the last resistive increment.
+    when diagnostics are sampled) and ``resistive_a`` the 1-form whose curl was the last resistive increment.
     """
     p: jnp.ndarray
     JxB: jnp.ndarray
@@ -74,7 +74,7 @@ class WarmStarts(eqx.Module):
     a: jnp.ndarray
     a_F: jnp.ndarray
     A: jnp.ndarray
-    resistive_delta: jnp.ndarray
+    resistive_a: jnp.ndarray
 
 
 class LastStep(eqx.Module):
@@ -207,7 +207,8 @@ class TimeStepper(eqx.Module):
         F = seq.G[1] @ a + ch
         if not smooth:
             return F, seq.M[2] @ F, None, J, a
-        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a)
+        # only curl a_s enters, and (M + mu L)^-1 and (M + mu S)^-1 differ by an exact form: one solve
+        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a, part="coexact")
         Fs = seq.G[1] @ a_s + ch
         return F, seq.M[2] @ F, Fs, J, a
 
@@ -254,15 +255,13 @@ class TimeStepper(eqx.Module):
         dt, dt_star = self._step_size(inc)
         B_nplus1 = B_n + dt * inc.dB
 
-        res_delta, res_it, res_moved = state.warm.resistive_delta, state.last.resistive_it, state.last.resistive_moved
+        res_a, res_it, res_moved = state.warm.resistive_a, state.last.resistive_it, state.last.resistive_moved
         if self.resistive:
-            B_ideal = B_nplus1
-            B_nplus1, res_it, res_moved = resistive_step(B_ideal, self.seq, self.resistivity,
-                                                         self.resistive_reference, guess=res_delta)
-            res_delta = B_nplus1 - B_ideal
+            B_nplus1, res_it, res_moved, res_a = resistive_step(B_nplus1, self.seq, self.resistivity,
+                                                                self.resistive_reference, guess=res_a)
 
         warm = WarmStarts(p=inc.p, JxB=inc.JxB, J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=state.warm.A,
-                          resistive_delta=res_delta)
+                          resistive_a=res_a)
         last = LastStep(F=inc.F, F_norm=jnp.sqrt(inc.F @ inc.MF), v=inc.u, v_norm=jnp.sqrt(inc.u @ inc.Mu),
                         newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved)
         return eqx.tree_at(lambda s: (s.B_nplus1, s.dt, s.dt_star, s.cfl_max, s.warm, s.last), state,
@@ -284,7 +283,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
         B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones(()), dt_star=jnp.ones(()), cfl_max=zero,
         warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1)),
                         a_F=a_F0,
-                        A=zeros1_odd, resistive_delta=jnp.zeros(odd.n(2))),
+                        A=zeros1_odd, resistive_a=zeros1_odd),
         last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2)), v_norm=zero,
                       newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
         best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=jnp.float64), step=jnp.int32(step)),

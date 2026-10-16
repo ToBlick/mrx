@@ -60,6 +60,57 @@ x_perp iterations [cumulative incl. the g-solve and the correction] and wall:
   383 it/step, 1e-2 612 mean / 1938 max, eta 1e-1 and 1 hit maxiter 10000 on 8-10 of the first steps
   (energy +3e-7, div B 6e-6).
 
+- Shifted solve on li383 (48,64,24) p=2 float64, one H200, against PR #33 (2026-10-14). Two changes:
+  - **Gradient correction.** The shifted atom models M + eps L and is too small on gradients by 1 / (1 + eps lambda),
+    where M + eps S is S_{k-1}. The preconditioner of M_j + eps S_j adds G P_{j-1} G^T.
+    - Single CG on M_1 + eps S_1, odd view: eps 1e-2 4228 -> 220, eps 1 > 5000 -> 274. An exact 0-form solve in
+      its place gains little: 211, 247.
+  - **Three solves as the Hodge split** (z, x_perp, a), in place of x = x_k - eps G z.
+    - With two solves the error of z reached the residual as eps M G M_{k-1}^-1 r_z. At eps = 1 every pass gained
+      only a factor 8 and the solve stopped at the pass limit. Tightening the (k-1)-form solve 1000 times made it
+      converge in 2 passes, the k-form solve did not matter.
+    - With three, the error of z cancels and each solve stops on its own residual at tol / 3. Every eps below
+      converges in one pass.
+    - Tried and dropped: judging the two solves on their contribution to the posed residual (an M_k apply per
+      iteration, +50 %, then tested every 16 iterations), and the same in refine (two passes per solve, 0.49
+      s/step).
+
+  seq.shifted(k, eps).solve on M_k z, iterations and time, PR #33 -> both changes:
+
+  | eps | k = 1 (even view) | k = 2 (odd view) |
+  |---|---|---|
+  | 7.4e-6 | 901, 0.36 s -> 548, 0.22 s | 1254, 0.48 s -> 1015, 0.44 s |
+  | 1e-4 | 1190, 0.47 s -> 491, 0.18 s | 1629, 0.60 s -> 631, 0.28 s |
+  | 1e-3 | 3032, 1.23 s -> 568, 0.21 s | 4321, 1.53 s -> 695, 0.30 s |
+  | 1e-2 | 15533, 6.3 s -> 622, 0.23 s | 23315, 8.0 s -> 821, 0.35 s |
+  | 1e-1 | unconverged, 24.8 s -> 703, 0.27 s | unconverged, 35.5 s -> 1205, 0.50 s |
+  | 1 | unconverged, 24.9 s -> 984, 0.40 s | unconverged, 43.5 s -> 2538, 0.99 s |
+
+  - The Laplacian and the shifted solve share the split: delta M + L with delta = None (static, the Laplacian) or
+    1 / eps. L_1, L_2 solve times unchanged against main (1.10 -> 1.11 s, 2.58 -> 2.59 s, even view). The
+    reported count now sums the three solves.
+  - The velocity smoothing only needs curl of the result, and (M + mu L)^-1 and (M + mu S)^-1 differ by an exact
+    form: it is one solve of M_1 + mu S_1 (`part="coexact"`). Gradient relaxation, 200 steps, paired twice on one
+    node: 0.260 / 0.260 -> 0.228 / 0.226 s/step, the same energy and residual. With the full three-solve
+    smoothing it was 0.307.
+  - W7-X FMM002 (32,64,36) and li383 (48,64,24) at p = 3, the same picture:
+    - shifted solve at eps 1e-2, k = 1: 1.17 -> 0.15 s and 15.8 -> 0.47 s.
+    - at eps 1 (unconverged before): 0.26 s and 0.73 s.
+    - gradient relaxation: 0.124 -> 0.096 s/step and 0.901 -> 0.652 s/step.
+  - Neumann (free) and Dirichlet spaces, li383 (48,64,24) and W7-X (36,48,48) field-period:
+    - L_1, L_2 solutions equal main's to 1e-12 .. 1e-14 in the same time.
+    - Shifted solutions within 1.2e-8 where main converged.
+    - li383 free k = 1 at eps 1: 29 s unconverged -> 0.39 s.
+  - Resistive step as a curl (2026-10-15). With the three-solve split the increment's divergence sat at the solver
+    tolerance (|div delta| / |delta| 6.4e-8 per step, |div B| 2.5e-10 after 30 driven steps, against round-off on
+    main, whose split took a second pass). For a divergence-free B - B_ref the backward-Euler increment is
+    delta = G_1 a with (M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref): one 1-form solve.
+    - It equals the full (M_2 + eps L_2) solve to 1e-8 at eps = h_r^2, 100 h_r^2 and 1e4 h_r^2. At 1e4 h_r^2 it
+      takes the field to the reference (6.928e-4 of a 6.937e-4 gap), while forward Euler is off by 4e4.
+    - |div delta| / |delta| 2.1e-12. 223 iterations against 1606.
+    - 30 Newton steps with the drive (C = 1), paired twice: |div B| 5.3e-15 (main) and 6.3e-15, resistive iterations
+      1565 -> 229, 3.95 -> 3.41 s/step. The same energy, residual and helicity drift.
+
 ## 3. Saddle MINRES: the diagonal lower block (2026-08-24)
 
 - The saddle lower block was silently a per-DoF diagonal (the default mass preconditioner was gated
