@@ -45,8 +45,9 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-# Three mathematical statements (de Rham complex, manufactured Poisson solutions on
-# three representations of the li383 domain, Newton descent) and the readers
+# Four mathematical statements (de Rham complex, every solve inverts its operator,
+# manufactured Poisson solutions on two representations of the li383 domain, Newton
+# descent) and the readers
 # (docs/source/concepts/testing_strategy.md). Every file it reads
 # is in the repository. The slowest tests are reported, so the cost of the suite is
 # measured rather than guessed.

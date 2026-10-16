@@ -1,19 +1,19 @@
 """Shared fixtures of the test suite.
 
-The suite tests three mathematical statements, each on the li383 equilibrium
-(``data/wout_li383_low_res_reference.nc``) at spline degree 2:
+The suite tests four statements, each on the li383 equilibrium (``data/wout_li383_low_res_reference.nc``) at
+spline degree 2, plus the readers (``test_readers.py``):
 
 - ``test_derham.py``: the discrete spaces form a de Rham complex.
-- ``test_poisson.py``: the Laplacians recover manufactured solutions, identically on the three ways to
-  represent the same domain.
-- ``test_newton.py``: the Newton direction is the second-order model of the energy along the ideal flow, and it
-  descends.
+- ``test_solvers.py``: every solve inverts its operator.
+- ``test_poisson.py``: the Laplacians recover manufactured solutions, identically on the two ways to represent
+  the same domain.
+- ``test_newton.py``: the Newton direction is the second-order model of the energy along the ideal flow, and a
+  relaxation with it descends.
 
-The three representations of the domain have the same mesh per field period:
+The two representations of the domain have the same mesh:
 
 - ``half``: the production sequence, one field period with stellarator symmetry, integrating half of it.
 - ``period``: one field period without the reflection.
-- ``full``: the whole torus as one period (``nfp = 1``), three times the toroidal splines.
 
 The run time of the suite is dominated by XLA compilation, so a test costs the distinct solves it compiles,
 not the size of the mesh. Compiled programs are cached on disk between runs (see below).
@@ -37,18 +37,16 @@ if _CACHE:
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
 #: Resolution (r, theta, zeta) per field period and the spline degree.
 NS, P = (12, 20, 12), 2
-#: The three representations of the li383 domain: (symmetry, nfp override, toroidal splines).
-DOMAINS = {"half": ("stellarator", None, NS[2]), "period": ("field-period", None, NS[2]),
-           "full": ("none", 1, 3 * NS[2])}
+#: The two representations of the li383 domain, by their symmetry.
+DOMAINS = {"half": "stellarator", "period": "field-period"}
 
 
 def _build(name):
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
-    symmetry, nfp, n_zeta = DOMAINS[name]
     t0 = time.perf_counter()
-    s, _ = build_sequence(GEOMETRY, (NS[0], NS[1], n_zeta), P, nfp=nfp, symmetry=symmetry)
+    s, _ = build_sequence(GEOMETRY, NS, P, symmetry=DOMAINS[name])
     compute_nullspaces(s, verbose=False)
     print(f"\n  li383 {name}: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
     return s

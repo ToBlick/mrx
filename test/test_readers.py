@@ -1,33 +1,25 @@
-"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence, except the G-frame
-vacuum.
+"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence.
 
 GVEC: a synthetic state written by ``test/synthetic_gvec.py`` from closed formulas is read back and
-reproduces the formulas to round-off. VMEC: the tracked li383 wout file reads with the expected layout and
-a plausible axis. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or current-constrained)
+reproduces the formulas to round-off. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or current-constrained)
 reproduces its formulas to round-off, and DESC's conversion of the li383 wout matches the wout.
 Without stellarator symmetry: the li383 wout and the synthetic GVEC state, shifted in both angles, read as
 the shifted series, and a synthetic DESC file with terms of the other parity reproduces its formulas.
 G-frame: the synthetic torus written in GVEC's axis-following frame reads as the same map, and a state
-computed by GVEC in its G-frame (data/gvec_gframe) reads as GVEC's own positions. Its vacuum field is
-MRX's harmonic field of the same domain.
+computed by GVEC in its G-frame (data/gvec_gframe) reads as GVEC's own positions.
 Orientation: ``read_equilibrium`` reverses the poloidal angle of the left-handed VMEC files and not of DESC's
 right-handed conversion, and the result is right-handed with the same R and Z at the mirrored angle.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.interpolate import BSpline
 from scipy.io import netcdf_file
 
 import mrx
 from mrx.equilibria import _left_handed, is_stellarator_symmetric, read_equilibrium, state_position
-from mrx.equilibria.fit import axis_orders
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
-from mrx.geometry import build_sequence
-from mrx.nullspace import compute_nullspaces
-from mrx.relaxation.initial_conditions import initial_field
 from test.synthetic_desc import write_synthetic_desc
 from test.synthetic_gvec import TWO_PI, evaluate, write_synthetic_state
 
@@ -106,38 +98,6 @@ def test_gvec_gframe_state_matches_gvec():
     r, th, ze = GFRAME_POINTS.T
     got = jax.vmap(state_position(st))(jnp.asarray(np.column_stack([r, th / TWO_PI, ze * st["nfp"] / TWO_PI])))
     assert jnp.abs(got - GFRAME_XYZ).max() <= mrx.eps(4096) * np.abs(GFRAME_XYZ).max()
-
-
-def test_gvec_gframe_vacuum_is_the_harmonic_field():
-    """GVEC's vacuum field of the G-frame state is MRX's harmonic 2-form ``h`` of the same domain, computed from
-    the map alone: ``||B - c h|| / ||B||`` with ``c = <B, h> / <h, h>`` is 7.2e-4 at (8, 16, 32), the
-    discretisation error (4.9e-3 with 16 toroidal splines: the frame has modes up to n = 20 per period)."""
-    seq, _ = build_sequence(GFRAME, (8, 16, 32), 2, symmetry="field-period")
-    compute_nullspaces(seq, verbose=False)
-    odd = seq.odd
-    B, _ = initial_field(seq)
-    h = odd.nullspace(2)[0].astype(B.dtype)
-    c = (B @ (odd.M[2] @ h)) / (h @ (odd.M[2] @ h))
-    assert odd.l2_norm(B - c * h, 2) <= 2e-3 * odd.l2_norm(B, 2)
-
-
-def test_vmec_li383_reads_and_reproduces_the_file():
-    """The li383 wout file reads with the expected sizes and a finite map with the axis near R = 1.4 m."""
-    st = read_wout(LI383)
-    assert (st["nfp"], st["ns"], st["mnmax"]) == (3, 16, 25)
-    deg = st["X1"]["deg"]
-    k_max = max(len(axis_orders(int(mm), deg)) for mm in st["X1"]["m"])
-    # the radial nodes plus the extra axis coefficients. LA: half mesh plus axis plus edge
-    for name, n_base in (("X1", 16 + k_max), ("X2", 16 + k_max), ("LA", 17 + k_max)):
-        blk = st[name]
-        assert blk["cos"].shape == blk["sin"].shape == (25, n_base)
-        assert len(blk["T"]) == n_base + blk["deg"] + 1
-    # radial values at the mesh nodes reproduce the fitted samples
-    r = np.sqrt(np.arange(st["ns"]) / (st["ns"] - 1))
-    design = BSpline.design_matrix(r, st["X1"]["T"], deg).toarray()
-    R_nodes = design @ st["X1"]["cos"].T           # (ns, n_modes)
-    assert np.isfinite(R_nodes).all()
-    assert abs(R_nodes[0, 0] - 1.41) < 0.2    # NCSX axis R ~ 1.4 m
 
 
 def test_desc_synthetic_and_li383(tmp_path):

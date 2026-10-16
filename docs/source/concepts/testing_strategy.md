@@ -5,27 +5,30 @@ MRX has one lean test tier. Bare `pytest` runs the suite, in float64
 and the GitHub workflow runs it on a CPU. The suite reads only files
 tracked in the repository.
 
-## Three statements
+## Four statements
 
-The suite tests three mathematical statements about the discretisation, which between them run most of
+The suite tests four mathematical statements about the discretisation, which between them run most of
 the code, plus the readers:
 
 | file | statement |
 |---|---|
 | `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the projections commute with the derivatives, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus, and pushforward inverts pullback |
-| `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the three representations of the domain (below), and the Leray projection is divergence-free, idempotent and non-expansive |
-| `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the parallel penalty is positive, the Newton direction is divergence-free and descends, and a short run lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints |
-| `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
+| `test_solvers.py` | every solve inverts its operator: a known solution, mapped to its right-hand side by the operator's apply, comes back from `M[k]`, `L[k]` (every `part`, with and without the gauge), `shifted(k, eps)` and the Leray projection to a multiple of `seq.tol`, on the production spaces; and the Krylov solvers stop on the norm they are given |
+| `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the two representations of the domain (below) |
+| `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the parallel penalty is positive, and a short Newton run lowers the energy at every step and the force, keeps the helicity up to grid-scale effects, and checkpoints. `div B = 0` follows from the exactness of the complex and is not tested again |
+| `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, GVEC's G-frame state reads as GVEC's positions, DESC's conversion of the li383 wout agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
+
+`test_shape_ad.py` checks the shape derivative of the vacuum rotational transform against central differences on
+its own QA sequence.
 
 The fixtures of `test/conftest.py` build the li383 equilibrium
 (`data/wout_li383_low_res_reference.nc`) at `(12, 20, 12)` per field period,
-`p = 2`, in three representations with the same mesh per period: `half`
-(the production sequence, stellarator symmetry, half a period integrated),
-`period` (one field period without the reflection) and `full` (the whole
-torus as one period). `seq` is `half`, `b0` the equilibrium's own field on
-it. A manufactured solution with the period and parity of li383 must give the
-same error on all three, which tests the half-period quadrature, the parity
-views and the field-period reduction end to end.
+`p = 2`, in two representations with the same mesh: `half`
+(the production sequence, stellarator symmetry, half a period integrated)
+and `period` (one field period without the reflection). `seq` is `half`,
+`b0` the equilibrium's own field on it. A manufactured solution with the
+period and parity of li383 must give the same error on both, which tests the
+half-period quadrature and the parity views end to end.
 
 The suite is XLA-compile-bound: a test costs the distinct solves it
 compiles, not the mesh. Compiled programs are cached on disk

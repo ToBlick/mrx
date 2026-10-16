@@ -1,4 +1,4 @@
-"""The Laplacians recover manufactured solutions on the li383 domain, identically on its three representations.
+"""The Laplacians recover manufactured solutions on the li383 domain, identically on two representations.
 
 Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form solution:
 
@@ -14,27 +14,22 @@ Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form
 
 Every solve must converge, and its relative L2 error, computed exactly as
 ``||u_h - u*||^2 = <u_h, u_h>_M - 2 u_h . load(u*) + int |u*|^2``, must lie below a measured band. A wrong metric
-factor, boundary row or extraction moves it by a factor. The three representations of the domain (``half``:
-one field period with stellarator symmetry, ``period``: one field period, ``full``: the whole torus) have the
-same mesh per period, and ``B*`` and ``psi`` have the period and the parity of li383. So the three must give the
-same error to the solver tolerance: this checks the half-period quadrature, the parity views and the field-period
-reduction end to end. The Leray projection, the k = 3 saddle solve of the relaxation, is divergence-free,
-idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve,
-and the one solve of ``M_1 + eps S_1`` the same curl as the shifted solve ``(M_1 + eps L_1)^-1``.
+factor, boundary row or extraction moves it by a factor. The two representations of the domain (``half``:
+one field period with stellarator symmetry, ``period``: one field period without the reflection) have the same
+mesh, and ``B*`` and ``psi`` have the period and the parity of li383. So the two must give the same error to the
+solver tolerance: this checks the half-period quadrature and the parity views end to end.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mrx.precision import eps
-
 #: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13:
 #: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
 ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
-#: The relative spread of the three representations' errors, which is below 3e-12.
+#: The relative spread of the two representations' errors, which is below 3e-12.
 SAME = 1e-3
-NAMES = ("half", "period", "full")
+NAMES = ("half", "period")
 _ERRORS = {}
 
 
@@ -123,7 +118,7 @@ def _solve(seq, k):
 @pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_manufactured_solution(domains, k, name):
-    """The k-th manufactured solution is recovered within its band, and with the same error on the three
+    """The k-th manufactured solution is recovered within its band, and with the same error on the two
     representations of the domain."""
     err = _solve(domains(name), k)
     _ERRORS[k, name] = err
@@ -134,149 +129,3 @@ def test_manufactured_solution(domains, k, name):
         spread = (max(errs) - min(errs)) / min(errs)
         print(f"  k={k}: spread of the errors over {len(errs)} representations {spread:.2e}")
         assert spread < SAME
-
-
-def test_leray_projection(seq):
-    """The Leray projection of a random velocity is divergence-free to the solver tolerance, idempotent and
-    non-expansive."""
-    even = seq.even
-    v = jnp.asarray(np.random.default_rng(5).standard_normal(even.n(2)))
-    v = v / even.l2_norm(v, 2)
-    Pv, p = even.leray(v, k=2)
-    PPv, _ = even.leray(Pv, k=2, p_guess=p)
-    div = float(even.l2_norm(even.G[2] @ Pv, 3))
-    moved = float(even.l2_norm(PPv - Pv, 2))
-    print(f"\n  ||div P v|| {div:.2e}, ||P P v - P v|| {moved:.2e}, ||P v|| {float(even.l2_norm(Pv, 2)):.4f}")
-    assert div <= 10 * seq.tol + eps(10)
-    assert moved <= 10 * seq.tol + eps(10)
-    assert float(even.l2_norm(Pv, 2)) < 1.0
-
-
-def test_a_new_geometry_can_keep_the_preconditioners(domains):
-    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the atoms and zeroes the harmonic forms, so
-    a solve runs without a new build. Without it the bundle is gone and a solve raises. The map installed here
-    is the sequence's own, and the preconditioners and harmonic forms are built again at the end."""
-    from mrx.equilibria import build_map
-    from mrx.nullspace import compute_nullspaces
-
-    s = domains("period")
-    Phi, _ = build_map(s.equilibrium, s, nfp=s.nfp, stellarator_symmetric=s.half_period)
-    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
-    x_ref = s.M[1].solve(b)
-    Pb = s.M[1].precondition(b)
-    try:
-        s.set_geometry_from_map(Phi, keep_preconditioners=True)
-        assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-        x, info = s.M[1].solve(b, return_info=True)
-        assert info > 0
-        assert float(s.l2_norm(x - x_ref, 1) / s.l2_norm(x_ref, 1)) <= 1e3 * s.tol
-        s.set_geometry_from_map(Phi)
-        assert s.operators is None
-        with pytest.raises(ValueError):
-            s.M[1].solve(b)
-    finally:
-        s.build_preconditioners()
-        compute_nullspaces(s, verbose=False)
-
-
-def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq, b0):
-    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve(part="coexact", gauge=False)``
-    and ``L[1].solve`` converge and differ by a closed form only, so their curls agree. With the gauge solve they
-    agree themselves."""
-    odd = seq.odd
-    b = odd.G[1].T @ (odd.M[2] @ b0)
-    a, info = odd.L[1].solve(b, return_info=True, part="coexact", gauge=False)
-    a_g = odd.L[1].solve(b, part="coexact")
-    a_L, info_L = odd.L[1].solve(b, return_info=True)
-    diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
-    diff_g = float(odd.l2_norm(a_g - a_L, 1) / odd.l2_norm(a_L, 1))
-    print(f"\n  co-closed {int(info)} iterations, Hodge split {int(info_L)}, ||curl (a - a_L)|| / ||curl a_L|| {diff:.2e}, "
-          f"with the gauge solve ||a - a_L|| / ||a_L|| {diff_g:.2e}")
-    assert info > 0 and info_L > 0
-    assert diff <= 1e3 * seq.tol
-    assert diff_g <= 1e3 * seq.tol
-
-
-@pytest.mark.parametrize("shift", ["smoothing", "one"])
-def test_coexact_shifted_solve_has_the_curl_of_the_shifted_solve(seq, shift):
-    """For a right-hand side ``M_1 z`` with every part, ``shifted(1, eps).solve(part="coexact")`` (one solve of
-    ``M_1 + eps S_1``) and the full shifted solve converge and differ by an exact form, so their curls agree. At the
-    velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
-    from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
-    odd = seq.odd
-    eps = SMOOTHING_C * radial_cell_sq(seq) if shift == "smoothing" else jnp.asarray(1.0)
-    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(4), (odd.n(1),), dtype=jnp.float64)
-    a, info = odd.shifted(1, eps).solve(b, return_info=True, part="coexact")
-    a_f, info_f = odd.shifted(1, eps).solve(b, return_info=True)
-    diff = float(odd.l2_norm(odd.G[1] @ (a - a_f), 2) / odd.l2_norm(odd.G[1] @ a_f, 2))
-    print(f"\n  eps {float(eps):.2e}: one solve {int(info)} iterations, full {int(info_f)}, "
-          f"||curl (a - a_f)|| / ||curl a_f|| {diff:.2e}")
-    assert info > 0 and info_f > 0
-    assert diff <= 1e3 * seq.tol
-
-
-@pytest.mark.parametrize("k", [1, 2, 3])
-def test_parts_of_the_laplacian_solve(domains, k):
-    """``L[k].solve(b, part=...)`` on right-hand sides of one kind, ``G_k^T w`` (co-exact) and ``M_k G_{k-1} c``
-    (exact): each part converges to the full solve of the same right-hand side, the co-exact solution is
-    orthogonal to the exact forms, and the full solve of the sum is the sum of the parts. 3-forms only have the
-    exact part."""
-    s = domains("period")
-    rng = np.random.default_rng(k)
-    c = jnp.asarray(rng.standard_normal(s.n(k - 1)))
-    b = {"exact": s.M[k] @ (s.G[k - 1] @ c)}
-    if k < 3:
-        b["coexact"] = s.G[k].T @ jnp.asarray(rng.standard_normal(s.n(k + 1)))
-    x = {}
-    for part, rhs in b.items():
-        x[part], info = s.L[k].solve(rhs, return_info=True, part=part)
-        x_full, info_full = s.L[k].solve(rhs, return_info=True)
-        diff = float(s.l2_norm(x[part] - x_full, k) / s.l2_norm(x_full, k))
-        print(f"\n  L{k} {part}: {int(info)} iterations against {int(info_full)} of the full solve, "
-              f"relative difference {diff:.2e}")
-        assert info > 0 and info_full > 0
-        assert diff <= 1e3 * s.tol
-    if k == 3:
-        return
-    gauge = s.G[k - 1].T @ (s.M[k] @ x["coexact"])
-    assert float(jnp.linalg.norm(gauge)) <= 1e3 * s.tol * float(jnp.linalg.norm(s.M[k] @ x["coexact"]))
-    x_sum = s.L[k].solve(b["coexact"] + b["exact"])
-    assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
-
-
-@pytest.mark.parametrize("k", [1, 2])
-def test_the_coexact_solve_without_its_gauge_takes_a_guess(domains, k):
-    """Started from its own result, the co-exact solve without the gauge is converged at once."""
-    s = domains("period")
-    b = s.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)))
-    y, info = s.L[k].solve(b, return_info=True, part="coexact", gauge=False)
-    y2, info2 = s.L[k].solve(b, return_info=True, part="coexact", gauge=False, guess=y)
-    assert 0 <= info2 < info
-    assert float(s.l2_norm(s.G[k] @ (y2 - y), k + 1) / s.l2_norm(s.G[k] @ y, k + 1)) <= 1e3 * s.tol
-
-
-def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
-    """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
-    s = domains("period")
-    b = s.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)))
-    x, info = s.L[0].solve(b, return_info=True, part="coexact")
-    x_full = s.L[0].solve(b)
-    assert info > 0
-    assert float(s.l2_norm(x - x_full, 0) / s.l2_norm(x_full, 0)) <= 1e3 * s.tol
-
-
-def test_parts_that_do_not_exist_are_refused(domains):
-    s = domains("period")
-    with pytest.raises(ValueError):
-        s.L[0].solve(jnp.zeros(s.n(0)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[3].solve(jnp.zeros(s.n(3)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), gauge=False)

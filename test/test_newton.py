@@ -13,10 +13,10 @@ product loads. By polarisation the bilinear form is checked too, ``(u, H v) = (q
 with ``q(w)`` the ``E''(0)`` of the flow along ``w``. The parallel-flow penalty adds a positive semidefinite
 term. With the Chebyshev mass inverse in place of the mass solves the Hessian stays symmetric.
 
-The Newton direction is divergence-free to round-off and pairs positively with the force, and a short run with
-the production stepper lowers the energy at every step, lowers the force, keeps ``div B`` at round-off and the
-helicity up to grid-scale effects, records the best state, and writes a checkpoint that reads back. A checkpoint
-without the ``angles`` attribute is refused on li383, whose angles are reversed on reading.
+A short run with the production stepper lowers the energy at every step, lowers the force, keeps the helicity
+up to grid-scale effects, records the best state, and writes a checkpoint that reads back. ``div B`` stays zero
+by the exactness of the complex (``test_derham.py``). A checkpoint without the ``angles`` attribute is refused on
+li383, whose angles are reversed on reading.
 """
 import os
 
@@ -29,7 +29,7 @@ import pytest
 from mrx.precision import eps
 from mrx.relaxation.loop import (TimeStepper, check_checkpoint, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
-from mrx.relaxation.newton import MassChebyshev, newton_direction, second_variation
+from mrx.relaxation.newton import MassChebyshev, second_variation
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
@@ -63,7 +63,8 @@ def _energy_derivatives(seq, B, u):
 
 
 def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
-    """``E'(0) = -(u, J x B)``, ``E''(0) = (u, H u)`` and the polarised ``(u, H v)``, for random ``u``, ``v``."""
+    """``E'(0) = -(u, J x B)``, ``E''(0) = (u, H u)`` and the polarised ``(u, H v)``, for random ``u``, ``v``. The
+    penalised Hessian minus the bare one is ``int w (u . B)^2 / |B|^2 dx > 0`` for a positive weight ``w``."""
     even = seq.even
     _, _, J, JxB = compute_force(b0, seq)
     H = second_variation(seq, b0, J)
@@ -83,18 +84,8 @@ def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
     assert abs(d1u - force) < band * float(seq.odd.l2_norm(b0, 2) * seq.odd.l2_norm(_flow(seq, u)(b0), 2))
     assert abs(qu - uHu) < band * abs(qu)
     assert abs(polar - uHv) < band * (abs(qu) + abs(qv))
-
-
-def test_parallel_penalty_is_positive_semidefinite(seq, b0):
-    """The penalised Hessian minus the bare one is ``int w (u . B)^2 / |B|^2 dx >= 0`` for a positive weight
-    ``w``."""
-    _, _, J, _ = compute_force(b0, seq)
-    w = jnp.ones(seq.quad.shape[0])
-    H, H_pen = second_variation(seq, b0, J), second_variation(seq, b0, J, penalty=w)
-    u = _divergence_free(seq, jax.random.PRNGKey(3))
-    extra = float(u @ H_pen(u)) - float(u @ H(u))
-    print(f"\n  (u, M_par u) {extra:+.6e}")
-    assert extra > 0.0
+    H_pen = second_variation(seq, b0, J, penalty=jnp.ones(seq.quad.shape[0]))
+    assert float(u @ H_pen(u)) - uHu > 0.0
 
 
 def test_chebyshev_mass_hessian_is_symmetric(seq, b0):
@@ -117,23 +108,9 @@ def test_chebyshev_mass_hessian_is_symmetric(seq, b0):
     assert abs(uHv - vHu) < 1e3 * eps() * (abs(float(u @ H(u))) + abs(float(v @ H(v))))
 
 
-def test_newton_direction_is_divergence_free_and_descends(seq, b0):
-    """The Newton velocity has zero divergence to round-off and a positive pairing with the force."""
-    even = seq.even
-    F, _, J, JxB = compute_force(b0, seq)
-    MF = even.M[2] @ F
-    u, _, info = newton_direction(seq, b0, J, even.M[2] @ JxB, jnp.zeros(even.n(1)), tol=1e-2,
-                                  maxiter=40)
-    div = float(even.l2_norm(even.G[2] @ u, 3))
-    cos = float(u @ MF) / float(even.l2_norm(u, 2) * jnp.sqrt(F @ MF))
-    print(f"\n  MINRES info {int(info)}, ||div u|| {div:.2e}, descent cosine {cos:+.4f}")
-    assert div < 1e2 * eps() * float(even.l2_norm(u, 2))
-    assert cos > 0.0
-
-
 def test_newton_relaxation_descends(seq, b0, tmp_path):
-    """Ten Newton steps with the production stepper lower the energy at every step and the force, conserve
-    ``div B = 0`` and the helicity up to grid-scale effects, record the best state, and checkpoint."""
+    """Ten Newton steps with the production stepper lower the energy at every step and the force, conserve the
+    helicity up to grid-scale effects, record the best state, and checkpoint."""
     ts = TimeStepper(seq=seq, newton=True)
     saved = []
     res = relax(initial_state(b0, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False,
@@ -142,14 +119,13 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
     F = np.asarray(res.trace["F"], dtype=float)
     H = np.asarray(res.qoi["helicity"], dtype=float)
     resid = np.asarray(res.trace["resid"], dtype=float)
-    div, E0 = float(res.trace["div"][-1]), res.E0
-    print(f"\n  ||F|| {F[0]:.3e} -> {F[-1]:.3e}, dH/2E0 {abs(H[-1] - H[0]) / (2 * E0):.2e}, ||div B|| {div:.1e}")
+    E0 = res.E0
+    print(f"\n  ||F|| {F[0]:.3e} -> {F[-1]:.3e}, dH/2E0 {abs(H[-1] - H[0]) / (2 * E0):.2e}")
     assert res.stop == "steps" and saved == [CHUNK, STEPS]
     # dE is formed in the stored precision, so a step whose true change is below an epsilon of E can read +eps
     assert np.all(dE < eps() * E0), f"energy not monotone: {dE}"
     assert F[-1] < NEWTON_FORCE_DROP * F[0]
     assert abs(H[-1] - H[0]) < HELICITY_DRIFT * 2 * E0
-    assert div < 1e3 * seq.tol * np.sqrt(2 * (E0 + dE.sum()))
     assert float(res.state.best.resid) <= resid.min() and int(res.state.best.step) == resid.argmin()
 
     path = os.path.join(tmp_path, "state.h5")

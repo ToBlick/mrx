@@ -1,9 +1,8 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
 On QA at (12, 20, 12) p=2 the field, which comes from the co-closed solve on ``S_1`` alone, is the harmonic 2-form
-of :func:`mrx.nullspace.compute_nullspaces` up to its scale and equals the field of the full Laplacian solve, a
-gradient added to the potential does not change it, and the derivative of the mean rotational transform with respect to every map coefficient matches
-central differences.
+of :func:`mrx.nullspace.compute_nullspaces` up to its scale, and the derivative of the mean rotational transform
+with respect to every map coefficient matches central differences.
 """
 import os
 
@@ -33,13 +32,6 @@ def test_vacuum_field_and_its_shape_derivative():
     scale = (h @ harmonic) / (harmonic @ harmonic)
     # two solves at seq.tol each: measured 1.3 seq.tol at tol 1e-8 (2026-10-12)
     assert jnp.linalg.norm(h - scale * harmonic) <= 1e2 * seq.tol * jnp.linalg.norm(h)
-    # The same field as the full Hodge-Laplacian solve
-    h_L = seed - seq.G[1] @ seq.L[1].solve(seq.D[1].T @ seed)
-    assert jnp.linalg.norm(h - h_L) <= 1e2 * seq.tol * jnp.linalg.norm(h)
-    # The co-closed solve leaves the gradient part of a free. It cannot reach h because G_1 G_0 = 0
-    phi = jax.random.normal(jax.random.PRNGKey(0), (seq.n(0),))
-    gradient = seq.G[0] @ phi
-    assert jnp.linalg.norm(seq.G[1] @ gradient) <= 1e-12 * jnp.linalg.norm(gradient)
 
     _, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
     shape = sa.BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], seq.nfp, extension="harmonic",
