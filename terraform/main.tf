@@ -1,5 +1,6 @@
-# MRX on GKE Cloud TPUs: bucket, registry, optional service accounts and VPC, one cluster per enabled TPU family, and
-# the jobs' access to the bucket. gke/provision-cluster.sh (make setup) applies it with the settings of gcp.env.
+# MRX on GKE Cloud TPUs: bucket, registry, optional service accounts and VPC, one cluster per enabled TPU family (each
+# with TPU pools of every enabled family its region offers), and the jobs' access to the bucket. gke/provision-cluster.sh
+# (make setup) applies it with the settings of gcp.env.
 
 locals {
   # Fixed names: gke/settings.sh and the Makefile use the same ones
@@ -18,9 +19,35 @@ locals {
   # The nodes run as mrx-gke-nodes with dedicated service accounts (section 3), else as the project's default one
   node_service_account = var.dedicated_service_accounts ? google_service_account.nodes[0].email : null
 
-  # The zones that offer each TPU machine type to this project (looked up below)
-  v5p_zones = sort([for zone, found in data.google_compute_machine_types.v5p : zone if length(found.machine_types) > 0])
-  v6e_zones = sort([for zone, found in data.google_compute_machine_types.v6e : zone if length(found.machine_types) > 0])
+  # The TPU node pools, keyed <cluster>-<family>: each cluster gets one for every enabled TPU family that its region
+  # offers, so a job can start in either region (gke/run.sh submits it to every pool and keeps the first to get a node).
+  # The pool of a cluster's own family must have zones; the other family's pool is left out where it has none
+  tpu_pools_wanted = {
+    for key, pool in {
+      "v5p-v5p" = { cluster = "v5p", family = "v5p", own = true, enabled = var.enable_v5p }
+      "v5p-v6e" = { cluster = "v5p", family = "v6e", own = false, enabled = var.enable_v5p && var.enable_v6e }
+      "v6e-v6e" = { cluster = "v6e", family = "v6e", own = true, enabled = var.enable_v6e }
+      "v6e-v5p" = { cluster = "v6e", family = "v5p", own = false, enabled = var.enable_v6e && var.enable_v5p }
+    } : key => merge(pool, { region = pool.cluster == "v5p" ? var.v5p_region : var.v6e_region }) if pool.enabled
+  }
+  tpu_machine_type = { v5p = "ct5p-hightpu-4t", v6e = "ct6e-standard-4t" }
+  # Every zone of each pool's region, whose machine types are looked up below
+  tpu_zone_checks = merge([
+    for key, pool in local.tpu_pools_wanted : {
+      for zone in(pool.cluster == "v5p" ? data.google_compute_zones.v5p.names : data.google_compute_zones.v6e.names) :
+      "${key}/${zone}" => { pool = key, zone = zone, type = local.tpu_machine_type[pool.family] }
+    }
+  ]...)
+  # The zones of each pool: they list its machine type and, when gke/provision-cluster.sh looked them up, the Cloud TPU
+  # API offers its TPU there too (us-east1-b lists ct6e-standard-4t, yet GKE refuses v6e nodes there)
+  tpu_pool_zones = {
+    for key, pool in local.tpu_pools_wanted : key => sort([
+      for check_key, check in local.tpu_zone_checks : check.zone
+      if check.pool == key && length(data.google_compute_machine_types.tpu[check_key].machine_types) > 0 &&
+      contains(lookup(var.tpu_api_zones, "${pool.family}@${pool.region}", [check.zone]), check.zone)
+    ])
+  }
+  tpu_pools = { for key, pool in local.tpu_pools_wanted : key => pool if pool.own || length(local.tpu_pool_zones[key]) > 0 }
 
   # The clusters' VPC network: the project's "default" one, an existing one named in gcp.env, or one Terraform creates
   # (section 4). An existing network needs a subnet named local.subnetwork in each cluster region.
@@ -47,18 +74,11 @@ data "google_compute_networks" "all" {
   project = var.project_id
 }
 
-# TPU machine types are offered in only some zones of a region, depending on the project: those zones get TPU nodes
+# The zones of the two clusters' regions
 data "google_compute_zones" "v5p" {
   project = var.project_id
   region  = var.v5p_region
   status  = "UP"
-}
-
-data "google_compute_machine_types" "v5p" {
-  for_each = var.enable_v5p ? toset(data.google_compute_zones.v5p.names) : toset([])
-  project  = var.project_id
-  zone     = each.value
-  filter   = "name = \"ct5p-hightpu-4t\""
 }
 
 data "google_compute_zones" "v6e" {
@@ -67,11 +87,12 @@ data "google_compute_zones" "v6e" {
   status  = "UP"
 }
 
-data "google_compute_machine_types" "v6e" {
-  for_each = var.enable_v6e ? toset(data.google_compute_zones.v6e.names) : toset([])
+# TPU machine types are offered in only some zones of a region, depending on the project: those zones get TPU nodes
+data "google_compute_machine_types" "tpu" {
+  for_each = local.tpu_zone_checks
   project  = var.project_id
-  zone     = each.value
-  filter   = "name = \"ct6e-standard-4t\""
+  zone     = each.value.zone
+  filter   = "name = \"${each.value.type}\""
 }
 
 # 1. GCS bucket for persistent XLA cache (/gcs/xla_cache) and job outputs (/gcs/outputs)
@@ -302,7 +323,8 @@ resource "google_container_cluster" "mrx_cluster" {
   }
 }
 
-# CPU nodes for the system Pods, in one zone: a regional pool would run system_pool_nodes nodes in every zone
+# CPU nodes for the system Pods, in one zone: a regional pool would run system_pool_nodes nodes in every zone (the TPU
+# pools are in section 7)
 resource "google_container_node_pool" "system_pool" {
   count              = var.enable_v5p ? 1 : 0
   name               = "system-pool"
@@ -323,52 +345,6 @@ resource "google_container_node_pool" "system_pool" {
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     workload_metadata_config {
       mode = "GKE_METADATA"
-    }
-  }
-}
-
-# Scale-to-zero Spot TPU pool. Its cloud.google.com/compute-class label lets the mrx-tpu-v5p ComputeClass use it
-# (gke/compute-classes.yaml); the class auto-creates another pool only when this one cannot scale up.
-resource "google_container_node_pool" "tpu_v5p_spot" {
-  count              = var.enable_v5p ? 1 : 0
-  name               = "tpu-v5p-4t-spot-pool"
-  project            = var.project_id
-  location           = var.v5p_region
-  cluster            = google_container_cluster.mrx_cluster[0].name
-  node_locations     = local.v5p_zones
-  initial_node_count = 0
-
-  autoscaling {
-    min_node_count = 0
-    max_node_count = local.max_tpu_nodes
-  }
-
-  node_config {
-    machine_type    = "ct5p-hightpu-4t"
-    spot            = true
-    service_account = local.node_service_account
-    oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
-
-    labels = {
-      "cloud.google.com/compute-class" = "mrx-tpu-v5p"
-    }
-
-    # Only Pods that tolerate this taint, the MRX jobs (gke/job-tpu.yaml), run on these nodes
-    taint {
-      key    = "cloud.google.com/gke-quick-remove"
-      value  = "true"
-      effect = "NO_SCHEDULE"
-    }
-
-    workload_metadata_config {
-      mode = "GKE_METADATA"
-    }
-  }
-
-  lifecycle {
-    precondition {
-      condition     = length(local.v5p_zones) > 0
-      error_message = "No zone of ${var.v5p_region} offers ct5p-hightpu-4t to project ${var.project_id}. Set V5P_REGION in gcp.env to a region that does."
     }
   }
 }
@@ -437,7 +413,7 @@ resource "google_container_cluster" "mrx_v6e_cluster" {
   }
 }
 
-# CPU nodes for the system Pods, in one zone, as in section 5
+# CPU nodes for the system Pods, in one zone, as in section 5 (the TPU pools are in section 7)
 resource "google_container_node_pool" "system_pool_v6e" {
   count              = var.enable_v6e ? 1 : 0
   name               = "system-pool"
@@ -462,14 +438,15 @@ resource "google_container_node_pool" "system_pool_v6e" {
   }
 }
 
-# Scale-to-zero Spot TPU pool for the mrx-tpu-v6e ComputeClass, as in section 5
-resource "google_container_node_pool" "tpu_v6e_spot" {
-  count              = var.enable_v6e ? 1 : 0
-  name               = "tpu-v6e-4t-spot-pool"
+# 7. Scale-to-zero Spot TPU pools, local.tpu_pools. Their cloud.google.com/compute-class label lets the ComputeClass of
+#    their family use them (gke/compute-classes.yaml); a class auto-creates another pool only when its own cannot scale
+resource "google_container_node_pool" "tpu" {
+  for_each           = local.tpu_pools
+  name               = "tpu-${each.value.family}-4t-spot-pool"
   project            = var.project_id
-  location           = var.v6e_region
-  cluster            = google_container_cluster.mrx_v6e_cluster[0].name
-  node_locations     = local.v6e_zones
+  location           = each.value.region
+  cluster            = each.value.cluster == "v5p" ? google_container_cluster.mrx_cluster[0].name : google_container_cluster.mrx_v6e_cluster[0].name
+  node_locations     = local.tpu_pool_zones[each.key]
   initial_node_count = 0
 
   autoscaling {
@@ -478,15 +455,16 @@ resource "google_container_node_pool" "tpu_v6e_spot" {
   }
 
   node_config {
-    machine_type    = "ct6e-standard-4t"
+    machine_type    = local.tpu_machine_type[each.value.family]
     spot            = true
     service_account = local.node_service_account
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
 
     labels = {
-      "cloud.google.com/compute-class" = "mrx-tpu-v6e"
+      "cloud.google.com/compute-class" = "mrx-tpu-${each.value.family}"
     }
 
+    # Only Pods that tolerate this taint, the MRX jobs (gke/job-tpu.yaml), run on these nodes
     taint {
       key    = "cloud.google.com/gke-quick-remove"
       value  = "true"
@@ -500,13 +478,24 @@ resource "google_container_node_pool" "tpu_v6e_spot" {
 
   lifecycle {
     precondition {
-      condition     = length(local.v6e_zones) > 0
-      error_message = "No zone of ${var.v6e_region} offers ct6e-standard-4t to project ${var.project_id}. Set V6E_REGION in gcp.env to a region that does."
+      condition     = length(local.tpu_pool_zones[each.key]) > 0
+      error_message = "No zone of ${each.value.region} offers ${local.tpu_machine_type[each.value.family]} to project ${var.project_id}. Set ${upper(each.value.cluster)}_REGION in gcp.env to a region that does."
     }
   }
 }
 
-# 7. Bucket read/write access for the jobs' Kubernetes service account in every cluster (Workload Identity, GCS Fuse)
+# The pools of the clusters' own families had their own resources before
+moved {
+  from = google_container_node_pool.tpu_v5p_spot[0]
+  to   = google_container_node_pool.tpu["v5p-v5p"]
+}
+
+moved {
+  from = google_container_node_pool.tpu_v6e_spot[0]
+  to   = google_container_node_pool.tpu["v6e-v6e"]
+}
+
+# 8. Bucket read/write access for the jobs' Kubernetes service account in every cluster (Workload Identity, GCS Fuse)
 resource "google_storage_bucket_iam_member" "ksa_storage_access" {
   bucket = google_storage_bucket.mrx_bucket.name
   role   = "roles/storage.objectUser"
