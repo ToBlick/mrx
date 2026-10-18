@@ -94,7 +94,7 @@ and the metric enters only where a Hodge star does.
 Assembly runs on the unconstrained tensor-product basis. An extraction
 operator `E_k` of shape `(n_k, n_k_raw)` maps it onto the conforming space,
 `A = E_k A_raw E_k^T`. `build_extraction` (`mrx/extraction_operators.py`)
-returns it as a `MatrixFreeExtraction` (COO triplets, applied by a gather
+returns it as a `SparseMatrix` (COO triplets, applied by a gather
 and a segment sum): the polar functions at the axis ([polar.md](polar.md))
 and, in the Dirichlet spaces, the `r = 1` functions dropped.
 

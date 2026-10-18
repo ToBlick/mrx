@@ -262,7 +262,7 @@ def parity_extraction(seq, k, dirichlet, parity):
     ``X`` maps reduced DoFs to extracted DoFs and has orthonormal columns, so ``X.T`` reduces an
     extracted vector of this parity. ``E_red = X^T E`` is the extraction of the reduced space and
     satisfies ``E_red R = parity E_red``. ``core_red`` are the reduced DoFs built from the polar
-    core rows. Both operators are :class:`~mrx.extraction_operators.MatrixFreeExtraction`. :meth:`~mrx.derham_sequence.DeRhamSequence.parity_view` builds its spaces
+    core rows. Both operators are :class:`~mrx.extraction_operators.SparseMatrix`. :meth:`~mrx.derham_sequence.DeRhamSequence.parity_view` builds its spaces
     with this function."""
     col, weight, n_red, core = _orbits(seq, k, dirichlet, parity)
     e = seq.extraction[(k, dirichlet)]

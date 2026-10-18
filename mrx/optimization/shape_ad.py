@@ -93,7 +93,7 @@ def section_moments(seq, raw_R, raw_Z, nfp):
     R, dR, dZ = _cylindrical_fields(seq, raw_R, raw_Z)
     a = 2.0 * np.pi / nfp
     J_over_R = a * (dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1])
-    axis = jnp.broadcast_to(raw_R[0, 0] @ seq.basis_z_jk, seq.quad.shape).reshape(-1)
+    axis = jnp.broadcast_to(raw_R[0, 0] @ seq.basis_jk[2], seq.quad.shape).reshape(-1)
     w = seq.quad.w
     return jnp.sum(w * R * J_over_R), jnp.sum(w * axis * J_over_R), jnp.sum(w * J_over_R) / a
 
@@ -254,9 +254,7 @@ def _tables(seq):
     """The 1-D spline tables at the quadrature points that :func:`quasisymmetry_residual` needs, and the
     quadrature grid shape."""
     types = seq.basis_0.types
-    prim = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    der = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    dder = seq.dd_basis_jk
+    prim, der, dder = seq.basis_jk, seq.d_basis_jk, seq.dd_basis_jk
     dprim = tuple(_grad_1d(d, t) for d, t in zip(der, types))
     ddprim = tuple(_grad_1d(dd, t) for dd, t in zip(dder, types))
     return prim, der, dprim, dder, ddprim, (int(prim[0].shape[1]), seq.quad.shape[1], seq.quad.shape[2])

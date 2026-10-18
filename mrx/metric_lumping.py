@@ -113,10 +113,7 @@ def weight_fields(seq):
 
 def _axis_bases(seq):
     """The per-axis spline and derivative-spline tables and the 1-D quadrature weights."""
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
-    return primal, deriv, quad_w
+    return seq.basis_jk, seq.d_basis_jk, (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
 
 
 def _fd_stiffness_degree0(seq, axis, profile):

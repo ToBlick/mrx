@@ -146,8 +146,10 @@ class DeRhamSequence():
 
         lam, dlam = self.basis_0.Lambda, self.basis_0.dLambda
         x = (self.quad.x_x, self.quad.x_y, self.quad.x_z)
-        self.basis_r_jk, self.basis_t_jk, self.basis_z_jk = (basis_table(b, xa) for b, xa in zip(lam, x))
-        self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk = (basis_table(b, xa) for b, xa in zip(dlam, x))
+        #: per axis (r, theta, zeta) at its quadrature points, each ``(n, n_q)``: the splines, the derivative
+        #: splines and the derivatives of the derivative splines
+        self.basis_jk = tuple(basis_table(b, xa) for b, xa in zip(lam, x))
+        self.d_basis_jk = tuple(basis_table(b, xa) for b, xa in zip(dlam, x))
         self.dd_basis_jk = tuple(basis_derivative_table(b, xa) for b, xa in zip(dlam, x))
         self.greville = greville_axes(self)
 
@@ -417,10 +419,8 @@ class DeRhamSequence():
 
     def _form_comp_info(self, k):
         """The 1-D basis tables at the quadrature points for each component of the k-forms."""
-        primal = (self.basis_r_jk, self.basis_t_jk, self.basis_z_jk)
-        deriv = (self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk)
         form = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)[k]
-        return [(c, *((deriv if a in form.derivative_axes(c) else primal)[a] for a in range(3)))
+        return [(c, *((self.d_basis_jk if a in form.derivative_axes(c) else self.basis_jk)[a] for a in range(3)))
                 for c in range(len(form.shape))]
 
     def _integrate(self, f_jk, n):

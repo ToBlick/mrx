@@ -75,8 +75,8 @@ def read_wout(path):
         return np.vstack([axis[None, :], lm, edge[None, :]])
 
     def block(r, cos, sin):
-        T, c = fit_modes(r, cos, m, DEG)
-        return dict(m=m, n=n, cos=c, sin=fit_modes(r, sin, m, DEG)[1], deg=DEG, T=T)
+        T, c = fit_modes(r, np.hstack([cos, sin]), np.concatenate([m, m]), DEG)
+        return dict(m=m, n=n, cos=c[:len(m)], sin=c[len(m):], deg=DEG, T=T)
 
     return dict(
         nfp=nfp, ns=ns, mnmax=int(raw["mnmax"]),

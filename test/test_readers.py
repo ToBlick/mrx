@@ -2,8 +2,8 @@
 vacuum.
 
 GVEC: a synthetic state written by ``test/synthetic_gvec.py`` from closed formulas is read back and
-reproduces the formulas to round-off. VMEC: the tracked li383 wout file reads with the expected layout and
-a plausible axis. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or current-constrained)
+reproduces the formulas to round-off. VMEC: the radial splines pass through the li383 wout's Fourier
+coefficients and profiles, and meet the axis conditions of their poloidal numbers, to round-off. DESC: a synthetic file (``test/synthetic_desc.py``, iota- or current-constrained)
 reproduces its formulas to round-off, and DESC's conversion of the li383 wout matches the wout.
 Without stellarator symmetry: the li383 wout and the synthetic GVEC state, shifted in both angles, read as
 the shifted series, and a synthetic DESC file with terms of the other parity reproduces its formulas.
@@ -39,7 +39,6 @@ LAM_AMPLITUDE, BETA = 0.05, 1e-3
 
 LI383 = "data/wout_li383_low_res_reference.nc"
 DESC_LI383 = "data/desc_li383_low_res_reference.h5"
-EPS64 = np.finfo(np.float64).eps
 
 
 def test_gvec_state_file_reproduces_the_formulas(tmp_path):
@@ -121,23 +120,32 @@ def test_gvec_gframe_vacuum_is_the_harmonic_field():
     assert odd.l2_norm(B - c * h, 2) <= 2e-3 * odd.l2_norm(B, 2)
 
 
-def test_vmec_li383_reads_and_reproduces_the_file():
-    """The li383 wout file reads with the expected sizes and a finite map with the axis near R = 1.4 m."""
+def test_vmec_reader_interpolates_the_wout():
+    """The radial splines of the li383 wout pass through its coefficients: ``rmnc`` and ``zmns`` on the full
+    mesh (the ``m > 0`` axis rows are VMEC's extrapolation, replaced by zero), ``lmns`` on the half mesh, iota
+    and the pressure on the full mesh. Every mode's spline has the derivatives at the axis that a smooth
+    field requires of its poloidal number. Both hold to round-off (measured 5e-16 and 4e-12, the derivatives
+    of order up to 3 growing like the inverse cube of the first cell)."""
     st = read_wout(LI383)
-    assert (st["nfp"], st["ns"], st["mnmax"]) == (3, 16, 25)
-    deg = st["X1"]["deg"]
-    k_max = max(len(axis_orders(int(mm), deg)) for mm in st["X1"]["m"])
-    # the radial nodes plus the extra axis coefficients. LA: half mesh plus axis plus edge
-    for name, n_base in (("X1", 16 + k_max), ("X2", 16 + k_max), ("LA", 17 + k_max)):
+    with netcdf_file(LI383, mmap=False) as f:
+        raw = {k: np.array(f.variables[k][()]) for k in ("ns", "xm", "rmnc", "zmns", "lmns", "iotaf", "presf")}
+    ns, m = int(raw["ns"]), raw["xm"].astype(int)
+    r_full = np.sqrt(np.arange(ns) / (ns - 1))
+    r_half = np.sqrt((np.arange(1, ns) - 0.5) / (ns - 1))
+    data = np.ones((ns, m.size), dtype=bool)
+    data[0, m > 0] = False
+    for name, part, values, r, rows in (("X1", "cos", raw["rmnc"], r_full, data),
+                                        ("X2", "sin", raw["zmns"], r_full, data),
+                                        ("LA", "sin", raw["lmns"][1:], r_half, data[1:])):
         blk = st[name]
-        assert blk["cos"].shape == blk["sin"].shape == (25, n_base)
-        assert len(blk["T"]) == n_base + blk["deg"] + 1
-    # radial values at the mesh nodes reproduce the fitted samples
-    r = np.sqrt(np.arange(st["ns"]) / (st["ns"] - 1))
-    design = BSpline.design_matrix(r, st["X1"]["T"], deg).toarray()
-    R_nodes = design @ st["X1"]["cos"].T           # (ns, n_modes)
-    assert np.isfinite(R_nodes).all()
-    assert abs(R_nodes[0, 0] - 1.41) < 0.2    # NCSX axis R ~ 1.4 m
+        fit = BSpline(blk["T"], blk[part].T, blk["deg"])(r)
+        assert np.abs(fit - values)[rows].max() <= mrx.eps(1e2) * np.abs(values).max(), name
+        for coef, mi in zip(blk[part], m):
+            for order in axis_orders(int(mi), blk["deg"]):
+                slope = BSpline(blk["T"], coef, blk["deg"]).derivative(order)(0.0)
+                assert abs(slope) <= mrx.eps(1e5) * np.abs(coef).max(), (name, int(mi), order)
+    for name, key in (("iota", "iotaf"), ("pressure", "presf")):
+        assert np.abs(st["profiles"][name](r_full) - raw[key]).max() <= mrx.eps(1e2) * np.abs(raw[key]).max()
 
 
 def test_desc_synthetic_and_li383(tmp_path):
@@ -150,11 +158,11 @@ def test_desc_synthetic_and_li383(tmp_path):
         st = read_desc(path)
         th, ze = TWO_PI * np.linspace(0.0, 1.0, 13), TWO_PI * np.linspace(0.0, 1.0, 9) / torus.nfp
         for blk, want in zip(("X1", "X2", "LA"), torus.fields(*np.meshgrid(r, th, ze, indexing="ij"))):
-            assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= 64 * EPS64, blk
+            assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= mrx.eps(64), blk
         prof = st["profiles"]
-        assert np.abs(prof["phi"](r) - torus.Psi * r ** 2 / TWO_PI).max() <= 8 * EPS64
-        assert np.abs(prof["iota"](r) - torus.iota(r)).max() <= 256 * EPS64
-        assert np.abs(prof["pressure"](r) - torus.pressure(r)).max() <= 64 * EPS64 * torus.p0
+        assert np.abs(prof["phi"](r) - torus.Psi * r ** 2 / TWO_PI).max() <= mrx.eps(8)
+        assert np.abs(prof["iota"](r) - torus.iota(r)).max() <= mrx.eps(256)
+        assert np.abs(prof["pressure"](r) - torus.pressure(r)).max() <= mrx.eps(64) * torus.p0
 
     # DESC's conversion of the li383 wout (theta = -u, iota flips): R and Z within DESC's degree-8 Zernike fit
     # of the wout (2.5e-4, 1.8e-3), iota the wout's at its nodes
@@ -164,8 +172,8 @@ def test_desc_synthetic_and_li383(tmp_path):
     for blk, tol in (("X1", 5e-4), ("X2", 3e-3)):
         want = evaluate(st_v[blk], r, -th, ze)
         assert np.abs(evaluate(st_d[blk], r, th, ze) - want).max() <= tol * np.abs(want).max(), blk
-    assert np.abs(st_d["profiles"]["iota"](r_full) + st_v["profiles"]["iota"](r_full)).max() <= 64 * EPS64
-    assert abs(st_d["profiles"]["phi"](1.0) - st_v["profiles"]["phi"](1.0)) <= 8 * EPS64
+    assert np.abs(st_d["profiles"]["iota"](r_full) + st_v["profiles"]["iota"](r_full)).max() <= mrx.eps(64)
+    assert abs(st_d["profiles"]["phi"](1.0) - st_v["profiles"]["phi"](1.0)) <= mrx.eps(8)
 
 
 def _shifted_wout(src, path, c, d):
@@ -208,7 +216,7 @@ def test_non_stellarator_symmetric_states(tmp_path):
         assert is_stellarator_symmetric(st) and not is_stellarator_symmetric(st_s)
         for blk in ("X1", "X2", "LA"):
             want = evaluate(st[blk], r, th + c, ze + d)
-            assert np.abs(evaluate(st_s[blk], r, th, ze) - want).max() <= 64 * EPS64 * np.abs(want).max(), blk
+            assert np.abs(evaluate(st_s[blk], r, th, ze) - want).max() <= mrx.eps(64) * np.abs(want).max(), blk
 
     path = str(tmp_path / "desc.h5")
     torus = write_synthetic_desc(path, asym=(0.01, 0.02, 0.03))
@@ -216,7 +224,7 @@ def test_non_stellarator_symmetric_states(tmp_path):
     assert not is_stellarator_symmetric(st)
     th, ze = TWO_PI * np.linspace(0.0, 1.0, 13), TWO_PI * np.linspace(0.0, 1.0, 9) / torus.nfp
     for blk, want in zip(("X1", "X2", "LA"), torus.fields(*np.meshgrid(r, th, ze, indexing="ij"))):
-        assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= 64 * EPS64, blk
+        assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= mrx.eps(64), blk
 
 
 def test_angles_are_right_handed_after_reading():
@@ -229,5 +237,5 @@ def test_angles_are_right_handed_after_reading():
     st, raw = read_equilibrium(LI383), read_wout(LI383)
     for blk, sign in (("X1", 1.0), ("X2", 1.0), ("LA", -1.0)):
         want = sign * evaluate(raw[blk], r, -th, ze)
-        assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= 64 * EPS64 * np.abs(want).max(), blk
-    assert np.abs(st["profiles"]["iota"](r) + raw["profiles"]["iota"](r)).max() <= 64 * EPS64
+        assert np.abs(evaluate(st[blk], r, th, ze) - want).max() <= mrx.eps(64) * np.abs(want).max(), blk
+    assert np.abs(st["profiles"]["iota"](r) + raw["profiles"]["iota"](r)).max() <= mrx.eps(64)

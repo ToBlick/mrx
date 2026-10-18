@@ -158,8 +158,8 @@ class TimeStepper(eqx.Module):
         self.resistive = bool(self.resistivity != 0)
         self.resistivity = jnp.asarray(self.resistivity, dtype=jnp.float64)
         self.cfl_weights = logical_cfl_weights(self.seq)
-        if self.newton and self.newton_mass_tol is not None:
-            self.mass_inverse = MassChebyshev.build(self.seq, self.newton_mass_tol)
+        self.mass_inverse = (MassChebyshev.build(self.seq, self.newton_mass_tol)
+                             if self.newton and self.newton_mass_tol is not None else None)
 
     def _lorentz(self, B: jnp.ndarray, J_guess: jnp.ndarray):
         """Return ``(J, (J x B)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
@@ -337,18 +337,25 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
     stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence.
     """
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
-    axes = seq.basis_0.bases[0].bases
     with h5py.File(path, "w") as fh:
         fh.attrs["step"] = int(step)
         fh.attrs["resolution"] = np.asarray(seq.ns, dtype=np.int64)
-        fh.attrs["degree"] = int(axes[0].p)
+        fh.attrs["degree"] = int(seq.p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
-        for name, basis in zip(("r", "theta", "zeta"), axes):
-            T = np.asarray(basis.T, dtype=np.float64)
-            fh.attrs[f"knots_{name}"] = np.unique(T[(T >= 0.0) & (T <= 1.0)])
+        for name, bp in zip(_AXES, _breakpoints(seq)):
+            fh.attrs[f"knots_{name}"] = bp
         for keypath, leaf in leaves:
             fh.create_dataset(jax.tree_util.keystr(keypath).lstrip("."), data=np.asarray(leaf))
+
+
+_AXES = ("r", "theta", "zeta")
+
+
+def _breakpoints(seq):
+    """The breakpoints of the three axes of ``seq``, as stored in a checkpoint."""
+    Ts = (np.asarray(b.T, dtype=np.float64) for b in seq.basis_0.bases[0].bases)
+    return [np.unique(T[(T >= 0.0) & (T <= 1.0)]) for T in Ts]
 
 
 def checkpoint_attrs(path: str) -> dict:
@@ -363,17 +370,22 @@ def checkpoint_attrs(path: str) -> dict:
         return None if np.allclose(bp, np.linspace(0.0, 1.0, bp.size)) else [float(v) for v in bp]
 
     return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
-                knots=[breakpoints(name) for name in ("r", "theta", "zeta")],
+                knots=[breakpoints(name) for name in _AXES],
                 symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), step=int(a["step"]))
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
-    """Raise if the checkpoint ``path`` does not belong to ``seq``: another resolution or degree."""
+    """Raise if the checkpoint ``path`` was written on another discretisation than that of ``seq``: another
+    resolution, degree, number of field periods, symmetry or knots."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
-    ns, p = tuple(int(v) for v in a["resolution"]), int(a["degree"])
-    if ns != tuple(seq.ns) or p != seq.p:
-        raise ValueError(f"{path}: resolution {ns} p={p}, the sequence is {tuple(seq.ns)} p={seq.p}")
+    stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]))
+    same_knots = all(np.allclose(a[f"knots_{name}"], bp, rtol=0.0, atol=1e-12) if a[f"knots_{name}"].shape == bp.shape
+                     else False for name, bp in zip(_AXES, _breakpoints(seq)))
+    if stored != (tuple(seq.ns), seq.p, seq.nfp, seq.symmetry) or not same_knots:
+        raise ValueError(f"{path}: written on {stored[0]} p={stored[1]} nfp={stored[2]} {stored[3]}"
+                         f"{'' if same_knots else ' with other knots'}, the sequence is {tuple(seq.ns)} p={seq.p} "
+                         f"nfp={seq.nfp} {seq.symmetry}")
 
 
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
