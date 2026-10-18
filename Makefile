@@ -8,7 +8,7 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS := 1
 # gcloud and kubectl use the gcloud login; only Terraform uses Application Default Credentials
 export CLOUDSDK_CONTAINER_USE_APPLICATION_DEFAULT_CREDENTIALS := false
 
-.PHONY: help regions setup infra build deploy deploy-sharded run sharded logs status pull stop destroy destroy-all
+.PHONY: help regions prices setup infra build deploy deploy-sharded run sharded logs status pull stop destroy destroy-all
 
 # LOAD_ENV: gcp.env (else the template), then the shared settings (gke/settings.sh). ENABLE_TPU_* and COMPUTE_CLASS
 # are unset first, so that only gcp.env sets them and a commented-out line turns them off
@@ -52,6 +52,9 @@ help:
 	echo "  make pull                        Sync gs://<bucket>/outputs/ to ./outputs/"; \
 	echo "  make stop                        Delete your jobs (idle TPU nodes scale to zero)"; \
 	echo "  make regions                     Show the enabled TPU families, their regions and cluster names"; \
+	echo "  make prices                      Spot price per chip by region, where zones and quota allow it"; \
+	echo "  bash gke/ephemeral.sh [deploy]   Clusters for one job only: create, run, delete (gke/README.md)"; \
+	echo "  bash gke/scan.sh runs.txt        Many relax.py runs, 4 per node, on clusters created once"; \
 	echo "  make setup                       Admin: create or update the clusters (Terraform) and build your image"; \
 	echo "  make infra                       Admin: make setup without the image build"; \
 	echo "  make destroy                     Admin: delete the clusters (\$$0 compute), keep the bucket and outputs"; \
@@ -59,6 +62,9 @@ help:
 
 regions:
 	@bash gke/settings.sh
+
+prices:
+	@python3 gke/spot_prices.py
 
 infra:
 	@$(LOAD_ENV) && $(CHECK_PROJECT) && bash gke/provision-cluster.sh

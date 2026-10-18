@@ -19,7 +19,9 @@ and ``--drive.eps``.
 Output (in ``--output.out``):
     relax.json                   The configuration (flat, plus facts of the run) under ``params``, then ``ic``,
                                  ``seed``, ``drive``, the per-step ``trace``, the per-chunk ``qoi`` and the
-                                 ``summary``. The file is rewritten after every chunk.
+                                 ``summary`` and the ``timing`` of the setup. The file is replaced after
+                                 every chunk, by writing a new file and renaming it, so a preemption mid-write
+                                 leaves the previous one.
     checkpoints/state_<step>.h5  The descent state at the start and after every chunk
                                  (:func:`mrx.relaxation.loop.write_checkpoint`). ``best.h5`` holds the field with
                                  the lowest residual.
@@ -51,13 +53,20 @@ def main(cfg):
     os.makedirs(ckpt_dir, exist_ok=True)
     # The record holds the flat configuration plus the facts of the run.
     params = dict(cfg.params, out=out, geometry_path=os.path.abspath(g.path))
+    import jax
+    # the hardware, for scripts/bench/compare_runs.py
+    params.update(device_kind=jax.devices()[0].device_kind, n_devices=jax.device_count(),
+                  jax_version=jax.__version__)
     results = {"params": params}
+    # the setup before the first step; the per-chunk wall times are in qoi["wall"]
+    timing = results["timing"] = {}
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
     seq, ops = g.build()
     params.update(ic=seq.equilibrium["kind"], resolution=list(seq.ns), knots=g.knots, nfp=seq.nfp)
     compute_nullspaces(seq)
+    timing["setup_s"] = time.perf_counter() - t0
     print(f"[setup] {g.path} resolution {seq.ns} degree {g.spline_degree} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.odd.n(2)}  operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
 
@@ -72,6 +81,7 @@ def main(cfg):
         t1 = time.perf_counter()
         B0, ic = initial_field(seq)
         results["ic"] = ic
+        timing["ic_s"] = time.perf_counter() - t1
         print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                           for k, v in ic.items() if k != "kind"), flush=True)
@@ -120,8 +130,11 @@ def main(cfg):
                          resid_window_mean=float(sum(res.trace["resid"][-res.chunk:]) / res.chunk),
                          best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
                          **last))
-        with open(os.path.join(out, "relax.json"), "w") as fh:
+        # a new file renamed over the old one: a preemption mid-write cannot leave relax.json empty
+        path = os.path.join(out, "relax.json")
+        with open(path + ".tmp", "w") as fh:
             json.dump(results, fh, indent=1)
+        os.replace(path + ".tmp", path)
 
     res = relax(state, ts, it0=it0, on_chunk=save, **cfg.relax_kwargs())
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),

@@ -77,6 +77,36 @@ make deploy
 
 `make help` lists every target.
 
+## Cost: the cheapest Spot pools, and clusters only while jobs run
+
+TPU Spot prices differ by region far more than between families: on 2026-10-18 a v6e chip cost $0.243/h in
+`us-east4`, $0.584 in `us-central1`, `us-east1` and `us-west1`, and $1.62 in `us-east5`. A region is only usable
+where a zone offers the family **and** the project has Spot quota for it there: without quota GKE never starts the
+node ("GCE quota exceeded") and the job waits until its deadline.
+
+* `make prices` ([`spot_prices.py`](spot_prices.py)) ranks the regions by the current Spot price per chip (Cloud
+  Billing Catalog API), marks those whose zones offer the family and where the project has Spot quota (Cloud Quotas
+  API), and says how the regions of `gcp.env` compare. Prices change at most monthly; run it then, and set
+  `V6E_REGION` / `V5P_REGION` to the cheapest usable region. It needs the Cloud Billing API enabled in the project.
+* [`ephemeral.sh`](ephemeral.sh) runs one job on clusters that exist only for it: `make infra` (about 10-15 min),
+  `make <target>` with `FOLLOW=1`, then `make destroy` once no MRX job of anyone is active, also after a failure or
+  Ctrl-C. It warns when `gcp.env` points at an unusable or overpriced region, stops the job and deletes the clusters
+  when no TPU node has started it after `NODE_WAIT_MIN` minutes (default 45) or at once on a quota failure, prints
+  each job's Spot cost, and saves each job's full log to `outputs/<job>.log`.
+* [`scan.sh`](scan.sh) runs a list of `relax.py` runs (one per line of a file), four to a node, one job after another
+  on one set of clusters, and deletes them at the end.
+
+```bash
+make prices
+bash gke/ephemeral.sh                                         # build and run the ARGS of gcp.env, then delete
+RUNS="--newton.maxiter 100; --newton.maxiter 200" bash gke/ephemeral.sh run
+bash gke/scan.sh runs.txt                                     # many runs, 4 per node
+bash gke/ephemeral.sh down                                    # delete idle clusters left by a crash or a sleep
+```
+
+`scripts/bench/compare_runs.py` turns the `relax.json` of runs on any hardware into one table: setup, compile and
+steady-state time per step, and the solver time and cost to given force residuals.
+
 ## Running jobs
 
 `make deploy` runs the whole loop, so you need not call `run.sh` or `kubectl` yourself:
