@@ -16,6 +16,7 @@ preconditioners. The sequence builds all of these itself when it is created.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 from typing import Optional
 
@@ -25,7 +26,8 @@ import jax.numpy as jnp
 import numpy as np
 
 import mrx.double_single as ds
-from mrx.extraction_operators import build_extraction, core_gram_inverse, get_xi, row_products, summed_coo
+from mrx.extraction_operators import (StructuredExtraction, build_extraction, core_gram_inverse, get_xi, row_products,
+                                      summed_coo)
 from mrx.precision import PAIRS, to_working
 
 
@@ -247,7 +249,15 @@ def parity_extraction(seq, k, dirichlet, parity):
                        (n_red, e.forward_shape[1]))
     free = np.flatnonzero(col >= 0)
     X = summed_coo(free, col[free], weight[free], (col.size, n_red))
-    return E_red, X, core
+    # the structured apply of E_red: X^T on the core rows of E is the block K, a signed pairing
+    core_full = np.asarray(seq.core[(k, dirichlet)])
+    K = np.zeros((core.size, core_full.size))
+    hit = col[core_full] >= 0
+    K[col[core_full[hit]] - (n_red - core.size), np.flatnonzero(hit)] = weight[core_full[hit]]
+    plan = reflection_plan(seq, k)
+    structured = StructuredExtraction.build(E_red, tuple(shape for *_, shape in plan), core, full=(e, core_full),
+                                            reduce=K, reflection=tuple((t, z) for t, z, *_ in plan))
+    return dataclasses.replace(E_red, structured=structured), X, core
 
 
 def reduced_dirichlet_dofs(X_free, X_dirichlet, index):

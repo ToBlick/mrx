@@ -10,6 +10,8 @@ raw tensor-product ones, so an extracted DoF vector ``v`` has the raw coefficien
   conditions at ``r = 1``, together with its polar core rows (the axis functions).
 - :class:`MatrixFreeExtraction` is the sparse matrix type of ``E`` and of the other topological
   operators. It acts by ``E @ x`` and ``E.T @ x``.
+- :class:`StructuredExtraction` applies an extraction without index arrays: static slices for the
+  rows that select raw functions, a small dense block for the axis functions.
 - :func:`conforming_restriction` maps raw coefficients to the closest extracted DoF vector.
 - :func:`dirichlet_dofs` locates the DoFs of a Dirichlet space among those of the free space.
 - :func:`get_xi` returns the polar weights that define the axis functions.
@@ -18,8 +20,10 @@ All of these depend only on the mesh and the spline degrees, not on the geometry
 builds them once when it is created.
 """
 
+import dataclasses
 import functools
 import math
+import os
 from typing import Optional
 
 import equinox as eqx
@@ -30,6 +34,9 @@ import numpy as np
 import mrx.double_single as ds
 from mrx.precision import PAIRS
 
+#: Whether an extraction applies through its :class:`StructuredExtraction` when it has one
+#: (``MRX_EXTRACTION=structured``, the default) or through its entries (``MRX_EXTRACTION=coo``).
+STRUCTURED = os.environ.get("MRX_EXTRACTION", "structured") != "coo"
 
 
 @functools.partial(jax.jit, static_argnames=("num_segments",))
@@ -60,6 +67,7 @@ class MatrixFreeExtraction(eqx.Module):
     lo: Optional[jnp.ndarray] = None
     by_rows: Optional[ds.Rows] = None
     by_cols: Optional[ds.Rows] = None
+    structured: Optional["StructuredExtraction"] = None
 
     @classmethod
     def from_coo(cls, rows, cols, vals, shape):
@@ -90,9 +98,18 @@ class MatrixFreeExtraction(eqx.Module):
         return MatrixFreeExtraction(rows=self.rows, cols=self.cols, vals=self.vals,
                                     forward_shape=self.forward_shape,
                                     transposed=not self.transposed, lo=self.lo, by_rows=self.by_rows,
-                                    by_cols=self.by_cols)
+                                    by_cols=self.by_cols, structured=self.structured)
 
     def __matmul__(self, x):
+        if STRUCTURED and self.structured is not None:
+            return _apply_structured(self.structured, x if isinstance(x, ds.DS) else jnp.asarray(x),
+                                     self.transposed)
+        return self.coo_matmul(x)
+
+    def coo_matmul(self, x):
+        """``A @ x`` from the entries (a gather and a segment sum, or :class:`~mrx.double_single.Rows`), also
+        when the matrix has a :class:`StructuredExtraction`. It is the reference the structured apply is
+        tested against."""
         if isinstance(x, ds.DS):
             return (self.by_cols if self.transposed else self.by_rows) @ x
         x = jnp.asarray(x)
@@ -115,6 +132,310 @@ class MatrixFreeExtraction(eqx.Module):
         pos[np.asarray(rows)] = np.arange(len(rows))
         keep = pos[r] >= 0
         return pos[r[keep]], c[keep], v[keep]
+
+
+def _zeros(x, shape):
+    """Zeros of ``shape`` of the kind of ``x``, a float array or a :class:`~mrx.double_single.DS`."""
+    return ds.zeros(shape) if isinstance(x, ds.DS) else jnp.zeros(shape, dtype=x.dtype)
+
+
+def _part(w, x):
+    """The weights ``w`` as ``x`` takes them: a float array is multiplied by their first part only."""
+    return w.hi if isinstance(w, ds.DS) and not isinstance(x, ds.DS) else w
+
+
+def _dense(A, X):
+    """``A @ X`` for a dense matrix ``A`` and a matrix ``X``, in double-single if either is a :class:`DS`."""
+    if not isinstance(A, ds.DS) and not isinstance(X, ds.DS):
+        return A @ X
+    return ds.contract(A[:, None, :], ds.moveaxis(X, 0, 1)[None])
+
+
+def _host(x):
+    """A float64 NumPy array as the device keeps the operator entries (a :class:`DS` in float32)."""
+    return ds.from_host(x) if PAIRS else jnp.asarray(x)
+
+
+class StructuredExtraction(eqx.Module):
+    """An extraction ``E``, or its parity reduction ``X^T E`` (:mod:`mrx.symmetry`), applied without index
+    arrays. A device such as a TPU runs a gather or a scatter far slower than slices, reshapes and small
+    dense products, and the extractions are made of the latter:
+
+    - **Bulk rows.** Each selects one raw function, or a reflected pair of them with weights ``w`` and
+      ``+-w``. With ``R`` the (unsigned) reflection of the raw coefficients, a reversal and a roll of the
+      angular axes, the bulk rows are ``w * (S x + sigma * S R x)``, where ``S`` keeps the lead functions
+      in raw order and ``sigma`` is ``+-1``, or 0 for a function its own reflection. Only the
+      multiplication by ``w`` rounds. The lead functions form a few runs that repeat with a fixed stride
+      (once per radial ring), so ``S`` is a list of segments ``(start, stride, count, pieces)``: entries
+      ``start + i stride + [o, o + n)`` for ``i < count`` and each piece ``(o, n)``, one strided slice of
+      the vector each.
+    - **Core rows** (the axis functions). The axis functions of ``E`` combine rings 0 and 1 within one zeta
+      layer: ``C = W X``, with ``X`` the first two rings of each component involved as a matrix
+      (ring and theta index, zeta layer) and ``W`` of shape (axis functions per layer, ring and theta
+      index). A parity reduction combines these rows with the small matrix ``K``.
+
+    :meth:`build` checks the structure against the entries of the extraction and returns ``None`` where it
+    does not hold, which keeps the extraction on its entries. The weights are kept as the operator entries
+    are, in double-single in float32, and the apply takes float arrays and :class:`DS` alike.
+    """
+
+    w: Optional[object]             # the weight of each bulk row, None when it is 1
+    sigma: Optional[jnp.ndarray]    # the sign of the reflected function in each bulk row, None without a reflection
+    W: Optional[object]             # (Q, window rows): the axis functions of one zeta layer
+    WT: Optional[object]
+    K: Optional[object]             # (core rows, Q * layers): the parity reduction of the axis functions
+    KT: Optional[object]
+    shape: tuple = eqx.field(static=True)
+    components: tuple = eqx.field(static=True)      # (offset, shape) of each component in the raw vector
+    shifts: Optional[tuple] = eqx.field(static=True)    # per component, the theta and zeta rolls of R
+    segments: tuple = eqx.field(static=True)
+    pad: int = eqx.field(static=True)               # zeros past the raw vector that the last segment reads
+    windows: tuple = eqx.field(static=True)         # (offset, size) of the first two rings of each core component
+    layers: int = eqx.field(static=True)
+    n_core: int = eqx.field(static=True)
+    core_first: bool = eqx.field(static=True)
+
+    @classmethod
+    def build(cls, e, components, core, full=None, reduce=None, reflection=None):
+        """The structured form of the extraction ``e`` (a :class:`MatrixFreeExtraction`) of a space whose
+        raw coefficients have the component shapes ``components``, with polar core rows ``core``, or
+        ``None`` if its entries do not have that structure.
+
+        For a parity reduction ``e = X^T E`` pass ``full = (E, core rows of E)``, ``reduce``, the block of
+        ``X^T`` from the core rows of ``E`` to the core rows of ``e`` (dense, float64), and ``reflection``,
+        the theta and zeta index permutations of each component (:func:`mrx.symmetry.reflection_plan`)."""
+        rows, cols, vals = e.entries()
+        n_rows, n_cols = e.forward_shape
+        offsets = np.cumsum([0] + [math.prod(s) for s in components])
+        core = np.asarray(core, dtype=np.int64)
+        n_core = core.size
+        core_first = n_core == 0 or core[0] == 0
+        if n_core and not np.array_equal(core, np.arange(n_core) if core_first else np.arange(n_rows - n_core, n_rows)):
+            return None
+        in_core = np.zeros(n_rows, dtype=bool)
+        in_core[core] = True
+
+        # the reflection as a raw index map, and as rolls of the reversed angular axes
+        r_map, shifts = None, None
+        if reflection is not None:
+            r_map, shifts = [], []
+            for off, shape, (perm_t, perm_z) in zip(offsets, components, reflection):
+                perm_t, perm_z = np.asarray(perm_t), np.asarray(perm_z)
+                index = np.arange(math.prod(shape)).reshape(shape)[:, perm_t][:, :, perm_z]
+                r_map.append(off + index.ravel())
+                shifts.append(((int(perm_t[0]) + 1) % shape[1], (int(perm_z[0]) + 1) % shape[2]))
+                rolled = np.roll(np.flip(np.arange(math.prod(shape)).reshape(shape), (1, 2)), shifts[-1], (1, 2))
+                if not np.array_equal(rolled, index):
+                    return None
+            r_map, shifts = np.concatenate(r_map), tuple(shifts)
+
+        # bulk rows: one or two entries, the lead (smallest) column increasing with the row
+        bulk = ~in_core[rows]
+        order = np.lexsort((cols[bulk], rows[bulk]))
+        br, bc, bv = rows[bulk][order], cols[bulk][order], vals[bulk][order]
+        bulk_rows = np.flatnonzero(~in_core)
+        count = np.bincount(br, minlength=n_rows)[bulk_rows]
+        if bulk_rows.size == 0 or count.min() < 1 or count.max() > 2:
+            return None
+        first = np.concatenate([[0], np.cumsum(count)[:-1]])
+        lead, two = bc[first], count == 2
+        if np.any(np.diff(lead) <= 0):
+            return None
+        w, sigma = bv[first], None
+        if two.any():
+            if r_map is None or not np.array_equal(bc[first[two] + 1], r_map[lead[two]]):
+                return None
+            sigma = np.zeros(lead.size)
+            sigma[two] = bv[first[two] + 1] / w[two]
+            if not np.all(np.abs(sigma[two]) == 1.0):
+                return None
+        segments = _segments(lead)
+        implied = [(bulk_rows, lead, w)]
+        if sigma is not None:
+            implied.append((bulk_rows[two], r_map[lead[two]], sigma[two] * w[two]))
+
+        # core rows: the axis functions of the full extraction, layer by layer
+        windows, layers, W, K = (), 0, None, None
+        if n_core:
+            e_full, core_full = full if full is not None else (e, core)
+            fr, fc, fv = e_full.entries(core_full)
+            comp = np.searchsorted(offsets, fc, "right") - 1
+            used = np.unique(comp)
+            layers = int(components[used[0]][2])
+            local = fc - offsets[comp]
+            if any(components[c][2] != layers for c in used) or len(core_full) % layers \
+                    or not np.array_equal(np.asarray(core_full), np.arange(len(core_full))) \
+                    or np.any(local % layers != fr % layers):
+                return None
+            depth = {c: int(local[comp == c].max()) // layers + 1 for c in used}
+            base = dict(zip(used, np.cumsum([0] + [depth[c] for c in used])))
+            windows = tuple((int(offsets[c]), depth[c] * layers) for c in used)
+            W = np.zeros((len(core_full) // layers, sum(depth.values())))
+            # one weight per layer and window row: the check below finds layers that differ
+            W[fr // layers, np.array([base[c] for c in comp]) + local // layers] = fv
+            K = None if reduce is None else np.asarray(reduce, dtype=np.float64)
+            if (K is None and len(core_full) != n_core) or (K is not None and K.shape != (n_core, len(core_full))):
+                return None
+            # the core entries implied by W and K
+            q, j = np.nonzero(W)
+            which = np.searchsorted(np.cumsum([depth[c] for c in used]), j, "right")
+            m = np.arange(layers)
+            full_rows = (q[:, None] * layers + m).ravel()
+            full_cols = ((offsets[used][which] + (j - np.array([base[c] for c in used])[which]) * layers)[:, None]
+                         + m).ravel()
+            full_vals = np.repeat(W[q, j], layers)
+            if K is None:
+                implied.append((core[full_rows], full_cols, full_vals))
+            else:
+                for i, f in zip(*np.nonzero(K)):
+                    hit = full_rows == f
+                    implied.append((np.full(int(hit.sum()), core[i]), full_cols[hit], K[i, f] * full_vals[hit]))
+
+        # the structure must reproduce every entry
+        def key(r, c):
+            return np.asarray(r, dtype=np.int64) * n_cols + np.asarray(c, dtype=np.int64)
+        keys = np.concatenate([key(rows, cols)] + [key(r, c) for r, c, _ in implied])
+        diff = np.concatenate([vals] + [-v for _, _, v in implied])
+        _, inv = np.unique(keys, return_inverse=True)
+        if np.abs(np.bincount(inv, weights=diff)).max() > 1e-13 * max(1.0, np.abs(vals).max()):
+            return None
+
+        return cls(w=None if np.all(w == 1.0) else _host(w),
+                   sigma=None if sigma is None else jnp.asarray(sigma, dtype=jnp.float32 if PAIRS else float),
+                   W=None if W is None else _host(W), WT=None if W is None else _host(W.T),
+                   K=None if K is None else _host(K), KT=None if K is None else _host(K.T),
+                   shape=(int(n_rows), int(n_cols)),
+                   components=tuple((int(o), tuple(int(v) for v in s)) for o, s in zip(offsets, components)),
+                   shifts=shifts, segments=segments,
+                   pad=max(0, max(st + n * stride for st, stride, n, _ in segments) - int(n_cols)),
+                   windows=windows, layers=layers, n_core=int(n_core), core_first=bool(core_first))
+
+    def _reflect(self, u):
+        """``R u``, the unsigned reflection of raw coefficients: reversed and rolled angular axes."""
+        parts = []
+        for (off, shape), shift in zip(self.components, self.shifts):
+            n = math.prod(shape)
+            parts.append(_map(u[off:off + n], lambda v: jnp.roll(jnp.flip(v.reshape(shape), (1, 2)), shift,
+                                                                 (1, 2)).ravel()))
+        return ds.concatenate(parts)
+
+    def _select(self, u):
+        """``S u``: the lead functions, segment by segment."""
+        if self.pad:
+            u = ds.pad(u, ((0, self.pad),))
+        out = []
+        for start, stride, count, pieces in self.segments:
+            block = u[start:start + count * stride].reshape(count, stride)
+            out.append(ds.concatenate([block[:, o:o + n] for o, n in pieces], axis=1).ravel())
+        return ds.concatenate(out)
+
+    def _place(self, v):
+        """``S^T v``: the bulk values put back at their lead functions, zeros elsewhere."""
+        out, pos, at = [], 0, 0
+        for start, stride, count, pieces in self.segments:
+            width = sum(n for _, n in pieces)
+            block = v[pos:pos + count * width].reshape(count, width)
+            pos += count * width
+            cols, c0, end = [], 0, 0
+            for o, n in pieces:
+                if o > end:
+                    cols.append(_zeros(v, (count, o - end)))
+                cols.append(block[:, c0:c0 + n])
+                c0, end = c0 + n, o + n
+            if stride > end:
+                cols.append(_zeros(v, (count, stride - end)))
+            if start > at:
+                out.append(_zeros(v, (start - at,)))
+            out.append(ds.concatenate(cols, axis=1).ravel()[:(count - 1) * stride + end])
+            at = start + (count - 1) * stride + end
+        if self.shape[1] > at:
+            out.append(_zeros(v, (self.shape[1] - at,)))
+        return ds.concatenate(out)
+
+    def forward(self, x):
+        """``E x`` for a vector ``x`` of raw coefficients."""
+        v = self._select(x)
+        if self.sigma is not None:
+            v = v + _map(self._select(self._reflect(x)), lambda u: self.sigma * u)
+        if self.w is not None:
+            v = v * _part(self.w, v)
+        parts = [v]
+        if self.n_core:
+            X = ds.concatenate([x[o:o + n].reshape(n // self.layers, self.layers) for o, n in self.windows])
+            c = _dense(_part(self.W, x), X).ravel()
+            if self.K is not None:
+                c = ds.matvec(_part(self.K, x), c)
+            parts.insert(0 if self.core_first else 1, c)
+        return ds.concatenate(parts)
+
+    def transpose(self, y):
+        """``E^T y`` for a vector ``y`` of extracted DoFs."""
+        n_bulk = self.shape[0] - self.n_core
+        if self.core_first:
+            y_core, y_bulk = y[:self.n_core], y[self.n_core:]
+        else:
+            y_bulk, y_core = y[:n_bulk], y[n_bulk:]
+        if self.w is not None:
+            y_bulk = y_bulk * _part(self.w, y_bulk)
+        x = self._place(y_bulk)
+        if self.sigma is not None:
+            x = x + self._reflect(self._place(_map(y_bulk, lambda u: self.sigma * u)))
+        if not self.n_core:
+            return x
+        if self.K is not None:
+            y_core = ds.matvec(_part(self.KT, y_core), y_core)
+        Xw = _dense(_part(self.WT, y_core), y_core.reshape(-1, self.layers))
+        parts, at, row = [], 0, 0
+        for o, n in self.windows:
+            if o > at:
+                parts.append(x[at:o])
+            parts.append(x[o:o + n] + Xw[row:row + n // self.layers].ravel())
+            at, row = o + n, row + n // self.layers
+        parts.append(x[at:])
+        return ds.concatenate(parts)
+
+
+def _map(x, fn):
+    """``fn``, a linear map made of reshapes, slices and reversals, applied to a float array or to both
+    parts of a :class:`~mrx.double_single.DS`."""
+    return ds.DS(fn(x.hi), fn(x.lo)) if isinstance(x, ds.DS) else fn(x)
+
+
+def _segments(lead, max_period=64):
+    """The increasing indices ``lead`` as segments ``(start, stride, count, pieces)`` of
+    :class:`StructuredExtraction`. The runs of consecutive indices are grouped greedily into the period
+    of runs that repeats the most often with a fixed stride."""
+    brk = np.flatnonzero(np.diff(lead) != 1) + 1
+    starts = lead[np.concatenate([[0], brk])].astype(np.int64)
+    lens = np.diff(np.concatenate([[0], brk, [lead.size]]))
+    segments, k = [], 0
+    while k < starts.size:
+        best_n, best_p = 1, 1
+        for p in range(1, min(max_period, (starts.size - k) // 2) + 1):
+            stride = starts[k + p] - starts[k]
+            n = 1
+            while k + (n + 1) * p <= starts.size \
+                    and np.array_equal(lens[k + n * p:k + (n + 1) * p], lens[k:k + p]) \
+                    and np.all(starts[k + n * p:k + (n + 1) * p] - starts[k:k + p] == n * stride):
+                n += 1
+            if n >= 2 and n * p > best_n * best_p:
+                best_n, best_p = n, p
+        p, n = best_p, best_n
+        end = starts[k + p - 1] + lens[k + p - 1]
+        stride = int(starts[k + p] - starts[k]) if n > 1 else int(end - starts[k])
+        pieces = tuple((int(s - starts[k]), int(m)) for s, m in zip(starts[k:k + p], lens[k:k + p]))
+        segments.append((int(starts[k]), stride, int(n), pieces))
+        k += n * p
+    return tuple(segments)
+
+
+@eqx.filter_jit
+def _apply_structured(s, x, transposed):
+    """``E x`` or ``E^T x`` with the :class:`StructuredExtraction` ``s``, for a vector or each column of a matrix."""
+    fn = s.transpose if transposed else s.forward
+    if x.ndim == 1:
+        return fn(x)
+    return jax.vmap(fn, in_axes=1, out_axes=1)(x)
 
 
 def summed_coo(rows, cols, vals, shape):
@@ -263,7 +584,8 @@ def build_extraction(form, xi, dirichlet):
 
     e = MatrixFreeExtraction.from_coo(np.concatenate(rows), np.concatenate(cols), np.concatenate(data),
                                       (row0, form.n))
-    return e, np.unique(np.asarray(core, dtype=np.int32))
+    core = np.unique(np.asarray(core, dtype=np.int32))
+    return dataclasses.replace(e, structured=StructuredExtraction.build(e, form.shape, core)), core
 
 
 def get_xi(nt, p):
