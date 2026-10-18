@@ -399,33 +399,79 @@ def _k0_solve(seq, b, tol, guess=None, check_residual=False):
     )
 
 
-def _hodge_split(seq, b, k, guess):
-    """``L_k^{-1} b`` for k = 1, 2, by three symmetric positive definite solves.
+def _shifted_cg(seq, j: int, delta, b, tol, x0=None, check_residual=False):
+    """``(x, info)`` with ``(delta M_j + S_j) x = b`` by preconditioned conjugate gradients.
 
-    Because ``G^T S_k = 0`` (``G = G_{k-1}``), the exact part of the solution splits off::
+    The preconditioner is the shifted atom of ``M_j + eps S_j`` (``eps = 1 / delta``) plus, for ``j >= 1``,
+    the ``(j-1)``-form Laplacian atom on gradients, ``G P_{j-1} G^T``. In the ``M``-orthogonal Hodge
+    decomposition ``x = G phi + y`` the operator is block-diagonal, because ``S_j G = 0``: on gradients it is
+    ``G^T M_j G = S_{j-1}`` up to the factor ``delta``. The shifted atom is a model of ``M_j + eps L_j`` and is
+    too small there by ``1 / (1 + eps lambda)``. Without the gradient part the 1-form solve on li383
+    (48,64,24) takes 4228 iterations at ``eps = 1e-2`` and does not converge in 5000 at ``eps = 1``, with it
+    220 and 274 (2026-10-14).
+    """
+    shifted = _seq_atom(seq, "laplacian", j).shifted_stiffness_apply(1.0 / delta)
+    if j == 0:
+        P = shifted
+    else:
+        lower = _seq_atom(seq, "laplacian", j - 1)
 
-        S_{k-1} g = G^T b,   S_k x_perp = b - M_k G g,
-        S_{k-1} a = M_{k-1} g - G^T M_k x_perp,   x = x_perp + G a
+        def P(x):
+            return shifted(x) + _grad(seq, lower.apply(_grad(seq, x, j - 1, transpose=True)), j - 1)
+    return solve_singular_cg(
+        lambda x: delta * _mass(seq, x, j) + _stiffness(seq, x, j),
+        b,
+        jnp.zeros((0, b.shape[0])),
+        precond_matvec=P,
+        x0=x0,
+        tol=tol,
+        maxiter=seq.maxiter,
+        check_residual=check_residual,
+        norm=dual_norm(seq, j),
+        parity=parity_projectors(seq, j, b),
+    )
 
-    Each singular ``S`` is solved through :func:`_hat_solve` (or :func:`_k0_solve` for degree 0),
-    and :func:`_pair_loop` repeats the split until the residual is small. Each of the three stops at a
-    third of the tolerance of the pass.
+def _hodge_split(seq, b, k, guess, delta=None):
+    """``(delta M_k + L_k)^{-1} b`` by three symmetric positive definite solves.
+
+    ``delta=None`` is the Laplacian ``L_k`` itself (k = 1, 2, while k = 3 is :func:`_saddle_solve`), a
+    positive ``delta`` the shifted Laplacian divided by its shift (k = 1, 2, 3). With ``G = G_{k-1}`` and
+    because ``G^T S_k = 0`` and ``G^T M_k G = S_{k-1}``, the exact part of the solution splits off::
+
+        (delta M_{k-1} + S_{k-1}) z = G^T b,   (delta M_k + S_k) x_perp = b - M_k G z,
+        (delta M_{k-1} + S_{k-1}) a = M_{k-1} z - G^T M_k x_perp,   x = x_perp + G a
+
+    The error of ``z`` cancels in ``x``, because ``z`` enters both later right-hand sides, and the third
+    solve takes up the gradient part ``G^T r`` of the residual ``r`` of the second, which ``S_k`` does not see.
+    So each solve stops on its own residual at a third of the tolerance of the pass, and :func:`_pair_loop`
+    repeats the split until the residual of the posed equation is small.
+
+    Without ``delta`` the singular stiffness solves go through :func:`_hat_solve` (:func:`_k0_solve` at degree
+    0) with the harmonic forms removed, and no mass term is formed. With ``delta`` each solve is
+    :func:`_shifted_cg`, and the operator is positive definite, with no kernel.
     """
 
     # the residual of the split is at most the sum of those of its three solves, so each gets a third
     def solve(b, j, rtol):
+        if delta is not None:
+            return _shifted_cg(seq, j, delta, b, rtol / 3.0)
         if j == 0:
             return _k0_solve(seq, b, rtol / 3.0)
         return _hat_solve(seq, b, j, rtol / 3.0)
 
     def split(b, rtol):
-        # g equals M_{k-1}^-1 G^T M x of the returned x, the second unknown of _pair_loop
-        g, _ = solve(_grad(seq, b, k - 1, transpose=True), k - 1, rtol)
-        x_perp, info = solve(b - _mass(seq, _grad(seq, g, k - 1), k), k, rtol)
-        a, _ = solve(_mass(seq, g, k - 1) - _grad(seq, _mass(seq, x_perp, k), k - 1, transpose=True), k - 1, rtol)
-        return x_perp + _grad(seq, a, k - 1), g, info
+        z, info_z = solve(_grad(seq, b, k - 1, transpose=True), k - 1, rtol)
+        x_perp, info = solve(b - _mass(seq, _grad(seq, z, k - 1), k), k, rtol)
+        a, info_a = solve(_mass(seq, z, k - 1) - _grad(seq, _mass(seq, x_perp, k), k - 1, transpose=True), k - 1, rtol)
+        # w = M_{k-1}^-1 G^T M_k x of the returned x, the second unknown of _pair_loop:
+        # G^T M_k x = M_{k-1} (z - delta a)
+        w = z if delta is None else z - delta * a
+        return x_perp + _grad(seq, a, k - 1), w, _merge_info(_merge_info(info_z, info), info_a)
 
-    return _pair_loop(seq, k, 0.0, split, b, guess, _harmonic(seq, k))
+    if delta is None:
+        return _pair_loop(seq, k, 0.0, split, b, guess, _harmonic(seq, k))
+    # the shifted operator is positive definite, so there is no kernel to remove
+    return _pair_loop(seq, k, delta, split, b, guess, jnp.zeros((0, seq.n(k))))
 
 
 @eqx.filter_jit
@@ -579,47 +625,14 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
 
 
 @eqx.filter_jit
-def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False):
-    """``(M_k + eps L_k)^{-1} rhs``, by two symmetric positive definite solves.
-
-    Because ``G_k G_{k-1} = 0`` the inverse splits exactly into::
-
-        (M_k + eps L_k)^{-1} = (M_k + eps S_k)^{-1}
-                               - eps G_{k-1} (M_{k-1} + eps S_{k-1})^{-1} G_{k-1}^T
-
-    and each part is solved by conjugate gradients. For k = 0 only the first part is present.
-    """
-    def shifted_cg(j, b, tol, x0=None, check_residual=False):
-        return solve_singular_cg(
-            lambda x: _mass(seq, x, j) + _stiffness(seq, x, j) * eps,
-            b,
-            jnp.zeros((0, b.shape[0])),
-            precond_matvec=_seq_atom(seq, "laplacian", j).shifted_stiffness_apply(eps),
-            x0=x0,
-            tol=tol,
-            maxiter=seq.maxiter,
-            check_residual=check_residual,
-            norm=dual_norm(seq, j),
-            parity=parity_projectors(seq, j, b),
-        )
-
-    if k == 0:
-        x, info = shifted_cg(0, rhs, seq.tol, x0=guess, check_residual=True)
-        x = to_working(x)
-        return (x, info) if return_info else x
-
-    def split(b, rtol):
-        # z equals M_{k-1}^-1 G^T M x of the returned x (as G^T S_k = 0), the second unknown of _pair_loop
-        # the residual of the split is at most the sum of those of its two solves, so each gets a half
-        x, info = shifted_cg(k, b, rtol / 2.0)
-        z, info_lower = shifted_cg(k - 1, _grad(seq, b, k - 1, transpose=True), rtol / 2.0)
-        x = x - eps * _grad(seq, z, k - 1)
-        total = jnp.abs(info) + jnp.abs(info_lower)
-        return x, z, jnp.where((info >= 0) & (info_lower >= 0), total, -total)
-
-    # solve (1/eps) M x + L x = b / eps. This operator is SPD, so there is no kernel to remove
-    x, info = _pair_loop(seq, k, 1.0 / eps, lambda r, rtol: split(eps * r, rtol), rhs / eps, guess,
-                         jnp.zeros((0, seq.n(k))))
+def _shifted_solve(seq, rhs, k: int, eps, guess=None, part="full", return_info: bool = False):
+    """``(M_k + eps L_k)^{-1} rhs`` (:meth:`ShiftedLaplacian.solve`): :func:`_hodge_split` with ``delta = 1 / eps``
+    on ``rhs / eps``, or one solve of ``M_k + eps S_k`` for k = 0 and for ``part="coexact"``."""
+    delta = 1.0 / eps
+    if k == 0 or part == "coexact":
+        x, info = _shifted_cg(seq, k, delta, rhs * delta, seq.tol, x0=guess, check_residual=True)
+    else:
+        x, info = _hodge_split(seq, rhs * delta, k, guess, delta=delta)
     x = to_working(x)
     return (x, info) if return_info else x
 
@@ -773,11 +786,21 @@ class ShiftedLaplacian(eqx.Module):
     k: int = eqx.field(static=True)
     eps: object
 
-    def solve(self, b, guess=None, return_info=False):
-        """``(M_k + eps L_k)^{-1} b`` by two symmetric positive definite solves. ``guess`` and
-        ``return_info`` work as in :meth:`MassMatrix.solve`, and ``info`` counts the iterations of
-        both solves together."""
-        return _shifted_solve(self.seq, b, self.k, self.eps, guess=guess, return_info=return_info)
+    def solve(self, b, guess=None, return_info=False, part="full"):
+        """``(M_k + eps L_k)^{-1} b``. ``guess`` and ``return_info`` work as in :meth:`MassMatrix.solve`.
+
+        - ``"full"``: any ``b``. Three solves for k >= 1, as the Hodge split of :meth:`Laplacian.solve`
+          (:func:`_hodge_split`), and ``info`` counts them together.
+        - ``"coexact"``: one solve of ``M_k + eps S_k``. For a ``b`` orthogonal to the closed forms, as
+          ``b = G_k^T w`` is, that is the solution, and it is co-exact. For any other ``b`` it differs
+          from the solution by an exact form ``G_{k-1} c``: ``G_k x`` is the same. Use it where only
+          ``G_k x`` enters, as in the velocity smoothing. Unlike :meth:`Laplacian.solve` there is no
+          gauge to fix, because ``M_k + eps S_k`` is positive definite.
+
+        k = 0 has only the one solve, so both parts are the same there."""
+        if part not in ("full", "coexact"):
+            raise ValueError(f"part must be 'full' or 'coexact', got {part!r}")
+        return _shifted_solve(self.seq, b, self.k, self.eps, guess=guess, part=part, return_info=return_info)
 
 
 class OperatorFamily:
