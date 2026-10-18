@@ -38,7 +38,8 @@ jobs:
     env:
       # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
       # the persistent compilation cache is the main lever on wall time.
-      JAX_COMPILATION_CACHE_DIR: ${{ github.workspace }}/.jax_cache
+      # test/conftest.py points JAX at MRX_XLA_CACHE, so that is the variable to set.
+      MRX_XLA_CACHE: ${{ github.workspace }}/.jax_cache
     steps:
     - uses: actions/checkout@v4
 

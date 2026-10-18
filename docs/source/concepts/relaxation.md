@@ -21,8 +21,7 @@ The relaxation forms the force by the potential route:
 `F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
 divergence-free fields, with no pressure solve. Every solve is warm-started from the previous step's value.
 `compute_force(B, seq, p_guess, JxB_guess, J_guess, F_guess)` returns the same projection by the Leray
-route, a k = 3 saddle solve that also gives the strong pressure `p`. The sampler calls it once per chunk
-for that pressure.
+route, a k = 3 saddle solve that also gives the strong pressure `p`. The relaxation does not call it.
 
 ## 2. The step
 
@@ -116,11 +115,11 @@ then goes to the resistive steady state of that current.
 
 ### Two pressures
 
-**Strong** `p` (from `compute_force`, a 3-form, computed by the sampler once
-per chunk): the multiplier of the constrained principle. The force is projected onto the Dirichlet 2-forms
+**Strong** `p` (from `compute_force`, a 3-form, computed on request): the multiplier of the
+constrained principle. The force is projected onto the Dirichlet 2-forms
 first, which discards its normal component, so `dp/dn = 0` on the wall and
 `p` is defined up to a constant. It is the right multiplier for the
-descent and blind to the wall force. It is part of the state.
+descent and blind to the wall force.
 
 **Weak** `p_w` (from `weak_pressure`, a Dirichlet 0-form): `J x B` is
 projected onto the natural 1-forms, which keep its normal component, and
@@ -132,17 +131,18 @@ sampler at every chunk and by `scripts/poincare_trace.py` at the crossings.
 
 ## 4. The loop
 
-`State` holds `B_n`, `B_nplus1`, `dt`, `dt_star`, `cfl_max` and three
-subtrees: `warm` (the warm starts), `last` (the last step's force,
-velocity and iteration counts) and `best` (the field of lowest residual,
-its residual and step). `initial_state(B, ts)` evaluates the force once, so
-the first step's solves start warm.
+`State` holds the field `B_n` and two subtrees: `warm` (the warm starts)
+and `best` (the field of lowest residual, its residual and step). What a
+step measures (the force and velocity norms, `dt`, `dt_star`, the CFL
+number, the iteration counts) goes into the trace, not the state.
+`initial_state(B, ts)` evaluates the force once, so the first step's solves
+start warm.
 
 `relax(state, ts, steps, chunk, it0, floor_tol, on_chunk)` runs the steps
-in compiled chunks (`chunk_runner`: one `lax.scan` of `chunk` steps,
-returning the per-step trace), samples the diagnostics once per chunk
-(`make_sampler`: energy, helicity, `||J||/||B||`,
-`int J . B`, `beta_vol`), calls `on_chunk`, and stops when the chunk mean of
+in compiled chunks (one `lax.scan` of `chunk` steps, returning the per-step
+trace), samples the diagnostics once per chunk (`sample`: energy, force
+residual, helicity, `||J||/||B||`, `int J . B`, `beta_vol`, all at the
+current field), calls `on_chunk`, and stops when the chunk mean of
 `resid` falls below `floor_tol` or after `steps`. It returns a
 `RelaxResult` (the state, the trace, the samples, the stopping reason).
 `write_checkpoint` / `read_checkpoint` store and restore a state as one

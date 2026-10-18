@@ -22,8 +22,7 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
                                    newton_direction)
-from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
-                                   weak_pressure, beta_vol)
+from mrx.relaxation.physics import beta_vol, compute_divergence_norm, compute_helicity, resistive_step, weak_pressure
 
 
 def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
@@ -62,32 +61,17 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
 class WarmStarts(eqx.Module):
     """The solutions of the last step's linear solves, kept as starting guesses for the next step.
 
-    ``p`` is the pressure, ``JxB`` the Lorentz force before projection, ``J`` the current, ``E = u x B`` the
-    electric field, ``a`` the vector potential of the step's direction, ``a_F`` the vector potential of the
-    force (the same as ``a`` for gradient descent), ``A`` the vector potential of the helicity (updated only
-    when diagnostics are sampled) and ``resistive_a`` the 1-form whose curl was the last resistive increment.
+    ``J`` is the current, ``E = u x B`` the electric field, ``a`` the vector potential of the step's direction,
+    ``a_F`` the vector potential of the force (the same as ``a`` for gradient descent), ``A`` the vector potential
+    of the helicity (updated only when diagnostics are sampled) and ``resistive_a`` the 1-form whose curl was the
+    last resistive increment.
     """
-    p: jnp.ndarray
-    JxB: jnp.ndarray
     J: jnp.ndarray
     E: jnp.ndarray
     a: jnp.ndarray
     a_F: jnp.ndarray
     A: jnp.ndarray
     resistive_a: jnp.ndarray
-
-
-class LastStep(eqx.Module):
-    """What the last step computed: the force ``F`` at the start of the step and its norm, the velocity ``v``
-    and its norm, the iteration counts of the Newton and resistive solves (positive when converged, negative
-    when not) and the relative size ``||delta|| / ||B||`` of the resistive increment."""
-    F: jnp.ndarray
-    F_norm: jnp.ndarray
-    v: jnp.ndarray
-    v_norm: jnp.ndarray
-    newton_it: jnp.ndarray
-    resistive_it: jnp.ndarray
-    resistive_moved: jnp.ndarray
 
 
 class BestState(eqx.Module):
@@ -98,19 +82,12 @@ class BestState(eqx.Module):
 
 
 class State(eqx.Module):
-    """Everything the relaxation carries from one step to the next. Make one with :func:`initial_state`.
-
-    ``B_n`` is the current field. ``dt`` is the step length taken, ``min(dt_star, CFL / cfl_max)``, where
-    ``dt_star`` minimises the energy along the step and ``cfl_max`` is the largest CFL number of the velocity.
-    All leaves are arrays, so the state can be passed through compiled code.
+    """Everything the relaxation carries from one step to the next: the current field ``B_n``, the warm starts of
+    its solves and the best field so far. Make one with :func:`initial_state`. All leaves are arrays, so the
+    state can be passed through compiled code. What a step measures goes into the trace of :func:`relax`.
     """
     B_n: jnp.ndarray
-    B_nplus1: jnp.ndarray
-    dt: jnp.ndarray
-    dt_star: jnp.ndarray
-    cfl_max: jnp.ndarray
     warm: WarmStarts
-    last: LastStep
     best: BestState
 
 
@@ -121,8 +98,6 @@ class Increment(NamedTuple):
     Mu: jnp.ndarray
     F: jnp.ndarray
     MF: jnp.ndarray
-    p: jnp.ndarray
-    JxB: jnp.ndarray
     J: jnp.ndarray
     E: jnp.ndarray
     cfl_max: jnp.ndarray
@@ -176,6 +151,9 @@ class TimeStepper(eqx.Module):
         hs = even.nullspace(2)
         self.harmonic = hs
         self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=jnp.float64)
+        if not isinstance(self.harmonic_norm_sq, jax.core.Tracer) and bool((self.harmonic_norm_sq <= 0).any()):
+            raise ValueError("the harmonic 2-forms of the sequence are zero: run mrx.nullspace.compute_nullspaces "
+                             "before building the TimeStepper")
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
         self.resistive = bool(self.resistivity != 0)
@@ -192,43 +170,40 @@ class TimeStepper(eqx.Module):
         return J, even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                                  odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
 
-    def _potential_force(self, B: jnp.ndarray, a_guess: jnp.ndarray, J_guess: jnp.ndarray, smooth: bool = True):
-        """Return ``(F, M F, F_s, J, a)``: the divergence-free force ``F = curl a + c h`` and, with ``smooth``,
-        its smoothed version ``F_s`` (else ``None``).
-
-        ``a`` is a vector potential of the force and ``c h`` its harmonic part. Smoothing ``a`` with
-        ``(M_1 + mu L_1)^-1 M_1`` and taking the curl equals smoothing ``curl a`` with ``(M_2 + mu L_2)^-1 M_2``.
-        """
+    def _force(self, JxB_dual: jnp.ndarray, a_guess: jnp.ndarray):
+        """Return ``(F, M F, a)``: the divergence-free force ``F = curl a + c h`` of the Lorentz force
+        ``JxB_dual``, with ``a`` a vector potential of the force and ``c h`` its harmonic part."""
         seq = self.seq.even
-        J, JxB_dual = self._lorentz(B, J_guess)
         # only curl a enters, so a keeps a gradient that nothing controls
         a = seq.L[1].solve(seq.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
-        if not smooth:
-            return F, seq.M[2] @ F, None, J, a
-        # only curl a_s enters, and (M + mu L)^-1 and (M + mu S)^-1 differ by an exact form: one solve
-        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a, part="coexact")
-        Fs = seq.G[1] @ a_s + ch
-        return F, seq.M[2] @ F, Fs, J, a
+        return F, seq.M[2] @ F, a
 
-    def _ideal_increment(self, B: jnp.ndarray, state: State) -> Increment:
-        """The ideal increment at ``B``, every Krylov solve warm-started from ``state``."""
+    def _smooth(self, F: jnp.ndarray, a: jnp.ndarray) -> jnp.ndarray:
+        """The smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` of the force ``F = curl a + c h`` of :meth:`_force`.
+
+        Smoothing ``a`` with ``(M_1 + mu L_1)^-1 M_1`` and taking the curl equals smoothing ``curl a``, the
+        harmonic part is unchanged, and ``(M + mu L)^-1`` and ``(M + mu S)^-1`` differ by an exact form, which the
+        curl removes: one solve.
+        """
+        seq = self.seq.even
+        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a, part="coexact")
+        return F + seq.G[1] @ (a_s - a)
+
+    def _ideal_increment(self, B: jnp.ndarray, w: WarmStarts) -> Increment:
+        """The ideal increment at ``B``, every Krylov solve warm-started from ``w``."""
         seq = self.seq
         odd, even = seq.odd, seq.even
-        w = state.warm
-        newton_it = jnp.int32(0)
-        p, JxB = w.p, w.JxB                                           # no pressure solve on either route
+        J, JxB_dual = self._lorentz(B, w.J)
+        F, MF, a_F = self._force(JxB_dual, w.a_F)
         if self.newton:
             # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
-            J, JxB_dual = self._lorentz(B, w.J)
             u, a, newton_it = newton_direction(seq, B, J, JxB_dual, w.a, self.newton_penalty, self.newton_tol,
                                                self.newton_maxiter, self.mass_inverse)
-            F, MF, _, _, a_F = self._potential_force(B, w.a_F, J, smooth=False)
         else:
-            F, MF, u, J, a = self._potential_force(B, w.a, w.J)       # u the smoothed force
-            a_F = a
+            u, a, newton_it = self._smooth(F, a_F), a_F, jnp.int32(0)    # u the smoothed force
         Mu = even.M[2] @ u
         u_jk = even.evaluate_at_quadrature(u, 2)
         E_dual = odd.cross_product_load_values(u_jk, odd.evaluate_at_quadrature(B, 2), 1, 2, 2)
@@ -236,7 +211,7 @@ class TimeStepper(eqx.Module):
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
         # the topological curl: div B is conserved exactly, no mass solve
         dB = odd.G[1] @ E
-        return Increment(dB, u, Mu, F, MF, p, JxB, J, E, cfl_max, a, a_F, newton_it)
+        return Increment(dB, u, Mu, F, MF, J, E, cfl_max, a, a_F, newton_it)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Return ``(dt, dt_star)``. ``dt_star = <F, u> / ||dB||^2`` minimises the energy along the increment and
@@ -248,24 +223,24 @@ class TimeStepper(eqx.Module):
             dt = jnp.minimum(dt, 1.0)              # the Newton length
         return dt, dt_star
 
-    def relaxation_step(self, state: State) -> State:
-        """Advance ``state.B_n`` by one step into ``state.B_nplus1``."""
-        B_n = state.B_n
-        inc = self._ideal_increment(B_n, state)
+    def relaxation_step(self, state: State) -> tuple[jnp.ndarray, WarmStarts, dict]:
+        """One step from ``state.B_n``. Returns ``(B_{n+1}, warm starts, scalars)``, where ``scalars`` holds what
+        the step measured at ``B_n``: ``F`` and ``v`` (the norms of force and velocity), ``Fu`` (``<F, u>``),
+        ``dt``, ``dt_star``, ``cfl`` (the largest CFL number of the velocity), ``newton_it``, ``res_it`` and
+        ``res_moved`` (see :func:`relax`)."""
+        w = state.warm
+        inc = self._ideal_increment(state.B_n, w)
         dt, dt_star = self._step_size(inc)
-        B_nplus1 = B_n + dt * inc.dB
-
-        res_a, res_it, res_moved = state.warm.resistive_a, state.last.resistive_it, state.last.resistive_moved
+        B_new = state.B_n + dt * inc.dB
+        res_a, res_it, res_moved = w.resistive_a, jnp.int32(0), jnp.zeros(())
         if self.resistive:
-            B_nplus1, res_it, res_moved, res_a = resistive_step(B_nplus1, self.seq, self.resistivity,
-                                                                self.resistive_reference, guess=res_a)
-
-        warm = WarmStarts(p=inc.p, JxB=inc.JxB, J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=state.warm.A,
-                          resistive_a=res_a)
-        last = LastStep(F=inc.F, F_norm=jnp.sqrt(inc.F @ inc.MF), v=inc.u, v_norm=jnp.sqrt(inc.u @ inc.Mu),
-                        newton_it=inc.newton_it, resistive_it=res_it, resistive_moved=res_moved)
-        return eqx.tree_at(lambda s: (s.B_nplus1, s.dt, s.dt_star, s.cfl_max, s.warm, s.last), state,
-                           (B_nplus1, dt, dt_star, inc.cfl_max, warm, last))
+            B_new, res_it, res_moved, res_a = resistive_step(B_new, self.seq, self.resistivity,
+                                                             self.resistive_reference, guess=res_a)
+        warm = WarmStarts(J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=w.A, resistive_a=res_a)
+        scalars = dict(F=jnp.sqrt(inc.F @ inc.MF), v=jnp.sqrt(inc.u @ inc.Mu), Fu=inc.F @ inc.Mu, dt=dt,
+                       dt_star=dt_star, cfl=inc.cfl_max, newton_it=inc.newton_it, res_it=res_it,
+                       res_moved=res_moved)
+        return B_new, warm, scalars
 
 
 def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
@@ -273,61 +248,44 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
     a restart). This evaluates the force once."""
     seq = ts.seq
     odd, even = seq.odd, seq.even
-    F0, MF0, _, J0, a_F0 = ts._potential_force(B_dof, jnp.zeros(even.n(1)), None, smooth=False)
-    # the pressure warm starts only feed the sampler's diagnostic Leray solve
-    p0, JxB0 = jnp.zeros(even.n(3)), jnp.zeros(even.n(2))
+    J0, JxB_dual = ts._lorentz(B_dof, None)
+    F0, MF0, a_F0 = ts._force(JxB_dual, jnp.zeros(even.n(1)))
     resid0 = (jnp.sqrt(F0 @ MF0) / force_scale_jit(seq, B_dof)) ** 2
-    zero = jnp.zeros(())       # scalars as arrays: one carry signature for the scan
     zeros1_odd = jnp.zeros(odd.n(1))
     return State(
-        B_n=B_dof, B_nplus1=B_dof, dt=jnp.ones(()), dt_star=jnp.ones(()), cfl_max=zero,
-        warm=WarmStarts(p=p0, JxB=JxB0, J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1)),
-                        a_F=a_F0,
-                        A=zeros1_odd, resistive_a=zeros1_odd),
-        last=LastStep(F=F0, F_norm=jnp.sqrt(F0 @ MF0), v=jnp.zeros(even.n(2)), v_norm=zero,
-                      newton_it=jnp.int32(0), resistive_it=jnp.int32(0), resistive_moved=zero),
+        B_n=B_dof,
+        warm=WarmStarts(J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1)), a_F=a_F0, A=zeros1_odd,
+                        resistive_a=zeros1_odd),
         best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=jnp.float64), step=jnp.int32(step)),
     )
 
 
-def chunk_runner(ts: TimeStepper, n_chunk: int) -> Callable[[State, int], tuple[State, dict]]:
-    """Return a function ``run(state, it0) -> (state, trace)`` that takes ``n_chunk`` steps in one compiled loop.
-
-    ``it0`` is the step number before the chunk. ``trace[name]`` is an array with one value per step:
-    ``dE`` (the energy change), ``F`` and ``v`` (the norms of force and velocity), ``dt``, ``dt_star``, ``cfl``,
-    ``div`` (``||div B||``), ``Fu`` (``<F, u>``), ``newton_it``, ``res_it``, ``res_moved`` and ``resid``, the
-    squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. A field with a lower ``resid`` than
-    ``state.best`` replaces it. Runners of the same stepper share the compiled code. Only a new ``n_chunk``
-    compiles again.
-    """
-    return lambda state, it0: _run_chunk(ts, state, jnp.asarray(it0), n_chunk)
-
-
 def _chunk_body(ts, state, it):
     seq = ts.seq
-    state = ts.relaxation_step(state)
-    B_n, B_new = state.B_n, state.B_nplus1
+    B_n = state.B_n
+    B_new, warm, scalars = ts.relaxation_step(state)
     dE = 0.5 * ((B_new - B_n) @ (seq.odd.M[2] @ (B_new + B_n)))
-    resid = (state.last.F_norm / force_scale(seq, B_new)) ** 2
+    # the force of this step is that of B_n, so the scale is too: best.resid is the residual of best.B
+    resid = (scalars["F"] / force_scale(seq, B_n)) ** 2
     better = resid < state.best.resid
     best = BestState(B=jnp.where(better, B_n, state.best.B),
                      resid=jnp.where(better, resid, state.best.resid).astype(state.best.resid.dtype),
                      step=jnp.where(better, it - 1, state.best.step).astype(state.best.step.dtype))
-    state = eqx.tree_at(lambda s: (s.B_n, s.best), state, (B_new, best))
-    trace = dict(
-        dE=dE, F=state.last.F_norm, v=state.last.v_norm,
-        dt=state.dt, dt_star=state.dt_star, cfl=state.cfl_max,
-        div=compute_divergence_norm(state.B_n, seq),
-        Fu=state.last.F @ (seq.even.M[2] @ state.last.v),
-        newton_it=state.last.newton_it, res_it=state.last.resistive_it, res_moved=state.last.resistive_moved,
-        resid=resid)
-    return state, trace
+    trace = dict(scalars, dE=dE, div=compute_divergence_norm(B_new, seq), resid=resid)
+    return State(B_n=B_new, warm=warm, best=best), trace
 
 
-# At module level with ts as an argument, so all runners on the same sequence share one compiled program. The
+# At module level with ts as an argument, so all chunks on the same sequence share one compiled program. The
 # step index is passed as an array because a Python int would be static and recompile every chunk.
 @eqx.filter_jit
 def _run_chunk(ts, state, it0, n_chunk):
+    """Take ``n_chunk`` steps from ``state`` in one compiled loop and return ``(state, trace)``.
+
+    ``it0`` is the step number before the chunk. ``trace[name]`` is an array with one value per step: the
+    scalars of :meth:`TimeStepper.relaxation_step` and ``dE`` (the energy change), ``div`` (``||div B||``) and
+    ``resid``, the squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. A field with a lower
+    ``resid`` than ``state.best`` replaces it. Only a new ``n_chunk`` compiles again.
+    """
     return jax.lax.scan(lambda st, it: _chunk_body(ts, st, it), state, it0 + jnp.arange(1, n_chunk + 1))
 
 
@@ -344,46 +302,37 @@ def force_scale(seq: DeRhamSequence, B: jnp.ndarray) -> jnp.ndarray:
 force_scale_jit = eqx.filter_jit(force_scale)
 
 
-def make_sampler(ts: TimeStepper):
-    """Return a function ``sample(state, pw_guess) -> (state, p_w, scalars)`` that computes the diagnostics of
-    the current field.
+def sample(ts: TimeStepper, state: State, pw_guess: jnp.ndarray) -> tuple[State, jnp.ndarray, dict]:
+    """Return ``(state, p_w, scalars)``, the diagnostics of the current field ``state.B_n``.
 
-    ``scalars`` is a dict of Python floats: the energy ``E``, the
-    ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and ``beta_vol``. ``p_w`` is the weak
-    pressure, to be passed back as ``pw_guess`` next time. The returned state has refreshed starting guesses.
+    ``scalars`` is a dict of Python floats: the energy ``E``, the force norm ``F`` and residual ``resid`` (as in
+    the trace of :func:`relax`), the ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and
+    ``beta_vol``. ``p_w`` is the weak pressure, to be passed back as ``pw_guess`` next time. The returned state
+    has refreshed warm starts.
     """
+    state, p_w, scalars = _sample(ts, state, pw_guess)
+    return state, p_w, {k: float(v) for k, v in scalars.items()}
+
+
+@eqx.filter_jit
+def _sample(ts, state, pw_guess):
     seq = ts.seq
     odd = seq.odd
-
-    def sample(state: State, pw_guess: jnp.ndarray):
-        f = _probe_jit
-        w = state.warm
-        p, JxB, J, A, p_w, h, JoverB, JB, beta = f(seq, state.B_n, w.p, w.JxB, w.J, state.last.F, pw_guess, w.A)
-        state = eqx.tree_at(lambda s: (s.warm.p, s.warm.JxB, s.warm.J, s.warm.A), state, (p, JxB, J, A))
-        E = 0.5 * float(odd.l2_norm_sq(state.B_n, 2))
-        scalars = dict(E=E, helicity=float(h), JoverB=float(JoverB), JB=float(JB), beta_vol=float(beta))
-        return state, p_w, scalars
-
-    return sample
-
-
-def _probe(seq, B, p, JxB, J, F_prev, pw_guess, A):
-    """The diagnostics of :func:`make_sampler` at the field ``B``."""
-    F, p, J, JxB = compute_force(B, seq, p, JxB, J, F_prev)
+    B, w = state.B_n, state.warm
+    J, JxB_dual = ts._lorentz(B, w.J)
+    F, MF, a_F = ts._force(JxB_dual, w.a_F)
     p_w = weak_pressure(J, B, seq, p_guess=pw_guess)
-    h, A_new = compute_helicity(B, seq, A)
-    odd = seq.odd
-    JoverB = odd.l2_norm(J, 1) / odd.l2_norm(B, 2)
-    JB = J @ (odd.P[2, 1] @ B)
-    return p, JxB, J, A_new, p_w, h, JoverB, JB, beta_vol(B, p_w, seq)
-
-
-#: :func:`_probe`, jit-compiled once per sequence.
-_probe_jit = eqx.filter_jit(_probe)
+    h, A = compute_helicity(B, seq, w.A)
+    F_norm = jnp.sqrt(F @ MF)
+    scalars = dict(E=0.5 * odd.l2_norm_sq(B, 2), F=F_norm, resid=(F_norm / force_scale(seq, B)) ** 2, helicity=h,
+                   JoverB=odd.l2_norm(J, 1) / odd.l2_norm(B, 2), JB=J @ (odd.P[2, 1] @ B),
+                   beta_vol=beta_vol(B, p_w, seq))
+    state = eqx.tree_at(lambda s: (s.warm.J, s.warm.a_F, s.warm.A), state, (J, a_F, A))
+    return state, p_w, scalars
 
 
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
-    """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.p``, ...).
+    """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.J``, ...).
 
     The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
     stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence. The attribute
@@ -465,9 +414,9 @@ class RelaxResult(NamedTuple):
 
     ``steps`` is the number of steps done in this run, so ``it0 + steps`` is the current step number. ``stop``
     is ``"steps"``, ``"floor"`` or ``"running"``. ``wall`` is the time in seconds spent in the steps themselves.
-    ``trace`` holds the per-step values of :func:`chunk_runner` except ``v`` and ``Fu``, plus ``dE_ls`` (the
+    ``trace`` holds the per-step values of :func:`_run_chunk` except ``v`` and ``Fu``, plus ``dE_ls`` (the
     energy change the line search predicts, ``-dt <F, u> (1 - dt / 2 dt_star)``) and ``cos`` (the cosine between
-    force and velocity). ``qoi`` holds the diagnostics of :func:`make_sampler` once per chunk, the first entry
+    force and velocity). ``qoi`` holds the diagnostics of :func:`sample` once per chunk, the first entry
     being the start of the run. ``E0`` is the energy at the start.
     """
     state: State
@@ -494,9 +443,6 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     if chunk < 1 or steps % chunk:
         raise ValueError("steps must be a positive multiple of chunk")
     seq = ts.seq
-    run = chunk_runner(ts, chunk)
-    sample = make_sampler(ts)
-
     trace: dict = {k: [] for k in ("dE_ls", "cos")}    # the per-step scalars are added at the first chunk
     qoi: dict = {}
 
@@ -504,27 +450,25 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         return RelaxResult(state, n_done, stop, wall, trace, qoi, chunk, E0)
 
     def record(it, wall, scalars):
-        row = dict(it=it, wall=wall, F=float(state.last.F_norm),
-                   resid=float((state.last.F_norm / force_scale_jit(seq, state.B_n)) ** 2), **scalars)
-        for k, v in row.items():
+        for k, v in dict(it=it, wall=wall, **scalars).items():
             qoi.setdefault(k, []).append(v)
 
     t_arm = time.perf_counter()
     t_out = 0.0     # time spent in samples and callbacks, which wall excludes
     pw = jnp.zeros(seq.even.n(0))
     tq = time.perf_counter()
-    state, pw, scalars = sample(state, pw)   # the start of THIS run
+    state, pw, scalars = sample(ts, state, pw)   # the start of THIS run
     E0, h0 = scalars["E"], scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
-        print(f"[start] it {it0}  E={E0:.8e}  |F|={float(state.last.F_norm):.4e}  "
-              f"resid={qoi['resid'][-1]:.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}  "
+        print(f"[start] it {it0}  E={E0:.8e}  |F|={scalars['F']:.4e}  "
+              f"resid={scalars['resid']:.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}  "
               f"beta_vol={scalars['beta_vol']:.3e}", flush=True)
     t_out += time.perf_counter() - tq
 
     n_done, stop = 0, "running"
     for _ in range(steps // chunk):
-        state, ch = run(state, it0 + n_done)
+        state, ch = _run_chunk(ts, state, jnp.asarray(it0 + n_done), chunk)
         ch = {k: np.asarray(v) for k, v in ch.items()}
         n_done += chunk
         it = it0 + n_done
@@ -539,7 +483,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
         tq = time.perf_counter()
         wall = tq - t_arm - t_out
-        state, pw, scalars = sample(state, pw)
+        state, pw, scalars = sample(ts, state, pw)
         record(it, wall, scalars)
         if verbose:
             print(f"  it {it:>5d}  E_0-E={E0 - scalars['E']:.4e}  |F|={ch['F'][-1]:.4e}  "
@@ -552,7 +496,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
                      f"dt* mean {ch['dt_star'].mean():.3e}" if ts.newton else "")
                   + (f"\n           resistive: eps {ts.resistivity:.3e} per step, CG it mean "
                      f"{np.abs(ch['res_it']).mean():.0f} max {np.abs(ch['res_it']).max()}, "
-                     f"||delta||/||B|| mean {ch['res_moved'].mean():.2e}" if ts.resistivity else ""),
+                     f"||delta||/||B|| mean {ch['res_moved'].mean():.2e}" if ts.resistive else ""),
                   flush=True)
         if resid_now < floor_tol:
             stop = "floor"

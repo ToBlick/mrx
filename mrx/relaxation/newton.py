@@ -51,7 +51,7 @@ LANCZOS_MARGIN = 0.05
 
 def _ddx(f, x, axis, periodic):
     """Central difference of ``f`` along ``axis`` on the grid ``x``, periodic on ``[0, 1)`` or one-sided at the
-    ends."""
+    ends. A half-period grid covers only ``zeta`` in ``[0, 1/2]`` and is not periodic."""
     f = jnp.moveaxis(f, axis, 0)
     if periodic:
         df = jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)
@@ -74,7 +74,8 @@ def harmonic_atom_profiles(seq, field):
     f_jk = (seq.odd.evaluate_at_quadrature(field, 2) / seq.jacobian_j[:, None]).reshape(shape + (3,))
     prof_t = f_jk[..., 1].mean(axis=(1, 2))
     prof_z = f_jk[..., 2].mean(axis=(1, 2))
-    grads = [_ddx(f_jk, x, ax, ax > 0) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
+    periodic = (False, True, not seq.half_period)
+    grads = [_ddx(f_jk, x, ax, periodic[ax]) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
     strain = jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
     return prof_t, prof_z, strain
 
@@ -103,8 +104,12 @@ def harmonic_preconditioner(seq, profiles, penalty):
     r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
     scale = []
+    # the radial position of a DoF is the Greville point of its radial basis: the derivative splines for the
+    # r component, the splines for the other two
+    lam_r = seq.basis_0.Lambda[0]
+    radial = (seq.basis_0.dLambda[0].s, lam_r, lam_r)
     for c, (s1, s2, s3) in enumerate(shapes):
-        r = (jnp.arange(s1) + 0.5) / s1
+        r = radial[c].greville_points()
         a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
         floor = jnp.interp(r, r_q, strain[:, c] + penalty)[:, None, None]
         m = np.fft.fftfreq(s2, d=1.0 / s2)

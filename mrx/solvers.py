@@ -207,6 +207,8 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
     iterates and the residuals, so ``x`` is the solution orthogonal to it.
 
     The residual is measured in ``norm`` (:func:`mrx.operators.dual_norm`), by the PCG as well.
+    Without ``norm`` it is measured in the norm of the preconditioner, ``sqrt(r^T P r)``, which the
+    PCG has at no cost: pass no ``norm`` when it would be that norm anyway (a mass solve).
     Without ``check_residual`` this is a plain PCG that stops at ``tol`` on the residual of its
     recurrence. With it the PCG runs inside :func:`refine`: each pass solves to ``tol`` and the
     true residual measured in ``norm`` decides convergence. ``parity``, the parity projections of a
@@ -220,6 +222,9 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
     def P(x):
         return project_primal(precond_matvec(project_dual(x)))
 
+    def outer_norm(r):
+        return jnp.sqrt(r @ P(r)) if norm is None else norm(r)
+
     if not check_residual:
         x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
         x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm)
@@ -227,7 +232,7 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
 
     x, info = refine(lambda x: A_matvec(project_primal(x)),
                      lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm),
-                     b, x0=x0, tol=tol, project_dual=project_dual, norm=norm)
+                     b, x0=x0, tol=tol, project_dual=project_dual, norm=outer_norm)
     return project_primal(x), info
 
 

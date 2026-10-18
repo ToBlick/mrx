@@ -54,6 +54,15 @@ class Trace:
     def __post_init__(self):
         if not self.checkpoints:
             raise ValueError("name at least one checkpoint to trace")
+        # the archive keys a field by its file name, so two best.h5 of different runs would overwrite each other
+        names = [field_name(path) for path in self.checkpoints]
+        if len(set(names)) != len(names):
+            raise ValueError(f"the checkpoints must have distinct file names, got {names}")
+
+
+def field_name(path):
+    """The archive name of the field in the checkpoint ``path``: its file name without the extension."""
+    return os.path.splitext(os.path.basename(path))[0]
 
 
 def main(cli):
@@ -67,8 +76,7 @@ def main(cli):
     fields = {}
     for path in cli.checkpoints:
         with h5py.File(path, "r") as fh:
-            fields[os.path.splitext(os.path.basename(path))[0]] = (np.asarray(fh["B_n"], dtype=np.float64),
-                                                                    int(fh.attrs["step"]))
+            fields[field_name(path)] = (np.asarray(fh["B_n"], dtype=np.float64), int(fh.attrs["step"]))
     archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
                                       "trace.npz")
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"

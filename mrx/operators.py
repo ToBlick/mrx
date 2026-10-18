@@ -181,7 +181,7 @@ def _projection(seq, v, k_in: int, k_out: int):
     """``P v`` with the metric-free pairing ``P_ij = int Lambda^{k_out}_i . Lambda^{k_in}_j`` over the
     logical domain, for ``(k_in, k_out)`` = (1, 2), (2, 1), (0, 3) or (3, 0)."""
     plan = seq.projection_plan[(k_out, k_in)]
-    weights = _geometry(seq).reference_weights[len(plan.shapes_r)]
+    weights = seq.quad.w.reshape(seq.quad.shape)       # the pairing has no metric
     core = _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k_in, k_out)
     return seq.E(k_out) @ core(seq.E(k_in).T @ v)
 
@@ -261,7 +261,10 @@ def dual_norm(seq, k: int):
 
 @eqx.filter_jit
 def _mass_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
-    """``M_k^{-1} rhs`` by preconditioned conjugate gradients."""
+    """``M_k^{-1} rhs`` by preconditioned conjugate gradients.
+
+    The preconditioner is the mass atom, so the norm of :func:`dual_norm` is the preconditioner's own norm,
+    which conjugate gradients have without a second apply: no ``norm`` is passed."""
     x, info = solve_singular_cg(
         lambda x: _mass(seq, x, k),
         rhs,
@@ -271,7 +274,6 @@ def _mass_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
         tol=seq.tol,
         maxiter=seq.maxiter,
         check_residual=True,
-        norm=dual_norm(seq, k),
         parity=parity_projectors(seq, k, rhs),
     )
     return (x, info) if return_info else x

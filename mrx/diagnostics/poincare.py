@@ -267,16 +267,18 @@ def steps_for(planes):
     return den * -(-MIN_STEPS_PER_PERIOD // den)
 
 
-@partial(jax.jit, static_argnames=("seq",))
-def _section_points(seq, x):
-    return jax.vmap(seq.map.section)(x.reshape(-1, 3)).reshape(x.shape[:-1] + (2,))
+# The map is a traced argument, not a static one: a new geometry on the same sequence must not reuse the old
+# map's coefficients compiled in as constants.
+@jax.jit
+def _section_points(Phi, x):
+    return jax.vmap(Phi.section)(x.reshape(-1, 3)).reshape(x.shape[:-1] + (2,))
 
 
 def to_RZ(seq, ys, zeta):
     """The coordinates in the cross-section (``section`` of the map: cylindrical ``(R, Z)``, or ``(X1, X2)`` in
     the plane of a G-frame) of ``(u, v)`` cross-section points at the logical angle ``zeta``."""
     r, theta = to_polar(ys)
-    xy = _section_points(seq, jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1))
+    xy = _section_points(seq.map, jnp.stack([r, theta, jnp.broadcast_to(jnp.asarray(zeta) % 1.0, r.shape)], axis=-1))
     return xy[..., 0], xy[..., 1]
 
 

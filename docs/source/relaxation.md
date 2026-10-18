@@ -77,7 +77,7 @@ chunk restarts it (`--output.restart`).
 | file | content |
 |---|---|
 | `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`. |
-| `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.p`, ...), the discretisation as attributes |
+| `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
@@ -103,9 +103,9 @@ B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)
 
 ## Pressure
 
-The run carries two pressures: the strong `p` of the descent (state,
-`warm.p` in every checkpoint) and the weak `p_w`, zero on the wall, from
-which `beta_vol` is computed ([Relaxation](concepts/relaxation.md)).
+MRX has two pressures: the strong `p` of the descent (`compute_force`, on
+request) and the weak `p_w`, zero on the wall, from which `beta_vol` is
+computed at every chunk ([Relaxation](concepts/relaxation.md)).
 
 ## Poincare sections
 
