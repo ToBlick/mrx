@@ -15,7 +15,7 @@ The relaxation forms the force by the potential route:
 1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl: one k = 1 mass solve.
 2. `load(J x B)`, the Lorentz force tested against the 2-form basis, not projected.
 3. `S_1 a = curl^T load(J x B)`: one curl-curl solve for the force potential `a`
-   (`seq.L[1].solve(b, part="coexact", gauge=False)`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
+   (`seq.S[1].solve(b)`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
    the even force of a half-period sequence). `a` is fixed only up to a gradient, which `curl` removes.
 
 `F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
@@ -38,7 +38,7 @@ is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
    any mesh and commutes with the divergence. Only the curl enters, and
    `(M_1 + mu L_1)^{-1}` and `(M_1 + mu S_1)^{-1}` differ by an exact form,
    so it is one solve of `M_1 + mu S_1`
-   (`seq.shifted(1, mu).solve(..., part="coexact")`).
+   (`seq.shifted_stiffness(1, mu).solve(...)`).
 2. **Electric field** `E = M_1^{-1} load(u x B)`, one k = 1 mass solve.
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
@@ -97,7 +97,7 @@ inverse.
 `(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`.
 For a divergence-free `B - B_ref` the solution is a curl, `delta = G_1 a` with
 `(M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref)`, one 1-form solve
-(`seq.shifted(1, eps).solve(..., part="coexact")`). So `div B` stays at
+(`seq.shifted_stiffness(1, eps).solve(...)`). So `div B` stays at
 round-off, since `G_2 G_1 = 0`. It is unconditionally stable. The drive
 of `scripts/relax.py --drive.resistivity C` applies it after every ideal
 step with `eps = C h_r^2` towards the reference field's current. The field
@@ -106,7 +106,7 @@ then goes to the resistive steady state of that current.
 ## 3. Diagnostics
 
 - `compute_helicity(B, seq, A_guess)`: `A` from one curl-curl solve
-  `S_1 A = D_1^T B` (`seq.L[1].solve(b, part="coexact", gauge=False)`), then `H = <A, P_{21}(B + B_harm)>` with
+  `S_1 A = D_1^T B` (`seq.S[1].solve(b)`), then `H = <A, P_{21}(B + B_harm)>` with
   `B_harm = B - curl A`.
 - `compute_divergence_norm(B, seq)`: `||G_2 B||`, no solve.
 - `force_scale(seq, B) = ||grad(|B|^2/2)||`: the scale of the force residual

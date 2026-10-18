@@ -21,6 +21,7 @@ The matrices of the complex are operator objects indexed by the form degree and 
     J = seq.M[1].solve(b)             # mass solve
     a = seq.L[1].solve(b)             # Hodge Laplacian solve
     x = seq.shifted(2, eps).solve(r)  # (M_2 + eps L_2)^-1 r
+    a = seq.S[1].solve(b)             # S_1 a = b for b = G_1^T w, a up to a closed form
     Bf = seq.free.G[1] @ seq.free.interpolate(A_ref, 1)   # curl of a free 1-form (logical components)
     B = seq.restrict(Bf, 2)                                # dropped to the Dirichlet 2-forms
 
@@ -271,7 +272,7 @@ class DeRhamSequence():
 
     @property
     def S(self):
-        """The stiffness matrices ``S_k = G_k^T M_{k+1} G_k``: ``seq.S[k] @ v``."""
+        """The stiffness matrices ``S_k = G_k^T M_{k+1} G_k``: ``seq.S[k] @ v``, ``seq.S[k].solve(b)``."""
         return op.OperatorFamily(self, op.Stiffness, (0, 1, 2, 3))
 
     @property
@@ -294,6 +295,11 @@ class DeRhamSequence():
         """The shifted Laplacian ``M_k + eps L_k``, solved by ``seq.shifted(k, eps).solve(b)``. Pass
         ``eps`` as a JAX array, otherwise every new value recompiles."""
         return op.ShiftedLaplacian(self, int(k), eps)
+
+    def shifted_stiffness(self, k, eps):
+        """The shifted stiffness ``M_k + eps S_k``, solved by ``seq.shifted_stiffness(k, eps).solve(b)``. Pass
+        ``eps`` as a JAX array, otherwise every new value recompiles."""
+        return op.ShiftedStiffness(self, int(k), eps)
 
     def with_geometry(self, geometry: SequenceGeometry):
         """A copy of this sequence and of its parity views with ``geometry`` installed. Unlike

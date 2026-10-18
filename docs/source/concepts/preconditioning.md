@@ -16,10 +16,10 @@ is called on, `seq` (Dirichlet) or `seq.free`.
 | `M_k u = f` | `seq.M[k].solve(f)` | PCG | the mass atom |
 | `L_0 u = f` | `seq.L[0].solve(f)` | PCG on `S_0`, kernel deflated | the k = 0 Laplacian atom |
 | `L_k u = f`, k = 1, 2 | `seq.L[k].solve(f)` | the Hodge split: three SPD PCGs | the Laplacian atoms of levels k and k-1 |
-| `S_k u = b`, `b = G_k^T w` | `seq.L[k].solve(b, part="coexact", gauge=False)` | PCG on the singular `S_k` | the Laplacian atom of level k |
+| `S_k u = b`, `b = G_k^T w` | `seq.S[k].solve(b)` | PCG on the singular `S_k` | the Laplacian atom of level k |
 | `L_3 u = f` | `seq.L[3].solve(f)` and `seq.leray(v, k=2)` | saddle-point MINRES | the k = 3 Laplacian atom, the k = 2 mass atom |
 | `(M_k + eps L_k) u = f` | `seq.shifted(k, eps).solve(f)` | three SPD PCGs, the Hodge split with `delta = 1 / eps` | the shifted-stiffness atoms plus the Laplacian atom of level k - 1 on gradients |
-| `G_k (M_k + eps L_k)^{-1} f` | `seq.shifted(k, eps).solve(f, part="coexact")` | one PCG on `M_k + eps S_k` | the same |
+| `(M_k + eps S_k) u = f` | `seq.shifted_stiffness(k, eps).solve(f)` | one PCG on `M_k + eps S_k` | the same |
 
 Every solve takes a warm start `guess` and returns the signed iteration
 count with `return_info=True`. `seq.M[k].precondition(r)` and
@@ -47,7 +47,7 @@ exact (b = M_k G_{k-1} c):   S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = 
 For a co-exact right-hand side the first solve of the split is zero and conjugate gradients run on the
 singular `S_k` alone. They converge because `b` lies exactly in its range, and each iteration drops the two
 mass applies and the atom of the exact-form term. The solve is stopped and refined like every other one
-([Precision](precision.md)). With `gauge=False` the gauge solve is left out. What comes back is then the
+([Precision](precision.md)). `seq.S[k].solve(b)` leaves out the gauge solve. What comes back is then the
 solution plus a closed form that nothing controls, of which only `G_k x` is determined. This is what the
 force potential, the vector potential of the helicity, the harmonic 2-form and the vacuum field of the
 shape optimisation use, since only `G_k x` enters them.
@@ -95,7 +95,7 @@ two solves, `x = x_k - eps G z`, nothing cancelled the error of `z`. It
 reached the residual multiplied by `eps`, and above `eps` of about 0.1 the
 solve did not converge.
 
-`seq.shifted(k, eps).solve(b, part="coexact")` is the one solve of
+`seq.shifted_stiffness(k, eps).solve(b)` is the one solve of
 `M_k + eps S_k`. It is the solution for a `b` orthogonal to the closed forms.
 For any other `b` it differs from the solution by an exact form, so `G_k x`
 is the same. The velocity smoothing needs only that.

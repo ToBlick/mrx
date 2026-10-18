@@ -174,7 +174,7 @@ class TimeStepper(eqx.Module):
         ``JxB_dual``, with ``a`` a vector potential of the force and ``c h`` its harmonic part."""
         seq = self.seq.even
         # only curl a enters, so a keeps a gradient that nothing controls
-        a = seq.L[1].solve(seq.G[1].T @ JxB_dual, part="coexact", gauge=False, guess=a_guess)
+        a = seq.S[1].solve(seq.G[1].T @ JxB_dual, guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         return F, seq.M[2] @ F, a
@@ -187,7 +187,7 @@ class TimeStepper(eqx.Module):
         curl removes: one solve.
         """
         seq = self.seq.even
-        a_s = seq.shifted(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a, part="coexact")
+        a_s = seq.shifted_stiffness(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a)
         return F + seq.G[1] @ (a_s - a)
 
     def _ideal_increment(self, B: jnp.ndarray, w: WarmStarts) -> Increment:

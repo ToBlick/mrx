@@ -431,19 +431,28 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
 PARTS = ("full", "coexact", "exact")
 
 
-def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
-    """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms.
-    With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Without it ``y`` is left with a
-    closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms. ``guess``
-    starts the stiffness solve."""
-    # degree 0 has no exact forms, and its solve is refined on the true residual
-    y, info = _stiffness_solve(seq, c, j, seq.tol if tol is None else tol, guess, check_residual=j == 0)
-    if gauge and j > 0:
-        # only G q enters, so q needs no gauge of its own
-        q, info_q = _coexact_solve(seq, -_grad(seq, _mass(seq, y, j), j - 1, transpose=True), j - 1, gauge=False)
-        y = y + _grad(seq, q, j - 1)
-        info = _merge_info(info, info_q)
-    return y, info
+def _consistent_solve(seq, c, j: int, tol=None, guess=None):
+    """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, ``y`` up to a closed form.
+    Degree 0 has no closed forms but the constants, and its solve is refined on the true residual."""
+    return _stiffness_solve(seq, c, j, seq.tol if tol is None else tol, guess, check_residual=j == 0)
+
+
+@eqx.filter_jit
+def _stiffness_solve_jit(seq, b, k: int, guess=None, tol=None, return_info: bool = False):
+    """:meth:`Stiffness.solve`."""
+    x, info = _consistent_solve(seq, b, k, tol, guess)
+    return (x, info) if return_info else x
+
+
+def _coexact_solve(seq, c, j: int):
+    """``(y, info)``: the co-exact ``y`` (``G_{j-1}^T M_j y = 0``) with ``S_j y = c`` for a ``c`` orthogonal to the
+    closed forms, the stiffness solve followed by a gauge solve of degree ``j - 1``."""
+    y, info = _consistent_solve(seq, c, j)
+    if j == 0:
+        return y, info
+    # only G q enters, so q needs no gauge of its own
+    q, info_q = _consistent_solve(seq, -_grad(seq, _mass(seq, y, j), j - 1, transpose=True), j - 1)
+    return y + _grad(seq, q, j - 1), _merge_info(info, info_q)
 
 
 def _merge_info(a, b):
@@ -453,11 +462,11 @@ def _merge_info(a, b):
 
 
 @eqx.filter_jit
-def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=None, return_info: bool = False):
+def _part_solve(seq, b, k: int, part: str, return_info: bool = False):
     """``L_k^{-1} b`` for a ``b`` that has only the co-exact or only the exact part (:meth:`Laplacian.solve`),
     k = 0 to 3::
 
-        coexact:  S_k x = b,   x co-exact (with ``gauge``)
+        coexact:  S_k x = b,   x co-exact
         exact:    S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
 
     The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
@@ -468,10 +477,10 @@ def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=N
     both solves are of ``S_0``.
     """
     if part == "coexact":
-        x, info = _coexact_solve(seq, b, k, gauge, guess, tol)
+        x, info = _coexact_solve(seq, b, k)
     else:
         j = k - 1
-        g, info_g = _coexact_solve(seq, _grad(seq, b, j, transpose=True), j, gauge=False)
+        g, info_g = _consistent_solve(seq, _grad(seq, b, j, transpose=True), j)
         a, info_a = _stiffness_solve(seq, _mass(seq, g, j), j, seq.tol, check_residual=j == 0, regularise=True)
         x, info = _grad(seq, a, j), _merge_info(info_g, info_a)
     return (x, info) if return_info else x
@@ -517,14 +526,22 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
 
 
 @eqx.filter_jit
-def _shifted_solve(seq, rhs, k: int, eps, guess=None, part="full", return_info: bool = False):
-    """``(M_k + eps L_k)^{-1} rhs`` (:meth:`ShiftedLaplacian.solve`): :func:`_hodge_split` with ``delta = 1 / eps``
-    on ``rhs / eps``, or one solve of ``M_k + eps S_k`` for k = 0 and for ``part="coexact"``."""
+def _shifted_stiffness_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False):
+    """``(M_k + eps S_k)^{-1} rhs`` (:meth:`ShiftedStiffness.solve`): one solve of ``delta M_k + S_k`` on
+    ``rhs / eps``, ``delta = 1 / eps``."""
     delta = 1.0 / eps
-    if k == 0 or part == "coexact":
-        x, info = _shifted_cg(seq, k, delta, rhs * delta, seq.tol, x0=guess, check_residual=True)
-    else:
-        x, info = _hodge_split(seq, rhs * delta, k, guess, delta=delta)
+    x, info = _shifted_cg(seq, k, delta, rhs * delta, seq.tol, x0=guess, check_residual=True)
+    return (x, info) if return_info else x
+
+
+@eqx.filter_jit
+def _shifted_solve(seq, rhs, k: int, eps, guess=None, return_info: bool = False):
+    """``(M_k + eps L_k)^{-1} rhs`` (:meth:`ShiftedLaplacian.solve`): :func:`_hodge_split` with ``delta = 1 / eps``
+    on ``rhs / eps``, and at k = 0, where ``L_0 = S_0``, the one solve of :func:`_shifted_stiffness_solve`."""
+    if k == 0:
+        return _shifted_stiffness_solve(seq, rhs, 0, eps, guess, return_info)
+    delta = 1.0 / eps
+    x, info = _hodge_split(seq, rhs * delta, k, guess, delta=delta)
     return (x, info) if return_info else x
 
 
@@ -570,7 +587,7 @@ class Laplacian(_Symmetric):
     def __matmul__(self, v):
         return _laplacian(self.seq, v, self.k)
 
-    def solve(self, b, guess=None, return_info=False, part="full", gauge=True, tol=None):
+    def solve(self, b, guess=None, return_info=False, part="full"):
         """``L_k^{-1} b``, the solution orthogonal (in ``M_k``) to the harmonic forms.
 
         The harmonic forms come from :func:`mrx.nullspace.compute_nullspaces`. While they are still
@@ -579,35 +596,24 @@ class Laplacian(_Symmetric):
         The solution is the sum of a co-exact form (``G_{k-1}^T M_k x = 0``) and an exact one
         (``x = G_{k-1} a``). ``part`` says which of them ``b`` has, and leaves out the solves of the other:
 
-        - ``"full"``: any ``b``. Three solves for k = 1, 2.
+        - ``"full"``: any ``b``. Three solves for k = 1, 2. ``guess`` starts it.
         - ``"coexact"``: ``b`` is orthogonal to the closed forms, as ``b = G_k^T w`` is. The solution
-          is co-exact: one solve of the stiffness ``S_k x = b`` and a gauge solve of degree ``k - 1``.
+          is co-exact: one stiffness solve (:meth:`Stiffness.solve`) and a gauge solve of degree ``k - 1``.
+          Where only ``G_k x`` enters, :meth:`Stiffness.solve` alone is enough.
         - ``"exact"``: ``b = M_k G_{k-1} c``. The solution is exact: two solves of degree ``k - 1``.
 
-        With ``part="coexact"`` and ``gauge=False`` the gauge solve is left out. What comes back is then
-        NOT the solution: it is the solution plus a closed form that nothing controls, and only its
-        derivative ``G_k x`` is the same. Use it where only ``G_k x`` enters. ``tol`` replaces ``seq.tol``
-        as the relative residual of the stiffness solve.
-
-        ``guess`` starts the full solve, and the co-exact solve without its gauge (an earlier result of
-        the same call; 15 % fewer iterations from one relaxation step to the next on li383 (48,64,24)).
-        The other part solves take none: the exact part does not iterate on ``x``, and the gauge solve
-        of an already co-exact guess has nothing but round-off on its right-hand side.
-
-        The stiffness solve only converges on a right-hand side of that kind. A ``b`` with the other part as well
-        returns a negative info. Every 0-form solution is co-exact and every 3-form solution is exact:
-        asking for the other part raises."""
+        The part solves take no guess. Their stiffness solves only converge on a right-hand side of their kind: a
+        ``b`` with the other part as well returns a negative info. Every 0-form solution is co-exact and every
+        3-form solution is exact: asking for the other part raises."""
         if part not in PARTS:
             raise ValueError(f"part must be one of {PARTS}, got {part!r}")
         if (self.k, part) in ((0, "exact"), (3, "coexact")):
             raise ValueError(f"the solution of L_{self.k} has no {part} part")
-        if part != "coexact" and (not gauge or tol is not None):
-            raise ValueError("gauge=False and tol belong to part='coexact'")
         if part == "full":
             return _laplacian_solve(self.seq, b, self.k, guess=guess, return_info=return_info)
-        if guess is not None and (part == "exact" or (gauge and self.k > 0)):
-            raise ValueError("of the part solves only part='coexact' with gauge=False takes a guess")
-        return _part_solve(self.seq, b, self.k, part, guess=guess, gauge=gauge, tol=tol, return_info=return_info)
+        if guess is not None:
+            raise ValueError("only the full solve takes a guess")
+        return _part_solve(self.seq, b, self.k, part, return_info=return_info)
 
     def precondition(self, v):
         """The preconditioner of ``L_k`` that the Laplacian solves use, applied to ``v``."""
@@ -619,6 +625,20 @@ class Stiffness(_Symmetric):
 
     def __matmul__(self, v):
         return _stiffness(self.seq, v, self.k)
+
+    def solve(self, b, guess=None, tol=None, return_info=False):
+        """``x`` with ``S_k x = b``, for a ``b`` orthogonal to the closed forms, as ``b = G_k^T w`` is.
+
+        ``S_k`` is singular on the closed forms, so ``x`` is fixed only up to a closed form that nothing
+        controls: only ``G_k x`` is determined. Use it where only ``G_k x`` enters, a vector potential for
+        example, and ``seq.L[k].solve(b, part="coexact")`` for the co-exact solution itself. Conjugate gradients
+        converge on the singular system because ``b`` lies in its range. A ``b`` with an exact part returns a
+        negative info. ``guess`` starts the solve (an earlier result of the same call: 15 % fewer iterations
+        from one relaxation step to the next on li383 (48,64,24)), ``tol`` replaces ``seq.tol``, and
+        ``return_info`` works as in :meth:`MassMatrix.solve`. At k = 0 it is the Laplacian solve."""
+        if self.k == 3:
+            raise ValueError("S_3 is zero")
+        return _stiffness_solve_jit(self.seq, b, self.k, guess=guess, tol=tol, return_info=return_info)
 
 
 class ExteriorDerivative(_Operator):
@@ -671,21 +691,27 @@ class ShiftedLaplacian(eqx.Module):
     k: int = eqx.field(static=True)
     eps: object
 
-    def solve(self, b, guess=None, return_info=False, part="full"):
-        """``(M_k + eps L_k)^{-1} b``. ``guess`` and ``return_info`` work as in :meth:`MassMatrix.solve`.
+    def solve(self, b, guess=None, return_info=False):
+        """``(M_k + eps L_k)^{-1} b``: three solves for k >= 1, as the Hodge split of :meth:`Laplacian.solve`
+        (:func:`_hodge_split`), with ``info`` counting them together, and one at k = 0. ``guess`` and
+        ``return_info`` work as in :meth:`MassMatrix.solve`. Where only ``G_k x`` enters, the one solve of
+        :class:`ShiftedStiffness` is enough."""
+        return _shifted_solve(self.seq, b, self.k, self.eps, guess=guess, return_info=return_info)
 
-        - ``"full"``: any ``b``. Three solves for k >= 1, as the Hodge split of :meth:`Laplacian.solve`
-          (:func:`_hodge_split`), and ``info`` counts them together.
-        - ``"coexact"``: one solve of ``M_k + eps S_k``. For a ``b`` orthogonal to the closed forms, as
-          ``b = G_k^T w`` is, that is the solution, and it is co-exact. For any other ``b`` it differs
-          from the solution by an exact form ``G_{k-1} c``: ``G_k x`` is the same. Use it where only
-          ``G_k x`` enters, as in the velocity smoothing. Unlike :meth:`Laplacian.solve` there is no
-          gauge to fix, because ``M_k + eps S_k`` is positive definite.
 
-        k = 0 has only the one solve, so both parts are the same there."""
-        if part not in ("full", "coexact"):
-            raise ValueError(f"part must be 'full' or 'coexact', got {part!r}")
-        return _shifted_solve(self.seq, b, self.k, self.eps, guess=guess, part=part, return_info=return_info)
+class ShiftedStiffness(eqx.Module):
+    """``M_k + eps S_k`` of ``seq.shifted_stiffness(k, eps)``, positive definite. ``eps`` may be a traced array.
+    A Python float is compiled in, so every new float value recompiles."""
+    seq: object
+    k: int = eqx.field(static=True)
+    eps: object
+
+    def solve(self, b, guess=None, return_info=False):
+        """``(M_k + eps S_k)^{-1} b`` by one preconditioned conjugate-gradient solve. For a ``b`` orthogonal to the
+        closed forms, as ``b = G_k^T w`` is, it is also ``(M_k + eps L_k)^{-1} b``. For any other ``b`` the two
+        differ by an exact form ``G_{k-1} c``, so ``G_k x`` is the same. Use it where only ``G_k x`` enters, as in
+        the velocity smoothing. ``guess`` and ``return_info`` work as in :meth:`MassMatrix.solve`."""
+        return _shifted_stiffness_solve(self.seq, b, self.k, self.eps, guess=guess, return_info=return_info)
 
 
 class OperatorFamily:

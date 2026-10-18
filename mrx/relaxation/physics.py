@@ -31,7 +31,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     """
     seq = seq.odd
     # A enters the helicity up to a gradient, which pairs to zero with the divergence-free B + B_harm
-    A = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ B), part="coexact", gauge=False, guess=A_guess)
+    A = seq.S[1].solve(seq.G[1].T @ (seq.M[2] @ B), guess=A_guess)
     B_harm = B - seq.G[1] @ A
     helicity = A @ (seq.P[2, 1] @ (B + B_harm))
     return helicity, A
@@ -103,7 +103,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
 
     because ``L_2 (B - B_ref) = M_2 G_1 M_1^{-1} G_1^T M_2 (B - B_ref)`` and
     ``(M_2 + eps L_2) G_1 a = M_2 G_1 M_1^{-1} (M_1 + eps S_1) a``. That is one 1-form solve
-    (``seq.shifted(1, eps).solve(..., part="coexact")``), and ``div B`` stays at round-off, since ``G_2 G_1 = 0``.
+    (``seq.shifted_stiffness(1, eps).solve(...)``), and ``div B`` stays at round-off, since ``G_2 G_1 = 0``.
 
     Returns ``(B + delta, info, ||delta|| / ||B||, a)``, where ``info`` is the iteration count of the solve
     (positive when converged, negative when not). ``guess`` is a starting guess for ``a``.
@@ -111,7 +111,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     seq = seq.odd
     # solve for the small increment, not for B itself
     rhs = -eps * (seq.G[1].T @ (seq.M[2] @ (B if B_ref is None else B - B_ref)))
-    a, info = seq.shifted(1, eps).solve(rhs, guess=guess, return_info=True, part="coexact")
+    a, info = seq.shifted_stiffness(1, eps).solve(rhs, guess=guess, return_info=True)
     delta = seq.G[1] @ a
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
     return B + delta, info.astype(jnp.int32), rel, a

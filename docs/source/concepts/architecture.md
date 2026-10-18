@@ -62,9 +62,10 @@ operator object indexed by the form degree and applied with `@`
 | mass `M_k` | `seq.M[k] @ v` | `seq.M[k].solve(b)` |
 | strong derivative `G_k` (grad, curl, div) | `seq.G[k] @ v`, `seq.G[k].T @ w`, with the polar stencils of [polar.md](polar.md) | |
 | weak derivative `D_k = M_{k+1} G_k` | `seq.D[k] @ v`, `seq.D[k].T @ w` | |
-| stiffness `S_k = G_k^T M_{k+1} G_k` | `seq.S[k] @ v` | |
+| stiffness `S_k = G_k^T M_{k+1} G_k` | `seq.S[k] @ v` | `seq.S[k].solve(b)`, `b = G_k^T w`, up to a closed form |
 | Hodge Laplacian `L_k = S_k + M_k G_{k-1} M_{k-1}^{-1} G_{k-1}^T M_k` | `seq.L[k] @ v` | `seq.L[k].solve(b)` |
 | shifted Laplacian `M_k + eps L_k` | | `seq.shifted(k, eps).solve(b)` |
+| shifted stiffness `M_k + eps S_k` | | `seq.shifted_stiffness(k, eps).solve(b)` |
 | projection masses `P_{k->l}` | `seq.P[k, l] @ v` | |
 
 `seq.M[k].precondition(r)` and `seq.L[k].precondition(r)` apply the

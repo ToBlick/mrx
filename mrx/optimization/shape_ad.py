@@ -210,7 +210,7 @@ def vacuum_two_form(seq, seed):
     def solve(_, r):
         # both right-hand sides are G_1^T of something: the forward one by construction, the adjoint one
         # because a enters h only through G_1 a
-        return odd.L[1].solve(r, part="coexact", gauge=False, return_info=True)
+        return odd.S[1].solve(r, return_info=True)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - odd.G[1] @ a, info

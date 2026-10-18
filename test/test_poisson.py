@@ -147,13 +147,13 @@ def test_leray_projection(seq):
     assert float(even.l2_norm(Pv, 2)) < 1.0
 
 
-def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq, b0):
-    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve(part="coexact", gauge=False)``
-    and ``L[1].solve`` converge and differ by a closed form only, so their curls agree. With the gauge solve they
-    agree themselves."""
+def test_stiffness_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
+    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``S[1].solve`` and ``L[1].solve`` converge
+    and differ by a closed form only, so their curls agree. With the gauge solve (``part="coexact"``) they agree
+    themselves."""
     odd = seq.odd
     b = odd.G[1].T @ (odd.M[2] @ b0)
-    a, info = odd.L[1].solve(b, return_info=True, part="coexact", gauge=False)
+    a, info = odd.S[1].solve(b, return_info=True)
     a_g = odd.L[1].solve(b, part="coexact")
     a_L, info_L = odd.L[1].solve(b, return_info=True)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
@@ -166,15 +166,15 @@ def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq
 
 
 @pytest.mark.parametrize("shift", ["smoothing", "one"])
-def test_coexact_shifted_solve_has_the_curl_of_the_shifted_solve(seq, shift):
-    """For a right-hand side ``M_1 z`` with every part, ``shifted(1, eps).solve(part="coexact")`` (one solve of
-    ``M_1 + eps S_1``) and the full shifted solve converge and differ by an exact form, so their curls agree. At the
-    velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
+def test_shifted_stiffness_solve_has_the_curl_of_the_shifted_solve(seq, shift):
+    """For a right-hand side ``M_1 z`` with every part, ``shifted_stiffness(1, eps).solve`` (one solve of
+    ``M_1 + eps S_1``) and the shifted Laplacian solve converge and differ by an exact form, so their curls agree. At
+    the velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
     from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
     odd = seq.odd
     eps = SMOOTHING_C * radial_cell_sq(seq) if shift == "smoothing" else jnp.asarray(1.0)
     b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(4), (odd.n(1),), dtype=jnp.float64)
-    a, info = odd.shifted(1, eps).solve(b, return_info=True, part="coexact")
+    a, info = odd.shifted_stiffness(1, eps).solve(b, return_info=True)
     a_f, info_f = odd.shifted(1, eps).solve(b, return_info=True)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_f), 2) / odd.l2_norm(odd.G[1] @ a_f, 2))
     print(f"\n  eps {float(eps):.2e}: one solve {int(info)} iterations, full {int(info_f)}, "

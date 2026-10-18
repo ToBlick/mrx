@@ -15,7 +15,7 @@ the Hessian stays symmetric.
 
 A short run with the production stepper takes positive steps, lowers the energy at every step, lowers the force,
 keeps ``div B`` at round-off and the helicity up to grid-scale effects, records the best state, and writes a
-checkpoint that reads back.
+checkpoint that reads back. A few steps of the gradient descent take positive steps and lower the energy too.
 """
 import os
 
@@ -29,6 +29,7 @@ from mrx.relaxation.newton import MassChebyshev, second_variation
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
+GD_STEPS = 4
 # ||F||_end / ||F||_0 after 10 Newton steps on li383 (12, 20, 12) p=2: measured 4.9e-3 (2026-10-13).
 NEWTON_FORCE_DROP = 0.5
 # |H_end - H_0| / (2 E_0) over the 10 steps: grid-scale reconnection, 1.05e-6 (2026-10-13). 5x that.
@@ -130,3 +131,15 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
     write_checkpoint(path, res.state, STEPS, seq)
     state, step = read_checkpoint(path, ts)
     assert step == STEPS and np.array_equal(np.asarray(state.B_n), np.asarray(res.state.B_n))
+
+
+def test_gradient_descent_descends(seq, b0):
+    """A few steps of the gradient descent of the paper (the smoothed force as the velocity) move along the
+    descent direction (``dt* > 0``), lower the energy at every step and keep ``div B`` at round-off."""
+    ts = TimeStepper(seq=seq, newton=False)
+    res = relax(initial_state(b0, ts), ts, steps=GD_STEPS, chunk=GD_STEPS, verbose=False)
+    dE = np.asarray(res.trace["dE"], dtype=float)
+    print(f"\n  dE {dE.max():+.3e} (max), ||div B|| {float(res.trace['div'][-1]):.1e}")
+    assert np.all(np.asarray(res.trace["dt_star"]) > 0.0)
+    assert np.all(dE < eps() * res.E0), f"energy not monotone: {dE}"
+    assert float(res.trace["div"][-1]) < eps(1e4) * np.sqrt(2 * (res.E0 + dE.sum()))
