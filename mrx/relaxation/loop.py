@@ -334,9 +334,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.J``, ...).
 
     The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
-    stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence. The attribute
-    ``angles = "right-handed"`` marks the convention of :func:`mrx.equilibria.read_equilibrium`, see
-    :func:`check_checkpoint`.
+    stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence.
     """
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     axes = seq.basis_0.bases[0].bases
@@ -346,7 +344,6 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(axes[0].p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
-        fh.attrs["angles"] = "right-handed"
         for name, basis in zip(("r", "theta", "zeta"), axes):
             T = np.asarray(basis.T, dtype=np.float64)
             fh.attrs[f"knots_{name}"] = np.unique(T[(T >= 0.0) & (T <= 1.0)])
@@ -371,15 +368,12 @@ def checkpoint_attrs(path: str) -> dict:
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
-    """Raise if the checkpoint ``path`` does not belong to ``seq``: another resolution or degree, or no
-    ``angles = "right-handed"`` attribute (the convention of :func:`mrx.equilibria.read_equilibrium`)."""
+    """Raise if the checkpoint ``path`` does not belong to ``seq``: another resolution or degree."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
     ns, p = tuple(int(v) for v in a["resolution"]), int(a["degree"])
     if ns != tuple(seq.ns) or p != seq.p:
         raise ValueError(f"{path}: resolution {ns} p={p}, the sequence is {tuple(seq.ns)} p={seq.p}")
-    if a.get("angles") != "right-handed":
-        raise ValueError(f"{path}: the angles are not marked right-handed. Relax the field again.")
 
 
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:

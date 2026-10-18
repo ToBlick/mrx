@@ -15,17 +15,15 @@ the Hessian stays symmetric.
 
 A short run with the production stepper takes positive steps, lowers the energy at every step, lowers the force,
 keeps ``div B`` at round-off and the helicity up to grid-scale effects, records the best state, and writes a
-checkpoint that reads back. A checkpoint without the ``angles`` attribute is refused.
+checkpoint that reads back.
 """
 import os
 
-import h5py
 import jax
 import numpy as np
-import pytest
 
 from mrx.precision import eps
-from mrx.relaxation.loop import (TimeStepper, check_checkpoint, initial_state, read_checkpoint, relax,
+from mrx.relaxation.loop import (TimeStepper, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
 from mrx.relaxation.newton import MassChebyshev, second_variation
 from mrx.relaxation.physics import compute_force
@@ -132,7 +130,3 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
     write_checkpoint(path, res.state, STEPS, seq)
     state, step = read_checkpoint(path, ts)
     assert step == STEPS and np.array_equal(np.asarray(state.B_n), np.asarray(res.state.B_n))
-    with h5py.File(path, "a") as fh:
-        del fh.attrs["angles"]
-    with pytest.raises(ValueError, match="right-handed"):
-        check_checkpoint(path, seq)

@@ -64,8 +64,7 @@ wout are left-handed, so `read_equilibrium` reverses its poloidal angle,
 change sign: the QA and li383 files read with a negative iota, and
 `theta_reversed` in the state (and the `[geom]` line) says so. The device and
 every result that does not depend on the orientation (energies, residuals,
-`|iota|`, island widths) are unchanged. A checkpoint records the convention
-in its `angles` attribute, and one without it is refused.
+`|iota|`, island widths) are unchanged.
 
 ## Compilation
 
