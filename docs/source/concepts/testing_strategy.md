@@ -16,6 +16,7 @@ the code, plus the solvers' stopping rule, the shape derivative and the readers:
 | `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the three representations of the domain (below), the Leray projection is divergence-free, idempotent and non-expansive, and the part solves (co-exact, exact, shifted) agree with the full solves where they must |
 | `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the Chebyshev mass inverse keeps the Hessian symmetric, and a short run takes positive steps, lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints |
 | `test_solvers.py` | conjugate gradients and MINRES stop on the given norm of the true residual |
+| `test_poincare.py` | the field-line tracer measures the file's rotational transform on the equilibrium's own field, whose lines stay on their logical surfaces |
 | `test_shape_ad.py` | the vacuum field of the shape derivative is harmonic, and its derivative in the map coefficients matches central differences |
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
 

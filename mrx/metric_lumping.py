@@ -533,7 +533,7 @@ class MetricLumpingLaplacian(_Atom):
         core_inv = _dense_symmetric_inverse(
             probe(lambda x: apply_laplacian_approx(seq, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
-        mass_core = probe(lambda x: seq.M[k] @ x)
+        mass_core = operators.mass_lumping[(k, seq.dirichlet)].core_block    # probed by the mass preconditioner
         stiffness_core = probe(lambda x: seq.S[k] @ x)
         self._core_pair = (_simultaneous_diagonalize_pair(mass_core, stiffness_core) if core.size
                            else (mass_core, jnp.zeros(0)))
@@ -568,7 +568,9 @@ class MetricLumpingMass(_Atom):
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
                  for c, rows, vals, (r0, nr), shape in raw_blocks]
-        core_inv = _dense_symmetric_inverse(probe(lambda x: seq.M[k] @ x), f"the mass preconditioner, k = {k}")
+        #: the mass matrix on the axis rows, which the Laplacian preconditioner of the same space reuses
+        self.core_block = probe(lambda x: seq.M[k] @ x)
+        core_inv = _dense_symmetric_inverse(self.core_block, f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 

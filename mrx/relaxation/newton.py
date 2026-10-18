@@ -162,7 +162,8 @@ class MassChebyshev(eqx.Module):
     ``steps``. It is linear and symmetric, so the Hessian of :func:`second_variation` stays symmetric when ``S``
     replaces ``M_1^{-1}`` in it. It costs ``steps`` mass applies and has no loop, so no Krylov solve runs inside
     the MINRES iteration of the Newton solve. ``bounds`` is the spectral interval of the atom times ``M_1``,
-    estimated once per geometry by :meth:`build`, which also picks ``steps`` for a given accuracy.
+    estimated once per geometry by :meth:`build`, which also picks ``steps`` for a given accuracy. ``steps`` is
+    static: a new geometry whose interval needs another degree compiles the Newton step again.
     """
 
     bounds: jnp.ndarray
