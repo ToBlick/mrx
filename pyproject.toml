@@ -33,7 +33,6 @@ dependencies = [
     "jax",
     "scipy",
     "matplotlib",
-    "diffrax",
     "equinox",
     "h5py",
     "tyro",

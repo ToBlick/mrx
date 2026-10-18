@@ -23,7 +23,6 @@ from fractions import Fraction
 from functools import lru_cache, partial, reduce
 from math import gcd
 
-import diffrax as dfx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -133,27 +132,49 @@ def cross_section_rhs(field):
 # The trace
 # ---------------------------------------------------------------------------
 
+#: The Runge-Kutta pair of Tsitouras (2011), of which the fifth-order solution is taken with fixed steps: the
+#: nodes, the rows of the stage matrix and the weights.
+_TSIT5_C = (0.0, 0.161, 0.327, 0.9, 0.98002554090450968572981028628702459549, 1.0)
+_TSIT5_A = ((),
+            (0.161,),
+            (-0.0084806554923569885444268742502307746751, 0.33548065549235698854442687425023077468),
+            (2.8971530571054934321304325941929387649, -6.3594484899750748431481599123838256260,
+             4.3622954328695814110177273181908868610),
+            (5.3258648284392566044288779208405113178, -11.748883564062827877747170339785772962,
+             7.4955393428898362083046047845643581557, -0.092495066361755249256502079332071916113),
+            (5.8614554429464200286592514869826478904, -12.920969317847109291706118681783359395,
+             8.1593678985761586431804007945392534852, -0.071584973281400997224530542525829738691,
+             -0.028269050394068382909003057212712241467))
+_TSIT5_B = (0.096460766818065229518167313165128763337, 0.01, 0.47988965041449957477524953229059651991,
+            1.3790085741037418931922748218568727708, -3.2900695154360806799010475857113638501,
+            2.3247105240997739824153559183987657961)
+
+
+def _tsit5_step(rhs, t, y, h, args):
+    """One step of length ``h`` of ``dy/dt = rhs(t, y, args)`` from ``(t, y)``."""
+    k = []
+    for c, a in zip(_TSIT5_C, _TSIT5_A):
+        k.append(rhs(t + c * h, y + h * sum(aj * kj for aj, kj in zip(a, k)) if a else y, args))
+    return y + h * sum(b * kj for b, kj in zip(_TSIT5_B, k))
+
+
 @partial(jax.jit, static_argnames=("field", "n_periods", "steps_per_period"))
 def trace(field, dof, seeds, n_periods, steps_per_period):
     """Trace field lines from the logical points ``seeds`` (rows ``(r, theta)`` at ``zeta = 0``) over
     ``n_periods`` field periods with ``steps_per_period`` fixed steps per period.
 
-    Returns ``(ys, ok)``. ``ys`` holds the ``(u, v)`` position after every step, shape ``(n_seeds, n_periods *
-    steps_per_period + 1, 2)``, and ``ok`` says per seed whether the integrator succeeded. Changing
-    ``n_periods`` or ``steps_per_period`` compiles a new tracer."""
-    n_steps = n_periods * steps_per_period
-    step_ts = jnp.arange(n_steps + 1) / steps_per_period
-    term = dfx.ODETerm(cross_section_rhs(field))
+    Returns the ``(u, v)`` position after every step, shape ``(n_seeds, n_periods * steps_per_period + 1, 2)``.
+    Changing ``n_periods`` or ``steps_per_period`` compiles a new tracer."""
+    rhs = cross_section_rhs(field)
+    h = 1.0 / steps_per_period
+
+    def step(y, i):
+        y = _tsit5_step(rhs, i / steps_per_period, y, h, dof)
+        return y, y
 
     def one(y0):
-        sol = dfx.diffeqsolve(
-            terms=term, solver=dfx.Tsit5(),
-            t0=0.0, t1=float(n_periods), dt0=None, y0=y0, args=dof,
-            saveat=dfx.SaveAt(ts=step_ts),
-            stepsize_controller=dfx.StepTo(ts=step_ts),
-            max_steps=n_steps + 1, throw=False,
-        )
-        return sol.ys, sol.result == dfx.RESULTS.successful
+        _, ys = jax.lax.scan(step, y0, jnp.arange(n_periods * steps_per_period))
+        return jnp.concatenate([y0[None], ys])
 
     return jax.vmap(one)(to_uv(seeds[:, 0], seeds[:, 1]))
 
@@ -167,7 +188,7 @@ def _escaped_mask(ys):
 def _step_convergence(field, dof, seeds, lo, n_periods, steps_per_period):
     """The largest ``(u, v)`` distance between the trace ``lo`` of ``seeds`` and a retrace at twice the steps,
     over the lines that stay inside the domain."""
-    hi, _ = trace(field, dof, seeds, n_periods, 2 * steps_per_period)
+    hi = trace(field, dof, seeds, n_periods, 2 * steps_per_period)
     hi = hi[:, ::2]
     good = ~(_escaped_mask(lo) | _escaped_mask(hi))
     d = jnp.linalg.norm(lo - hi, axis=-1).max(axis=-1)
@@ -229,10 +250,10 @@ def seed_from_axis(field, dof, n_lines, steps_per_period, *, seed=0):
     with the X-points of an island chain. Locating the axis traces two short probes first."""
     # Two passes: the first probe orbits the coordinate axis, the second the first estimate of the magnetic axis.
     probe = jnp.array([[R_AXIS, 0.0], [R_EDGE, 0.0]])
-    ys, _ = trace(field, dof, probe, PROBE_PERIODS, steps_per_period)
+    ys = trace(field, dof, probe, PROBE_PERIODS, steps_per_period)
     centre = jnp.mean(ys[0, ::steps_per_period], axis=0)
     probe2 = jnp.array([to_polar(centre + jnp.array([R_AXIS, 0.0])), [R_EDGE, 0.0]])
-    ys, _ = trace(field, dof, probe2, PROBE_PERIODS, steps_per_period)
+    ys = trace(field, dof, probe2, PROBE_PERIODS, steps_per_period)
     centre = jnp.mean(ys[0, ::steps_per_period], axis=0)
 
     thetas = jax.random.uniform(jax.random.PRNGKey(seed), (n_lines,))
@@ -319,7 +340,7 @@ def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"
     seeds = seed_from_axis(field, dof, lines, steps, seed=seed)
 
     t0 = time.perf_counter()
-    ys, ok = trace(field, dof, seeds, periods, steps)
+    ys = trace(field, dof, seeds, periods, steps)
     ys = ys.block_until_ready()
     walltime = time.perf_counter() - t0
 
@@ -338,7 +359,7 @@ def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"
     drift = (_step_convergence(field, dof, seeds[idx], ys[idx, :n_drift * steps + 1], n_drift, steps)
              if idx.size else float("nan"))
 
-    keep = np.asarray(~(escaped | ~ok))[1:]
+    keep = np.asarray(~escaped)[1:]
     chaotic = np.asarray(chaotic)[1:]
     return {"iota": np.asarray(iota)[1:], "seed_r": np.asarray(seeds[1:, 0]), "keep": keep, "chaotic": chaotic,
             "shown": keep & ~chaotic,
