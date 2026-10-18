@@ -31,19 +31,14 @@ import os
 import time
 
 def main(cfg):
-    import equinox as eqx
-    import h5py
-    import jax.numpy as jnp
     import mrx
     from mrx.relaxation.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
-    from mrx.relaxation.loop import (check_checkpoint, initial_state, radial_cell_sq, read_checkpoint, relax,
-                                     write_checkpoint)
+    from mrx.relaxation.loop import initial_state, radial_cell_sq, read_checkpoint, read_field, relax, write_checkpoint
     from mrx.relaxation.physics import resistive_step
     from mrx.relaxation.seeding import energy_seed
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
-    mrx.MAP_BATCH_SIZE_INNER = g.max_batch
     print(f"[env] mrx from {mrx.__file__}  batch {g.max_batch or 'all'}", flush=True)
     out = cfg.output.out or os.path.join("outputs", "relax", time.strftime("%Y-%m-%d"), time.strftime("%H-%M-%S"))
     ckpt_dir = os.path.join(out, "checkpoints")
@@ -84,17 +79,14 @@ def main(cfg):
 
     # --- the drive: resistive steps towards the reference current ---------
     if dr:
-        check_checkpoint(dr.reference, seq)
-        with h5py.File(dr.reference, "r") as fh:
-            B_star = jnp.asarray(fh["B_n"][()], dtype=jnp.float64)
-            ref_step = int(fh.attrs["step"])
+        B_star, ref_step = read_field(dr.reference, seq)
         print(f"[drive] B* from {dr.reference} (step {ref_step})", flush=True)
         if dr.reference_smoothing:
             # The heat step removes the current sheets of B* on rational surfaces. If kept, they would make the start a fixed point.
             B_star = resistive_step(B_star, seq, dr.reference_smoothing * h_r_sq)[0]
         if dr.chain is not None:
             B_star, results["drive"] = energy_seed(seq, B_star, iotas=(dr.chain,), amplitudes=(dr.eps,))
-        ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+        ts = ts.with_reference(B_star)
         print(f"[drive] eps {dr.resistivity:g} h_r^2 = {ts.resistivity:.3e} per step, B* smoothed by "
               f"{dr.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)

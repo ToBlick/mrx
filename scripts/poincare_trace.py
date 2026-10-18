@@ -66,28 +66,19 @@ def field_name(path):
 
 
 def main(cli):
-    import h5py
-
     from mrx.geometry import build_sequence
     from mrx.diagnostics.poincare import planes_for, steps_for, trace_archive
-    from mrx.relaxation.loop import check_checkpoint, checkpoint_attrs
+    from mrx.relaxation.loop import checkpoint_attrs, read_field
 
     attrs = checkpoint_attrs(cli.checkpoints[0])
-    fields = {}
-    for path in cli.checkpoints:
-        with h5py.File(path, "r") as fh:
-            fields[field_name(path)] = (np.asarray(fh["B_n"], dtype=np.float64), int(fh.attrs["step"]))
     archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
                                       "trace.npz")
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
-    print(f"[trace] {source}: fields {list(fields)}", flush=True)
-
     seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
+    fields = {field_name(path): read_field(path, seq) for path in cli.checkpoints}
     planes = planes_for(seq, cli.planes)
-    print(f"[trace] nfp={seq.nfp}, symmetry {seq.symmetry}, planes {[f'{v:g}' for v in planes]} "
-          f"({steps_for(planes)} steps per period)", flush=True)
-    for path in cli.checkpoints:
-        check_checkpoint(path, seq)
+    print(f"[trace] {source}: fields {list(fields)}, nfp={seq.nfp}, symmetry {seq.symmetry}, planes "
+          f"{[f'{v:g}' for v in planes]} ({steps_for(planes)} steps per period)", flush=True)
     sections, _ = trace_archive(seq, fields, lines=cli.lines, periods=cli.periods, planes=planes, seed=cli.seed,
                                 source=source)
     os.makedirs(os.path.dirname(os.path.abspath(archive)), exist_ok=True)

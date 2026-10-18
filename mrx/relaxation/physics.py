@@ -45,6 +45,13 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
 
 
 @eqx.filter_jit
+def current(B: jnp.ndarray, seq: DeRhamSequence, guess: jnp.ndarray | None = None) -> jnp.ndarray:
+    """The current ``J = curl B`` of the odd 2-form ``B``, a 1-form computed weakly: ``M_1 J = D_1^T B``."""
+    odd = seq.odd
+    return odd.M[1].solve(odd.D[1].T @ B, guess=guess)
+
+
+@eqx.filter_jit
 def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | None = None,
                   JxB_guess: jnp.ndarray | None = None, J_guess: jnp.ndarray | None = None,
                   F_guess: jnp.ndarray | None = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -55,7 +62,7 @@ def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | No
     The optional guesses are the results of a previous call and only speed up the linear solves.
     """
     odd, even = seq.odd, seq.even
-    J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
+    J = current(B, seq, J_guess)
     JxB_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                               odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
     JxB = even.M[2].solve(JxB_dual, guess=JxB_guess)
@@ -70,8 +77,8 @@ def weak_pressure(J: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence,
     """Return the weak pressure ``p_w``, a 0-form that vanishes on the wall.
 
     It is the gradient part of the Helmholtz split ``J x B = F_w + grad p_w`` of the force as a 1-form. Unlike the
-    pressure of :func:`compute_force` it does not absorb the force normal to the wall. Pass the ``J`` returned by
-    :func:`compute_force`.
+    pressure of :func:`compute_force` it does not absorb the force normal to the wall. ``J`` is the current of
+    ``B`` (:func:`current`).
     """
     odd, even = seq.odd, seq.even
     # the Dirichlet 1-forms suffice: p_w only sees J x B tested against gradients of 0-forms that vanish on the wall

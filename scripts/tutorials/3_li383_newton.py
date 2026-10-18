@@ -50,18 +50,13 @@ os.makedirs(cli.out, exist_ok=True)
 
 # %%
 # 2) Import MRX
-import json
-
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from mrx.relaxation.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 from mrx.diagnostics.plotting import plot_twin_axis
+from mrx.diagnostics.plotstyle import finish_figure
 from mrx.relaxation.config import RelaxConfig
-from mrx.relaxation.loop import initial_state, radial_cell_sq, relax, write_checkpoint
+from mrx.relaxation.loop import initial_state, relax, save_run
 
 
 # The configuration is the same object that scripts/relax.py builds from its command line
@@ -71,7 +66,6 @@ geometry = cfg.geometry
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
 seq = geometry.build()
 compute_nullspaces(seq)
-h_r_sq = radial_cell_sq(seq)
 
 # %%
 # 3) Set the initial condition: the equilibrium field of li383 as B = dA' from the Clebsch potential.
@@ -102,25 +96,13 @@ print(f"[newton] MINRES iterations mean {np.abs(it_n).mean():.0f}, at the budget
 # 5) Plots. Draw ||F|| and the energy released against the step.
 fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
                         left_plot_kwargs=dict(marker="o"), right_plot_kwargs=dict(marker=""))
-path = os.path.join(cli.out, "trace.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "trace.png"))
 
 # %%
 # 6) Write a checkpoint of the final field the way scripts/relax.py does, with relax.json and
 # the checkpoints of the start and the end. Tutorial 4 can then start from the Newton state, and 
 # scripts/poincare_trace.py can trace it.
-os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B0, time_stepper), 0, seq)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
-params = dict(cfg.params, geometry_path=os.path.abspath(geometry.path), knots=geometry.knots, ic=ic["kind"],
-              h_r_sq=float(h_r_sq), start_step=0)
-with open(os.path.join(cli.out, "relax.json"), "w") as fh:
-    json.dump(dict(params=params, ic=ic, trace=res.trace, qoi=res.qoi), fh, indent=1)
-print(f"  -> {cli.out}/relax.json and checkpoints/  (trace and draw the sections with:")
+save_run(cli.out, cfg, seq, initial_state(B0, time_stepper), res, ic["kind"], ic=ic)
+print("  Trace and draw the sections with:")
 print(f"     python -u scripts/poincare_trace.py --geometry {geometry.path} {cli.out}/checkpoints/state_*.h5")
-print(f"     python scripts/poincare_plot.py {cli.out})")
+print(f"     python scripts/poincare_plot.py {cli.out}")

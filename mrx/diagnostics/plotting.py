@@ -24,7 +24,9 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 import mrx
+from mrx.diagnostics.poincare import trace_archive
 from mrx.relaxation.seeding import resonances
+from mrx.diagnostics.plotstyle import finish_figure
 from mrx.diagnostics.plotstyle import (FIELD_CMAP, FS, IOTA_COLOR, LEFT, P_COLOR, PRESSURE_CMAP, RIGHT, SECTION_CMAP,
                            house_style)
 
@@ -509,3 +511,16 @@ def plot_archive(archive, out, *, fields=None, planes=None, pressure=True, profi
                 print(f"  -> {pgf_dir}/{os.path.basename(stem)}.pgf", flush=True)
             figs[n, pl] = fig
     return figs
+
+
+def trace_and_plot(seq, fields, out, *, lines, periods, source, pressure=True):
+    """Trace the fields ``{name: (B, step)}`` into one archive as ``scripts/poincare_trace.py`` does, save it as
+    ``out/trace.npz``, and draw it into ``out/poincare`` as ``scripts/poincare_plot.py`` does, each figure shown in
+    a notebook or closed (:func:`~mrx.diagnostics.plotstyle.finish_figure`). Returns the per-field results of
+    :func:`~mrx.diagnostics.poincare.trace_archive`."""
+    print(f"[poincare] {', '.join(fields)}: tracing {lines} field lines for {periods} field periods each", flush=True)
+    archive, results = trace_archive(seq, fields, lines=lines, periods=periods, source=source)
+    np.savez_compressed(os.path.join(out, "trace.npz"), **archive)
+    for fig in plot_archive(archive, os.path.join(out, "poincare"), pressure=pressure).values():
+        finish_figure(fig)
+    return results

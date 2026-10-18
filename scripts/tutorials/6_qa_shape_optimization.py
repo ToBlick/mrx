@@ -75,14 +75,12 @@ import time
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize
 from mrx.equilibria import build_map
 from mrx.diagnostics.plotting import plot_twin_axis
+from mrx.diagnostics.plotstyle import finish_figure
 from mrx.optimization.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota,
                                        normal_field_fraction, quasisymmetry_residual, section_moments,
                                        vacuum_two_form)
@@ -331,13 +329,7 @@ fig, (ax_F, ax_i) = plot_twin_axis(F_path, iota_path,
                                    left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 ax_F.axhline(F_lp, color=ax_F.get_lines()[0].get_color(), ls=":", lw=1)
 ax_i.axhline(target, color=ax_i.get_lines()[0].get_color(), ls=":", lw=1)
-path = os.path.join(cli.out, "trace.png")
-fig.savefig(path, dpi=200, bbox_inches="tight")
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "trace.png"), bbox_inches="tight")
 
 # %%
 # 9) Draw the boundary of the device, the start and the end in three toroidal planes of a field period.
@@ -355,10 +347,4 @@ for ax, zeta in zip(axes, planes):
     ax.set_xlabel(r"$R$ [m]")
 axes[0].set_ylabel(r"$Z$ [m]")
 axes[1].legend(frameon=False, loc="upper right")
-path = os.path.join(cli.out, "sections.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "sections.png"))

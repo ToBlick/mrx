@@ -10,9 +10,10 @@ and calls :func:`relax`, which runs the steps in compiled chunks and prints diag
 The sequence and the stepper's switches (Newton or not, resistive or not) are compiled in. Changing them
 recompiles. A new geometry or a new field on the same sequence does not.
 """
-from typing import Callable, NamedTuple, Optional
-
+import json
+import os
 import time
+from typing import Callable, NamedTuple, Optional
 
 import equinox as eqx
 import h5py
@@ -23,7 +24,8 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
                                    newton_direction)
-from mrx.relaxation.physics import beta_vol, compute_divergence_norm, compute_helicity, resistive_step, weak_pressure
+from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
+                                   weak_pressure)
 
 
 def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
@@ -161,11 +163,15 @@ class TimeStepper(eqx.Module):
         self.mass_inverse = (MassChebyshev.build(self.seq, self.newton_mass_tol)
                              if self.newton and self.newton_mass_tol is not None else None)
 
+    def with_reference(self, B_ref: jnp.ndarray) -> "TimeStepper":
+        """This stepper with ``B_ref`` as the reference field of the resistive drive."""
+        return eqx.tree_at(lambda t: t.resistive_reference, self, B_ref, is_leaf=lambda x: x is None)
+
     def _lorentz(self, B: jnp.ndarray, J_guess: jnp.ndarray):
         """Return ``(J, (J x B)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
         2-form basis), not projected."""
         odd, even = self.seq.odd, self.seq.even
-        J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
+        J = current(B, self.seq, J_guess)
         return J, even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                                  odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
 
@@ -388,6 +394,14 @@ def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
                          f"nfp={seq.nfp} {seq.symmetry}")
 
 
+def read_field(path: str, seq: DeRhamSequence) -> tuple[jnp.ndarray, int]:
+    """``(B, step)``: the field ``B_n`` and the step of the checkpoint ``path``, which must belong to ``seq``
+    (:func:`check_checkpoint`)."""
+    check_checkpoint(path, seq)
+    with h5py.File(path, "r") as fh:
+        return jnp.asarray(np.asarray(fh["B_n"]), dtype=jnp.float64), int(fh.attrs["step"])
+
+
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     """Return the ``(state, step)`` saved by :func:`write_checkpoint`. ``ts`` must be built on a sequence with
     the same discretisation. Arrays missing from the file are taken from :func:`initial_state` of the stored
@@ -546,3 +560,20 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
               f"unconverged on {int((np.array(tr['newton_it']) < 0).sum())}/{n} steps,  "
               f"dt* mean {dt_star.mean():.3e}", flush=True)
+
+
+def save_run(out: str, cfg, seq: DeRhamSequence, start: State, res: RelaxResult, start_kind: str, **record) -> None:
+    """Write a run in the layout of ``scripts/relax.py``: the checkpoints of ``start`` and of the end of ``res``
+    under ``out/checkpoints``, and ``relax.json`` with the configuration ``cfg`` (a
+    :class:`~mrx.relaxation.config.RelaxConfig`) and the facts of the run under ``params``, then the entries of
+    ``record``, the trace and the samples. ``start_kind`` names the start field (``params['ic']``)."""
+    checkpoints = os.path.join(out, "checkpoints")
+    os.makedirs(checkpoints, exist_ok=True)
+    write_checkpoint(os.path.join(checkpoints, "state_000000.h5"), start, 0, seq)
+    write_checkpoint(os.path.join(checkpoints, f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
+    g = cfg.geometry
+    params = dict(cfg.params, geometry_path=os.path.abspath(g.path), knots=g.knots, ic=start_kind,
+                  h_r_sq=float(radial_cell_sq(seq)), start_step=0)
+    with open(os.path.join(out, "relax.json"), "w") as fh:
+        json.dump(dict(params=params, **record, trace=res.trace, qoi=res.qoi), fh, indent=1)
+    print(f"  -> {out}/relax.json and {checkpoints}/", flush=True)

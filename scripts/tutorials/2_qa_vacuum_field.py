@@ -61,16 +61,12 @@ os.makedirs(cli.out, exist_ok=True)
 # %%
 # 2) Import MRX.
 import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.nullspace import compute_nullspaces, harmonic_rayleigh
-from mrx.diagnostics.plotting import get_2d_grids, plot_archive, plot_torus
-from mrx.diagnostics.poincare import trace_archive
-from mrx.relaxation.physics import compute_divergence_norm, compute_force
+from mrx.diagnostics.plotting import get_2d_grids, plot_torus, trace_and_plot
+from mrx.diagnostics.plotstyle import finish_figure
+from mrx.relaxation.physics import compute_divergence_norm, current
 
 # Geometry.build calls mrx.geometry.build_sequence with these options, as in Tutorial 1.
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
@@ -86,8 +82,7 @@ print("[vacuum] computing the harmonic forms", flush=True)
 compute_nullspaces(seq)
 B = seq.odd.nullspace(2)[0]
 B = B / float(seq.odd.l2_norm(B, 2))
-_, _, J, _ = compute_force(B, seq)
-ratio = float(seq.odd.l2_norm(J, 1))
+ratio = float(seq.odd.l2_norm(current(B, seq), 1))
 rayleigh = float(harmonic_rayleigh(seq.odd, B, 2))
 print(f"[vacuum] {seq.odd.n(2)} odd Dirichlet 2-form DoFs, ||div B|| = {compute_divergence_norm(B, seq):.2e}, "
       f"||curl B|| / ||B|| = {ratio:.2e}, "
@@ -114,27 +109,14 @@ grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
                             ny=4 * n, nz=4 * n, invert_z=True)
 print("[plot] |B| on the torus", flush=True)
 fig, _ = plot_torus(B_mag, grids_pol, grid_surface, cbar_label=r"$|B|$")
-path = os.path.join(cli.out, "torus_Bmag.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "torus_Bmag.png"))
 
 # %%
 # 5) Trace the field lines once and take Poincare sections at five planes with ``trace_archive``, which
 # writes the same trace.npz as scripts/poincare_trace.py. ``plot_archive`` draws it as scripts/poincare_plot.py
 # does, in the layout of the paper (the vacuum field has no pressure to show).
-print(f"[poincare] tracing {cli.lines} field lines for {cli.periods} field periods", flush=True)
-archive, results = trace_archive(seq, {"vacuum": (B, 0)}, lines=cli.lines, periods=cli.periods,
-                                 source=f"{g.path} {g.resolution} p={g.spline_degree}, vacuum field")
-np.savez_compressed(os.path.join(cli.out, "trace.npz"), **archive)
-for fig in plot_archive(archive, os.path.join(cli.out, "poincare"), pressure=False).values():
-    if _INTERACTIVE:
-        plt.show()
-    else:
-        plt.close(fig)
+results = trace_and_plot(seq, {"vacuum": (B, 0)}, cli.out, lines=cli.lines, periods=cli.periods,
+                         source=f"{g.path} {g.resolution} p={g.spline_degree}, vacuum field", pressure=False)
 res = results["vacuum"]
 
 # the lines near the axis circle the magnetic axis (off r = 0), so iota is read from r >= 0.1

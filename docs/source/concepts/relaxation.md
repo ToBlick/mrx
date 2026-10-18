@@ -27,8 +27,9 @@ route, a k = 3 saddle solve that also gives the strong pressure `p`. The relaxat
 
 `TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_tol, resistivity,
 resistive_reference)`
-is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
-`B_{n+1} = B_n + dt curl(u x B)`:
+is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` does
+one forward-Euler step `B_{n+1} = B_n + dt curl(u x B)` and returns `B_{n+1}`, the warm starts of the next
+step and the step's scalars:
 
 1. **Direction** `u`. With `newton`, the Newton direction (below). Without,
    the smoothed force,

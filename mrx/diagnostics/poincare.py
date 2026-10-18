@@ -29,7 +29,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DiscreteFunction
-from mrx.relaxation.physics import compute_force, weak_pressure
+from mrx.relaxation.physics import current, weak_pressure
 
 TWO_PI = 2.0 * jnp.pi
 
@@ -369,8 +369,7 @@ def trace_archive(seq, fields, *, lines=160, periods=400, planes=5, seed=0, sour
     results = {}
     for name, (B, step) in fields.items():
         B = jnp.asarray(B)
-        _, _, J, _ = compute_force(B, seq)
-        pw = jnp.asarray(weak_pressure(J, B, seq))
+        pw = jnp.asarray(weak_pressure(current(B, seq), B, seq))
         res = poincare(seq, B, lines=lines, periods=periods, planes=planes, seed=seed, name=name)
         results[name] = res
         archive[f"{name}_label"] = np.array(f"{name} (step {step})")

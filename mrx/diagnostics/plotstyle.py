@@ -7,11 +7,13 @@
 * The named colours and colormaps: :data:`LEFT` and :data:`RIGHT` for twin-axis plots, :data:`IOTA_COLOR` and
   :data:`P_COLOR` for section figures, and :data:`FIELD_CMAP`, :data:`PRESSURE_CMAP` and :data:`SECTION_CMAP`.
 * :func:`save_figure` saves a figure as a PNG and, when ``xelatex`` is available, as a ``.pgf`` file for LaTeX
-  in a ``pgf/`` folder next to it.
+  in a ``pgf/`` folder next to it. :func:`finish_figure` saves a figure and then shows it in a notebook or
+  closes it in a script.
 """
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -57,6 +59,19 @@ def house_style(**overrides):
     change individual rcParams on top of the house style."""
     with mpl.rc_context(rc=overrides, fname=STYLE_FILE):
         yield
+
+
+def finish_figure(fig, path=None, dpi=200, **savefig_kw):
+    """Save ``fig`` as ``path`` (unless ``None``) and print the path, then show the figure in a notebook or close
+    it in a script."""
+    import matplotlib.pyplot as plt
+    if path is not None:
+        fig.savefig(path, dpi=dpi, **savefig_kw)
+        print(f"  -> {path}", flush=True)
+    if "ipykernel" in sys.modules:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 @house_style()

@@ -69,8 +69,11 @@ class Geometry:
         return [self.knots_r, self.knots_theta, self.knots_zeta]
 
     def build(self):
-        """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`."""
+        """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`.
+        ``max_batch`` becomes the batch of the loops over quadrature points (:data:`mrx.MAP_BATCH_SIZE_INNER`)."""
+        import mrx
         from mrx.geometry import build_sequence
+        mrx.MAP_BATCH_SIZE_INNER = self.max_batch
         return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
                               tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry))
 

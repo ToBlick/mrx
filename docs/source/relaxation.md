@@ -88,15 +88,13 @@ grid-scale reconnection and `div` at round-off.
 To evaluate a checkpoint's field:
 
 ```python
-import h5py
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.relaxation.loop import checkpoint_attrs
+from mrx.relaxation.loop import checkpoint_attrs, read_field
 
 path = "outputs/relax/<date>/<time>/checkpoints/best.h5"
 a = checkpoint_attrs(path)
 seq = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"])
-with h5py.File(path) as fh:
-    B = fh["B_n"][...]
+B, step = read_field(path, seq)
 odd = seq.odd                     # B is odd under the stellarator symmetry
 B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)
 ```
