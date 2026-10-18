@@ -132,6 +132,31 @@ def test_newton_direction_is_divergence_free_and_descends(seq, b0):
     assert cos > 0.0
 
 
+def _primitives(jaxpr):
+    """The names of all primitives of ``jaxpr``, those of loop bodies and branches included."""
+    for e in jaxpr.eqns:
+        yield e.primitive.name
+        for v in e.params.values():
+            for x in v if isinstance(v, (list, tuple)) else (v,):
+                if hasattr(x, "eqns") or hasattr(getattr(x, "jaxpr", None), "eqns"):
+                    yield from _primitives(x if hasattr(x, "eqns") else x.jaxpr)
+
+
+def test_newton_direction_has_no_double_single(seq, b0):
+    """With the Chebyshev mass inverse the Newton solve runs in the working precision only: its program has no
+    double-single product (the ``optimization_barrier`` of :func:`mrx.double_single.two_prod`). In float32 the
+    double-single solves stay outside it, in the current, the force and the increment of the step."""
+    even = seq.even
+    _, _, J, JxB = compute_force(b0, seq)
+    S = MassChebyshev.build(seq, 0.3)
+    jaxpr = jax.make_jaxpr(lambda B, J, load, a: newton_direction(seq, B, J, load, a, mass_inverse=S))(
+        b0, J, even.M[2] @ JxB, jnp.zeros(even.n(1)))
+    names = list(_primitives(jaxpr.jaxpr))
+    print(f"\n  {len(names)} primitives, {names.count('optimization_barrier')} double-single products")
+    assert "while" in names
+    assert "optimization_barrier" not in names
+
+
 def test_newton_relaxation_descends(seq, b0, tmp_path):
     """Ten Newton steps with the production stepper lower the energy at every step and the force, conserve
     ``div B = 0`` and the helicity up to grid-scale effects, record the best state, and checkpoint."""
