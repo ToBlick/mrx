@@ -334,15 +334,6 @@ class FreeProjector(eqx.Module):
         rows away from the polar core decide the sign."""
         return jnp.where(jnp.vdot(r, self.reflect_free(r)) >= 0.0, 1.0, -1.0)
 
-    def projectors(self, b):
-        """The functions ``(project_primal, project_dual)`` at the parity of the right-hand side
-        ``b``, for a solver to combine with its deflation projectors."""
-        return self.with_sign(self.parity(b))
-
-    def with_sign(self, s):
-        """The functions ``(project_primal, project_dual)`` for the parity ``s``."""
-        return (lambda y: self.post(y, s)), (lambda r: self.dual(r, s))
-
     def __call__(self, apply, x):
         """``Pi P Pi^T x`` for the preconditioner apply ``P = apply``, at the parity of ``x``."""
         s = self.parity(x)

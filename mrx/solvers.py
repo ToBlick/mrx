@@ -189,17 +189,8 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=N
     return x, jnp.where(converged, its, -its)
 
 
-def _compose_parity(projectors, parity):
-    """Compose the kernel projections with the parity projections of a half-period sequence (if any)."""
-    if parity is None:
-        return projectors
-    pp, pd = projectors
-    par_p, par_d = parity
-    return (lambda x: par_p(pp(x))), (lambda f: par_d(pd(f)))
-
-
 def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None,
-                      x0=None, check_residual=False, norm=None, parity=None):
+                      x0=None, check_residual=False, norm=None):
     """Solve the symmetric semidefinite system ``A x = b`` by PCG and return ``(x, info)``.
 
     The rows of ``vs`` (shape ``(m, n)``, ``m`` may be 0) span the kernel of ``A`` and are
@@ -211,10 +202,9 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
     PCG has at no cost: pass no ``norm`` when it would be that norm anyway (a mass solve).
     Without ``check_residual`` this is a plain PCG that stops at ``tol`` on the residual of its
     recurrence. With it the PCG runs inside :func:`refine`: each pass solves to ``tol`` and the
-    true residual measured in ``norm`` decides convergence. ``parity``, the parity projections of a
-    half-period sequence, keeps the iterates at the parity of ``b``.
+    true residual measured in ``norm`` decides convergence.
     """
-    project_primal, project_dual = _compose_parity(deflation_projectors(vs, mass_matvec), parity)
+    project_primal, project_dual = deflation_projectors(vs, mass_matvec)
 
     def A(x):
         return project_dual(A_matvec(project_primal(x)))
@@ -357,8 +347,7 @@ def solve_saddle_point_minres(
         mass_lower_matvec, b_upper, n_upper, n_lower, *,
         precond_upper, precond_lower, mass_upper_matvec, vs_upper,
         tol, maxiter, norm_upper, norm_lower,
-        x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None,
-        eliminate_lower=None):
+        x0_upper=None, x0_lower=None, eliminate_lower=None):
     """Solve the saddle-point system of a Hodge Laplacian by MINRES and return ``(u, sigma, info)``::
 
         | S    D   | | u     |   | f |
@@ -377,10 +366,8 @@ def solve_saddle_point_minres(
     An initial guess ``x0_upper`` should come with a matching
     ``x0_lower``, since ``u`` alone leaves ``D^T x0_upper`` in the lower residual.
     """
-    project_primal_upper, project_dual_upper = _compose_parity(
-        deflation_projectors(vs_upper, mass_upper_matvec), parity_upper)
-    # The lower block has no kernel. parity_lower has the sign of the upper block, since sigma follows u.
-    project_primal_lower, project_dual_lower = _compose_parity(((lambda x: x), (lambda f: f)), parity_lower)
+    # the lower block has no kernel
+    project_primal_upper, project_dual_upper = deflation_projectors(vs_upper, mass_upper_matvec)
 
     def pack(u, s):
         return jnp.concatenate([u, s])
@@ -388,23 +375,16 @@ def solve_saddle_point_minres(
     def unpack(x):
         return x[:n_upper], x[n_upper:]
 
-    def project_primal(x):
-        u, s = unpack(x)
-        return pack(project_primal_upper(u), project_primal_lower(s))
-
     def A_matvec(x):
         u, s = unpack(x)
         u = project_primal_upper(u)
-        s = project_primal_lower(s)
         r_upper = stiffness_matvec(u) + derivative_matvec(s)
         r_lower = derivative_T_matvec(u) - mass_lower_matvec(s)
-        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
+        return pack(project_dual_upper(r_upper), r_lower)
 
     def precond(x):
         u, s = unpack(x)
-        pu = precond_upper(project_dual_upper(u))
-        ps = precond_lower(project_dual_lower(s))
-        return pack(project_primal_upper(pu), project_primal_lower(ps))
+        return pack(project_primal_upper(precond_upper(project_dual_upper(u))), precond_lower(s))
 
     b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
     if x0_upper is None:
@@ -424,4 +404,4 @@ def solve_saddle_point_minres(
 
     x, info = refine(A_matvec, solve, b, x0=x0, tol=tol, norm=norm)
     u, sigma = unpack(x)
-    return project_primal_upper(u), project_primal_lower(sigma), info
+    return project_primal_upper(u), sigma, info

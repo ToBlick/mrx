@@ -297,6 +297,20 @@ class DeRhamSequence():
         ``eps`` as a JAX array, otherwise every new value recompiles."""
         return op.ShiftedLaplacian(self, int(k), eps)
 
+    def with_geometry(self, geometry: SequenceGeometry):
+        """A copy of this sequence and of its parity views with ``geometry`` installed. Unlike
+        :meth:`set_geometry` it changes nothing in place and can be used inside ``jax.grad`` and ``jit``, so the
+        copy is differentiable in ``geometry``. It keeps the preconditioners and harmonic forms of this
+        sequence, which belong to the old geometry."""
+        out = copy.copy(self)
+        out.geometry = attach_weights(self, geometry)
+        out._parity_views = {}
+        for s, view in self._parity_views.items():
+            v = copy.copy(view)
+            v.geometry, v._base = out.geometry, out
+            out._parity_views[s] = v
+        return out
+
     def set_geometry_from_map(self, Phi, keep_preconditioners=False):
         """Evaluate the geometry of the logical-to-physical map ``Phi`` at the quadrature points and
         install it (:meth:`set_geometry`)."""

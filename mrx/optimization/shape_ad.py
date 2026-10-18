@@ -13,12 +13,11 @@ and one adjoint solve of this system.
 
 A typical use: build a :class:`BoundaryShape` about a starting map, turn its variables into map coefficients
 (:meth:`BoundaryShape.map_coefficients`) and a geometry (:func:`cylindrical_geometry`), install it with
-:func:`with_geometry`, compute the field with :func:`flux_seed` and :func:`vacuum_two_form`, and evaluate an
+:meth:`~mrx.derham_sequence.DeRhamSequence.with_geometry`, compute the field with :func:`flux_seed` and :func:`vacuum_two_form`, and evaluate an
 objective: :func:`mean_iota`, :func:`normal_field_fraction` or :func:`quasisymmetry_residual`. The objectives treat the logical surfaces as flux surfaces, and
 :func:`normal_field_fraction` measures how far that is from true. The preconditioners of the solves are
 those of the sequence's own geometry and are not rebuilt as the shape changes.
 """
-import copy
 from typing import Optional
 
 import equinox as eqx
@@ -30,7 +29,6 @@ from mrx.differential_forms import DifferentialForm, inv33
 from mrx.equilibria import CylindricalMap
 from mrx.geometry import SequenceGeometry
 from mrx.mappings import stellarator_symmetric_scalar
-from mrx.mass import attach_weights
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
 
@@ -51,15 +49,6 @@ def _tp_evaluate(C_raw, M1, M2, M3):
     T1 = jnp.einsum("iabc,aI->iIbc", C_raw, M1)
     T2 = jnp.einsum("iIbc,bJ->iIJc", T1, M2)
     return jnp.einsum("iIJc,cK->iIJK", T2, M3)
-
-
-def with_geometry(seq, geometry):
-    """A copy of ``seq`` with ``geometry`` installed, differentiable in ``geometry``. Unlike
-    :meth:`~mrx.derham_sequence.DeRhamSequence.set_geometry` it can be used inside ``jax.grad`` and ``jit``.
-    ``seq`` itself is not changed, and the copy keeps the preconditioners of ``seq``'s geometry."""
-    out = copy.copy(seq)
-    out.geometry = attach_weights(seq, geometry)
-    return out
 
 
 def _cylindrical_metric(R, dR, dZ, nfp):
@@ -201,41 +190,38 @@ class BoundaryShape(eqx.Module):
 
 def flux_seed(seq):
     """The seed ``s`` of :func:`vacuum_two_form`: the 2-form ``dr ^ dtheta`` interpolated into the Dirichlet
-    2-form space. It carries the toroidal flux, is closed and does not depend on the geometry, so it can be
-    computed once and reused for every shape."""
+    2-form space of the odd view ``seq.odd`` (the field is odd). It carries the toroidal flux, is closed and
+    does not depend on the geometry, so it can be computed once and reused for every shape."""
     flux = jnp.asarray((0.0, 0.0, 1.0))
-    return seq.interpolate(lambda x_hat: flux, 2)
+    return seq.odd.interpolate(lambda x_hat: flux, 2)
 
 
 def vacuum_two_form(seq, seed):
     """``(h, info)``: the vacuum field, the harmonic 2-form ``h = seed - G_1 a`` with ``S_1 a = G_1^T M_2
-    seed`` (see the module docstring), on ``seq`` (a :func:`with_geometry` copy). ``h`` is differentiable in
-    the geometry and has the toroidal flux of ``seed``, without normalisation. ``info`` is the signed
-    iteration count of the forward solve."""
-    b = seq.D[1].T @ seed
-    parity = seq.free_projector(1)
+    seed`` (see the module docstring), on the odd view of ``seq`` (a
+    :meth:`~mrx.derham_sequence.DeRhamSequence.with_geometry` copy). ``h`` is differentiable in the geometry and
+    has the toroidal flux of ``seed``, without normalisation. ``info`` is the signed iteration count of the
+    forward solve."""
+    odd = seq.odd
+    b = odd.D[1].T @ seed
 
     def matvec(x):
-        return seq.S[1] @ x
+        return odd.S[1] @ x
 
     def solve(_, r):
-        if parity is not None:
-            # h is odd. The adjoint right-hand side has an even part, which pairs to zero with every odd
-            # tangent but would otherwise decide the parity the solver reads off it.
-            r = parity.dual(r, -1.0)
         # both right-hand sides are G_1^T of something: the forward one by construction, the adjoint one
         # because a enters h only through G_1 a
-        return seq.L[1].solve(r, part="coexact", gauge=False, return_info=True)
+        return odd.L[1].solve(r, part="coexact", gauge=False, return_info=True)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
-    return seed - seq.G[1] @ a, info
+    return seed - odd.G[1] @ a, info
 
 
 def _radial_moments(seq, h):
     """``(A, C)``: the ``(theta, zeta)`` averages of the logical densities ``B^theta`` and ``B^zeta`` of ``h`` as
     radial splines, ``<B^theta>(r) = sum_i A_i D_i(r)`` with ``D_i`` the radial derivative splines."""
     _, (n_rt, n_tt, n_zt), (n_rz, n_tz, n_zz) = seq.basis_2.shape
-    raw = seq.E(2).T @ h
+    raw = seq.odd.E(2).T @ h
     n0, n1 = seq.basis_2.n1, seq.basis_2.n2
     lt, lz = seq.basis_0.Lambda[1], seq.basis_0.Lambda[2]
 
@@ -258,7 +244,7 @@ def mean_iota(seq, h):
 def normal_field_fraction(seq, h):
     """``int (B . n)^2 / int |B|^2`` over the volume, with ``n`` the unit normal of the logical surfaces. It is
     zero when the logical surfaces are flux surfaces of ``h``."""
-    b = seq.evaluate_at_quadrature(h, 2)
+    b = seq.odd.evaluate_at_quadrature(h, 2)
     w, J = seq.quad.w, seq.jacobian_j
     # (B . n)^2 J = (B^r)^2 / (J g^rr) and |B|^2 J = B^T G B / J for the logical densities B, J = det DPhi
     normal = jnp.sum(w * b[:, 0] ** 2 / (J * seq.metric_inv_jkl[:, 0, 0]))
@@ -282,7 +268,7 @@ def _two_form_derivatives(seq, h, tables):
     their logical derivatives ``db[a, q, i] = d_a b^i``, ``(3, n_q, 3)``."""
     prim, der, dprim, dder, _, grid = tables
     shapes = [tuple(int(v) for v in sh) for sh in seq.basis_2.shape]
-    raw = seq.E(2).T @ h
+    raw = seq.odd.E(2).T @ h
 
     def info(a):
         # Component c uses the 0-form splines on axis c and the derivative splines on the others. d_a

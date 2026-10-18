@@ -85,7 +85,7 @@ from mrx.equilibria import build_map
 from mrx.diagnostics.plotting import plot_twin_axis
 from mrx.optimization.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota,
                                        normal_field_fraction, quasisymmetry_residual, section_moments,
-                                       vacuum_two_form, with_geometry)
+                                       vacuum_two_form)
 from mrx.spline_bases import basis_derivative_table, basis_table
 
 ASPECT = 6.0         # the aspect ratio held exactly
@@ -126,7 +126,7 @@ def mapped(x, seq, shape):
 def terms(x, seq, shape, seed):
     """<Q_QA^2>_{r >= h_r}, <iotabar>_s (signed), P and min det DPhi at x."""
     R, Z = mapped(x, seq, shape)
-    sq = with_geometry(seq, cylindrical_geometry(seq, R, Z, nfp))
+    sq = seq.with_geometry(cylindrical_geometry(seq, R, Z, nfp))
     h, _ = vacuum_two_form(sq, seed)
     F_qs, _ = quasisymmetry_residual(sq, h, R, Z, nfp, r_min)
     return dict(F_qs=F_qs, iota=mean_iota(sq, h), P=normal_field_fraction(sq, h), jmin=jnp.min(sq.jacobian_j))

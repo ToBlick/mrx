@@ -94,7 +94,10 @@ def _atom(operators, kind: str, k: int, dirichlet: bool):
 
 
 def _seq_atom(seq, kind: str, k: int):
-    """The preconditioner of the ``k``-form space of ``seq``."""
+    """The preconditioner of the ``k``-form space of ``seq``. Every solve needs one, and a half-period sequence
+    holds its fields on its parity views, so only those are solved on."""
+    if seq.half_period and seq.parity is None:
+        raise ValueError("a half-period sequence is solved on its parity views, seq.odd and seq.even")
     return _atom(seq.operators, kind, k, seq.dirichlet)
 
 
@@ -224,22 +227,6 @@ def apply_laplacian_approx(seq, operators: SequenceOperators, v, k: int):
 # Solves
 # ---------------------------------------------------------------------------
 
-def parity_projectors(seq, k: int, b):
-    """The projections onto the stellarator parity of ``b`` in the ``k``-form space of a
-    half-period sequence, or ``None`` on a full-period one."""
-    pj = seq.free_projector(k)
-    return None if pj is None else pj.projectors(b)
-
-
-def _parity_pair(seq, k: int, b):
-    """The parity projections of degrees ``k`` and ``k - 1``, both at the parity of ``b``."""
-    pj = seq.free_projector(k)
-    if pj is None:
-        return None, None
-    sign = pj.parity(b)
-    return pj.with_sign(sign), seq.free_projector(k - 1).with_sign(sign)
-
-
 def dual_norm(seq, k: int):
     """The norm ``sqrt(r^T P r)`` in which the solves measure a residual ``r`` of the ``k``-form
     space of ``seq``, where ``P`` is the preconditioner of ``M_k``. It approximates the ``M_k^{-1}``
@@ -266,7 +253,6 @@ def _mass_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
         tol=seq.tol,
         maxiter=seq.maxiter,
         check_residual=True,
-        parity=parity_projectors(seq, k, rhs),
     )
     return (x, info) if return_info else x
 
@@ -288,13 +274,9 @@ def _pair_loop(seq, k, eps, split, b, guess, vs):
     n_k, n_l = seq.n(k), seq.n(k - 1)
     nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
     _, project_dual_k = deflation_projectors(vs, lambda v: _mass(seq, v, k))
-    # on a half-period sequence both blocks lose the other parity (that of b)
-    par_k, par_l = _parity_pair(seq, k, b)
-    pd_k = (lambda r: r) if par_k is None else par_k[1]
-    pd_l = (lambda r: r) if par_l is None else par_l[1]
 
     def project_dual(r):
-        return jnp.concatenate([pd_k(project_dual_k(r[:n_k])), pd_l(r[n_k:])])
+        return jnp.concatenate([project_dual_k(r[:n_k]), r[n_k:]])
 
     def residual(p):
         x, w = p[:n_k], p[n_k:]
@@ -355,7 +337,6 @@ def _stiffness_solve(seq, b, k: int, tol, guess=None, check_residual=False, regu
         maxiter=seq.maxiter,
         check_residual=check_residual,
         norm=dual_norm(seq, k),
-        parity=parity_projectors(seq, k, b),
     )
 
 
@@ -388,7 +369,6 @@ def _shifted_cg(seq, j: int, delta, b, tol, x0=None, check_residual=False):
         maxiter=seq.maxiter,
         check_residual=check_residual,
         norm=dual_norm(seq, j),
-        parity=parity_projectors(seq, j, b),
     )
 
 
@@ -514,7 +494,6 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         # D_2 M_2^-1 r, with the preconditioner of M_2 for its inverse
         return _weak_derivative(seq, P_lower(r), 2)
 
-    parity_upper, parity_lower = _parity_pair(seq, 3, rhs)
     return solve_saddle_point_minres(
         stiffness_matvec=lambda x: _stiffness(seq, x, 3),
         derivative_matvec=lambda s: _weak_derivative(seq, s, 2),
@@ -533,7 +512,6 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         maxiter=seq.maxiter,
         norm_upper=dual_norm(seq, 3),
         norm_lower=dual_norm(seq, 2),
-        parity_upper=parity_upper, parity_lower=parity_lower,
         eliminate_lower=eliminate_lower,
     )
 
