@@ -113,6 +113,35 @@ def mirror_zeta_1d(seq, M, derivative):
     return 0.5 * (M + M[perm][:, perm])
 
 
+def _reflect_angles(X, perm_t, perm_z):
+    """The ``(n_r, n_t, n_z)`` coefficient grid ``X`` with the angular indices reflected."""
+    return X[:, perm_t, :][:, :, perm_z]
+
+
+#: The stellarator symmetry ``(R, phi, Z) -> (R, -phi, -Z)`` in Cartesian coordinates, the reflection
+#: ``S = diag(1, -1, -1)``. In logical coordinates it is ``(r, theta, zeta) -> (r, -theta, -zeta)``.
+STELLARATOR_REFLECTION = jnp.array([1.0, -1.0, -1.0])
+
+
+def stellarator_symmetric_scalar(raw, basis_0, even: bool):
+    """Project the ``(n_r, n_t, n_z)`` coefficients of a scalar spline onto its even part (for ``R``) or
+    its odd part (for ``Z``) under ``(theta, zeta) -> (-theta, -zeta)``. Both angular axes must be
+    uniform and periodic."""
+    reflected = _reflect_angles(raw, reflection_permutation(basis_0.Lambda[1].n, basis_0.Lambda[1].p),
+                                reflection_permutation(basis_0.Lambda[2].n, basis_0.Lambda[2].p))
+    return 0.5 * (raw + reflected) if even else 0.5 * (raw - reflected)
+
+
+def stellarator_symmetry_defect(Phi, x):
+    """``max |Phi(r, -t, -z) - S Phi(r, t, z)|`` over the logical points ``x`` (``(n, 3)``). It is zero
+    exactly when ``Phi`` is stellarator symmetric at these points."""
+    def one(xi):
+        r, t, z = xi
+        return jnp.max(jnp.abs(Phi(jnp.array([r, -t, -z])) - STELLARATOR_REFLECTION * Phi(xi)))
+
+    return jnp.max(jax.vmap(one)(jnp.atleast_2d(jnp.asarray(x))))
+
+
 def mirror_component(seq, X, derivative_axes):
     """The full-period version of a per-DoF quantity ``X`` on the raw ``(n_r, n_t, n_z)`` grid of
     one component, computed on a half-period sequence (for example a squared basis function
@@ -125,7 +154,7 @@ def mirror_component(seq, X, derivative_axes):
     for axis in (1, 2):
         b = seq.basis_0.dLambda[axis] if axis in derivative_axes else seq.basis_0.Lambda[axis]
         perms.append(reflection_permutation(b.n, b.p))
-    return 0.5 * (X + X[:, perms[0], :][:, :, perms[1]])
+    return 0.5 * (X + _reflect_angles(X, *perms))
 
 
 @functools.partial(jax.jit, static_argnames=("plan_out", "plan_in"))

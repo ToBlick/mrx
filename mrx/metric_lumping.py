@@ -36,6 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
+from mrx.incidence import diff_1d
 from mrx.mass import build_mass_diagonal
 from mrx.precision import eps, sqrt_eps
 from mrx.pytree import register_arrays
@@ -74,15 +75,6 @@ def _simultaneous_diagonalize_pair(M, A):
     lam, U = jnp.linalg.eigh(_symmetrize(B))
     V = jax.scipy.linalg.solve_triangular(L.T, U, lower=False)
     return V, lam
-
-
-def _dense_incidence_1d(n0, typ):
-    """The 1-D incidence ``(G c)_j = c_{j+1} - c_j`` of an axis of type ``typ`` (wrapped if periodic)."""
-    if typ == 'clamped':
-        j = jnp.arange(n0 - 1)
-        return jnp.zeros((n0 - 1, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
-    j = jnp.arange(n0)
-    return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -236,7 +228,7 @@ def component_factors(seq, k, c, window):
                 kt = kt + _face_term(seq, k, c, window)
             stiffs.append(kt)
         else:
-            G = _dense_incidence_1d(int(m_full.shape[0]), seq.basis_0.types[a])
+            G = jnp.asarray(diff_1d(int(m_full.shape[0]), seq.basis_0.types[a]).toarray())
             k_full = _symmetrize(G.T @ (_assemble_weighted_1d_mass(deriv[a], quad_w[a] * prof) @ G))
             if a == 2:
                 k_full = mirror_zeta_1d(seq, k_full, False)

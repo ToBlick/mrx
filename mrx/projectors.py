@@ -20,6 +20,7 @@ from jax import Array
 
 import mrx
 from mrx.extraction_operators import conforming_restriction
+from mrx.spline_bases import basis_table
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
@@ -40,8 +41,8 @@ def _solve_tensor_collocation_axis(matrix: Array, values: Array, axis: int) -> A
 def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
     """Gauss points and weights ``(xs, ws)``, ``(n_spans, n_pts)``, that integrate the splines exactly
     over every Greville span."""
-    # split at the knots inside a span (at even p a span straddles a knot), the same rule as
-    # SplineBasis.histopolation_matrix, padded to the widest span with zero-width pieces
+    # split at the knots inside a span (at even p a span straddles a knot), padded to the widest span with
+    # zero-width pieces
     xi_ref, w_ref = np.polynomial.legendre.leggauss(basis.p + 2)
     spans = np.asarray(spans)
     knots = np.unique(np.asarray(basis.T))
@@ -58,6 +59,13 @@ def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
     return jnp.asarray(xs), jnp.asarray(ws)
 
 
+def _histopolation(basis, span_rule) -> Array:
+    """The ``(n_spans, n)`` integrals of every function of ``basis`` over every span of ``span_rule``."""
+    xs, ws = span_rule
+    values = basis_table(basis, xs.reshape(-1)).reshape((basis.n,) + xs.shape)
+    return jnp.einsum('sq,isq->si', ws, values)
+
+
 class _GrevilleAxis(NamedTuple):
     """What Greville interpolation needs about one logical axis."""
     coll: Array          # (n, n)   parent-basis collocation matrix at the Greville points
@@ -72,11 +80,12 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
     axes = []
     for lam, d in zip(seq.basis_0.Lambda, seq.basis_0.dLambda):
         pts = lam.greville_points()
+        span_rule = _span_quadrature(d, d.greville_spans())
         axes.append(_GrevilleAxis(
             coll=lam.collocation_matrix(pts),
-            hist=d.histopolation_matrix(),
+            hist=_histopolation(d, span_rule),
             point_rule=(pts[:, None], jnp.ones((pts.shape[0], 1), dtype=pts.dtype)),
-            span_rule=_span_quadrature(d, d.greville_spans())))
+            span_rule=span_rule))
     return tuple(axes)
 
 

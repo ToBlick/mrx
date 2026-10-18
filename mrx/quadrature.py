@@ -10,7 +10,6 @@
 """
 
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from mrx.pytree import register_arrays
@@ -47,7 +46,7 @@ class QuadratureRule:
                 raise ValueError("a half-period quadrature needs zeta = 1/2 as a knot: an even "
                                  "number of uniform zeta cells, or breakpoints containing 1/2")
             spans[2] = jnp.asarray(T_z[:int(fold[0]) + 1])
-        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [composite_quad(T, p) for T in spans]
+        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [tuple(map(jnp.asarray, composite_quad(T, p))) for T in spans]
         if half_zeta:
             w_z = 2.0 * w_z
         n = w_x.size * w_y.size * w_z.size
@@ -63,18 +62,12 @@ class QuadratureRule:
 
 
 def composite_quad(T, p):
-    """Return the points and weights ``(x_q, w_q)`` of ``p``-point Gauss on each interval between
-    consecutive breakpoints ``T``. The rule is exact for piecewise polynomials of degree
-    ``2p - 1``."""
+    """Return the points and weights ``(x_q, w_q)``, NumPy float64, of ``p``-point Gauss on each interval between
+    consecutive breakpoints ``T``. The rule is exact for piecewise polynomials of degree ``2p - 1``."""
     xi, wi = np.polynomial.legendre.leggauss(p)
-    xi = jnp.asarray(xi)
-    wi = jnp.asarray(wi)
-
-    def _rescale(a, b):
-        return (xi + 1) / 2 * (b - a) + a, wi * (b - a) / 2
-
-    x_q, w_q = jax.vmap(_rescale)(T[:-1], T[1:])
-    return jnp.ravel(x_q), jnp.ravel(w_q)
+    T = np.asarray(T, dtype=np.float64)
+    lo, hi = T[:-1], T[1:]
+    return ((0.5 * (lo + hi))[:, None] + (0.5 * (hi - lo))[:, None] * xi).ravel(), ((0.5 * (hi - lo))[:, None] * wi).ravel()
 
 
 def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):

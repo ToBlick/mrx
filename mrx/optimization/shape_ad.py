@@ -28,19 +28,18 @@ import numpy as np
 from mrx.differential_forms import DifferentialForm, inv33
 from mrx.equilibria import CylindricalMap
 from mrx.geometry import SequenceGeometry
-from mrx.mappings import stellarator_symmetric_scalar
+from mrx.incidence import diff_1d
+from mrx.symmetry import stellarator_symmetric_scalar
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
 
 
 def _grad_1d(d_basis, boundary_type):
     """The derivatives of the splines of one axis, ``(n, nq)``, from the values ``d_basis`` of the
-    derivative splines ``D_l`` of that axis, by ``B'_l = D_{l-1} - D_l``. ``boundary_type`` is
-    ``'clamped'`` or ``'periodic'``."""
-    if boundary_type == 'clamped':
-        padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
-        return padded[:-1] - padded[1:]
-    return jnp.roll(d_basis, 1, axis=0) - d_basis
+    derivative splines ``D_l`` of that axis: ``B'_l = D_{l-1} - D_l``, the transposed 1-D incidence.
+    ``boundary_type`` is ``'clamped'`` or ``'periodic'``."""
+    n = d_basis.shape[0] + (boundary_type == 'clamped')
+    return jnp.asarray(diff_1d(n, boundary_type).toarray()).T @ d_basis
 
 
 def _tp_evaluate(C_raw, M1, M2, M3):

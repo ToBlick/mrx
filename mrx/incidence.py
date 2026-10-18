@@ -116,7 +116,7 @@ def build_matrixfree_incidence(seq, k: int):
     return _MatrixFreeIncidence(k, False, tuple(seq.basis_0.types), s0, s1, s2, s3)
 
 
-def _diff_1d(n, typ):
+def diff_1d(n, typ):
     """The 1-D incidence ``c_{j+1} - c_j`` on an axis of ``n`` coefficients as a sparse matrix, wrapped if
     periodic."""
     rows = np.arange(n - 1 if typ == 'clamped' else n)
@@ -128,7 +128,7 @@ def _diff_1d(n, typ):
 def raw_incidence_matrix(seq, k):
     """Grad (k = 0) or curl (k = 1) on the raw tensor-product coefficients of ``seq`` as a sparse matrix, the
     map that :func:`build_matrixfree_incidence` applies."""
-    D = [_diff_1d(int(n), t) for n, t in zip(seq.basis_0.shape[0], seq.basis_0.types)]
+    D = [diff_1d(int(n), t) for n, t in zip(seq.basis_0.shape[0], seq.basis_0.types)]
     I_p = [sp.identity(int(n)) for n in seq.basis_0.shape[0]]       # the splines of each axis
     I_d = [sp.identity(d.shape[0]) for d in D]                       # the derivative splines
 

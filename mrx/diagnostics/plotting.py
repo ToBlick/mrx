@@ -24,6 +24,7 @@ import matplotlib.ticker as mticker
 import numpy as np
 
 import mrx
+from mrx.relaxation.seeding import resonances
 from mrx.diagnostics.plotstyle import (FIELD_CMAP, FS, IOTA_COLOR, LEFT, P_COLOR, PRESSURE_CMAP, RIGHT, SECTION_CMAP,
                            house_style)
 
@@ -218,22 +219,15 @@ def resonant_rationals(iota_min, iota_max, nfp):
     ``nfp`` periods can have island chains (``n`` a multiple of ``nfp``, ``m <= 300``). Rationals with small
     ``m`` are preferred, and a rational is skipped if it lies within 0.12 of the range from one already chosen.
     Returns ``(ticks, labels)`` sorted by value."""
-    denom_max, span = 300, iota_max - iota_min
-    candidates, seen = [], set()
-    for j in range(1, denom_max // nfp + 1):
-        n_tor = j * nfp
-        for m_pol in range(1, denom_max + 1):
-            value = n_tor / m_pol
-            if iota_min <= value <= iota_max and value not in seen:
-                candidates.append((m_pol, n_tor, value))
-                seen.add(value)
+    span = iota_max - iota_min
     ticks, labels = [], []
-    for m_pol, n_tor, value in sorted(candidates):
+    for m, n in resonances(iota_min, iota_max, nfp, 300):          # by increasing m
+        value = nfp * n / m
         if all(abs(value - t) >= 0.12 * span for t in ticks):
             ticks.append(value)
-            labels.append(f"{n_tor}/{m_pol}")
-    order = sorted(range(len(ticks)), key=lambda i: ticks[i])
-    return [ticks[i] for i in order], [labels[i] for i in order]
+            labels.append(f"{nfp * n}/{m}")
+    order = sorted(zip(ticks, labels))
+    return [t for t, _ in order], [label for _, label in order]
 
 
 def _scale_note(axis, scale, color=None, tick=False):

@@ -39,6 +39,19 @@ def _nonzero_bsplines(T, p, x):
     return jnp.stack(N), s - p
 
 
+def knot_vector(breakpoints, p, periodic):
+    """The knot vector of the degree-``p`` splines on the cells between ``breakpoints``, which increase
+    from 0 to 1. A clamped axis repeats each end ``p`` more times, and a periodic axis continues ``p``
+    cells periodically on either side. There are (number of cells) + ``p`` splines on a clamped axis and
+    (number of cells) on a periodic one."""
+    bp = np.asarray(breakpoints, dtype=float)
+    if bp[0] != 0.0 or bp[-1] != 1.0 or np.any(np.diff(bp) <= 0):
+        raise ValueError(f"breakpoints must increase from 0 to 1 (got {list(breakpoints)})")
+    if periodic:
+        return np.concatenate([bp[-(p + 1):-1] - 1.0, bp, bp[1:p + 1] + 1.0])
+    return np.concatenate([np.zeros(p), bp, np.ones(p)])
+
+
 def contract_local(coefficients, local):
     """Return ``sum_ijk c[..., i, j, k] B_i B_j B_k`` from the per-axis ``(values, indices)`` of
     ``evaluate_local``. Leading axes of ``coefficients`` are kept."""
@@ -66,27 +79,6 @@ def rebuild_basis(key, T):
     return DerivativeSpline(base) if kind == "d" else base
 
 
-@functools.partial(jax.jit, static_argnames=("key", "periodic"))
-def _histopolation(T, spans, xi_ref, w_ref, knots, *, key, periodic):
-    """Return the integral of every basis function over every span, shape ``(n_spans, n)``."""
-    basis = rebuild_basis(key, T)
-
-    def integrate_span(span):
-        a, b = span
-        cuts = jnp.clip(knots, a, b)
-        cuts = jnp.sort(jnp.concatenate([jnp.array([a]), cuts, jnp.array([b])]))
-        lo, hi = cuts[:-1], cuts[1:]
-        centers = 0.5 * (lo + hi)
-        halfwidths = 0.5 * (hi - lo)
-        xs = centers[:, None] + halfwidths[:, None] * xi_ref[None, :]
-        if periodic:
-            xs = jnp.mod(xs, 1.0)
-        values = _table(basis, xs.reshape(-1)).reshape((basis.n,) + xs.shape)
-        return jnp.einsum('s,q,isq->i', halfwidths, w_ref, values)
-
-    return jax.vmap(integrate_span)(spans)
-
-
 class SplineBasis:
     """A basis of ``n`` B-splines of degree ``p`` on ``[0, 1]``, clamped or periodic.
 
@@ -112,11 +104,9 @@ class SplineBasis:
         self.T = self._init_knots() if T is None else T
 
     def _init_knots(self) -> jnp.ndarray:
-        n, p = self.n, self.p
-        if self.type == 'periodic':
-            _T = jnp.linspace(0, 1, n+1)
-            return jnp.concatenate([_T[-(p+1):-1] - 1, _T, _T[1:(p+1)] + 1])
-        return jnp.concatenate([jnp.zeros(p), jnp.linspace(0, 1, n-p+1), jnp.ones(p)])
+        periodic = self.type == 'periodic'
+        cells = self.n if periodic else self.n - self.p
+        return jnp.asarray(knot_vector(np.linspace(0.0, 1.0, cells + 1), self.p, periodic))
 
     def __call__(self, x: float, i: int) -> jnp.ndarray:
         """Return the value of the ``i``-th spline at ``x``."""
@@ -222,17 +212,6 @@ class DerivativeSpline:
             next_points = next_points.at[-1].set(next_points[-1] + 1.0)
             return jnp.stack([points, next_points], axis=1)
         return jnp.stack([points[:-1], points[1:]], axis=1)
-
-    def histopolation_matrix(self) -> jnp.ndarray:
-        """Return the ``(n, n)`` matrix whose entry ``[k, i]`` is the integral of function ``i``
-        over the span ``k`` of :meth:`greville_spans`."""
-        spans = self.greville_spans()
-        xi_ref, w_ref = np.polynomial.legendre.leggauss(max(2, self.p + 2))
-        # A span can contain a knot, so it is integrated piece by piece between the knots.
-        key, T = basis_key(self)
-        return _histopolation(T, jnp.asarray(spans), jnp.asarray(xi_ref),
-                              jnp.asarray(w_ref), jnp.unique(self.T),
-                              key=key, periodic=self.type == 'periodic')
 
 
 def _single(basis, x, i):

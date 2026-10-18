@@ -19,10 +19,10 @@ from typing import Any, Callable, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
+from mrx.spline_bases import knot_vector
 
 
 def map_jacobian_at(Phi: Callable, x: jnp.ndarray) -> jnp.ndarray:
@@ -51,19 +51,6 @@ class SequenceGeometry(eqx.Module):
         return cls(Phi, metric_jkl, jax.vmap(inv33)(metric_jkl), jnp.linalg.det(DPhi_jkl))
 
 
-def knot_vector(breakpoints, p, periodic):
-    """The knot vector of the degree-``p`` splines on the cells between ``breakpoints``, which increase
-    from 0 to 1. A clamped axis repeats each end ``p`` more times, and a periodic axis continues ``p``
-    cells periodically on either side. There are (number of cells) + ``p`` splines on a clamped axis and
-    (number of cells) on a periodic one."""
-    bp = np.asarray(breakpoints, dtype=float)
-    if bp[0] != 0.0 or bp[-1] != 1.0 or np.any(np.diff(bp) <= 0):
-        raise ValueError(f"breakpoints must increase from 0 to 1 (got {list(breakpoints)})")
-    if periodic:
-        return np.concatenate([bp[-(p + 1):-1] - 1.0, bp, bp[1:p + 1] + 1.0])
-    return np.concatenate([np.zeros(p), bp, np.ones(p)])
-
-
 #: The symmetry a map is assumed to have. In logical ``(r, theta, zeta)``, ``zeta`` in ``[0, 1]`` is one
 #: field period.
 #: ``"stellarator"``: ``nfp`` field periods and ``Phi(r, -theta, -zeta) = S Phi(r, theta, zeta)`` with
@@ -90,7 +77,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         maxiter, tol: iteration limit and relative tolerance of every solve on the sequence
             (``tol=None`` means :data:`mrx.precision.SOLVE_TOL`).
         nfp: overrides the ``nfp`` of the equilibrium file.
-        knots: ``(r, theta, zeta)`` breakpoints (see :func:`knot_vector`), ``None`` for a uniform axis.
+        knots: ``(r, theta, zeta)`` breakpoints (see :func:`mrx.spline_bases.knot_vector`), ``None`` for a uniform axis.
         symmetry: one of :data:`SYMMETRIES`, stored as ``seq.symmetry`` next to ``seq.nfp``. The
             half-period quadrature is only used with uniform angular knots. ``"none"`` needs ``nfp = 1``
             (see :class:`~mrx.derham_sequence.DeRhamSequence`).

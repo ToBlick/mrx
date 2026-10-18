@@ -39,7 +39,8 @@ from mrx.differential_forms import det33
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
-from mrx.mappings import stellarator_symmetric_scalar, stellarator_symmetry_defect
+from mrx.quadrature import composite_quad
+from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 from mrx.extraction_operators import conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -189,21 +190,13 @@ def frame_blocks(st):
              _times(st["X2"], frame["cos"][2, i], frame["sin"][2, i], frame["n"])] for i in range(3)]
 
 
-def _cell_gauss(bp, q):
-    """``q`` Gauss-Legendre points and weights per cell of the breakpoints ``bp``, float64."""
-    xi, wi = np.polynomial.legendre.leggauss(q)
-    lo, hi = bp[:-1], bp[1:]
-    pts = (0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * xi[None, :]).ravel()
-    return pts, (0.5 * (hi - lo)[:, None] * wi[None, :]).ravel()
-
-
 def _angular_coefficients(basis, freqs):
     """The L2 projections of ``exp(2 pi i f theta)`` onto the periodic ``basis``, one row per frequency."""
     freqs = np.asarray(freqs, dtype=np.float64)
     T = np.asarray(basis.T, dtype=np.float64)
     bp = np.unique(T[(T >= 0.0) & (T <= 1.0)])
     # enough points for the highest mode's phase across the widest cell
-    pts, w = _cell_gauss(bp, basis.p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * np.diff(bp).max())))
+    pts, w = composite_quad(bp, basis.p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * np.diff(bp).max())))
     B = np.asarray(basis.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
     moments = B.T @ (w[:, None] * np.exp(1j * TWO_PI * np.outer(pts, freqs)))   # (N, n_modes)
     return np.linalg.solve(B.T @ (w[:, None] * B), moments).T
@@ -214,7 +207,7 @@ def _radial_coefficients(block, C, basis_r):
     # Gauss quadrature on the union of both knot vectors integrates the products exactly
     T_s, deg_s = np.asarray(block["T"]), block["deg"]
     T_r, p_r = np.asarray(basis_r.T, dtype=np.float64), basis_r.p
-    pts, w = _cell_gauss(np.unique(np.concatenate([T_s, T_r])), (deg_s + p_r) // 2 + 1)
+    pts, w = composite_quad(np.unique(np.concatenate([T_s, T_r])), (deg_s + p_r) // 2 + 1)
     Br = BSpline.design_matrix(pts, T_r, p_r).toarray()
     Bs = BSpline.design_matrix(pts, T_s, deg_s).toarray()
     return np.linalg.solve(Br.T @ (w[:, None] * Br), Br.T @ (w[:, None] * (Bs @ C.T)))
@@ -292,7 +285,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
     (:func:`frame_blocks`) projected in the same way, ``x`` as ``R`` and ``y``, ``z`` as ``Z``.
 
     ``info`` holds ``nfp``, the range ``det_range`` of ``det DPhi`` at the sample points, the
-    ``symmetry_defect`` (:func:`mrx.mappings.stellarator_symmetry_defect`) and the tensor-product spline
+    ``symmetry_defect`` (:func:`mrx.symmetry.stellarator_symmetry_defect`) and the tensor-product spline
     coefficients that ``Phi`` evaluates, ``raw_R``, ``raw_Z`` of shape ``(n_r, n_theta, n_zeta)`` or ``raw_P``
     of shape ``(3, n_r, n_theta, n_zeta)``. Raises if ``det DPhi`` is not positive, which
     :func:`read_equilibrium` guarantees for a map that does not fold.

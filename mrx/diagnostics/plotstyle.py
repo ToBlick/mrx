@@ -75,4 +75,6 @@ def save_figure(fig, png_path, dpi=None):
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
         if os.path.exists(pgf_path):
             os.remove(pgf_path)   # a half-written .pgf is not a usable file
+        if not os.listdir(pgf_dir):
+            os.rmdir(pgf_dir)
         print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})", flush=True)
