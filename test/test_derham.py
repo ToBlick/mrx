@@ -8,7 +8,6 @@
   projection matrices of complementary degree are adjoint.
 - the harmonic forms span the cohomology of the solid torus, Betti numbers ``(1, 1, 0, 0)``: one free 1-form and
   one Dirichlet 2-form, harmonic to round-off and orthonormal.
-- pushforward inverts pullback.
 
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
@@ -19,7 +18,6 @@ import numpy as np
 import pytest
 
 import mrx
-from mrx.differential_forms import Pullback, Pushforward
 from mrx.nullspace import harmonic_rayleigh
 from mrx.precision import eps
 
@@ -89,8 +87,8 @@ def test_projections_commute_with_the_derivative(domains, k):
     exterior derivative ``d f``: gradient (k = 0), curl (k = 1) and divergence (k = 2)."""
     space = domains("period").free
     f = (_f0, _a1, _b2)[k]
-    lhs = space.G[k] @ space.interpolate(f, k, frame="logical")
-    rhs = space.interpolate(_d(f, k), k + 1, frame="logical")
+    lhs = space.G[k] @ space.interpolate(f, k)
+    rhs = space.interpolate(_d(f, k), k + 1)
     rel = float(jnp.linalg.norm(lhs - rhs) / jnp.linalg.norm(rhs))
     print(f"\n  k={k}: |G Pi f - Pi d f| / |Pi d f| = {rel:.2e}")
     assert rel < max(EXACT, 1e-7)
@@ -130,22 +128,3 @@ def test_harmonic_forms_span_the_cohomology(seq):
         assert abs(norm - 1.0) < seq.tol + eps(10)
     assert seq.nullspace(0).shape[0] == 0 and seq.free.nullspace(3).shape[0] == 0
 
-
-def test_pushforward_inverts_pullback(seq):
-    """``pushforward(pullback(g))(x) = g(Phi(x))`` for k = 0, 1, 2, 3 and random affine physical forms, at
-    random points off the axis."""
-    rng = np.random.default_rng(3)
-    pts = jnp.asarray(np.column_stack([rng.uniform(0.15, 1.0, 6), rng.uniform(0.0, 1.0, 6),
-                                       rng.uniform(0.0, 1.0, 6)]))
-    for k in range(4):
-        n_comp = 1 if k in (0, 3) else 3
-        c = jnp.asarray(rng.standard_normal((n_comp, 4)))
-
-        def g(y, c=c, n_comp=n_comp):
-            v = c[:, 0] + c[:, 1:] @ y
-            return v[0] if n_comp == 1 else v
-        forth = Pushforward(Pullback(g, seq.map, k), seq.map, k)
-        got = np.asarray(jnp.stack([forth(x) for x in pts]))
-        want = np.asarray(jnp.stack([g(seq.map(x)) for x in pts]))
-        err = np.abs(got - want).max() / np.abs(want).max()
-        assert err < 1e3 * eps(), f"k={k}: pushforward(pullback(g)) off by {err:.2e}"

@@ -95,7 +95,7 @@ from mrx.relaxation.seeding import energy_seed
 geometry = cli.geometry
 mesh = f"{geometry.resolution} p={geometry.spline_degree}"
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, ops = geometry.build()
+seq = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
 nfp = seq.nfp

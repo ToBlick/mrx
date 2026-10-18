@@ -69,7 +69,7 @@ from mrx.relaxation.loop import initial_state, radial_cell_sq, relax, write_chec
 cfg = RelaxConfig(geometry=cli.geometry, newton=cli.newton, budget=cli.budget)
 geometry = cfg.geometry
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, ops = geometry.build()
+seq = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
 

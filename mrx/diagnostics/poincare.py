@@ -202,12 +202,10 @@ def _slope(angle, zeta):
     return (ac @ zc) / (zc @ zc)
 
 
-def rotational_transform(ys, steps_per_period, nfp, center=None):
+def rotational_transform(ys, steps_per_period, nfp, center):
     """The rotational transform iota of every line, in poloidal turns per full toroidal turn. It is the
-    least-squares rate at which the line winds about ``center`` (by default :func:`axis_track`), per field
-    period, times ``nfp``. Always non-negative."""
-    if center is None:
-        center = axis_track(ys, steps_per_period)
+    least-squares rate at which the line winds about ``center`` (:func:`axis_track`), per field period, times
+    ``nfp``. Always non-negative."""
     return jnp.abs(_slope(*_winding(ys, steps_per_period, center))) * nfp
 
 
@@ -400,8 +398,7 @@ def locked_width(res, iota, tol=2e-3):
     """Return ``(width, n_locked)`` for the rotational transform ``iota`` in ``res``, the result of
     :func:`poincare`. The locked lines are the kept lines whose ``|iota|`` lies within ``tol`` of it, and
     ``width`` is ``max(r) - min(r)`` of their seed radii (0 with fewer than two). This is a quick island width
-    with the resolution of the seed spacing. :func:`mrx.diagnostics.islands.islands` measures a chain properly
-    but traces many more lines."""
+    with the resolution of the seed spacing."""
     locked = np.asarray(res["keep"]) & (np.abs(np.abs(np.asarray(res["iota"])) - iota) < tol)
     r = np.asarray(res["seed_r"])[locked]
     return (float(r.max() - r.min()) if r.size > 1 else 0.0), int(locked.sum())

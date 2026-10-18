@@ -6,35 +6,27 @@ on:
   pull_request:
     branches: [ main ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12']
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+    - uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install ruff
-      run: |
-        python -m pip install --upgrade pip
-        pip install ruff
+        python-version: '3.12'
 
     - name: Run ruff
       run: |
-        ruff check . --ignore F403,F405
+        pip install ruff==0.16.10
+        ruff check .
 
   test:
-    needs: lint
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12']
     env:
       # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
       # the persistent compilation cache is the main lever on wall time.
@@ -43,17 +35,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+    - uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: pyproject.toml
 
-    # The default `jax` wheel is the CPU build. Tests marked `needs_data`
-    # skip here (no data directory); slurm/README.md runs them on a GPU node.
+    # The default `jax` wheel is the CPU build. Every file the suite reads is in the repository.
     - name: Install mrx
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e . pytest
+      run: pip install -e ".[test]"
 
     - name: Restore the XLA compilation cache
       uses: actions/cache@v4
@@ -64,34 +54,27 @@ jobs:
           jax-cache-${{ runner.os }}-
 
     - name: Run the test suite
-      run: |
-        pytest
+      run: pytest
+
+    # catches import and command-line drift of the scripts, which the suite does not run
+    - name: The scripts start
+      run: for f in scripts/*.py scripts/tutorials/*.py; do python "$f" --help > /dev/null; done
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.12
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: pip
+        cache-dependency-path: |
+          pyproject.toml
+          docs/requirements.txt
 
-      - name: Upgrade pip and install mrx
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
+    - name: Install mrx and sphinx
+      run: pip install -e . -r docs/requirements.txt
 
-      - name: Install sphinx and its dependencies for building docs
-        run: |
-          pip install -r docs/requirements.txt
-
-      - name: Install doxygen and pandoc
-        run: |
-          sudo apt update
-          sudo apt install -y doxygen pandoc
-
-      - name: Build docs
-        run: |
-          cd docs
-          sphinx-build -b html source build
+    - name: Build docs
+      run: sphinx-build -b html docs/source docs/build

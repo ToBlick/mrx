@@ -248,7 +248,7 @@ def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_
     curl, curl_t, A = _newton_system(seq, B, J, penalty, mass_inverse)
     atom = harmonic_preconditioner(seq, profiles, penalty)
     rhs = curl_t(load)
-    a, info, _ = newton_mr(A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, dual_norm(even, 1))
+    a, info = newton_mr(A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, dual_norm(even, 1))
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
@@ -270,17 +270,17 @@ def _newton_system(seq, B, J, penalty, mass_inverse):
 
 
 def newton_mr(A, P, b, x0, tol, maxiter, norm):
-    """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info, npc)``.
+    """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info)``.
 
     If the warm start ``x0`` already meets ``norm(b - A x0) <= tol norm(b)`` it is returned unchanged.
     Otherwise one preconditioned MINRES solve computes the correction to ``x0``. It stops when its own residual
     estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. MINRES
-    stops early at a direction of nonpositive curvature (``npc`` is then true). Such a direction is a descent
+    stops early at a direction of nonpositive curvature. Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
     from zero. ``info`` is the number
     of MINRES iterations, positive when the tolerance was met and negative when not.
     """
-    x = jnp.zeros_like(b) if x0 is None else x0
+    x = x0
     bnorm = norm(b)
     r0 = b - A(x)
 
@@ -297,10 +297,10 @@ def newton_mr(A, P, b, x0, tol, maxiter, norm):
         x_new, its_npc = jax.lax.cond(npc, from_zero,
                                       lambda _: (x + d * rnorm, jnp.zeros((), jnp.int32)),
                                       None)
-        return x_new, b - A(x_new), (jnp.abs(info) + its_npc).astype(jnp.int32), npc
+        return x_new, b - A(x_new), (jnp.abs(info) + its_npc).astype(jnp.int32)
 
     def skip(_):
-        return x, r0, jnp.zeros((), jnp.int32), jnp.zeros((), bool)
+        return x, r0, jnp.zeros((), jnp.int32)
 
-    x, r, its, npc = jax.lax.cond(norm(r0) > tol * bnorm, solve, skip, None)
-    return x, jnp.where(norm(r) <= tol * bnorm, its, -its), npc
+    x, r, its = jax.lax.cond(norm(r0) > tol * bnorm, solve, skip, None)
+    return x, jnp.where(norm(r) <= tol * bnorm, its, -its)

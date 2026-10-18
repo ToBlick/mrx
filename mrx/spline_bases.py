@@ -275,19 +275,3 @@ def basis_derivative_table(basis, x):
 def _basis_derivative_table(T, x, *, key):
     return _table(rebuild_basis(key, T), x, derivative=True)
 
-
-def evaluate_basis_local(basis, x_q_flat, q_per_elem):
-    """Return, for each knot span, the values of the ``p + 1`` functions of ``basis`` that are
-    nonzero on it at its quadrature points, and the indices of those functions.
-
-    ``x_q_flat`` holds ``q_per_elem`` points per span, span by span, starting at the first span
-    of the axis. The values have shape ``(n_elem, q_per_elem, p + 1)`` and the indices
-    ``(n_elem, p + 1)``.
-    """
-    n_elem = x_q_flat.shape[0] // q_per_elem
-    elems = jnp.arange(n_elem)
-    gdof = elems[:, None] + jnp.arange(basis.p + 1)[None, :]
-    if basis.type == "periodic":
-        gdof = gdof % basis.n
-    points = elems[:, None] * q_per_elem + jnp.arange(q_per_elem)[None, :]
-    return basis_table(basis, x_q_flat)[gdof[:, None, :], points[:, :, None]], gdof

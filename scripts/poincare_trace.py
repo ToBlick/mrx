@@ -82,7 +82,7 @@ def main(cli):
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
     print(f"[trace] {source}: fields {list(fields)}", flush=True)
 
-    seq, _ = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
+    seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
     planes = planes_for(seq, cli.planes)
     print(f"[trace] nfp={seq.nfp}, symmetry {seq.symmetry}, planes {[f'{v:g}' for v in planes]} "
           f"({steps_for(planes)} steps per period)", flush=True)

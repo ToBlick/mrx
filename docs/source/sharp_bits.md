@@ -20,7 +20,7 @@ after the build, before any relaxation (`scripts/relax.py` and the tutorials
 do).
 
 It prints the Rayleigh quotient `v^T L v / v^T M v` of every form. A harmonic
-form reads round-off, `1e-20` or smaller. A quotient near `1e-3` means the solve that
+form reads round-off, `1e-9` or smaller. A quotient near `1e-3` means the solve that
 produced the form did not converge (see the sections above), and the
 vacuum field and every projection built on it are off by that much.
 
@@ -64,10 +64,8 @@ wout are left-handed, so `read_equilibrium` reverses its poloidal angle,
 change sign: the QA and li383 files read with a negative iota, and
 `theta_reversed` in the state (and the `[geom]` line) says so. The device and
 every result that does not depend on the orientation (energies, residuals,
-`|iota|`, island widths) are unchanged. A checkpoint written before this
-convention (2026-09-30) has no `angles` attribute and describes the mirror
-image on such a file, so `read_checkpoint`, the drive reference,
-`scripts/poincare_trace.py` and the tutorials refuse it.
+`|iota|`, island widths) are unchanged. A checkpoint records the convention
+in its `angles` attribute, and one without it is refused.
 
 ## Compilation
 

@@ -38,7 +38,7 @@ def harmonic_rayleigh(seq, v, k):
 def _closed_seed(seq, components, k):
     """The form with constant logical components ``components``, checked to be closed up to round-off."""
     components = jnp.asarray(components)
-    seed = seq.interpolate(lambda x_hat: components, k, frame='logical')
+    seed = seq.interpolate(lambda x_hat: components, k)
     closed = float(seq.l2_norm(seq.G[k] @ seed, k + 1) / seq.l2_norm(seed, k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(

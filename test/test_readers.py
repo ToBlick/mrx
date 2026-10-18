@@ -112,7 +112,7 @@ def test_gvec_gframe_vacuum_is_the_harmonic_field():
     """GVEC's vacuum field of the G-frame state is MRX's harmonic 2-form ``h`` of the same domain, computed from
     the map alone: ``||B - c h|| / ||B||`` with ``c = <B, h> / <h, h>`` is 7.2e-4 at (8, 16, 32), the
     discretisation error (4.9e-3 with 16 toroidal splines: the frame has modes up to n = 20 per period)."""
-    seq, _ = build_sequence(GFRAME, (8, 16, 32), 2, symmetry="field-period")
+    seq = build_sequence(GFRAME, (8, 16, 32), 2, symmetry="field-period")
     compute_nullspaces(seq, verbose=False)
     odd = seq.odd
     B, _ = initial_field(seq)

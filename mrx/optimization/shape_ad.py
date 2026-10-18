@@ -11,11 +11,10 @@ Here ``s`` is a fixed seed that carries the toroidal flux, ``G_1`` the discrete 
 matrix, and ``a`` solves ``S_1 a = G_1^T M_2 s`` with ``S_1 = G_1^T M_2 G_1``. A gradient costs one forward
 and one adjoint solve of this system.
 
-A typical use: build a :class:`BoundaryShape` about a starting map, turn its variables into a geometry
-(:meth:`BoundaryShape.geometry`), install it with :func:`with_geometry`, compute the field with
-:func:`flux_seed` and :func:`vacuum_two_form`, and evaluate an objective: :func:`flux_ratio_iota`,
-:func:`mean_iota`, :func:`flux_surface_radius`, :func:`normal_field_fraction` or
-:func:`quasisymmetry_residual`. The objectives treat the logical surfaces as flux surfaces, and
+A typical use: build a :class:`BoundaryShape` about a starting map, turn its variables into map coefficients
+(:meth:`BoundaryShape.map_coefficients`) and a geometry (:func:`cylindrical_geometry`), install it with
+:func:`with_geometry`, compute the field with :func:`flux_seed` and :func:`vacuum_two_form`, and evaluate an
+objective: :func:`mean_iota`, :func:`normal_field_fraction` or :func:`quasisymmetry_residual`. The objectives treat the logical surfaces as flux surfaces, and
 :func:`normal_field_fraction` measures how far that is from true. The preconditioners of the solves are
 those of the sequence's own geometry and are not rebuilt as the shape changes.
 """
@@ -29,12 +28,29 @@ import numpy as np
 
 from mrx.differential_forms import DifferentialForm, inv33
 from mrx.equilibria import CylindricalMap
-from mrx.geometry import SequenceGeometry, _tp_evaluate, grad_1d
+from mrx.geometry import SequenceGeometry
 from mrx.mappings import stellarator_symmetric_scalar
 from mrx.mass import attach_weights
-from mrx.operators import _coclosed_solve
 from mrx.quadrature import evaluate_at_xq
 from mrx.spline_bases import basis_table
+
+
+def _grad_1d(d_basis, boundary_type):
+    """The derivatives of the splines of one axis, ``(n, nq)``, from the values ``d_basis`` of the
+    derivative splines ``D_l`` of that axis, by ``B'_l = D_{l-1} - D_l``. ``boundary_type`` is
+    ``'clamped'`` or ``'periodic'``."""
+    if boundary_type == 'clamped':
+        padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
+        return padded[:-1] - padded[1:]
+    return jnp.roll(d_basis, 1, axis=0) - d_basis
+
+
+def _tp_evaluate(C_raw, M1, M2, M3):
+    """A tensor-product spline ``sum_abc C_raw[i, a, b, c] M1[a, I] M2[b, J] M3[c, K]`` evaluated on a grid,
+    ``(len(C_raw), nqr, nqt, nqz)``."""
+    T1 = jnp.einsum("iabc,aI->iIbc", C_raw, M1)
+    T2 = jnp.einsum("iIbc,bJ->iIJc", T1, M2)
+    return jnp.einsum("iIJc,cK->iIJK", T2, M3)
 
 
 def with_geometry(seq, geometry):
@@ -101,17 +117,11 @@ class BoundaryShape(eqx.Module):
     symmetric (``R`` even and ``Z`` odd under ``(theta, zeta) -> (-theta, -zeta)``) and has the volume of the
     starting map, and also its aspect ratio if ``aspect`` is given (:meth:`map_coefficients`).
 
-    With ``free="boundary"``, ``beta`` has shape ``(2, n_theta, n_zeta)`` and is the change of the ``R`` and
-    ``Z`` coefficients on the outermost ring. The change is carried into the interior with a weight per ring
-    and poloidal mode ``m``, chosen by ``extension``:
-
-    * ``"ramp"``: weight ``((i - 1) / (n_r - 2))^2`` on ring ``i``, and zero on the two innermost rings, so the
-      magnetic axis does not move.
-    * ``"harmonic"``: weight ``r_i^|m|``, with ``r_i`` the radius of ring ``i``, except that ring 1 only takes
-      ``|m| <= 1``. The ``m = 0`` part then moves the axis as well.
-
-    With ``free="all"``, ``beta`` has shape ``(2, n_r, n_theta, n_zeta)``. Its outermost ring is extended
-    inwards as above, and the inner rings add their own independent change (:meth:`interior_modes`).
+    ``beta`` has shape ``(2, n_r, n_theta, n_zeta)``. Its outermost ring is the change of the ``R`` and ``Z``
+    coefficients on the boundary, carried into the interior with the weight ``r_i^|m|`` on ring ``i`` and
+    poloidal mode ``m`` (``r_i`` the radius of the ring), except that ring 1 only takes ``|m| <= 1``. The
+    ``m = 0`` part then moves the axis as well. The inner rings add their own independent change
+    (:meth:`interior_modes`).
     """
 
     raw_R: jnp.ndarray
@@ -120,31 +130,28 @@ class BoundaryShape(eqx.Module):
     volume: jnp.ndarray
     nfp: int = eqx.field(static=True)
     basis_0: DifferentialForm = eqx.field(static=True)
+    interior: jnp.ndarray
     aspect: Optional[float] = eqx.field(static=True, default=None)
-    interior: Optional[jnp.ndarray] = None
 
     @classmethod
-    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, volume=None, aspect=None, extension="ramp",
-                          free="boundary"):
+    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, volume=None, aspect=None):
         """The parametrisation about the map with coefficients ``raw_R``, ``raw_Z`` (``nfp`` as in
         :func:`cylindrical_geometry`). ``volume`` is the volume of one field period to hold, by default that of
         the starting map. ``aspect`` is the aspect ratio to hold, by default none. With these defaults
         ``beta = 0`` gives back the starting map."""
         if volume is None:
             volume = section_moments(seq, raw_R, raw_Z, nfp)[0]
-        weights = cls.extension_weights(seq.basis_0, extension)
-        interior = jnp.asarray(cls.interior_modes(seq.basis_0), dtype=raw_R.dtype) if free == "all" else None
+        weights = cls.extension_weights(seq.basis_0)
+        interior = jnp.asarray(cls.interior_modes(seq.basis_0), dtype=raw_R.dtype)
         return cls(raw_R, raw_Z, jnp.asarray(weights, dtype=raw_R.dtype), jnp.asarray(volume), int(nfp),
-                   seq.basis_0, None if aspect is None else float(aspect), interior)
+                   seq.basis_0, interior, None if aspect is None else float(aspect))
 
     @staticmethod
-    def extension_weights(basis_0, extension):
+    def extension_weights(basis_0):
         """The ``(n_r, n_theta)`` weights with which the boundary change enters ring ``i``, per poloidal mode
         ``m`` in FFT order (see the class docstring)."""
-        n_r, n_t = basis_0.Lambda[0].n, basis_0.Lambda[1].n
+        n_t = basis_0.Lambda[1].n
         m = np.abs(np.fft.fftfreq(n_t, 1.0 / n_t))
-        if extension == "ramp":
-            return np.broadcast_to(((np.maximum(np.arange(n_r) - 1, 0) / (n_r - 2)) ** 2)[:, None], (n_r, n_t))
         r = np.asarray(basis_0.Lambda[0].greville_points(), dtype=np.float64)
         weights = r[:, None] ** m[None, :]
         weights[1, m >= 2] = 0.0
@@ -152,7 +159,7 @@ class BoundaryShape(eqx.Module):
 
     @staticmethod
     def interior_modes(basis_0):
-        """A ``(n_r, n_theta)`` mask of the poloidal modes each ring may change on its own with ``free="all"``:
+        """A ``(n_r, n_theta)`` mask of the poloidal modes each ring may change on its own:
         ``m = 0`` on ring 0, ``|m| = 1`` on ring 1, every mode on the rings in between and none on the boundary
         ring. Ring 1 takes its ``m = 0`` change from ring 0."""
         n_r, n_t = basis_0.Lambda[0].n, basis_0.Lambda[1].n
@@ -164,38 +171,24 @@ class BoundaryShape(eqx.Module):
     def perturbation(self, beta):
         """``(b_R, b_Z)``: the stellarator-symmetric part of ``beta``, ``R`` even and ``Z`` odd under
         ``(theta, zeta) -> (-theta, -zeta)``."""
-        if self.interior is not None:
-            return (stellarator_symmetric_scalar(beta[0], self.basis_0, even=True),
-                    stellarator_symmetric_scalar(beta[1], self.basis_0, even=False))
-        return (stellarator_symmetric_scalar(beta[0][None], self.basis_0, even=True)[0],
-                stellarator_symmetric_scalar(beta[1][None], self.basis_0, even=False)[0])
+        return (stellarator_symmetric_scalar(beta[0], self.basis_0, even=True),
+                stellarator_symmetric_scalar(beta[1], self.basis_0, even=False))
 
     def change(self, beta):
         """The change ``(2, n_r, n_theta, n_zeta)`` of the ``R`` and ``Z`` coefficients at ``beta``, before the
-        volume and aspect-ratio scalings."""
-        b = jnp.stack(self.perturbation(beta))
-        if self.interior is None:
-            spectrum = jnp.fft.fft(b, axis=1)                                            # (2, n_t, n_z)
-            return jnp.fft.ifft(self.extension[None, :, :, None] * spectrum[:, None], axis=2).real
-        boundary = jnp.fft.fft(b[:, -1:], axis=2)                                         # (2, 1, n_t, n_z)
-        return jnp.fft.ifft(self.extension[None, :, :, None] * boundary, axis=2).real + self.interior_change(beta)
-
-    def interior_change(self, beta):
-        """The independent change of the inner rings at ``beta`` with ``free="all"``, shape ``(2, n_r, n_theta,
-        n_zeta)``. It is zero on the boundary ring."""
+        volume and aspect-ratio scalings: the boundary ring carried inwards plus the inner rings' own change."""
         spectrum = jnp.fft.fft(jnp.stack(self.perturbation(beta)), axis=2)              # (2, n_r, n_t, n_z)
+        boundary = self.extension[None, :, :, None] * spectrum[:, -1:]
         own = (self.interior[None, :, :, None] * spectrum).at[:, 1, 0].set(spectrum[:, 0, 0])
-        return jnp.fft.ifft(own, axis=2).real
+        return jnp.fft.ifft(boundary + own, axis=2).real
 
     def map_coefficients(self, seq, beta):
-        """``(R, Z, mu, scale)``: the coefficients of the map at ``beta`` and the two scale factors applied to
-        them. With ``aspect``, every cross-section is first scaled by ``mu`` about the coordinate axis so that
-        the aspect ratio is ``aspect`` (``mu = 1`` without it). Then the whole map is scaled by
-        ``scale = (volume / V)^(1/3)`` so that the volume is ``volume``. Both factors are exact."""
+        """``(R, Z)``: the coefficients of the map at ``beta``. With ``aspect``, every cross-section is first
+        scaled by ``mu`` about the coordinate axis so that the aspect ratio is ``aspect``. Then the whole map is
+        scaled by ``scale = (volume / V)^(1/3)`` so that the volume is ``volume``. Both factors are exact."""
         rings = self.change(beta)
         R, Z = self.raw_R + rings[0], self.raw_Z + rings[1]
         V, V_axis, S = section_moments(seq, R, Z, self.nfp)
-        mu = jnp.ones_like(V)
         if self.aspect is not None:
             # the aspect ratio nfp V / (2 sqrt(pi) S^(3/2)) does not change under the scaling by `scale`
             mu = V_axis / (2.0 * np.sqrt(np.pi) * S ** 1.5 * self.aspect / self.nfp - V + V_axis)
@@ -203,12 +196,7 @@ class BoundaryShape(eqx.Module):
             Z = Z[:1, :1] + mu * (Z - Z[:1, :1])
             V = mu ** 2 * V_axis + mu ** 3 * (V - V_axis)
         scale = (self.volume / V) ** (1.0 / 3.0)
-        return scale * R, scale * Z, mu, scale
-
-    def geometry(self, seq, beta):
-        """The differentiable geometry (:func:`cylindrical_geometry`) of the map at ``beta``."""
-        R, Z, _, _ = self.map_coefficients(seq, beta)
-        return cylindrical_geometry(seq, R, Z, self.nfp)
+        return scale * R, scale * Z
 
 
 def flux_seed(seq):
@@ -216,7 +204,7 @@ def flux_seed(seq):
     2-form space. It carries the toroidal flux, is closed and does not depend on the geometry, so it can be
     computed once and reused for every shape."""
     flux = jnp.asarray((0.0, 0.0, 1.0))
-    return seq.interpolate(lambda x_hat: flux, 2, frame='logical')
+    return seq.interpolate(lambda x_hat: flux, 2)
 
 
 def vacuum_two_form(seq, seed):
@@ -237,7 +225,7 @@ def vacuum_two_form(seq, seed):
             r = parity.dual(r, -1.0)
         # both right-hand sides are G_1^T of something: the forward one by construction, the adjoint one
         # because a enters h only through G_1 a
-        return _coclosed_solve(seq, r, 1)
+        return seq.L[1].solve(r, part="coexact", gauge=False, return_info=True)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - seq.G[1] @ a, info
@@ -259,46 +247,12 @@ def _radial_moments(seq, h):
     return A, C
 
 
-def _flux_tables(seq, C, r):
-    """``(s, ds/dr)`` at the logical radii ``r``, with ``s = Psi(r) / Psi_edge`` the normalised toroidal flux
-    computed from the moments ``C`` of :func:`_radial_moments`."""
-    # the antiderivative of sum_i C_i D_i is sum_l B_l(r) sum_{i < l} C_i (B'_l = D_{l-1} - D_l)
-    flux = jnp.concatenate([jnp.zeros(1, C.dtype), jnp.cumsum(C)])
-    return ((flux @ basis_table(seq.basis_0.Lambda[0], r)) / flux[-1],
-            (C @ basis_table(seq.basis_0.dLambda[0], r)) / flux[-1])
-
-
-def flux_ratio_iota(seq, h, r):
-    """``(iota, s)`` at the logical radii ``r`` for the field ``h``. ``iota = nfp <B^theta> / <B^zeta>`` is the
-    ratio of the averages over the logical surface, and ``s = Psi / Psi_edge`` the normalised toroidal flux
-    inside it. Both are exact functions of the coefficients of ``h``. ``iota`` is the rotational transform
-    where the logical surfaces are flux surfaces, and its sign follows the logical orientation."""
-    A, C = _radial_moments(seq, h)
-    D = basis_table(seq.basis_0.dLambda[0], r)
-    return seq.nfp * (A @ D) / (C @ D), _flux_tables(seq, C, r)[0]
-
-
 def mean_iota(seq, h):
-    """The mean ``int_0^1 iota ds`` of :func:`flux_ratio_iota` over the normalised toroidal flux ``s``. It
-    equals ``nfp`` times the ratio of the poloidal to the toroidal flux per field period, the analogue of
-    simsopt's ``mean_iota``."""
+    """The mean ``int_0^1 iota ds`` over the normalised toroidal flux ``s`` of the flux-ratio rotational transform
+    ``iota = nfp <B^theta> / <B^zeta>`` (averages over the logical surfaces). It equals ``nfp`` times the ratio of
+    the poloidal to the toroidal flux per field period, the analogue of simsopt's ``mean_iota``."""
     A, C = _radial_moments(seq, h)
     return seq.nfp * jnp.sum(A) / jnp.sum(C)
-
-
-def flux_surface_radius(seq, h, s, newton_steps=8):
-    """The logical radii at which the normalised toroidal flux of :func:`flux_ratio_iota` takes the values
-    ``s``, found by ``newton_steps`` Newton steps from ``r = sqrt(s)``. The derivative with respect to the
-    shape is the exact derivative of the root."""
-    # Newton runs with the gradient stopped. One final differentiable step gives the implicit derivative.
-    _, C = _radial_moments(seq, h)
-    C0 = jax.lax.stop_gradient(C)
-    r = jnp.sqrt(s)
-    for _ in range(newton_steps):
-        val, slope = _flux_tables(seq, C0, r)
-        r = r - (val - s) / slope
-    val, slope = _flux_tables(seq, C, r)
-    return r - (val - s) / slope
 
 
 def normal_field_fraction(seq, h):
@@ -318,8 +272,8 @@ def _tables(seq):
     prim = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
     der = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
     dder = seq.dd_basis_jk
-    dprim = tuple(grad_1d(d, t) for d, t in zip(der, types))
-    ddprim = tuple(grad_1d(dd, t) for dd, t in zip(dder, types))
+    dprim = tuple(_grad_1d(d, t) for d, t in zip(der, types))
+    ddprim = tuple(_grad_1d(dd, t) for dd, t in zip(dder, types))
     return prim, der, dprim, dder, ddprim, (int(prim[0].shape[1]), seq.quad.shape[1], seq.quad.shape[2])
 
 
@@ -391,8 +345,8 @@ def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, r_min):
 
         f = (G B . grad|B| - iota (B x grad Psi) . grad|B| / (2 pi)) / |B|^3.
 
-    Here ``Psi`` is the toroidal flux, taken constant on the logical surfaces, ``iota`` the signed flux ratio
-    of :func:`flux_ratio_iota`, and ``G`` the mean of the covariant ``B_zeta`` over the quadrature points times
+    Here ``Psi`` is the toroidal flux, taken constant on the logical surfaces, ``iota = nfp <B^theta> / <B^zeta>`` the signed flux
+    ratio (averages over the logical surfaces), and ``G`` the mean of the covariant ``B_zeta`` over the quadrature points times
     ``nfp / 2 pi``. The residual is exact where the logical surfaces are flux surfaces. ``F_parallel`` is the
     same average of the first term alone."""
     B, parallel, cross, B_cov, J = _residual_terms(seq, h, raw_R, raw_Z, nfp, _tables(seq))

@@ -82,7 +82,7 @@ if "a_minor" in st:
 # 4) Build the de Rham sequence on that geometry: the spline spaces, operators and preconditioners that
 # every solve uses.
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, _ = build_sequence(g.path, g.resolution, g.spline_degree, knots=g.knots, symmetry=str(g.symmetry))
+seq = build_sequence(g.path, g.resolution, g.spline_degree, knots=g.knots, symmetry=str(g.symmetry))
 jac = np.asarray(seq.geometry.jacobian_j)
 free = seq.free
 print(f"[seq] resolution {g.resolution}, p = {g.spline_degree}: {free.n(0)} 0-form, {free.n(1)} 1-form, "

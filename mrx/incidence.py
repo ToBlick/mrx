@@ -4,8 +4,8 @@ In a spline de Rham sequence the derivative of a k-form spline lies in the next 
 its coefficients are differences of neighbouring coefficients (entries -1, 0, +1). These matrices
 depend only on the mesh, not on the geometry, and the sequence builds them once when it is created.
 
-- :func:`build_matrixfree_incidence` returns ``G_k`` (``k = 0, 1, 2``: grad, curl, div) and its
-  transpose on the raw tensor-product coefficients.
+- :func:`build_matrixfree_incidence` returns ``G_k`` (``k = 0, 1, 2``: grad, curl, div) on the raw
+  tensor-product coefficients. Its ``.T`` is the transpose.
 - :func:`build_grad_stencil_g0` and :func:`build_curl_stencil_g1` return grad and curl on the
   extracted DoFs of :mod:`mrx.extraction_operators`, axis functions included. On these spaces
   ``curl grad = 0`` holds exactly.
@@ -90,7 +90,7 @@ def _apply_incidence_mf(op, x):
 
 class _MatrixFreeIncidence(eqx.Module):
     """The incidence matrix ``G_k`` or its transpose, applied to a flat raw coefficient vector
-    with ``@`` or a call. It holds only shapes, no arrays."""
+    with ``@``. It holds only shapes, no arrays."""
     k: int = eqx.field(static=True)
     transpose: bool = eqx.field(static=True)
     types: tuple = eqx.field(static=True)
@@ -98,37 +98,22 @@ class _MatrixFreeIncidence(eqx.Module):
     s1: tuple = eqx.field(static=True)
     s2: tuple = eqx.field(static=True)
     s3: tuple = eqx.field(static=True)
-    shape: tuple = eqx.field(static=True)
 
     def __matmul__(self, x):
         return _apply_incidence_mf(self, x)
 
-    def __call__(self, x):
-        return _apply_incidence_mf(self, x)
-
     @property
     def T(self):
-        return _MatrixFreeIncidence(
-            k=self.k,
-            transpose=not self.transpose,
-            types=self.types,
-            s0=self.s0, s1=self.s1, s2=self.s2, s3=self.s3,
-            shape=(self.shape[1], self.shape[0]),
-        )
+        return _MatrixFreeIncidence(self.k, not self.transpose, self.types, self.s0, self.s1, self.s2, self.s3)
 
 
 def build_matrixfree_incidence(seq, k: int):
-    """``(G_k, G_k^T)`` on the raw tensor-product coefficients of ``seq``, for ``k = 0, 1, 2``."""
+    """``G_k`` on the raw tensor-product coefficients of ``seq``, for ``k = 0, 1, 2``."""
     s0 = tuple(int(v) for v in seq.basis_0.shape[0])
     s3 = tuple(int(v) for v in seq.basis_3.shape[0])
     s1 = tuple(tuple(int(v) for v in comp) for comp in seq.basis_1.shape)
     s2 = tuple(tuple(int(v) for v in comp) for comp in seq.basis_2.shape)
-    sizes = (_prod3(s0), sum(_prod3(c) for c in s1), sum(_prod3(c) for c in s2), _prod3(s3))
-    n_in, n_out = sizes[k], sizes[k + 1]
-    common = dict(k=k, types=tuple(seq.basis_0.types), s0=s0, s1=s1, s2=s2, s3=s3)
-    g = _MatrixFreeIncidence(transpose=False, shape=(n_out, n_in), **common)
-    g_T = _MatrixFreeIncidence(transpose=True, shape=(n_in, n_out), **common)
-    return g, g_T
+    return _MatrixFreeIncidence(k, False, tuple(seq.basis_0.types), s0, s1, s2, s3)
 
 
 def _stencil_grid(*dims):

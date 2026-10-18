@@ -35,7 +35,6 @@ ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
 #: The relative spread of the three representations' errors, which is below 3e-12.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
-_ERRORS = {}
 
 
 def psi(X):
@@ -120,20 +119,16 @@ def _solve(seq, k):
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
 
 
-@pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_manufactured_solution(domains, k, name):
+def test_manufactured_solution(domains, k):
     """The k-th manufactured solution is recovered within its band, and with the same error on the three
     representations of the domain."""
-    err = _solve(domains(name), k)
-    _ERRORS[k, name] = err
-    print(f"\n  k={k} {name}: relative L2 error {err:.6e}")
-    assert err < ERROR_BAND[k]
-    if name == NAMES[-1]:
-        errs = [_ERRORS[k, n] for n in NAMES if (k, n) in _ERRORS]
-        spread = (max(errs) - min(errs)) / min(errs)
-        print(f"  k={k}: spread of the errors over {len(errs)} representations {spread:.2e}")
-        assert spread < SAME
+    errs = {name: _solve(domains(name), k) for name in NAMES}
+    spread = (max(errs.values()) - min(errs.values())) / min(errs.values())
+    print(f"\n  k={k}: relative L2 errors " + ", ".join(f"{n} {e:.6e}" for n, e in errs.items())
+          + f", spread {spread:.2e}")
+    assert max(errs.values()) < ERROR_BAND[k]
+    assert spread < SAME
 
 
 def test_leray_projection(seq):
@@ -150,34 +145,6 @@ def test_leray_projection(seq):
     assert div <= 10 * seq.tol + eps(10)
     assert moved <= 10 * seq.tol + eps(10)
     assert float(even.l2_norm(Pv, 2)) < 1.0
-
-
-def test_a_new_geometry_can_keep_the_preconditioners(domains):
-    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the atoms and zeroes the harmonic forms, so
-    a solve runs without a new build. Without it the bundle is gone and a solve raises. The map installed here
-    is the sequence's own, and the preconditioners and harmonic forms are built again at the end."""
-    from mrx.equilibria import build_map
-    from mrx.nullspace import compute_nullspaces
-
-    s = domains("period")
-    Phi, _ = build_map(s.equilibrium, s, nfp=s.nfp, stellarator_symmetric=s.half_period)
-    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
-    x_ref = s.M[1].solve(b)
-    Pb = s.M[1].precondition(b)
-    try:
-        s.set_geometry_from_map(Phi, keep_preconditioners=True)
-        assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-        x, info = s.M[1].solve(b, return_info=True)
-        assert info > 0
-        assert float(s.l2_norm(x - x_ref, 1) / s.l2_norm(x_ref, 1)) <= 1e3 * s.tol
-        s.set_geometry_from_map(Phi)
-        assert s.operators is None
-        with pytest.raises(ValueError):
-            s.M[1].solve(b)
-    finally:
-        s.build_preconditioners()
-        compute_nullspaces(s, verbose=False)
 
 
 def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq, b0):
@@ -243,40 +210,3 @@ def test_parts_of_the_laplacian_solve(domains, k):
     assert float(jnp.linalg.norm(gauge)) <= 1e3 * s.tol * float(jnp.linalg.norm(s.M[k] @ x["coexact"]))
     x_sum = s.L[k].solve(b["coexact"] + b["exact"])
     assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
-
-
-@pytest.mark.parametrize("k", [1, 2])
-def test_the_coexact_solve_without_its_gauge_takes_a_guess(domains, k):
-    """Started from its own result, the co-exact solve without the gauge is converged at once."""
-    s = domains("period")
-    b = s.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)))
-    y, info = s.L[k].solve(b, return_info=True, part="coexact", gauge=False)
-    y2, info2 = s.L[k].solve(b, return_info=True, part="coexact", gauge=False, guess=y)
-    assert 0 <= info2 < info
-    assert float(s.l2_norm(s.G[k] @ (y2 - y), k + 1) / s.l2_norm(s.G[k] @ y, k + 1)) <= 1e3 * s.tol
-
-
-def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
-    """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
-    s = domains("period")
-    b = s.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)))
-    x, info = s.L[0].solve(b, return_info=True, part="coexact")
-    x_full = s.L[0].solve(b)
-    assert info > 0
-    assert float(s.l2_norm(x - x_full, 0) / s.l2_norm(x_full, 0)) <= 1e3 * s.tol
-
-
-def test_parts_that_do_not_exist_are_refused(domains):
-    s = domains("period")
-    with pytest.raises(ValueError):
-        s.L[0].solve(jnp.zeros(s.n(0)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[3].solve(jnp.zeros(s.n(3)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), gauge=False)

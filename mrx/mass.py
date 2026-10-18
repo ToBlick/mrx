@@ -26,6 +26,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.symmetry import symmetrize
+
 
 class SumfactPlan(eqx.Module):
     """The geometry-independent part of a mass or projection apply: the 1-D basis tables of the row and the
@@ -141,6 +143,5 @@ def build_mass_diagonal(seq, k):
     if seq.half_period:
         # d holds twice the half-period integrals. An entry and its mirror image each hold
         # one half of the full integral, so their unsigned mean is the full diagonal.
-        from mrx.symmetry import symmetrize  # noqa: PLC0415
         d = symmetrize(d, seq.reflection_plan[k], 1, signed=False)
     return d

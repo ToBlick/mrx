@@ -53,6 +53,3 @@ concepts/testing_strategy
 
 api/index
 ```
-
-`docs/research` in the repository holds the record of measurements behind the design. It is written for
-coding agents working on the code, not for reading.

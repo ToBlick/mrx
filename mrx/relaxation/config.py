@@ -5,14 +5,12 @@ descent method, Newton solve, step budget, resistive drive, output). The default
 production values, and invalid combinations raise a ``ValueError`` when the config is created. ``relax.py`` turns
 the same classes into its command line with ``tyro.cli``. The docstring under each field is its help text, and a
 field ``x`` of the group ``g`` is the option ``--g.x`` (underscores written as hyphens). :attr:`RelaxConfig.params`
-is the flat record stored as ``params`` in ``relax.json``, and :meth:`RelaxConfig.from_params` rebuilds the config
-from it. :meth:`RelaxConfig.stepper` and :meth:`RelaxConfig.relax_kwargs` give what
+is the flat record stored as ``params`` in ``relax.json``. :meth:`RelaxConfig.stepper` and :meth:`RelaxConfig.relax_kwargs` give what
 :func:`~mrx.relaxation.loop.relax` needs.
 """
 from __future__ import annotations
 
 import os
-import typing
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
@@ -71,8 +69,7 @@ class Geometry:
         return [self.knots_r, self.knots_theta, self.knots_zeta]
 
     def build(self):
-        """Build the de Rham sequence of this geometry and return ``(seq, ops)``, see
-        :func:`mrx.geometry.build_sequence`."""
+        """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`."""
         from mrx.geometry import build_sequence
         return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
                               tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry))
@@ -217,10 +214,6 @@ class RelaxConfig:
         about the run to it."""
         return flatten(self)
 
-    @classmethod
-    def from_params(cls, params: dict) -> "RelaxConfig":
-        """Rebuild a configuration from the ``params`` of a ``relax.json``. Unknown keys are ignored."""
-        return unflatten(cls, params)
 
 
 def flatten(cfg, prefix="") -> dict:
@@ -237,19 +230,3 @@ def flatten(cfg, prefix="") -> dict:
             out[key] = list(v) if isinstance(v, tuple) else (v.value if isinstance(v, Enum) else v)
     return out
 
-
-def unflatten(cls, params: dict, prefix=""):
-    """Rebuild a ``cls`` from a record written by :func:`flatten`. Missing keys keep their defaults, and keys that
-    are not fields are ignored."""
-    hints = typing.get_type_hints(cls)
-    kw = {}
-    for f in fields(cls):
-        t = hints[f.name]
-        if is_dataclass(t):
-            kw[f.name] = unflatten(t, params, f.metadata.get("record_prefix", ""))
-            continue
-        key = f.metadata.get("record", prefix + f.name)
-        if key in params:
-            v = params[key]
-            kw[f.name] = tuple(v) if isinstance(v, list) else (t(v) if isinstance(t, type) and issubclass(t, Enum) else v)
-    return cls(**kw)

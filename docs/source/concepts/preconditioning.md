@@ -164,8 +164,7 @@ index shuffling around the blocks (picking out each component's entries,
 the parity views, putting the result back in order) is worked out once when
 the atom is built and done in a single lookup on the way in and one on the
 way out. On a GPU every small operation costs a few microseconds no matter
-how little it computes, so doing fewer of them halved the cost of an apply
-(`docs/research/performance.md`).
+how little it computes, so doing fewer of them halved the cost of an apply.
 
 ## 3. Building and invalidation
 

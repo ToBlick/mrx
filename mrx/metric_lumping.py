@@ -77,15 +77,12 @@ def _simultaneous_diagonalize_pair(M, A):
 
 
 def _dense_incidence_1d(n0, typ):
-    """The 1-D incidence ``(G c)_j = c_{j+1} - c_j`` of an axis of type ``typ`` (wrapped if
-    periodic, zero if constant)."""
+    """The 1-D incidence ``(G c)_j = c_{j+1} - c_j`` of an axis of type ``typ`` (wrapped if periodic)."""
     if typ == 'clamped':
         j = jnp.arange(n0 - 1)
         return jnp.zeros((n0 - 1, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
-    if typ == 'periodic':
-        j = jnp.arange(n0)
-        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
-    return jnp.zeros((n0, n0))
+    j = jnp.arange(n0)
+    return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +528,7 @@ class MetricLumpingLaplacian(_Atom):
     """
 
     def __init__(self, seq, operators, k):
-        from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
+        from mrx.operators import apply_laplacian_approx   # imports this module
         core, raw_blocks, probe = self._prologue(seq, k)
         specs, strong = [], []
         for c, rows, vals, (r0, nr), shape in raw_blocks:
@@ -574,7 +571,7 @@ class MetricLumpingMass(_Atom):
     :meth:`apply`.
     """
 
-    def __init__(self, seq, operators, k):
+    def __init__(self, seq, k):
         core, raw_blocks, probe = self._prologue(seq, k)
         mass_1d, lam = _kron_mass_model_1d(seq, k)
         specs = [dict(rows=rows, vals=vals, shape=shape, pre=1.0 / lam[c][r0:r0 + nr],

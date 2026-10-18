@@ -1,15 +1,11 @@
-"""Turning a given function into a discrete ``k``-form. Users call these through ``seq.load`` and
-``seq.interpolate``.
+"""Turning a given function into a discrete ``k``-form by commuting projections. Users call this through
+``seq.interpolate``. (``seq.load`` gives the right-hand side of an L2 projection instead.)
 
-- :func:`load` returns the dual vector ``v_i = int Lambda^k_i . f dx`` of the basis forms
-  ``Lambda^k_i`` against ``f``. Applying the inverse mass matrix to it gives the L2 projection of ``f``.
-- :func:`interpolate` returns the coefficients of a form directly, by interpolation at the Greville
-  points (k = 0) or by matching integrals over Greville cells (histopolation, k = 1, 2, 3). On the
-  tensor-product spline spaces these projections commute with the exterior derivative. The result is
-  then restricted to the polar (axis-regular) subspace the sequence works in.
-
-The function ``f`` is evaluated at logical points. It returns physical components, or with
-:func:`interpolate` also logical ones (``frame='logical'``).
+:func:`interpolate` returns the coefficients of a form directly, by interpolation at the Greville points
+(k = 0) or by matching integrals over Greville cells (histopolation, k = 1, 2, 3). On the tensor-product
+spline spaces these projections commute with the exterior derivative. The result is then restricted to the
+polar (axis-regular) subspace the sequence works in. The function is evaluated at logical points and returns
+the logical components of the form.
 """
 
 from __future__ import annotations
@@ -23,10 +19,7 @@ from jax import Array
 
 
 import mrx
-from mrx.differential_forms import adj33
 from mrx.extraction_operators import conforming_restriction
-from mrx.geometry import map_jacobian_at
-from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
     from mrx.derham_sequence import DeRhamSequence
@@ -87,26 +80,6 @@ def greville_axes(seq) -> tuple[_GrevilleAxis, _GrevilleAxis, _GrevilleAxis]:
     return tuple(axes)
 
 
-def load(seq: "DeRhamSequence", f, k: int, parity=None):
-    """The dual vector ``v_i = int Lambda^k_i . f dx`` of the ``k``-form space of ``seq`` (the
-    Dirichlet space, or the free one on ``seq.free``). ``f`` takes a logical point and returns a scalar (k = 0, 3) or three
-    physical components (k = 1, 2), which are pulled back here. ``parity`` is as in
-    :meth:`~mrx.derham_sequence.DeRhamSequence.symmetrize`."""
-    fn = f if k in (1, 2) else (lambda x: _as_single_component(f(x)))
-    f_jk = jax.lax.map(fn, seq.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    if k in (1, 2):
-        # DPhi is not stored on the geometry, so it is recomputed here once per call
-        f_jk = jnp.einsum('qji,qj->qi', map_jacobian_at(seq.map, seq.quad.x), f_jk)    # DPhi^T v
-        if k == 1:
-            f_jk = jnp.einsum('qij,qj->qi', seq.metric_inv_jkl, f_jk)                    # DPhi^-1 v = G^-1 DPhi^T v
-    if k in (0, 1):
-        weight = seq.quad.w * seq.jacobian_j
-    else:
-        weight = seq.quad.w
-    w_jk = f_jk * weight[:, None]
-    return seq.E(k) @ seq.symmetrize(integrate_against(w_jk, seq._form_comp_info(k)), k, parity)
-
-
 def _wrap_periodic_point(seq, xi):
     """The logical point ``xi`` with its periodic coordinates wrapped into ``[0, 1)``."""
     # periodic Greville spans run past x = 1 (at even p the last one is [1 - h/2, 1 + h/2])
@@ -119,31 +92,14 @@ def _wrap_periodic_point(seq, xi):
     return jnp.asarray(wrapped)
 
 
-def _pullback(seq, v, k, frame):
-    """The function giving the logical components of the ``k``-form ``v``: ``DPhi^T v`` (k=1) or
-    ``adj(DPhi) v = J DPhi^-1 v`` (k=2) or ``J v`` (k=3) when ``v`` returns physical components, ``v`` itself
-    otherwise."""
-    # adj(DPhi) rather than J DPhi^-1 stays finite where det DPhi -> 0 (the axis)
-    if frame == 'logical':
-        if k == 3:
-            return lambda x: _as_single_component(v(_wrap_periodic_point(seq, x)))
-        return lambda x: v(_wrap_periodic_point(seq, x))
-    DPhi = jax.jacfwd(seq.map)
+def _wrapped(seq, v, k):
+    """``v`` with its periodic coordinates wrapped into ``[0, 1)`` first, as a vector (of length one at k = 3)."""
     if k == 3:
-        def density(x):
-            x_eval = _wrap_periodic_point(seq, x)
-            return jnp.linalg.det(DPhi(x_eval)) * _as_single_component(v(x_eval))
-        return density
-    transform = (lambda D: D.T) if k == 1 else adj33
-
-    def pullback(x):
-        x_eval = _wrap_periodic_point(seq, x)
-        return transform(DPhi(x_eval)) @ v(x_eval)
-
-    return pullback
+        return lambda x: _as_single_component(v(_wrap_periodic_point(seq, x)))
+    return lambda x: v(_wrap_periodic_point(seq, x))
 
 
-def _greville_moments(seq, fn, rules) -> Array:
+def _greville_moments(fn, rules) -> Array:
     """The integrals of the scalar ``fn`` over every cell of the tensor-product rule ``rules``,
     ``(n_r, n_t, n_z)``."""
     sizes = [xs.shape[0] for xs, _ in rules]
@@ -162,18 +118,13 @@ def _greville_moments(seq, fn, rules) -> Array:
         integrate, cells, batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(sizes)
 
 
-def interpolate(seq: "DeRhamSequence", f, k: int, frame: str = 'physical'):
+def interpolate(seq: "DeRhamSequence", f, k: int):
     """The coefficients of the ``k``-form that interpolates ``f`` (k = 0) or matches its integrals over the
     Greville cells (k = 1, 2, 3), in the ``k``-form space of ``seq`` (the Dirichlet space, or the free one
-    on ``seq.free``).
-
-    With ``frame='physical'`` (the default), ``f`` returns physical components (for k = 3 the physical
-    density). With ``frame='logical'``, ``f`` returns the logical components of the form (for k = 3 the
+    on ``seq.free``). ``f`` returns the logical components of the form at a logical point (for k = 3 the
     density times ``det DPhi``)."""
-    if frame not in ('physical', 'logical'):
-        raise ValueError(f"frame must be 'physical' or 'logical', got {frame!r}")
     axes = seq.greville
-    pullback = _pullback(seq, f, k, frame) if k else None
+    logical = _wrapped(seq, f, k) if k else None
     coeffs = []
     for c in range(3 if k in (1, 2) else 1):
         # per axis: histopolated (span rule, histopolation matrix) or collocated (point, collocation matrix)
@@ -186,7 +137,7 @@ def interpolate(seq: "DeRhamSequence", f, k: int, frame: str = 'physical'):
                             batch_size=mrx.MAP_BATCH_SIZE_INNER).reshape(len(x_r), len(x_t), len(x_z))
         else:
             rules = tuple(ax.span_rule if h else ax.point_rule for ax, h in zip(axes, hist))
-            m = _greville_moments(seq, lambda x, c=c: pullback(x)[c], rules)
+            m = _greville_moments(lambda x, c=c: logical(x)[c], rules)
         for j, ax in enumerate(axes):
             m = _solve_tensor_collocation_axis(ax.hist if hist[j] else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))

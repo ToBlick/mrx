@@ -54,7 +54,7 @@ def main(cfg):
 
     # --- geometry and operators ------------------------------------------
     t0 = time.perf_counter()
-    seq, ops = g.build()
+    seq = g.build()
     params.update(ic=seq.equilibrium["kind"], resolution=list(seq.ns), knots=g.knots, nfp=seq.nfp)
     compute_nullspaces(seq)
     print(f"[setup] {g.path} resolution {seq.ns} degree {g.spline_degree} tol={seq.tol:.1e}  "

@@ -256,16 +256,14 @@ class _MinresState(NamedTuple):
     npc: bool
 
 
-def minres(A_matvec, b, *, M, tol, maxiter, x0=None, npc_exit=False, norm=None):
-    """Solve the symmetric (possibly indefinite) system ``A x = b`` by preconditioned MINRES.
+def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
+    """Solve the symmetric (possibly indefinite) system ``A x = b`` by preconditioned MINRES from zero.
 
     Returns ``(x, info)``. ``M`` is an SPD approximation of ``A^{-1}``. The solve stops when
     ``norm(r) < tol norm(b)`` for the residual ``r = b - A x``, which is carried by its recurrence
     ``r_k = s_k^2 r_{k-1} - c_k phibar_k z_{k+1} / beta_{k+1}`` (``z`` the Lanczos vectors before
-    the preconditioner). ``norm`` is the norm of the residual's space
-    (:func:`mrx.operators.dual_norm`), the one every solve is judged in. Without it the solve stops
-    on the residual estimate ``phibar``, the norm of ``r`` in the preconditioner
-    (Choi, Paige & Saunders 2011).
+    the preconditioner, Choi, Paige & Saunders 2011). ``norm`` is the norm of the residual's space
+    (:func:`mrx.operators.dual_norm`), the one every solve is judged in.
 
     With ``npc_exit=True`` the solve also stops at the first residual ``r`` with
     ``<r, A r> <= 0`` and returns ``M r`` in place of the iterate. This is the
@@ -273,14 +271,12 @@ def minres(A_matvec, b, *, M, tol, maxiter, x0=None, npc_exit=False, norm=None):
     descent direction of nonpositive curvature. The return is then ``(x, info, npc)`` with
     ``npc`` true if the exit was taken.
     """
-    if x0 is None:
-        x0 = jnp.zeros_like(b)
-
+    x0 = jnp.zeros_like(b)
     # A negative r^T M r means M is not SPD. The result then becomes NaN.
-    r0 = b - A_matvec(x0)
+    r0 = b
     y0 = M(r0)
     beta1 = jnp.sqrt(jnp.dot(r0, y0))
-    bnorm = jnp.sqrt(jnp.dot(b, M(b))) if norm is None else norm(b)
+    bnorm = norm(b)
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     # The state follows SOL MINRES. y is the preconditioned residual (v = y / beta), r1 and r2
@@ -336,12 +332,8 @@ def minres(A_matvec, b, *, M, tol, maxiter, x0=None, npc_exit=False, norm=None):
         x_new = jnp.where(npc_new, x, x + phi * w_new)
         # the residual of the new iterate (frozen with it at the NPC exit)
         safe_beta_new = jnp.where(beta_new > 0, beta_new, 1.0)
-        if norm is None:
-            res_new, size = res, phibar_new
-        else:
-            res_new = jnp.where(npc_new, res, sn_new**2 * res - (cs_new * phibar_new / safe_beta_new) * y_new)
-            size = norm(res_new)
-        converged_new = size < tol * bnorm_safe
+        res_new = jnp.where(npc_new, res, sn_new**2 * res - (cs_new * phibar_new / safe_beta_new) * y_new)
+        converged_new = norm(res_new) < tol * bnorm_safe
 
         return _MinresState(
             x=x_new, y=y_prec, r1=r2, r2=y_new, beta=beta_new, oldbeta=beta,
@@ -364,7 +356,7 @@ def solve_saddle_point_minres(
         stiffness_matvec, derivative_matvec, derivative_T_matvec,
         mass_lower_matvec, b_upper, n_upper, n_lower, *,
         precond_upper, precond_lower, mass_upper_matvec, vs_upper,
-        tol, maxiter, saddle_res, norm_upper, norm_lower,
+        tol, maxiter, norm_upper, norm_lower,
         x0_upper=None, x0_lower=None, parity_upper=None, parity_lower=None,
         eliminate_lower=None):
     """Solve the saddle-point system of a Hodge Laplacian by MINRES and return ``(u, sigma, info)``::
@@ -377,8 +369,7 @@ def solve_saddle_point_minres(
     preconditioners of the two diagonal blocks. The rows of ``vs_upper`` span the harmonic
     k-forms, orthonormal in ``M_k``, and are removed from ``u``. The lower block has no kernel.
 
-    MINRES runs inside :func:`refine`. ``saddle_res(u, sigma)`` returns the two blocks of the
-    operator applied to ``(u, sigma)``, each pass solves to ``tol``, and convergence is
+    MINRES runs inside :func:`refine`, each pass solves to ``tol``, and convergence is
     judged in the norm ``sqrt(norm_upper^2 + norm_lower^2)``, by MINRES as well. With
     ``eliminate_lower`` (``r_lower -> D M^{-1} r_lower``) the upper part is the residual of the
     equation for ``u`` alone, ``f - (S + D M^{-1} D^T) u``, which is ``r_upper + D M^{-1} r_lower``
@@ -422,11 +413,6 @@ def solve_saddle_point_minres(
         x0_lower = jnp.zeros(n_lower)
     x0 = pack(project_primal_upper(x0_upper), x0_lower)
 
-    def apply(x):
-        u, s = unpack(x)
-        r_upper, r_lower = saddle_res(project_primal_upper(u), project_primal_lower(s))
-        return pack(project_dual_upper(r_upper), project_dual_lower(r_lower))
-
     def solve(r):
         return minres(A_matvec, r, M=precond, tol=tol, maxiter=maxiter, norm=norm)
 
@@ -436,6 +422,6 @@ def solve_saddle_point_minres(
             r_u = r_u + eliminate_lower(r_l)
         return jnp.sqrt(norm_upper(r_u) ** 2 + norm_lower(r_l) ** 2)
 
-    x, info = refine(apply, solve, b, x0=x0, tol=tol, norm=norm)
+    x, info = refine(A_matvec, solve, b, x0=x0, tol=tol, norm=norm)
     u, sigma = unpack(x)
     return project_primal_upper(u), project_primal_lower(sigma), info

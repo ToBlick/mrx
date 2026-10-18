@@ -80,16 +80,13 @@ def set_nullspace(operators, k, dirichlet, values):
     return _replace(operators, "nullspaces", spaces)
 
 
-def _bundle(operators):
+def _atom(operators, kind: str, k: int, dirichlet: bool):
+    """The preconditioner of ``(k, dirichlet)`` in the bundle ``operators``, ``kind`` being ``'mass'`` or
+    ``'laplacian'``."""
     if operators is None:
         raise ValueError("no operator bundle: call seq.build_preconditioners() after set_geometry_from_map")
-    return operators
-
-
-def _atom(operators, kind: str, k: int, dirichlet: bool):
-    """The preconditioner of ``(k, dirichlet)``, ``kind`` being ``'mass'`` or ``'laplacian'``."""
     try:
-        return getattr(_bundle(operators), f"{kind}_lumping")[(int(k), bool(dirichlet))]
+        return getattr(operators, f"{kind}_lumping")[(int(k), bool(dirichlet))]
     except KeyError:
         raise ValueError(
             f"the metric-lumped {kind} atom of k={k}, dirichlet={dirichlet} is not built. "
@@ -103,18 +100,18 @@ def _seq_atom(seq, kind: str, k: int):
 
 def _harmonic(seq, k):
     """The harmonic forms of the ``k``-form space of ``seq``, one per row."""
-    return _bundle(seq.operators).nullspaces[(int(k), seq.dirichlet)]
+    return seq._require_operators().nullspaces[(int(k), seq.dirichlet)]
 
 
 def assemble_preconditioners(seq, operators):
     """A copy of ``operators`` with the mass and Laplacian preconditioners of the Dirichlet and the
     free spaces of every degree built for the installed geometry. This needs at least two radial
     elements (``n >= p + 2``)."""
-    from mrx.metric_lumping import MetricLumpingLaplacian, MetricLumpingMass  # noqa: PLC0415
+    from mrx.metric_lumping import MetricLumpingLaplacian, MetricLumpingMass   # imports this module
     views = [(k, view) for k in range(4) for view in (seq.free, seq)]
     mass = dict(operators.mass_lumping)
     for k, view in views:
-        mass[(k, view.dirichlet)] = MetricLumpingMass(view, operators, k)
+        mass[(k, view.dirichlet)] = MetricLumpingMass(view, k)
     # the Laplacian preconditioners are built using the mass ones
     operators = _replace(operators, "mass_lumping", mass)
     laplacian = dict(operators.laplacian_lumping)
@@ -123,15 +120,9 @@ def assemble_preconditioners(seq, operators):
     return _replace(operators, "laplacian_lumping", laplacian)
 
 
-def _geometry(seq):
-    if seq.geometry is None:
-        raise ValueError("no geometry installed: call seq.set_geometry_from_map first")
-    return seq.geometry
-
-
 def _mass_core(seq, k: int):
     """The function ``x -> M_k x`` on the full tensor-product spline DoFs."""
-    plan, weights = seq.mass_plan[k], _geometry(seq).mass_weights[k]
+    plan, weights = seq.mass_plan[k], seq._require_geometry().mass_weights[k]
     return _half_period_apply(seq, lambda x: sumfact_apply(plan, weights, x), k, k)
 
 
@@ -154,7 +145,8 @@ def _half_period_apply(seq, core, k_in, k_out):
 
 def _raw_incidence(seq, k: int):
     """``(G_k, G_k^T)`` on the full tensor-product DoFs (:mod:`mrx.incidence`)."""
-    return getattr(seq, f"g{k}"), getattr(seq, f"g{k}_T")
+    g = seq.incidence[k]
+    return g, g.T
 
 
 def _grad(seq, v, k: int, transpose: bool = False):
@@ -330,57 +322,40 @@ def _pair_loop(seq, k, eps, split, b, guess, vs):
     return p[:n_k], info
 
 
-def _hat_solve(seq, b, k: int, tol, check_residual=False):
-    """Solve ``L^_k x = b`` by conjugate gradients to tolerance ``tol``, harmonic forms removed.
+def _stiffness_solve(seq, b, k: int, tol, guess=None, check_residual=False, regularise=False):
+    """``(x, info)`` with ``S_k x = b`` by conjugate gradients with the preconditioner of ``L_k``, harmonic forms
+    removed, stopped on the residual in :func:`dual_norm` at ``tol``.
 
-    ``L^_k = S_k + M_k G W G^T M_k`` (``G = G_{k-1}``), with ``W`` the preconditioner of
-    ``M_{k-1}``, is symmetric positive definite, while ``S_k`` alone is singular on the exact forms.
-    For a ``b`` orthogonal to the exact forms both have the same solution, for any SPD ``W``. For any
-    other ``b`` the co-exact part of ``x`` solves ``S_k x = b`` with the part of ``b`` that the exact
-    forms see left out, and ``G_k x`` only depends on that part.
+    ``S_k`` is singular on the closed forms, so ``x`` is fixed only up to a closed form and only ``G_k x`` is
+    determined. Conjugate gradients converge on the singular system for a consistent ``b``, one that is literally
+    ``G_k^T`` of something. A right-hand side only approximately in that range, as inside the Hodge split, makes
+    the iteration diverge. ``regularise`` (k >= 1) solves ``L^_k x = b`` instead, with
+    ``L^_k = S_k + M_k G W G^T M_k`` (``G = G_{k-1}``, ``W`` the preconditioner of ``M_{k-1}``), which is
+    symmetric positive definite. For a ``b`` orthogonal to the exact forms both have the same solution. For any
+    other ``b`` the co-exact part of ``x`` solves ``S_k x = b`` with the part of ``b`` that the exact forms see
+    left out, and ``G_k x`` only depends on that part.
 
     With ``check_residual`` the true residual is checked after the conjugate gradients
-    (:func:`mrx.solvers.refine`). Without it the solve stops on the residual of its recurrence, as it
-    does inside :func:`_hodge_split`.
+    (:func:`mrx.solvers.refine`). Without it the solve stops on the residual of its recurrence, as it does
+    inside :func:`_hodge_split`.
     """
-    W = _seq_atom(seq, "mass", k - 1).apply
-
-    def L_hat(x):
-        Mx = _mass(seq, x, k)
-        return _stiffness(seq, x, k) + _mass(seq, _grad(seq, W(_grad(seq, Mx, k - 1, transpose=True)), k - 1), k)
+    def A(x):
+        y = _stiffness(seq, x, k)
+        if not regularise or k == 0:
+            return y
+        W = _seq_atom(seq, "mass", k - 1).apply
+        return y + _mass(seq, _grad(seq, W(_grad(seq, _mass(seq, x, k), k - 1, transpose=True)), k - 1), k)
 
     return solve_singular_cg(
-        L_hat, b,
-        mass_matvec=lambda v: _mass(seq, v, k),
+        A, b, _harmonic(seq, k),
         precond_matvec=_seq_atom(seq, "laplacian", k).apply,
-        vs=_harmonic(seq, k),
+        mass_matvec=lambda v: _mass(seq, v, k),
+        x0=guess,
         tol=tol,
         maxiter=seq.maxiter,
         check_residual=check_residual,
         norm=dual_norm(seq, k),
         parity=parity_projectors(seq, k, b),
-    )
-
-
-def _k0_solve(seq, b, tol, guess=None, check_residual=False):
-    """Solve ``S_0 x = b`` by conjugate gradients, harmonic forms removed.
-
-    With ``check_residual`` the true residual is checked after the conjugate gradients
-    (:func:`mrx.solvers.refine`). Without it the solve stops on the residual of its recurrence, as it
-    does inside :func:`_hodge_split`.
-    """
-    return solve_singular_cg(
-        lambda x: _stiffness(seq, x, 0),
-        b,
-        mass_matvec=lambda x: _mass(seq, x, 0),
-        precond_matvec=_seq_atom(seq, "laplacian", 0).apply,
-        x0=guess,
-        vs=_harmonic(seq, 0),
-        tol=tol,
-        maxiter=seq.maxiter,
-        check_residual=check_residual,
-        norm=dual_norm(seq, 0),
-        parity=parity_projectors(seq, 0, b),
     )
 
 
@@ -432,8 +407,8 @@ def _hodge_split(seq, b, k, guess, delta=None):
     So each solve stops on its own residual at a third of the tolerance, and :func:`_pair_loop` repeats the
     split until the residual of the posed equation is small.
 
-    Without ``delta`` the singular stiffness solves go through :func:`_hat_solve` (:func:`_k0_solve` at degree
-    0) with the harmonic forms removed, and no mass term is formed. With ``delta`` each solve is
+    Without ``delta`` the singular stiffness solves are regularised (:func:`_stiffness_solve`) with the harmonic
+    forms removed, and no mass term is formed. With ``delta`` each solve is
     :func:`_shifted_cg`, and the operator is positive definite, with no kernel.
     """
 
@@ -441,9 +416,7 @@ def _hodge_split(seq, b, k, guess, delta=None):
     def solve(b, j):
         if delta is not None:
             return _shifted_cg(seq, j, delta, b, seq.tol / 3.0)
-        if j == 0:
-            return _k0_solve(seq, b, seq.tol / 3.0)
-        return _hat_solve(seq, b, j, seq.tol / 3.0)
+        return _stiffness_solve(seq, b, j, seq.tol / 3.0, regularise=True)
 
     def split(b):
         z, info_z = solve(_grad(seq, b, k - 1, transpose=True), k - 1)
@@ -466,37 +439,12 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
     conjugate gradients, k = 1, 2 split into three conjugate-gradient solves, and k = 3 calls
     :func:`_saddle_solve`."""
     if k == 0:
-        u, info = _k0_solve(seq, rhs, seq.tol, guess=guess, check_residual=True)
+        u, info = _stiffness_solve(seq, rhs, 0, seq.tol, guess=guess, check_residual=True)
     elif k == 3:
         u, _, info = _saddle_solve(seq, rhs, guess=guess)
     else:
         u, info = _hodge_split(seq, rhs, k, guess)
     return (u, info) if return_info else u
-
-
-def _coclosed_solve(seq, b, k: int, guess=None, tol=None):
-    """``(x, info)`` with ``S_k x = b`` for a right-hand side ``b`` in the range of ``G_k^T``.
-
-    ``S_k`` is singular. Its kernel are the closed forms, so ``x`` is only fixed up to a closed form and no
-    gauge is imposed. Use this where only ``G_k x`` is needed. Conjugate gradients converge on the singular
-    system because ``b`` is consistent, which holds when ``b`` is literally ``G_k^T`` of something. A right-hand side that is only approximately in that range, as inside
-    the Hodge split, makes the iteration diverge. Use :func:`_laplacian_solve` for those.
-
-    These are the steps of the Hodge split that such a right-hand side leaves. It is solved like every other
-    system (:func:`mrx.solvers.solve_singular_cg`): conjugate gradients with the preconditioner of ``L_k``,
-    harmonic forms removed, stopped on the residual in :func:`dual_norm` at ``tol`` (``seq.tol`` by default).
-    ``info`` is the signed iteration count.
-    """
-    return solve_singular_cg(
-        lambda v: _stiffness(seq, v, k), b, _harmonic(seq, k),
-        precond_matvec=_seq_atom(seq, "laplacian", k).apply,
-        tol=seq.tol if tol is None else tol,
-        maxiter=seq.maxiter,
-        mass_matvec=lambda v: _mass(seq, v, k),
-        x0=guess,
-        norm=dual_norm(seq, k),
-        parity=parity_projectors(seq, k, b),
-    )
 
 
 #: The parts of a Laplacian solve (:meth:`Laplacian.solve`).
@@ -508,10 +456,9 @@ def _coexact_solve(seq, c, j: int, gauge: bool = True, guess=None, tol=None):
     With ``gauge`` ``y`` is co-exact (``G_{j-1}^T M_j y = 0``), which fixes it. Without it ``y`` is left with a
     closed form that nothing controls, and only ``G_j y`` is determined. Degree 0 has no exact forms. ``guess``
     starts the stiffness solve."""
-    if j == 0:
-        return _k0_solve(seq, c, seq.tol if tol is None else tol, guess=guess, check_residual=True)
-    y, info = _coclosed_solve(seq, c, j, guess, tol)
-    if gauge:
+    # degree 0 has no exact forms, and its solve is refined on the true residual
+    y, info = _stiffness_solve(seq, c, j, seq.tol if tol is None else tol, guess, check_residual=j == 0)
+    if gauge and j > 0:
         # only G q enters, so q needs no gauge of its own
         q, info_q = _coexact_solve(seq, -_grad(seq, _mass(seq, y, j), j - 1, transpose=True), j - 1, gauge=False)
         y = y + _grad(seq, q, j - 1)
@@ -534,9 +481,9 @@ def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=N
         exact:    S_{k-1} g = G^T b,   L^_{k-1} a = M_{k-1} g,   x = G a      (G = G_{k-1})
 
     The co-exact solve and the first of the exact part are solves of the stiffness alone on a consistent
-    right-hand side (:func:`_coclosed_solve`). ``M_{k-1} g`` is consistent only as far as ``g`` is co-exact,
+    right-hand side (:func:`_stiffness_solve`). ``M_{k-1} g`` is consistent only as far as ``g`` is co-exact,
     and a stiffness solve does not get below what is left. So the second solve is one of the regularised
-    ``L^_{k-1}`` (:func:`_hat_solve`), whose solution has the same ``G a`` for any right-hand side, and ``g``
+    ``L^_{k-1}``, whose solution has the same ``G a`` for any right-hand side, and ``g``
     needs no gauge. At degree 0 there is nothing to regularise against: ``L^_0`` is ``S_0``, and for k = 1
     both solves are of ``S_0``.
     """
@@ -545,16 +492,9 @@ def _part_solve(seq, b, k: int, part: str, guess=None, gauge: bool = True, tol=N
     else:
         j = k - 1
         g, info_g = _coexact_solve(seq, _grad(seq, b, j, transpose=True), j, gauge=False)
-        a, info_a = _regularised_solve(seq, _mass(seq, g, j), j)
+        a, info_a = _stiffness_solve(seq, _mass(seq, g, j), j, seq.tol, check_residual=j == 0, regularise=True)
         x, info = _grad(seq, a, j), _merge_info(info_g, info_a)
     return (x, info) if return_info else x
-
-
-def _regularised_solve(seq, c, j: int):
-    """``(a, info)`` with ``L^_j a = c`` (:func:`_hat_solve`), which is ``S_0 a = c`` at degree 0."""
-    if j == 0:
-        return _k0_solve(seq, c, seq.tol, check_residual=True)
-    return _hat_solve(seq, c, j, seq.tol)
 
 
 @eqx.filter_jit
@@ -568,10 +508,6 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
     removes. Harmonic 3-forms are removed from ``u``. Pass ``guess`` and ``sigma_guess`` together to
     warm-start from a previous solve.
     """
-    def saddle_res(u, s):
-        return (_stiffness(seq, u, 3) + _weak_derivative(seq, s, 2),
-                _weak_derivative(seq, u, 2, transpose=True) - _mass(seq, s, 2))
-
     P_lower = _seq_atom(seq, "mass", 2).apply
 
     def eliminate_lower(r):
@@ -595,7 +531,6 @@ def _saddle_solve(seq, rhs, guess=None, sigma_guess=None):
         x0_lower=sigma_guess,
         tol=seq.tol,
         maxiter=seq.maxiter,
-        saddle_res=saddle_res,
         norm_upper=dual_norm(seq, 3),
         norm_lower=dual_norm(seq, 2),
         parity_upper=parity_upper, parity_lower=parity_lower,

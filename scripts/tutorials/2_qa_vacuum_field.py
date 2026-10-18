@@ -74,7 +74,7 @@ from mrx.relaxation.physics import compute_divergence_norm, compute_force
 
 # Geometry.build calls mrx.geometry.build_sequence with these options, as in Tutorial 1.
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, _ = g.build()
+seq = g.build()
 nfp = seq.nfp
 
 # %%

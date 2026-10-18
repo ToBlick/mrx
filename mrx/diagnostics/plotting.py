@@ -475,8 +475,7 @@ def plot_archive(archive, out, *, fields=None, planes=None, pressure=True, profi
     if planes:
         shown_planes = [pl for pl in shown_planes if any(abs(pl - v) < 1e-9 for v in planes)]
     nfp = int(archive["nfp"])
-    # archives traced before 2026-10-06 hold cylindrical sections and no labels
-    labels = tuple(str(v) for v in archive.get("section_labels", ("R", "Z")))
+    labels = tuple(str(v) for v in archive["section_labels"])
     per = {n: {k: np.asarray(archive[f"{n}_{k}"]) for k in ("iota", "keep", "shown")} for n in which}
     if iota_lim is None:
         iota_lim = (min(float(per[m]["iota"][per[m]["shown"]].min()) for m in which if per[m]["shown"].any()),

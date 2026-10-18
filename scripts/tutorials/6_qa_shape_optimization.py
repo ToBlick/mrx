@@ -99,7 +99,7 @@ IOTA_TOL, P_TOL = 1e-5, 1.01e-8   # met when |<iotabar>_s - iotabar*| <= IOTA_TO
 # the raw R and Z coefficients, (n_r, n_theta, n_zeta) each.
 t0 = time.perf_counter()
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, _ = g.build()
+seq = g.build()
 nfp = seq.nfp
 _, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
 lp = BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], nfp)
@@ -113,16 +113,14 @@ r_min = float(np.min(T[T > 0.0]))   # h_r, the end of the first radial knot span
 # change of the boundary ring is extended harmonically into the interior, and every inner ring changes on
 # its own too. map_coefficients rescales the map to the device's volume and to ASPECT. The field is
 # h = seed - curl A on the changed map, and from it come the criterion, the mean iota and P.
-shape = BoundaryShape.from_coefficients(seq, lp.raw_R, lp.raw_Z, nfp, aspect=ASPECT,
-                                        extension="harmonic", free="all")
+shape = BoundaryShape.from_coefficients(seq, lp.raw_R, lp.raw_Z, nfp, aspect=ASPECT)
 seed = flux_seed(seq)
 n_var = 2 * lp.raw_R.size
 
 
 def mapped(x, seq, shape):
     """The raw coefficients (R, Z) of the map at the variables x."""
-    R, Z, _, _ = shape.map_coefficients(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.raw_R.shape)))
-    return R, Z
+    return shape.map_coefficients(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.raw_R.shape)))
 
 
 def terms(x, seq, shape, seed):

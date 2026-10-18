@@ -1,15 +1,5 @@
-"""Shared fixtures of the test suite.
-
-The suite tests three mathematical statements, each on the li383 equilibrium
-(``data/wout_li383_low_res_reference.nc``) at spline degree 2:
-
-- ``test_derham.py``: the discrete spaces form a de Rham complex.
-- ``test_poisson.py``: the Laplacians recover manufactured solutions, identically on the three ways to
-  represent the same domain.
-- ``test_newton.py``: the Newton direction is the second-order model of the energy along the ideal flow, and it
-  descends.
-
-The three representations of the domain have the same mesh per field period:
+"""Shared fixtures of the test suite: the li383 equilibrium at spline degree 2 in three representations of the
+domain with the same mesh per field period (docs/source/concepts/testing_strategy.md):
 
 - ``half``: the production sequence, one field period with stellarator symmetry, integrating half of it.
 - ``period``: one field period without the reflection.
@@ -48,7 +38,7 @@ def _build(name):
 
     symmetry, nfp, n_zeta = DOMAINS[name]
     t0 = time.perf_counter()
-    s, _ = build_sequence(GEOMETRY, (NS[0], NS[1], n_zeta), P, nfp=nfp, symmetry=symmetry)
+    s = build_sequence(GEOMETRY, (NS[0], NS[1], n_zeta), P, nfp=nfp, symmetry=symmetry)
     compute_nullspaces(s, verbose=False)
     print(f"\n  li383 {name}: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
     return s

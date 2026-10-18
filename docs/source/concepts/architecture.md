@@ -83,8 +83,7 @@ H = A @ (seq.P[2, 1] @ (2 * B - seq.G[1] @ A))
 exposed as L2 loads: the factors are evaluated at the quadrature points
 (`evaluate_at_quadrature`) and the product is integrated against the
 output basis. `cross_product_load_values` covers `w x u` for every degree
-combination, `dot_product_load_values`, `scalar_product_load_values` and
-`scalar_vector_load_values` the others. In reference components a 1-form is
+combination and `dot_product_load_values` the inner products. In reference components a 1-form is
 covariant (`DPhi^T a`), a 2-form a contravariant density (`det DPhi DPhi^{-1} b`), a
 3-form a density. Wedge products and contractions are metric-free in these
 components, so the induction `dB/dt = curl(u x B)` conserves flux exactly,
@@ -105,13 +104,13 @@ Dirichlet spaces (no flux through the wall, tangential `E` and `A` zero,
 `seq.free` has the free spaces. It shares every array with `seq`, and all
 operators, `seq.E(k)`, `seq.n(k)`, `seq.load` and `seq.interpolate` act on
 the spaces of the object they are called on. No operator takes a boundary
-condition argument. `seq.restrict(v, k)` drops the wall DoFs of a free form
-and `seq.extend(v, k)` pads a Dirichlet form with zeros. The initial field,
+condition argument. `seq.restrict(v, k)` drops the wall DoFs of a free form.
+The initial field,
 for example, is the curl of a free vector potential restricted to the
 Dirichlet 2-forms:
 
 ```python
-A = seq.free.interpolate(A_ref, 1, frame='logical')
+A = seq.free.interpolate(A_ref, 1)
 B = seq.restrict(seq.free.G[1] @ A, 2)
 ```
 
@@ -189,7 +188,7 @@ geometry file:
 4. Harmonic forms: `compute_nullspaces(seq)`, a separate call.
 
 ```python
-seq, ops = build_sequence("data/wout_li383_low_res_reference.nc", (8, 12, 12), 2)   # steps 1-3
+seq = build_sequence("data/wout_li383_low_res_reference.nc", (8, 12, 12), 2)   # steps 1-3
 compute_nullspaces(seq)                                                             # step 4
 ```
 

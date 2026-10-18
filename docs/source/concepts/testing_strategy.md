@@ -8,13 +8,15 @@ tracked in the repository.
 ## Three statements
 
 The suite tests three mathematical statements about the discretisation, which between them run most of
-the code, plus the readers:
+the code, plus the solvers' stopping rule, the shape derivative and the readers:
 
 | file | statement |
 |---|---|
-| `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the projections commute with the derivatives, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus, and pushforward inverts pullback |
-| `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the three representations of the domain (below), and the Leray projection is divergence-free, idempotent and non-expansive |
-| `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the parallel penalty is positive, the Newton direction is divergence-free and descends, and a short run lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints |
+| `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the projections commute with the derivatives, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, and the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus |
+| `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the three representations of the domain (below), the Leray projection is divergence-free, idempotent and non-expansive, and the part solves (co-exact, exact, shifted) agree with the full solves where they must |
+| `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the Chebyshev mass inverse keeps the Hessian symmetric, and a short run takes positive steps, lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints |
+| `test_solvers.py` | conjugate gradients and MINRES stop on the given norm of the true residual |
+| `test_shape_ad.py` | the vacuum field of the shape derivative is harmonic, and its derivative in the map coefficients matches central differences |
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
 
 The fixtures of `test/conftest.py` build the li383 equilibrium

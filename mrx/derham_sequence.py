@@ -11,8 +11,7 @@ no tangential part and a 2-form no normal part. The view ``seq.free`` has the fr
 boundary condition. On a
 stellarator-symmetric sequence the views ``seq.odd`` and ``seq.even`` have only the fields of one
 parity, and ``seq.odd.free`` combines both. Views share all arrays with the sequence, and taking one
-is free. :meth:`~DeRhamSequence.restrict` and :meth:`~DeRhamSequence.extend` move a form between the
-free and the Dirichlet space.
+is free. :meth:`~DeRhamSequence.restrict` drops the wall DoFs of a free form.
 
 The matrices of the complex are operator objects indexed by the form degree and applied with
 ``@``. Each acts on the spaces of the sequence or view it came from::
@@ -22,7 +21,7 @@ The matrices of the complex are operator objects indexed by the form degree and 
     J = seq.M[1].solve(b)             # mass solve
     a = seq.L[1].solve(b)             # Hodge Laplacian solve
     x = seq.shifted(2, eps).solve(r)  # (M_2 + eps L_2)^-1 r
-    Bf = seq.free.G[1] @ seq.free.interpolate(A_ref, 1)   # curl of a free 1-form
+    Bf = seq.free.G[1] @ seq.free.interpolate(A_ref, 1)   # curl of a free 1-form (logical components)
     B = seq.restrict(Bf, 2)                                # dropped to the Dirichlet 2-forms
 
 ``M`` is the mass matrix, ``L`` the Hodge Laplacian, ``S`` the stiffness, ``G`` the exterior
@@ -49,23 +48,25 @@ them. To change the resolution, build a new sequence.
 import copy
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 
+import mrx
 import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
-from mrx.geometry import SYMMETRIES, SequenceGeometry
+from mrx.geometry import SYMMETRIES, SequenceGeometry, map_jacobian_at
 from mrx.incidence import build_curl_stencil_g1, build_grad_stencil_g0, build_matrixfree_incidence
 from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
 from mrx.precision import SOLVE_TOL
-from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
+from mrx.projectors import greville_axes, interpolate as _interpolate
 from mrx.pytree import register_arrays
 from mrx.quadrature import QuadratureRule, evaluate_at_xq, integrate_against
 from mrx.spline_bases import basis_derivative_table, basis_table
 from mrx.symmetry import (FreeProjector, is_uniform_periodic, parity_extraction, reduce_operator,
-                          reduced_dirichlet_dofs, reflection_plan, symmetrize)
+                          reduced_dirichlet_dofs, reflection_plan)
 
 
 #: The boundary type of each logical axis ``(r, theta, zeta)``: clamped in ``r``, periodic in both angles.
@@ -138,7 +139,8 @@ class DeRhamSequence():
         self._base = None
         #: on a reduced view, the expansion ``X`` (free <- reduced) per ``(k, dirichlet)``
         self.reduction = None
-        self.extraction, self.core = self._extractions()
+        xi = get_xi(self.ns[1], self.p)
+        self.extraction, self.core = self._extractions(xi)
         # the position of each Dirichlet DoF among the free DoFs, per degree (restrict and extend)
         self._dirichlet_dofs = {k: jnp.asarray(dirichlet_dofs(self.extraction[(k, False)], self.extraction[(k, True)]))
                                 for k in range(4)}
@@ -150,11 +152,9 @@ class DeRhamSequence():
         self.dd_basis_jk = tuple(basis_derivative_table(b, xa) for b, xa in zip(dlam, x))
         self.greville = greville_axes(self)
 
-        for k in range(3):
-            g, g_T = build_matrixfree_incidence(self, k)
-            setattr(self, f"g{k}", g)
-            setattr(self, f"g{k}_T", g_T)
-        self.g0_grad, self.g1_curl = self._polar_stencils()
+        #: grad, curl, div on the raw tensor-product coefficients (:mod:`mrx.incidence`)
+        self.incidence = tuple(build_matrixfree_incidence(self, k) for k in range(3))
+        self.g0_grad, self.g1_curl = self._polar_stencils(xi)
         self.mass_plan = {k: mass_plan(self, k) for k in range(4)}
         self.projection_plan = {pair: projection_plan(self, *pair)
                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
@@ -167,29 +167,33 @@ class DeRhamSequence():
         if self.half_period:
             self._parity_views = {s: self._parity_view(s) for s in (1, -1)}
 
-    def _extractions(self):
+    def _extractions(self, xi):
         """The extraction operators and their axis rows for every ``(k, dirichlet)``."""
-        xi = get_xi(self.ns[1], self.p)
         built = {(k, d): build_extraction(form, xi, d)
                  for k, form in enumerate((self.basis_0, self.basis_1, self.basis_2, self.basis_3))
                  for d in (False, True)}
         return {key: e for key, (e, _) in built.items()}, {key: c for key, (_, c) in built.items()}
 
-    def _polar_stencils(self):
+    def _polar_stencils(self, xi):
         """The grad and curl on the extracted DoFs of the free (``False``) and Dirichlet (``True``) spaces."""
-        xi = get_xi(self.ns[1], self.p)
         return ({d: build_grad_stencil_g0(self, xi, d) for d in (False, True)},
                 {d: build_curl_stencil_g1(self, xi, d) for d in (False, True)})
 
-    def load(self, f, k: int, parity=None):
-        """The vector of integrals of ``f`` (physical components) against the k-form basis functions,
-        the right-hand side of an L2 projection (:func:`mrx.projectors.load`)."""
-        return _load(self, f, k, parity=parity)
+    def load(self, f, k: int):
+        """The vector of integrals of ``f`` against the k-form basis functions, the right-hand side of an L2
+        projection. ``f`` takes a logical point and returns a scalar (k = 0, 3) or three physical components
+        (k = 1, 2), which are pulled back here."""
+        f_jk = jax.lax.map(f, self.quad.x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+        if k in (0, 3):
+            return self._scalar_load_values(jnp.reshape(f_jk, (-1,)), k)
+        # covariant components DPhi^T f. DPhi is not stored on the geometry, so it is recomputed here
+        return self.vector_load_values(jnp.einsum('qji,qj->qi', map_jacobian_at(self.map, self.quad.x), f_jk), 1, k)
 
-    def interpolate(self, f, k: int, frame: str = 'physical'):
-        """The k-form DoFs of ``f`` by interpolation at the Greville points (k = 0) or by
-        integrals over edges, faces and cells (k = 1, 2, 3), see :func:`mrx.projectors.interpolate`."""
-        return _interpolate(self, f, k, frame=frame)
+    def interpolate(self, f, k: int):
+        """The k-form DoFs of ``f``, which returns the logical components of the form at a logical point, by
+        interpolation at the Greville points (k = 0) or by integrals over edges, faces and cells (k = 1, 2, 3),
+        see :func:`mrx.projectors.interpolate`."""
+        return _interpolate(self, f, k)
 
     @property
     def map(self):
@@ -251,11 +255,6 @@ class DeRhamSequence():
         """The Dirichlet ``k``-form with the DoFs of the free ``k``-form ``v`` away from the wall. The
         DoFs on the wall are dropped."""
         return v[self._dirichlet_dofs[int(k)]]
-
-    def extend(self, v, k):
-        """The free ``k``-form equal to the Dirichlet ``k``-form ``v``, with zeros on the wall."""
-        n_free = self.extraction[(int(k), False)].forward_shape[0]
-        return jnp.zeros(n_free).at[self._dirichlet_dofs[int(k)]].set(v)
 
     # --- the matrices of the complex (mrx.operators) ------------------------------------
     #
@@ -414,17 +413,12 @@ class DeRhamSequence():
         return [(c, *((deriv if a in form.derivative_axes(c) else primal)[a] for a in range(3)))
                 for c in range(len(form.shape))]
 
-    def symmetrize(self, y_raw, k, parity):
-        """Turn integrals over half the period into integrals over the full period for a
-        tensor-product k-form vector (:func:`mrx.symmetry.symmetrize`). ``parity`` is ``+1``
-        (even: velocities, forces, pressures) or ``-1`` (odd: ``B``, ``A``, ``J``, ``H``). It does
-        nothing on a full-period sequence and on a parity view."""
-        if not self.half_period or self.parity is not None:
-            return y_raw
-        if parity is None:
-            raise ValueError("a reduction on a half-period sequence needs the field's parity: "
-                             "+1 (even: velocities, forces, pressures) or -1 (odd: B, A, J, H)")
-        return symmetrize(y_raw, self.reflection_plan[k], parity)
+    def _integrate(self, f_jk, n):
+        """The integrals of the quadrature values ``f_jk`` (weights included) against the n-form basis. A
+        half-period sequence integrates only over half the period, so a field must be on its parity view."""
+        if self.half_period and self.parity is None:
+            raise ValueError("on a half-period sequence, loads and products are formed on seq.odd or seq.even")
+        return self.E(n) @ integrate_against(f_jk, self._form_comp_info(n))
 
     def free_projector(self, k):
         """The :class:`mrx.symmetry.FreeProjector` of the ``k``-form space. ``None`` on a
@@ -473,10 +467,10 @@ class DeRhamSequence():
         return evaluate_at_xq(self.E(k).T @ dofs, self._form_comp_info(k), list(form.shape),
                               self.quad.shape, 3 if k in (1, 2) else 1)
 
-    def cross_product_load_values(self, w_jk, u_jk, n, m, k, parity=None):
+    def cross_product_load_values(self, w_jk, u_jk, n, m, k):
         """The integrals of ``w x u`` against the n-form basis, from the quadrature values
         (:meth:`evaluate_at_quadrature`) of the m-form ``w`` and the k-form ``u``, with n, m, k in
-        {1, 2}. On a half-period sequence ``parity`` is the parity of the product.
+        {1, 2}. On a half-period sequence it is formed on the view of the product's parity.
         """
         # (A a) x (A b) = det(A) A^-T (a x b): the product is formed in the components that need
         # the least metric when tested against the n-forms
@@ -497,15 +491,14 @@ class DeRhamSequence():
             c = (jnp.cross(contract(G, w_jk), u_jk, axis=1) if m == 2
                  else jnp.cross(w_jk, contract(G, u_jk), axis=1)) / J
             rep = 2
-        return self.vector_load_values(c, rep, n, parity)
+        return self.vector_load_values(c, rep, n)
 
-    def _scalar_load_values(self, s_jk, n, parity=None):
+    def _scalar_load_values(self, s_jk, n):
         """The integrals of the scalar ``s_jk`` (values at the quadrature points) against the n-form basis, n = 0, 3."""
         weight = self.quad.w * self.jacobian_j if n == 0 else self.quad.w
-        return self.E(n) @ self.symmetrize(integrate_against(
-            (s_jk * weight)[:, None], self._form_comp_info(n)), n, parity)
+        return self._integrate((s_jk * weight)[:, None], n)
 
-    def vector_load_values(self, c_jk, rep, n, parity=None):
+    def vector_load_values(self, c_jk, rep, n):
         """The integrals of a vector field against the n-form basis (n = 1, 2), from its
         covariant (``rep = 1``) or contravariant-density (``rep = 2``) reference components
         ``c_jk`` at the quadrature points."""
@@ -517,14 +510,9 @@ class DeRhamSequence():
                     * (self.quad.w / self.jacobian_j)[:, None])
         else:
             f_jk = c_jk * self.quad.w[:, None]
-        return self.E(n) @ self.symmetrize(integrate_against(
-            f_jk, self._form_comp_info(n)), n, parity)
+        return self._integrate(f_jk, n)
 
-    def _physical_scalar(self, s_jk, k):
-        """The value of a 0-form or 3-form from its reference component ``(n_q, 1)``."""
-        return s_jk[:, 0] if k == 0 else s_jk[:, 0] / self.jacobian_j
-
-    def dot_product_load_values(self, w_jk, u_jk, n, m, k, parity=None):
+    def dot_product_load_values(self, w_jk, u_jk, n, m, k):
         """The integrals of ``w . u`` against the n-form basis (n = 0, 3), from the quadrature
         values of the m-form ``w`` and the k-form ``u`` (m, k in {1, 2})."""
         if m == 1 and k == 1:
@@ -533,19 +521,7 @@ class DeRhamSequence():
             s_jk = jnp.einsum('jk,jkl,jl->j', w_jk, self.metric_jkl, u_jk) / self.jacobian_j ** 2
         else:
             s_jk = jnp.sum(w_jk * u_jk, axis=1) / self.jacobian_j
-        return self._scalar_load_values(s_jk, n, parity)
-
-    def scalar_product_load_values(self, f_jk, g_jk, n, m, k, parity=None):
-        """The integrals of ``f g`` against the n-form basis (n = 0, 3), from the quadrature
-        values of the scalar m-form ``f`` and k-form ``g`` (m, k in {0, 3})."""
-        s_jk = self._physical_scalar(f_jk, m) * self._physical_scalar(g_jk, k)
-        return self._scalar_load_values(s_jk, n, parity)
-
-    def scalar_vector_load_values(self, f_jk, v_jk, n, m, k, parity=None):
-        """The integrals of ``f v`` against the n-form basis (n = 1, 2), from the quadrature
-        values of the scalar m-form ``f`` (m = 0, 3) and the vector k-form ``v`` (k = 1, 2)."""
-        c_jk = v_jk * self._physical_scalar(f_jk, m)[:, None]
-        return self.vector_load_values(c_jk, k, n, parity)
+        return self._scalar_load_values(s_jk, n)
 
 
 # ``_base`` (the full sequence behind a parity view) is static. As a pytree child it would

@@ -15,6 +15,7 @@ from typing import Callable, NamedTuple, Optional
 import time
 
 import equinox as eqx
+import h5py
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,9 +30,7 @@ def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
     """The smallest knot spacing of each logical direction, shape ``(3,)``."""
     h = []
     for b in seq.basis_0.bases[0].bases:
-        knots = np.asarray(b.T)
-        interior = knots[b.p:-b.p] if b.type in ('clamped', 'periodic') else knots
-        h.append(np.diff(interior).min())
+        h.append(np.diff(np.asarray(b.T)[b.p:-b.p]).min())
     return np.array(h)
 
 
@@ -339,7 +338,6 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
     ``angles = "right-handed"`` marks the convention of :func:`mrx.equilibria.read_equilibrium`, see
     :func:`check_checkpoint`.
     """
-    import h5py  # noqa: PLC0415
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     axes = seq.basis_0.bases[0].bases
     with h5py.File(path, "w") as fh:
@@ -359,7 +357,6 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
 def checkpoint_attrs(path: str) -> dict:
     """Return the discretisation stored in a checkpoint as :func:`mrx.geometry.build_sequence` keywords (``ns``,
     ``p``, ``knots``, ``symmetry``), together with ``nfp`` and ``step``."""
-    import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
 
@@ -374,31 +371,25 @@ def checkpoint_attrs(path: str) -> dict:
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
-    """Raise if the checkpoint ``path`` does not belong to ``seq``: another resolution or degree, or angles of
-    another orientation. Checkpoints written before the logical angles were made right-handed (2026-09-30)
-    have no ``angles`` attribute. On a file read with its poloidal angle reversed (a VMEC wout) their
-    coefficients describe the mirror image of the field."""
-    import h5py  # noqa: PLC0415
+    """Raise if the checkpoint ``path`` does not belong to ``seq``: another resolution or degree, or no
+    ``angles = "right-handed"`` attribute (the convention of :func:`mrx.equilibria.read_equilibrium`)."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
     ns, p = tuple(int(v) for v in a["resolution"]), int(a["degree"])
     if ns != tuple(seq.ns) or p != seq.p:
         raise ValueError(f"{path}: resolution {ns} p={p}, the sequence is {tuple(seq.ns)} p={seq.p}")
-    if "angles" not in a and seq.equilibrium is not None and seq.equilibrium["theta_reversed"]:
-        raise ValueError(f"{path}: written in the left-handed angles of MRX before 2026-09-30, while "
-                         f"{seq.equilibrium['path']} is now read with theta reversed. Relax the field again.")
+    if a.get("angles") != "right-handed":
+        raise ValueError(f"{path}: the angles are not marked right-handed. Relax the field again.")
 
 
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     """Return the ``(state, step)`` saved by :func:`write_checkpoint`. ``ts`` must be built on a sequence with
     the same discretisation. Arrays missing from the file are taken from :func:`initial_state` of the stored
     field."""
-    import h5py  # noqa: PLC0415
     check_checkpoint(path, ts.seq)
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    # a checkpoint written by a float32 run of an earlier version is read into float64
     skeleton = initial_state(jnp.asarray(data["B_n"], dtype=jnp.float64), ts, step=step)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
