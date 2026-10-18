@@ -99,10 +99,9 @@ def detDPhi(x):
 
 zetas = np.arange(cli.cuts) / cli.cuts
 n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
+grids_pol = [get_2d_grids(seq.map, 2, float(z), n, n)
              for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+grid_surface = get_2d_grids(seq.map, 0, 1.0 - 1e-6, 4 * n, 4 * n, invert_z=True)
 print(f"[plot] det DPhi on the torus and on {cli.cuts} poloidal cuts", flush=True)
 fig, _ = plot_torus(detDPhi, grids_pol, grid_surface, cbar_label=r"$\det D\Phi$")
 finish_figure(fig, os.path.join(cli.out, "torus_jacobian.png"))

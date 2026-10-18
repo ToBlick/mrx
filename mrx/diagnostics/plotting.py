@@ -31,51 +31,34 @@ from mrx.diagnostics.plotstyle import (FIELD_CMAP, FS, IOTA_COLOR, LEFT, P_COLOR
                            house_style)
 
 
-def get_2d_grids(
-    Phi: Callable,
-    cut_value: float = 0,
-    cut_axis: int = 2,
-    nx: int = 64,
-    ny: int = 64,
-    nz: int = 64,
-    invert_z: bool = False,
-):
-    """Sample the logical-to-physical map ``Phi`` on the logical plane
-    ``x_{cut_axis} = cut_value``, with ``cut_axis`` 0 (a surface of constant r) or 2 (a poloidal cut at
-    constant zeta).
+def get_2d_grids(Phi: Callable, cut_axis: int, cut_value: float, n1: int = 64, n2: int = 64, invert_z: bool = False):
+    """Sample the logical-to-physical map ``Phi`` on a logical plane: the surface ``r = cut_value``
+    (``cut_axis=0``, ``n1`` points in theta and ``n2`` in zeta) or the poloidal cut ``zeta = cut_value``
+    (``cut_axis=2``, ``n1`` points in r and ``n2`` in theta).
 
-    The other two logical coordinates are sampled uniformly on ``[0, 1]``, except that r stays just inside
-    ``(0, 1)`` to avoid the polar axis and the boundary. ``invert_z`` reverses the zeta direction, which flips
-    the orientation of a surface. Returns ``(x, y, (Y1, Y2, Y3), (x1, x2, x3))``: the logical points as a flat
-    ``(n1 n2, 3)`` array, their images, the three components of the images as ``(n1, n2)`` arrays, and the
-    three 1-D logical axes.
+    The free coordinates are uniform on ``[0, 1]``, except that r stays just inside ``(0, 1)`` to avoid the polar
+    axis and the boundary. ``invert_z`` reverses the zeta direction, which flips the orientation of a surface.
+    Returns ``(x, (Y1, Y2, Y3))``: the logical points as a flat ``(n1 n2, 3)`` array and the three components
+    of their images as ``(n1, n2)`` arrays.
     """
-    _x1 = jnp.linspace(1e-6, 1.0 - 1e-6, nx)
-    _x2 = jnp.linspace(0.0, 1.0, ny)
-    _x3 = jnp.linspace(0.0, 1.0, nz)
-    if invert_z:
-        _x3 = _x3[::-1]
     if cut_axis == 0:
-        _x1 = jnp.ones(1) * cut_value
-        n1, n2 = ny, nz
+        zeta = jnp.linspace(0.0, 1.0, n2)
+        axes = (jnp.full(1, cut_value), jnp.linspace(0.0, 1.0, n1), zeta[::-1] if invert_z else zeta)
+    elif cut_axis == 2:
+        axes = (jnp.linspace(1e-6, 1.0 - 1e-6, n1), jnp.linspace(0.0, 1.0, n2), jnp.full(1, cut_value))
     else:
-        _x3 = jnp.ones(1) * cut_value
-        n1, n2 = nx, ny
+        raise ValueError(f"cut_axis must be 0 (a surface r = const) or 2 (a poloidal cut), got {cut_axis}")
     # indexing="ij": the flattened point order matches the (n1, n2) reshape below
-    _x = jnp.array(jnp.meshgrid(_x1, _x2, _x3, indexing="ij"))
-    _x = _x.transpose(1, 2, 3, 0).reshape(n1 * n2, 3)
-    _y = jax.lax.map(Phi, _x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    _y1 = _y[:, 0].reshape(n1, n2)
-    _y2 = _y[:, 1].reshape(n1, n2)
-    _y3 = _y[:, 2].reshape(n1, n2)
-    return _x, _y, (_y1, _y2, _y3), (_x1, _x2, _x3)
+    x = jnp.stack(jnp.meshgrid(*axes, indexing="ij"), axis=-1).reshape(n1 * n2, 3)
+    y = jax.lax.map(Phi, x, batch_size=mrx.MAP_BATCH_SIZE_INNER)
+    return x, tuple(y[:, i].reshape(n1, n2) for i in range(3))
 
 
 def _values_on_cuts(p_h, grids_pol):
     """The values of ``p_h`` on every cut, each as an ``(n1, n2)`` array."""
     return np.asarray([
         jax.lax.map(p_h, grid[0], batch_size=mrx.MAP_BATCH_SIZE_INNER)
-        .reshape(grid[2][0].shape)
+        .reshape(grid[1][0].shape)
         for grid in grids_pol])
 
 
@@ -94,10 +77,10 @@ def plot_torus(p_h: Callable, grids_pol: list, grid_surface: tuple, cbar_label: 
 
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection="3d")
-    ax.plot_surface(*grid_surface[2], edgecolors=(0, 0, 0, 0.2), rstride=8, cstride=8, shade=True, alpha=0.0,
+    ax.plot_surface(*grid_surface[1], edgecolors=(0, 0, 0, 0.2), rstride=8, cstride=8, shade=True, alpha=0.0,
                     linewidth=0.3)
     for grid, v in zip(grids_pol, vals):
-        ax.plot_surface(*grid[2], facecolors=cmap(norm(v)), rstride=1, cstride=1, shade=False, zsort="min",
+        ax.plot_surface(*grid[1], facecolors=cmap(norm(v)), rstride=1, cstride=1, shade=False, zsort="min",
                         linewidth=0)
 
     sm = mpl.cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -137,8 +120,8 @@ def plot_crossections_separate(p_h: Callable, grids_pol: list, zeta_vals: list):
     ``zeta_vals``. Returns ``(fig, axes)``."""
     textsize, ticksize = FS.label, FS.tick
     vals = _values_on_cuts(p_h, grids_pol)
-    R = [jnp.sqrt(grid[2][0] ** 2 + grid[2][1] ** 2) for grid in grids_pol]
-    z = [grid[2][2] for grid in grids_pol]
+    R = [jnp.sqrt(grid[1][0] ** 2 + grid[1][1] ** 2) for grid in grids_pol]
+    z = [grid[1][2] for grid in grids_pol]
 
     fig, axes = plt.subplots(1, len(grids_pol), figsize=(16, 16 / 5), squeeze=False)
     axes = axes.flatten()
@@ -267,9 +250,8 @@ def _padded(v, pad=0.06, floor=0.0):
 
 
 @house_style()
-def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subtitle=None, pressure=None,
-                   pressure_label=r"$p$", iota_lim=None, p_lim=None, window=None, profile_rays=1,
-                   axis_marker=True, dot_scale=1.0, labels=("R", "Z")):
+def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, pressure=None, iota_lim=None, p_lim=None,
+                   window=None, profile_rays=1, dot_scale=1.0, labels=("R", "Z")):
     """A figure of one Poincare section in three panels: the ``(R, Z)`` crossings coloured by the iota of their
     line, the same crossings in the logical ``(theta, r)`` plane, and iota against logical r read along
     ``profile_rays`` poloidal rays.
@@ -284,9 +266,8 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
     and the profile panel shows each line's mean pressure and its spread on a second axis.
 
     ``iota_lim``, ``p_lim`` (each ``(lo, hi)``) and ``window`` (``((R0, R1), (Z0, Z1))``) fix the scales, so
-    that several figures can be compared. ``dot_scale`` multiplies the marker size, ``axis_marker`` draws the
-    axis, ``labels`` names the section's axes, and ``title=None`` leaves out the figure title. Returns ``(fig, (ax_section, ax_logical,
-    ax_profile))``.
+    that several figures can be compared. ``dot_scale`` multiplies the marker size and ``labels`` names the
+    section's axes. Returns ``(fig, (ax_section, ax_logical, ax_profile))``.
     """
     has_p = pressure is not None
     lr, lth = np.asarray(logical[0]), np.asarray(logical[1])
@@ -327,11 +308,6 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
         ax.scatter(R[~keep], Z[~keep], c="0.55", s=size, linewidths=0,
                    rasterized=True, label=f"lost ({int((~keep).sum())})")
         ax.legend(loc="upper right", fontsize=FS.annot, markerscale=4)
-    if axis_marker:
-        # one marker at the mean and a hairline through the axis' wander over the saves
-        aR, aZ = np.asarray(axis_RZ[0]), np.asarray(axis_RZ[1])
-        ax.plot(aR, aZ, "-", color="0.35", lw=0.4, alpha=0.6, zorder=4)
-        ax.plot(np.mean(aR), np.mean(aZ), "k+", ms=7, mew=1.2, zorder=5)
     cbar = fig.colorbar(sc, ax=ax, fraction=0.046, pad=0.12 if psc is not None else 0.02)
     # below the bar: beside it the wide Farey labels squeeze it against the next panel
     cbar.ax.set_xlabel(r"$\iota$", fontsize=FS.title)
@@ -341,7 +317,7 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
     if psc is not None:
         capped = p_lim is not None and float(np.nanmax(pressure[sel_p])) > p_lim[1]
         pbar = fig.colorbar(psc, ax=ax, fraction=0.046, pad=0.02, extend="max" if capped else "neither")
-        pbar.ax.set_xlabel(pressure_label, fontsize=FS.title)
+        pbar.ax.set_xlabel(PRESSURE_LABEL, fontsize=FS.title)
         _scale_note(pbar.ax.xaxis, PRESSURE_SCALE)
         pbar.ax.tick_params(labelsize=FS.annot)
         ax.axhline(z_axis, color="0.35", lw=0.6, ls=":", zorder=1)
@@ -400,7 +376,7 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
     bx.set_ylabel(r"$\iota$", color=IOTA_COLOR)
     bx.tick_params(axis="y", labelcolor=IOTA_COLOR)
     if has_p:
-        px.set_ylabel(pressure_label, color=P_COLOR)
+        px.set_ylabel(PRESSURE_LABEL, color=P_COLOR)
         _scale_note(px.yaxis, PRESSURE_SCALE, color=P_COLOR, tick=True)
         px.tick_params(axis="y", labelcolor=P_COLOR)
         if p_lim is not None:
@@ -412,14 +388,6 @@ def render_section(R, Z, iota, keep, *, logical, axis_RZ, nfp, title=None, subti
     if iota_lim is not None:
         bx.set_ylim(lo, hi)
     bx.grid(alpha=0.3)
-
-    if title is not None:
-        sup = title if to_scale else f"{title}   -   AXES NOT TO SCALE"
-        if subtitle:
-            sup = f"{sup}   |   {subtitle}"
-        if has_p:
-            sup = f"{sup}   |   {pressure_label} $\\times$ {PRESSURE_SCALE:g}"
-        fig.suptitle(sup, fontsize=FS.title)
     return fig, (ax, lx, bx)
 
 
@@ -488,8 +456,7 @@ def plot_archive(archive, out, *, fields=None, planes=None, pressure=True, profi
             R, Z, aR, aZ, lr, lth = (np.asarray(archive[f"{n}_zeta{pl:g}_{k}"])
                                      for k in ("R", "Z", "axisR", "axisZ", "logr", "logth"))
             fig, _ = render_section(R, Z, per[n]["iota"], per[n]["keep"], logical=(lr, lth), axis_RZ=(aR, aZ),
-                                    nfp=nfp, pressure=presses[n, pl], pressure_label=PRESSURE_LABEL,
-                                    axis_marker=False, dot_scale=dot_scale, iota_lim=iota_lim, p_lim=p_lim,
+                                    nfp=nfp, pressure=presses[n, pl], dot_scale=dot_scale, iota_lim=iota_lim, p_lim=p_lim,
                                     window=window, profile_rays=profile_rays,
                                     labels=labels)
             paper_fonts(fig, label_size=label_size, page_width=page_width)

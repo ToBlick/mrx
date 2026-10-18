@@ -103,10 +103,9 @@ print(f"[vacuum] |B| near the axis {float(B_mag(jnp.array([0.01, 0.0, 0.0]))):.4
       f"(||B||_M = 1)")
 zetas = np.arange(cli.cuts) / cli.cuts
 n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
+grids_pol = [get_2d_grids(seq.map, 2, float(z), n, n)
              for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+grid_surface = get_2d_grids(seq.map, 0, 1.0 - 1e-6, 4 * n, 4 * n, invert_z=True)
 print("[plot] |B| on the torus", flush=True)
 fig, _ = plot_torus(B_mag, grids_pol, grid_surface, cbar_label=r"$|B|$")
 finish_figure(fig, os.path.join(cli.out, "torus_Bmag.png"))
