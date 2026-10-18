@@ -165,6 +165,7 @@ def plot_crossections_separate(p_h: Callable, grids_pol: list, zeta_vals: list):
     return fig, axes
 
 
+@house_style()
 def plot_twin_axis(left_y, right_y, x_right=None, left_label="", right_label="",
                    left_plot_kwargs=None, right_plot_kwargs=None):
     """``left_y`` on a log scale and ``right_y`` on a linear scale against the iteration, on twin y axes. Each
