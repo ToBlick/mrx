@@ -1,0 +1,40 @@
+# The image of the MRX jobs on GKE Cloud TPUs (gke/job-tpu.yaml): Cloud TPU JAX and this checkout of mrx. Built and
+# pushed by make build (Cloud Build)
+FROM python:3.12-slim
+
+# The JAX of the benchmarks (docs/gke_tpu_architecture_and_benchmarks.md); bench_multichip.py reads JAX 0.11
+# monitoring events, so recheck them when bumping it
+ARG JAX_VERSION=0.11.2
+
+# PYTHONUNBUFFERED: every run's output reaches kubectl logs as it is printed. PIP_NO_CACHE_DIR: a smaller image
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Cloud TPU JAX (jax, jaxlib, libtpu), and pytest to run the tests on a TPU node. Every dependency installs from
+# wheels, so the image needs no compiler or system libraries
+RUN pip install --upgrade pip && \
+    pip install "jax[tpu]==${JAX_VERSION}" pytest
+
+WORKDIR /workspace/mrx
+
+# The package with its scripts, tests and data files, installed in place; pip-freeze.txt records the exact versions in
+# the image. make build uploads only what .gitignore allows, so a new data file needs a !data/ line there
+COPY pyproject.toml README.md ./
+COPY mrx ./mrx
+COPY scripts ./scripts
+COPY test ./test
+COPY data ./data
+RUN pip install -e . && pip freeze > /workspace/mrx/pip-freeze.txt
+
+# Cloud Build has no TPU: check on the CPU that the pinned JAX and mrx import together
+RUN JAX_PLATFORMS=cpu MRX_DTYPE=float32 python -c \
+    "import jax, jaxlib, mrx; from importlib.metadata import version; \
+print('jax', jax.__version__, 'jaxlib', jaxlib.__version__, 'libtpu', version('libtpu'), 'mrx', mrx.DTYPE)"
+
+# What every run of the image needs:
+# - MRX_DTYPE=float32: TPUs have no float64, so mrx refines float32 (hi, lo) pairs (double-single)
+# - MPLBACKEND=Agg: plots without a display
+# - PYTHONPATH: the tests import their helpers as test.* from the repository root
+ENV MRX_DTYPE=float32 \
+    MPLBACKEND=Agg \
+    PYTHONPATH=/workspace/mrx
