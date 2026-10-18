@@ -46,7 +46,10 @@ def _split(a):
 
 def two_prod(a, b):
     """``(p, e)`` with ``p = fl(a b)`` and ``a b = p + e`` exactly."""
-    p = a * b
+    # Keep p rounded: without the barrier, XLA:CPU on arm64 contracts a * b and ah * bh - p into one fused
+    # multiply-add, so the error term is no longer exact, and XLA:TPU (libtpu 0.0.48.1) fails to compile the
+    # solver at 12x20x12
+    p = jax.lax.optimization_barrier(a * b)
     ah, al = _split(a)
     bh, bl = _split(b)
     return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
