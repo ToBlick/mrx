@@ -11,6 +11,33 @@ trap 'rm -f "${PLAN}"' EXIT
 
 tf() { terraform -chdir="${MRX_ROOT}/terraform" "$@"; }
 
+# The zones whose Cloud TPU API offers each TPU of a pool region, as a Terraform map keyed <family>@<region>: a zone
+# can list the machine type and still refuse TPU nodes (us-east1-b with v6e). A region whose lookup fails gets no key,
+# so Terraform keeps every zone that lists the machine type there
+tpu_api_zones() {
+    local pools=() entries=() pool family region accel zone types zones failed
+    [[ "${ENABLE_TPU_V5P}" == "true" ]] && pools+=("v5p@${V5P_REGION}")
+    [[ "${ENABLE_TPU_V6E}" == "true" ]] && pools+=("v6e@${V6E_REGION}")
+    if [[ "${ENABLE_TPU_V5P}" == "true" && "${ENABLE_TPU_V6E}" == "true" ]]; then
+        pools+=("v6e@${V5P_REGION}" "v5p@${V6E_REGION}")
+    fi
+    for pool in "${pools[@]}"; do
+        family="${pool%@*}" region="${pool#*@}" accel="v6e-4" zones=() failed=0
+        [[ "${family}" == "v5p" ]] && accel="v5p-8"
+        for zone in $(gcloud compute zones list --project="${PROJECT_ID}" --filter="name~^${region}- AND status=UP" \
+            --format="value(name)" 2>/dev/null); do
+            if types="$(gcloud compute tpus accelerator-types list --zone="${zone}" --project="${PROJECT_ID}" \
+                --format="value(type)" 2>/dev/null)"; then
+                grep -qx "${accel}" <<< "${types}" && zones+=("\"${zone}\"")
+            else
+                failed=1
+            fi
+        done
+        (( failed )) || entries+=("\"${pool}\" = [$(IFS=,; echo "${zones[*]:-}")]")
+    done
+    echo "{$(IFS=,; echo "${entries[*]:-}")}"
+}
+
 # Plans with the settings of gcp.env (the same -var list as TF_VARS in the Makefile) and applies the plan, unless it
 # deletes or replaces shared resources
 apply() {
@@ -25,7 +52,8 @@ apply() {
         -var="subnetwork=${SUBNETWORK}" \
         -var="create_network=${CREATE_NETWORK}" \
         -var="private_nodes=${PRIVATE_NODES}" \
-        -var="dedicated_service_accounts=${DEDICATED_SERVICE_ACCOUNTS}" || return 1
+        -var="dedicated_service_accounts=${DEDICATED_SERVICE_ACCOUNTS}" \
+        -var="tpu_api_zones=$(tpu_api_zones)" || return 1
     # Others share the clusters, the bucket and the images: a gcp.env that disables a TPU family or changes a
     # region must not delete them
     local show deletes

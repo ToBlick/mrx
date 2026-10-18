@@ -72,8 +72,8 @@ Ideas: apply `E(k)` as an identity slice plus a small dense block instead of a g
 * **Restart:** a preempted `relax.py` run resumes from its newest checkpoint (tested by deleting the pod mid-run: both runs resumed and finished). It is exact up to the restart, then close but not bit-identical: at 12×20×12 the residual differs by 5e-7 (relative) one step later and by 0.13% ten steps later, and the energy by 5e-9 (relative), which is 0.05% of the energy removed.
 * **`relax.json`:** `relax.py` rewrites it in place after every chunk, and a preemption in the middle of a rewrite left it empty (the checkpoints were intact). Writing a temporary file and renaming it would avoid this.
 * **Spot capacity** varies by region and hour: on 2026-10-17, `us-central1` had no Spot v6e VMs for over 28 minutes while `us-east1` had them. Hence `us-east1` first and `us-central1` as the backup.
-* **Zones:** in `us-east1`, zone b lists the v6e machine type but rejects the nodes, so a job can wait 4–14 minutes for its node, instead of about 3, until zone d takes it. Limiting the pool to the zones the Cloud TPU API lists would avoid this.
-* **One cluster per TPU family:** GKE requires the same TPU topology in all priorities of a ComputeClass, so a class cannot fall back from v6e to v5p.
+* **Zones:** in `us-east1`, zone b lists the v6e machine type but rejects the nodes, so a job waited 4–14 minutes for its node, instead of about 3, until zone d took it. `make setup` now gives each TPU pool only the zones where the Cloud TPU API offers its TPU.
+* **Both families in both regions:** GKE requires the same TPU topology in all priorities of a ComputeClass, so a class cannot fall back from v6e to v5p. Instead each cluster has a pool for every enabled family its region offers, and a job waits in all of them and runs in the first to get a node. On 2026-10-18 a test job waited in four pools: v5p in `us-east1-d` and v6e in `us-east5-c` had no capacity, v5p in `us-east5-a` got a node about 5 minutes after the submission, and its results matched earlier v5p runs bit for bit.
 
 ## Open items
 

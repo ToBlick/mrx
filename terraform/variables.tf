@@ -65,6 +65,12 @@ variable "dedicated_service_accounts" {
   default     = false
 }
 
+variable "tpu_api_zones" {
+  description = "Zones whose Cloud TPU API offers each TPU, keyed <family>@<region> (gke/provision-cluster.sh looks them up); in a pool region without a key, every zone that lists the machine type gets nodes"
+  type        = map(list(string))
+  default     = {}
+}
+
 variable "destroy_storage" {
   description = "Delete the bucket even if it holds objects (force_destroy); only make destroy-all sets it"
   type        = bool
