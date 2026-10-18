@@ -1,0 +1,219 @@
+# The Kubernetes Job that gke/run.sh fills in (envsubst) and submits; not for kubectl apply as is. One pod on one
+# TPU node runs SCRIPT with ARGS, or one relax.py run per chip with RUNS, with gs://${GCS_BUCKET} mounted at /gcs
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${JOB_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    app: mrx
+    mrx-user: "${MRX_USER}"
+spec:
+  # Exit code 1 or 2 (a Python error, bad arguments) fails the job at once. Spot preemptions (DisruptionTarget) are
+  # not counted, so backoffLimit only bounds other crashes, such as running out of memory.
+  backoffLimit: 4
+  activeDeadlineSeconds: ${ACTIVE_DEADLINE_SECONDS}
+  podFailurePolicy:
+    rules:
+    - action: FailJob
+      onExitCodes:
+        containerName: mrx-tpu
+        operator: In
+        values: [1, 2]
+    - action: Ignore
+      onPodConditions:
+      - type: DisruptionTarget
+  template:
+    metadata:
+      annotations:
+        gke-gcsfuse/volumes: "true"
+      labels:
+        app: mrx
+        mrx-user: "${MRX_USER}"
+    spec:
+      serviceAccountName: ${KSA_NAME}
+      restartPolicy: Never
+      nodeSelector:
+        cloud.google.com/compute-class: ${COMPUTE_CLASS}
+      # The taints of the Spot TPU nodes: GKE's own, and the one terraform/main.tf puts on the TPU node pools
+      tolerations:
+      - key: "cloud.google.com/gke-spot"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: "cloud.google.com/gke-quick-remove"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      - key: "google.com/tpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+      containers:
+      - name: mrx-tpu
+        image: ${IMAGE_NAME}
+        command: ["/bin/bash", "-c"]
+        # The ${...} on run.sh's envsubst list (JOB_NAME, SCRIPT, ARGS, RUNS, REMOTE_OUTDIR, ...) are filled in when
+        # the job is submitted; all others, such as ${MRX_DTYPE} or ${out}, are this shell's own variables
+        args:
+        - |
+          set -euo pipefail
+          mkdir -p /gcs/xla_cache "${REMOTE_OUTDIR}"
+          echo "[gke] host=$(hostname) job=${JOB_NAME} compute-class=${COMPUTE_CLASS} out=${REMOTE_OUTDIR}"
+          ${EXTRA_EXPORT}
+
+          # The restart of a relax.py run writing to $1 with arguments $2, after a Spot preemption, if its args.txt
+          # holds the same arguments: "<checkpoint> <step> <steps left>", from the newest checkpoint that opens (a
+          # preemption can cut the last one short), or "done" when that checkpoint ends the run's budget. The budget is
+          # read the way relax.py reads it. A seeded run starts over instead, since relax.py would seed the restart
+          # state again.
+          restart_point() {
+            local out="$1" args="$2" f ckpt="" step budget="" seeded=""
+            [[ "${args}" != *"--output.restart"* && "$(cat "${out}/args.txt" 2>/dev/null || true)" == "${args}" ]] \
+              || return 0
+            for f in $(ls -1 "${out}/checkpoints"/state_*.h5 2>/dev/null | sort -r); do
+              if python -c "import h5py, sys; h5py.File(sys.argv[1], 'r').close()" "${f}" 2>/dev/null; then
+                ckpt="${f}"
+                break
+              fi
+            done
+            [[ -n "${ckpt}" ]] || return 0
+            step="$(basename "${ckpt}" .h5)"
+            step=$((10#${step#state_}))
+            read -r budget seeded <<< "$(JAX_PLATFORMS=cpu python -c "import sys, tyro; from mrx.relaxation.config import RelaxConfig; c = tyro.cli(RelaxConfig, args=sys.argv[1:]); print(c.budget.steps, int(bool(c.seed)))" ${args} 2>/dev/null || true)"
+            if (( step == 0 )) || [[ -z "${budget}" || "${seeded}" != "0" ]]; then
+              return 0
+            fi
+            if (( step >= budget )); then
+              echo "done"
+            else
+              echo "${ckpt} ${step} $((budget - step))"
+            fi
+          }
+
+          # Prints the arguments added to a run writing to $1 with arguments $2, and records $2 in its args.txt: its
+          # output directory, the image's precision (relax.py's --geometry.precision defaults to float64) and, after a
+          # preemption, its restart (restart_point). relax.py rewrites relax.json from the restart, so the record so far
+          # is kept as relax.until-<step>.json, unless the preemption cut it short. Prints only "done" if the run had
+          # finished.
+          added_args() {
+            local out="$1" args="$2" ckpt="" step="" left=""
+            mkdir -p "${out}"
+            if [[ "${SCRIPT}" == *"bench_multichip.py"* ]]; then
+              [[ "${args}" == *"--out"* ]] || echo "--out ${out}"
+              return 0
+            fi
+            [[ "${SCRIPT}" == *"relax.py"* ]] || return 0
+            mkdir -p "${out}/checkpoints"
+            read -r ckpt step left <<< "$(restart_point "${out}" "${args}")" || true
+            printf '%s' "${args}" > "${out}/args.txt"
+            if [[ "${ckpt}" == "done" ]]; then
+              echo "done"
+              return 0
+            fi
+            [[ "${args}" == *"--output.out"* ]] || echo "--output.out ${out}"
+            [[ "${args}" == *"--geometry.precision"* ]] || echo "--geometry.precision ${MRX_DTYPE}"
+            if [[ -n "${ckpt}" ]]; then
+              if python -c "import json, sys; json.load(open(sys.argv[1]))" "${out}/relax.json" 2>/dev/null; then
+                mv "${out}/relax.json" "${out}/relax.until-${step}.json"
+              elif [[ -f "${out}/relax.json" ]]; then
+                echo "[gke] ${out}: the preemption cut relax.json short, so the record before step ${step} is lost" >&2
+              fi
+              echo "[gke] ${out}: resuming from ${ckpt} for the ${left} steps left of the budget" >&2
+              echo "--output.restart ${ckpt} --budget.steps ${left}"
+            fi
+          }
+
+          if [[ -z "${RUNS}" ]]; then
+            extra="$(added_args "${REMOTE_OUTDIR}" "${ARGS}")"
+            if [[ "${extra}" == "done" ]]; then
+              echo "[gke] the run finished before this pod started"
+              exit 0
+            fi
+            exec python -u ${SCRIPT} ${ARGS} ${extra}
+          fi
+
+          # RUNS: one relax.py process per entry. TPU_VISIBLE_CHIPS and the 1,1,1 process bounds give each process one
+          # chip (the settings of JAX's multi-process tests), and each libtpu its own port. A run that ends well writes
+          # a "done" file, which a restarted pod skips
+          nums=() pids=()
+          n=0
+          IFS=';' read -ra entries <<< "${RUNS}"
+          for entry in "${entries[@]}"; do
+            read -r entry <<< "${entry}" || true     # trims the spaces around the entry
+            [[ -n "${entry}" ]] || continue
+            n=$((n + 1))
+            chip=$((n - 1))
+            out="${REMOTE_OUTDIR}/run-${n}"
+            args="${ARGS} ${entry}"
+            if [[ "$(cat "${out}/done" 2>/dev/null || true)" == "${args}" ]]; then
+              echo "[run ${n}] finished before this pod started; skipping"
+              continue
+            fi
+            extra="$(added_args "${out}" "${args}")"
+            if [[ "${extra}" == "done" ]]; then
+              printf '%s' "${args}" > "${out}/done"
+              echo "[run ${n}] its last checkpoint ends its budget; marked done"
+              continue
+            fi
+            echo "[run ${n}] chip ${chip}: ${SCRIPT} ${args}"
+            (
+              export TPU_VISIBLE_CHIPS="${chip}" TPU_CHIPS_PER_PROCESS_BOUNDS=1,1,1 TPU_PROCESS_BOUNDS=1,1,1 \
+                TPU_PROCESS_PORT="$((8476 + chip))" TPU_PROCESS_ADDRESSES="localhost:$((8476 + chip))" \
+                ALLOW_MULTIPLE_LIBTPU_LOAD=1
+              python -u ${SCRIPT} ${args} ${extra} 2>&1 | sed -u "s/^/[run ${n}] /"
+              printf '%s' "${args}" > "${out}/done"
+            ) &
+            nums+=("${n}")
+            pids+=("$!")
+          done
+          # Once all runs have ended, the pod exits with 1 or 2 if a run did (the job then fails at once), else with the
+          # code of the lowest-numbered run that failed
+          rc=0
+          for i in "${!pids[@]}"; do
+            code=0
+            wait "${pids[i]}" || code=$?
+            if (( code != 0 )); then
+              echo "[run ${nums[i]}] failed with exit code ${code}"
+              if (( rc == 0 )) || [[ "${code}" == [12] ]]; then
+                rc="${code}"
+              fi
+            fi
+          done
+          exit "${rc}"
+        # The image sets MRX_DTYPE, MPLBACKEND, PYTHONUNBUFFERED and PYTHONPATH (Dockerfile.tpu)
+        env:
+        # The image digest that run.sh resolved, which bench_multichip.py records with its results
+        - name: IMAGE_NAME
+          value: "${IMAGE_NAME}"
+        # One axis row per probe batch (mrx/metric_lumping.py, default 8): less HBM during setup, same build time
+        - name: MRX_PROBE_BATCH
+          value: "1"
+        # libtpu logs fatal errors only (3 on its scale of 0 INFO to 3 FATAL)
+        - name: TPU_STDERR_LOG_LEVEL
+          value: "3"
+        - name: TPU_MIN_LOG_LEVEL
+          value: "3"
+        # Compiled kernels are kept in the bucket, for later jobs and restarted pods: every compilation that takes over
+        # 0.1 s is cached, whatever its size
+        - name: JAX_COMPILATION_CACHE_DIR
+          value: "/gcs/xla_cache"
+        - name: JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES
+          value: "0"
+        - name: JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS
+          value: "0.1"
+        resources:
+          requests:
+            google.com/tpu: ${TPU_CHIPS}
+          limits:
+            google.com/tpu: ${TPU_CHIPS}
+        volumeMounts:
+        - name: gcs-fuse-csi
+          mountPath: /gcs
+      volumes:
+      - name: gcs-fuse-csi
+        csi:
+          driver: gcsfuse.csi.storage.gke.io
+          volumeAttributes:
+            bucketName: ${GCS_BUCKET}
+            mountOptions: "implicit-dirs,file-cache:max-size-mb:4096"

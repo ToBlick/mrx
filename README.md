@@ -15,3 +15,7 @@ If you find the content of this repository useful for your work, consider refere
 	year = {2025},
 }
 ```
+
+## Running on Google Cloud TPUs
+
+[`gke/README.md`](gke/README.md) runs MRX on Cloud TPU v6e and v5p nodes on GKE (`make setup`, then `make deploy`), and [`docs/gke_tpu_architecture_and_benchmarks.md`](docs/gke_tpu_architecture_and_benchmarks.md) compares them with one NVIDIA H200.

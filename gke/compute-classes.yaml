@@ -1,0 +1,36 @@
+# The ComputeClasses of the MRX jobs (gke/job-tpu.yaml selects one), applied by gke/provision-cluster.sh (make setup):
+#   mrx-tpu-v5p   TPU v5p, 4 chips (ct5p-hightpu-4t, 2x2x1), Spot only
+#   mrx-tpu-v6e   TPU v6e, 4 chips (ct6e-standard-4t, 2x2), Spot only
+# Without Spot capacity a job waits (DoNotScaleUp). GKE requires one TPU topology per class, so v5p and v6e cannot
+# back each other up: enable both families in gcp.env to run on both. Each class scales up the Terraform node pool
+# labeled with its name; nodePoolAutoCreation lets it add a pool when that one cannot scale (GKE 1.33.3 and later)
+
+apiVersion: cloud.google.com/v1
+kind: ComputeClass
+metadata:
+  name: mrx-tpu-v5p
+spec:
+  nodePoolAutoCreation:
+    enabled: true
+  whenUnsatisfiable: DoNotScaleUp
+  priorities:
+  - tpu:
+      type: tpu-v5p-slice
+      count: 4
+      topology: "2x2x1"
+    spot: true
+---
+apiVersion: cloud.google.com/v1
+kind: ComputeClass
+metadata:
+  name: mrx-tpu-v6e
+spec:
+  nodePoolAutoCreation:
+    enabled: true
+  whenUnsatisfiable: DoNotScaleUp
+  priorities:
+  - tpu:
+      type: tpu-v6e-slice
+      count: 4
+      topology: "2x2"
+    spot: true
