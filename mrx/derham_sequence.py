@@ -57,7 +57,7 @@ import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
 from mrx.geometry import SYMMETRIES, SequenceGeometry, map_jacobian_at
-from mrx.incidence import build_curl_stencil_g1, build_grad_stencil_g0, build_matrixfree_incidence
+from mrx.incidence import build_matrixfree_incidence, build_polar_derivative
 from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
 from mrx.precision import SOLVE_TOL
@@ -139,8 +139,7 @@ class DeRhamSequence():
         self._base = None
         #: on a reduced view, the expansion ``X`` (free <- reduced) per ``(k, dirichlet)``
         self.reduction = None
-        xi = get_xi(self.ns[1], self.p)
-        self.extraction, self.core = self._extractions(xi)
+        self.extraction, self.core = self._extractions()
         # the position of each Dirichlet DoF among the free DoFs, per degree (restrict and extend)
         self._dirichlet_dofs = {k: jnp.asarray(dirichlet_dofs(self.extraction[(k, False)], self.extraction[(k, True)]))
                                 for k in range(4)}
@@ -154,7 +153,8 @@ class DeRhamSequence():
 
         #: grad, curl, div on the raw tensor-product coefficients (:mod:`mrx.incidence`)
         self.incidence = tuple(build_matrixfree_incidence(self, k) for k in range(3))
-        self.g0_grad, self.g1_curl = self._polar_stencils(xi)
+        # grad and curl on the extracted DoFs of the free (False) and Dirichlet (True) spaces
+        self.g0_grad, self.g1_curl = ({d: build_polar_derivative(self, k, d) for d in (False, True)} for k in (0, 1))
         self.mass_plan = {k: mass_plan(self, k) for k in range(4)}
         self.projection_plan = {pair: projection_plan(self, *pair)
                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
@@ -167,17 +167,13 @@ class DeRhamSequence():
         if self.half_period:
             self._parity_views = {s: self._parity_view(s) for s in (1, -1)}
 
-    def _extractions(self, xi):
+    def _extractions(self):
         """The extraction operators and their axis rows for every ``(k, dirichlet)``."""
+        xi = get_xi(self.ns[1], self.p)
         built = {(k, d): build_extraction(form, xi, d)
                  for k, form in enumerate((self.basis_0, self.basis_1, self.basis_2, self.basis_3))
                  for d in (False, True)}
         return {key: e for key, (e, _) in built.items()}, {key: c for key, (_, c) in built.items()}
-
-    def _polar_stencils(self, xi):
-        """The grad and curl on the extracted DoFs of the free (``False``) and Dirichlet (``True``) spaces."""
-        return ({d: build_grad_stencil_g0(self, xi, d) for d in (False, True)},
-                {d: build_curl_stencil_g1(self, xi, d) for d in (False, True)})
 
     def load(self, f, k: int):
         """The vector of integrals of ``f`` against the k-form basis functions, the right-hand side of an L2
