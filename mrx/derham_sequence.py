@@ -52,7 +52,9 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
+import mrx.banded as banded_module
 import mrx.operators as op
+from mrx.banded import Band
 from mrx.differential_forms import DifferentialForm
 from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
 from mrx.geometry import SYMMETRIES, SequenceGeometry
@@ -148,6 +150,7 @@ class DeRhamSequence():
         self.basis_r_jk, self.basis_t_jk, self.basis_z_jk = (basis_table(b, xa) for b, xa in zip(lam, x))
         self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk = (basis_table(b, xa) for b, xa in zip(dlam, x))
         self.dd_basis_jk = tuple(basis_derivative_table(b, xa) for b, xa in zip(dlam, x))
+        self.bands_jk = self._bands()
         self.greville = greville_axes(self)
 
         for k in range(3):
@@ -406,10 +409,25 @@ class DeRhamSequence():
             raise ValueError('no operator bundle: call seq.build_preconditioners() after set_geometry_from_map')
         return self.operators
 
-    def _form_comp_info(self, k):
-        """The 1-D basis tables at the quadrature points for each component of the k-forms."""
-        primal = (self.basis_r_jk, self.basis_t_jk, self.basis_z_jk)
-        deriv = (self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk)
+    def _bands(self):
+        """The banded forms (:class:`mrx.banded.Band`) of the primal and the derivative 1-D tables, or ``None``
+        if one of them has no exact band."""
+        spans = (self.quad.ne_x, self.quad.ne_y, self.quad.ne_z)
+        bands = tuple(tuple(Band.from_dense(t[None], e) for t, e in zip(tables, spans)) for tables in (
+            (self.basis_r_jk, self.basis_t_jk, self.basis_z_jk),
+            (self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk)))
+        return None if any(b is None for axes in bands for b in axes) else bands
+
+    def _form_comp_info(self, k, banded=None):
+        """The 1-D basis tables at the quadrature points for each component of the k-forms. They are the banded
+        tables if ``banded`` (by default :func:`mrx.banded.enabled`) and the sequence has them, else dense."""
+        if banded is None:
+            banded = banded_module.enabled()
+        if banded and self.bands_jk is not None:
+            primal, deriv = self.bands_jk
+        else:
+            primal = (self.basis_r_jk, self.basis_t_jk, self.basis_z_jk)
+            deriv = (self.d_basis_r_jk, self.d_basis_t_jk, self.d_basis_z_jk)
         form = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)[k]
         return [(c, *((deriv if a in form.derivative_axes(c) else primal)[a] for a in range(3)))
                 for c in range(len(form.shape))]

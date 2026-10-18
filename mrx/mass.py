@@ -13,7 +13,8 @@ The product is a global sum factorisation: the coefficients of each component ar
 by one contraction per axis with the 1-D basis tables, multiplied by the weights there, and tested back the same
 way. The components are zero-padded to one grid shape and handled as one batch, so a product costs a handful of
 large contractions instead of a few small ones per component, which matters on a GPU where every launched kernel
-costs a few microseconds whatever its size.
+costs a few microseconds whatever its size. On a TPU each contraction uses only the nonzero band of the
+tables, as shifted slices of the grid (:mod:`mrx.banded`), elsewhere the dense tables.
 
 The work is split into a static part and a geometry part. :func:`mass_plan` and
 :func:`projection_plan` hold the basis tables and are built once with the de Rham sequence.
@@ -28,7 +29,9 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
+import mrx.banded as banded
 import mrx.double_single as ds
+from mrx.banded import Band
 from mrx.precision import PAIRS
 
 
@@ -38,7 +41,8 @@ class SumfactPlan(eqx.Module):
     zero-padded to the largest coefficient count ``N_a``. The sequence builds one per mass matrix
     (:func:`mass_plan`) and one per projection (:func:`projection_plan`). The geometric weights are stored on
     the geometry instead (:func:`attach_weights`). In float32 the plan also holds the tables in the gather form
-    of the double-single apply (:class:`mrx.double_single.Tables`)."""
+    of the double-single apply (:class:`mrx.double_single.Tables`). ``bands_r`` and ``bands_c`` hold the same
+    tables without their zeros (:class:`mrx.banded.Band`), or ``None`` where a band does not reproduce them."""
 
     tables_r: tuple
     tables_c: tuple
@@ -46,19 +50,33 @@ class SumfactPlan(eqx.Module):
     shapes_c: tuple = eqx.field(static=True)
     gather_r: Optional[tuple] = None
     gather_c: Optional[tuple] = None
+    bands_r: Optional[tuple] = None
+    bands_c: Optional[tuple] = None
 
 
-def _plan(tables_r, tables_c, shapes_r, shapes_c):
+def _bands(tables, spans):
+    bands = tuple(Band.from_dense(t, e) for t, e in zip(tables, spans))
+    return None if any(b is None for b in bands) else bands
+
+
+def _plan(tables_r, tables_c, shapes_r, shapes_c, spans):
     gather_r = gather_c = None
     if PAIRS:
         gather_r = tuple(ds.Tables.from_dense(t) for t in tables_r)
         gather_c = gather_r if tables_c is tables_r else tuple(ds.Tables.from_dense(t) for t in tables_c)
-    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c, gather_r, gather_c)
+    bands_r = _bands(tables_r, spans)
+    bands_c = bands_r if tables_c is tables_r else _bands(tables_c, spans)
+    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c, gather_r, gather_c, bands_r, bands_c)
+
+
+def _spans(seq):
+    """The number of knot spans the quadrature covers per axis."""
+    return (seq.quad.ne_x, seq.quad.ne_y, seq.quad.ne_z)
 
 
 def _padded_tables(seq, k):
     """The zero-padded 1-D tables of the k-forms and the coefficient grid shape of each component."""
-    info = seq._form_comp_info(k)
+    info = seq._form_comp_info(k, banded=False)
     shapes = tuple(tuple(int(n) for n in s) for s in getattr(seq, f"basis_{k}").shape)
     tables = []
     for a in range(3):
@@ -73,7 +91,7 @@ def _padded_tables(seq, k):
 def mass_plan(seq, k):
     """The :class:`SumfactPlan` of ``M_k``."""
     tables, shapes = _padded_tables(seq, k)
-    return _plan(tables, tables, shapes, shapes)
+    return _plan(tables, tables, shapes, shapes, _spans(seq))
 
 
 def projection_plan(seq, k_row, k_col):
@@ -83,7 +101,7 @@ def projection_plan(seq, k_row, k_col):
     """
     tables_r, shapes_r = _padded_tables(seq, k_row)
     tables_c, shapes_c = _padded_tables(seq, k_col)
-    return _plan(tables_r, tables_c, shapes_r, shapes_c)
+    return _plan(tables_r, tables_c, shapes_r, shapes_c, _spans(seq))
 
 
 def _mass_weight(k, metric, metric_inv, jac):
@@ -127,18 +145,44 @@ def sumfact_apply(plan, weights, x):
     """
     if isinstance(x, ds.DS):
         return ds.sumfact(plan.gather_r, plan.gather_c, plan.shapes_r, plan.shapes_c, weights, x)
-    R, T, Z = plan.tables_c
-    n_max = tuple(t.shape[1] for t in plan.tables_c)
+    if banded.enabled() and plan.bands_r is not None and plan.bands_c is not None:
+        return _apply_banded(plan, weights, x)
+    return _apply_dense(plan, weights, x)
+
+
+def _stack_padded(x, shapes, n_max):
+    """The concatenated component grids of ``x``, zero-padded to ``n_max`` and stacked."""
     parts, offset = [], 0
-    for s in plan.shapes_c:
+    for s in shapes:
         n = s[0] * s[1] * s[2]
         parts.append(jnp.pad(x[offset:offset + n].reshape(s), [(0, n_max[a] - s[a]) for a in range(3)]))
         offset += n
-    u = jnp.einsum('cijk,cia,cjb,ckd->abdc', jnp.stack(parts), R, T, Z)
+    return jnp.stack(parts)
+
+
+def _unstack(y, shapes):
+    return jnp.concatenate([y[c, :s[0], :s[1], :s[2]].reshape(-1) for c, s in enumerate(shapes)])
+
+
+def _apply_dense(plan, weights, x):
+    """:func:`sumfact_apply` with the dense tables."""
+    R, T, Z = plan.tables_c
+    x = _stack_padded(x, plan.shapes_c, tuple(t.shape[1] for t in plan.tables_c))
+    u = jnp.einsum('cijk,cia,cjb,ckd->abdc', x, R, T, Z)
     v = jnp.einsum('abdrc,abdc->rabd', weights, u)
     R, T, Z = plan.tables_r
-    y = jnp.einsum('ria,rjb,rkd,rabd->rijk', R, T, Z, v)
-    return jnp.concatenate([y[c, :s[0], :s[1], :s[2]].reshape(-1) for c, s in enumerate(plan.shapes_r)])
+    return _unstack(jnp.einsum('ria,rjb,rkd,rabd->rijk', R, T, Z, v), plan.shapes_r)
+
+
+def _apply_banded(plan, weights, x):
+    """:func:`sumfact_apply` with the banded tables: one shifted-slice contraction per axis (:mod:`mrx.banded`)."""
+    u = _stack_padded(x, plan.shapes_c, tuple(b.n for b in plan.bands_c))
+    for a, b in enumerate(plan.bands_c):
+        u = banded.forward(u, b, a + 1)                         # (c, Q_r, Q_t, Q_z)
+    v = jnp.einsum('abdrc,cabd->rabd', weights, u)
+    for a, b in enumerate(plan.bands_r):
+        v = banded.backward(v, b, a + 1)
+    return _unstack(v, plan.shapes_r)
 
 
 def build_mass_diagonal(seq, k):

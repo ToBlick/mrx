@@ -13,6 +13,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+from mrx import banded
+from mrx.banded import Band
 from mrx.pytree import register_arrays
 
 
@@ -86,7 +88,8 @@ def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
     ``dofs`` are the spline coefficients of all components before the extraction ``E`` of the
     sequence (which handles the polar axis and the boundary conditions), that is ``E.T @ dofs``
     for DoFs of the sequence. ``comp_info`` holds for each component the
-    output index it adds to and its 1-D basis values at the quadrature points of each axis.
+    output index it adds to and its 1-D basis values at the quadrature points of each axis, as dense
+    ``(N_a, Q_a)`` tables or as :class:`~mrx.banded.Band`.
     ``comp_shapes`` are the coefficient grid shapes of the components, ``quad_shape`` is
     ``seq.quad.shape`` and ``d`` the number of output components.
     """
@@ -96,7 +99,13 @@ def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):
         s = comp_shapes[c]
         n_c = s[0] * s[1] * s[2]
         V = dofs[offset:offset + n_c].reshape(s)
-        val = jnp.einsum('ijk,ia,jb,kc->abc', V, R, T, Z)
+        if isinstance(R, Band):
+            val = V[None]
+            for a, band in enumerate((R, T, Z)):
+                val = banded.forward(val, band, a + 1)
+            val = val[0]
+        else:
+            val = jnp.einsum('ijk,ia,jb,kc->abc', V, R, T, Z)
         f = f.at[out_dim].add(val)
         offset += n_c
     return f.transpose(1, 2, 3, 0).reshape(-1, d)
@@ -108,11 +117,17 @@ def integrate_against(f_jk, comp_info):
 
     ``f_jk`` must already include the quadrature weights. The result belongs to the spline
     coefficients before the extraction, so a caller applies ``E`` to it."""
-    quad_shape = tuple(int(tab.shape[1]) for tab in comp_info[0][1:])
+    quad_shape = tuple(tab.n_q if isinstance(tab, Band) else int(tab.shape[1]) for tab in comp_info[0][1:])
     d = f_jk.shape[1]
     f = f_jk.reshape(quad_shape + (d,)).transpose(3, 0, 1, 2)
     parts = []
     for in_dim, R, T, Z in comp_info:
-        val = jnp.einsum('ia,jb,kc,abc->ijk', R, T, Z, f[in_dim])
+        if isinstance(R, Band):
+            val = f[in_dim][None]
+            for a, band in enumerate((R, T, Z)):
+                val = banded.backward(val, band, a + 1)
+            val = val[0]
+        else:
+            val = jnp.einsum('ia,jb,kc,abc->ijk', R, T, Z, f[in_dim])
         parts.append(val.ravel())
     return jnp.concatenate(parts)
