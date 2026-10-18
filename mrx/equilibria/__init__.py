@@ -98,14 +98,19 @@ def is_stellarator_symmetric(st):
     under ``(theta, zeta) -> (-theta, -zeta)``. This holds when ``R`` has no sine and ``Z``, lambda have
     no cosine coefficients. A G-frame (``X1``, ``X2`` the frame coordinates) must also map the reflection to
     ``(x, y, z) -> (x, -y, -z)``: the axis and ``N`` have an even ``x`` and odd ``y``, ``z`` component, ``B``
-    the opposite. The frame is read from samples, so its coefficients of the wrong parity are compared to
-    round-off."""
-    symmetric = not (st["X1"]["sin"].any() or st["X2"]["cos"].any() or st["LA"]["cos"].any())
+    the opposite. Coefficients of the wrong parity count as zero below 1e-10 of those of the right one, so a
+    file written without the symmetry but symmetric to round-off (a frame read from samples, for example) is
+    symmetric."""
+    def negligible(wrong, right):
+        return np.abs(wrong).max(initial=0.0) <= 1e-10 * np.abs(right).max(initial=0.0)
+
+    symmetric = all(negligible(st[b][w], st[b][r]) for b, w, r in (("X1", "sin", "cos"), ("X2", "cos", "sin"),
+                                                                 ("LA", "cos", "sin")))
     if "frame" not in st:
         return symmetric
     cos, sin = st["frame"]["cos"], st["frame"]["sin"]
     odd = np.array([[False, True, True], [False, True, True], [True, False, False]])[:, :, None]
-    return symmetric and np.abs(np.where(odd, cos, sin)).max() <= 1e-10 * np.abs(cos).max()
+    return symmetric and negligible(np.where(odd, cos, sin), cos)
 
 
 class StateField:
