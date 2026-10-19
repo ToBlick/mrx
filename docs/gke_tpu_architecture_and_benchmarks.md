@@ -38,11 +38,68 @@ What was measured on Cloud TPUs, how it compares with one NVIDIA H200 GPU, and w
 
 The node times at 12×20×12 and 32×44×20 are from reruns on 2026-10-17; those of the first sweep differ by up to 8%. The two values at 48×64×24 are from two runs (20 and 40 Newton steps, 200 and 400 gradient steps). XL was not run. v6e at 48×64×24 has no result: the setup fit in 32 GB per chip, but Spot preemptions stopped all 7 attempts.
 
-* **8×12×12:** a v6e node is 5.4× faster than the H200 on Newton and about 10× cheaper (gradient: 3.0× faster, 5.5× cheaper). One v6e chip alone is 1.37× faster than the H200 on Newton.
+* **8×12×12:** a v6e node is 5.4× faster than the H200 on Newton and about 10× cheaper (gradient: 3.0× faster, 5.5× cheaper). One v6e chip alone is 1.37× faster than the H200 on Newton. *Superseded: the H200 figure (3.12 s) predates the faster solves of #32; on the same commit an H200 takes 0.59 s per Newton step at 8×12×12 (next section).*
 * **v6e against v5p:** up to 12×20×12, v6e is as fast or up to 1.4× faster, and 2.4–3.2× cheaper. At 32×44×20, v5p is 1.3–1.4× faster and v6e 1.6–1.8× cheaper.
 * **48×64×24:** the H200 is 5.1–5.6× faster on Newton and 6× on gradient, and 6–8× cheaper. From 8×12×12 to 48×64×24 (64× the cells), the H200's Newton step grows 1.7× and a TPU node's 42–46× (the H200 figure at 48×64×24 predates #35).
 * **Four chips:** `shard_map` gives 3.9–4.1× the throughput of one chip. `jit(vmap)` reached only 1.6–1.8× on Newton: its batched `while_loop` keeps every chip stepping until the slowest equilibrium's Krylov solve converges.
 * **Accuracy:** at 48×64×24 on v5p, float32 + double-single matches the H200's float64 energy drop within 0.09% after 200 gradient steps (1.149e-6 against 1.150e-6), and reaches 96.7% of it after 40 Newton steps (1.614e-6 against 1.669e-6), with best residuals of 3.9e-8 to 7.6e-8 on all four equilibria. Across hardware, compare converged states: after 20 Newton steps at 12×20×12, v5p and v6e agree on the residual but differ by 0.17% in the energy removed.
+
+## Same-commit baseline and the TPU kernel work (2026-10-18)
+
+All on one commit of `tpu-speedups` (`gke-tpu-capacity` with `main` merged), li383, p = 2, 20 Newton steps (cap 200)
+or 200 gradient steps. TPU: one v6e chip (one run of `RUNS`), Spot `us-central1`, float32 + double-single. GPU: one
+H200 on UW Tillicum, float64. Steady state per step from the chunk times (`scripts/bench/compare_runs.py`); the setup
+is the sequence, nullspaces and initial field before the first step.
+
+**Newton**, seconds per step and best residual after 20 steps:
+
+| Mesh | H200 before | H200 after | v6e chip before | v6e chip after | v6e speed-up |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| 8×12×12 | 0.59 | — | 2.26 | **1.47** | 1.5× |
+| 12×20×12 | 0.73 | — | 6.11 | **3.22** | 1.9× |
+| S, 32×44×20 | 2.14 (1.96e-8) | **1.67** (2.23e-8) | 57.6 (1.98e-7) | **23.3** (2.23e-8) | 2.5× |
+
+**Gradient**, seconds per step over 200 steps including the compilation: 12×20×12, H200 0.06, v6e chip 0.30 before;
+S, H200 0.15, v6e chip 3.42 before and 1.95 after.
+
+**Setup**, seconds: S on the H200 126 before, 52 after; v6e chip 215 before and 131 after at 12×20×12, 453 and 304
+at S.
+
+What changed (each with tests against the old path in float64 and float32):
+
+* **Extraction without a gather** (`mrx/extraction_operators.py`, `StructuredExtraction`): `E(k)` as static slices,
+  a flip and roll for the parity reflection, and a small dense block for the polar rows, equal to the entries'
+  apply to round-off. `MRX_EXTRACTION=auto` (default) uses it on a TPU only: on the H200 it made the S Newton step
+  about 20% slower, since gathers are cheap there.
+* **Banded 1-D tables** (`mrx/banded.py`): the sum-factorised contractions store only the p + 1 nonzero basis
+  values per knot span and contract with shifted slices, 3.6–6× fewer FLOPs. `MRX_BANDED=auto` (default) uses them
+  on any accelerator: on the H200 the S Newton step went from 2.15 to 1.67 s.
+* **Setup compiles** cut from about 2500 to 350 (`jnp.asarray` replaced by `device_put`, eager double-single and
+  operator applies compiled as one program, batched preconditioner probes).
+* **A libtpu crash, worked around:** on a v6e (JAX 0.11.2, libtpu 0.0.48.1) XLA aborted compiling the
+  preconditioner probes at S ("Check failed ... Cannot find a valid window" in `fusion_emitter.cc`) when the
+  extraction was structured, in their double-single apply batched by `lax.map` and `vmap`. The probes, which run once
+  per sequence, are traced with the dense tables and the extraction from its entries (`banded.dense()`,
+  `extraction_operators.coo()`); the steps keep both.
+
+Per step the H200 is still far ahead at these meshes: at S, 1.67 s against 23.3 s on a v6e chip, so about 9× cheaper
+per step at $0.90 per H200-hour against the v6e Spot price of $0.584 per chip-hour (3.8× at `us-east4`'s $0.243,
+where the project has no Spot quota yet).
+
+Measured and set aside:
+
+* **One equilibrium on four chips** (`scripts/bench/bench_sharded_newton.py`: the quadrature-grid arrays sharded
+  along r, GSPMD, vectors replicated), 26×44×20, v6e node: 0.86× one chip per Hessian apply, 0.90× per Newton
+  direction, 0.93× per step, and 2.5–4× the compile time; with sharding constraints on the intermediates 0.89–0.95×.
+  The operators are matrix-free, so sharding the matrix-vector products is this same quadrature-grid decomposition;
+  each MINRES iteration then needs about 63 all-reduces, mostly from the two Chebyshev mass inverses. Several
+  equilibria per node (`RUNS`, `shard_map`) remain the way to use four chips.
+* **MINRES cap:** 100 instead of 200 halves the step and reaches the same residual at 12×20×12, but at S the
+  residual after 20 steps is 28× worse (5.4e-7 against 2.0e-8), and a low cap hurts from the second step, so neither
+  a lower cap nor a schedule that starts low helps; the tolerance (1e-3) is never met, so an adaptive tolerance does
+  nothing. `--newton.mass-tol 1e-3` (Chebyshev degree 27 instead of 36) is worse again (2.3e-6).
+* **Double-single in the Newton solve:** there is none with the default `MassChebyshev`; the solve runs in float32,
+  and only three outer solves per step (about 1.5% of it) use double-single (`test_newton_direction_has_no_double_single`).
 
 ## Where the time goes at 48×64×24
 
@@ -77,6 +134,6 @@ Ideas: apply `E(k)` as an identity slice plus a small dense block instead of a g
 
 ## Open items
 
-* `relax.py`: `--geometry.precision` defaults to float64 and overrides `MRX_DTYPE` (the jobs pass float32); write `relax.json` atomically; make restarts bit-identical.
-* H200 timings at 12×20×12 and 32×44×20 would locate the crossover; TPU runs at L and XL after the kernel work.
+* `relax.py`: `--geometry.precision` defaults to float64 and overrides `MRX_DTYPE` (the jobs pass float32); make restarts bit-identical. (`relax.json` is now written atomically.)
+* TPU runs at M, L and XL with the new kernels (v5p, or v6e in `us-east4` once its Spot quota is granted); a stronger Newton preconditioner, which would cut the 200 MINRES iterations on every backend.
 * TPU7x (Ironwood): 192 GB and 7.4 TB/s per chip. JAX sees each chip as two 96 GB devices, so a node runs 8 equilibria; `RUNS` would need an update.
