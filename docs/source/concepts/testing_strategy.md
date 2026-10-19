@@ -12,7 +12,7 @@ the code, plus the field-line tracer, the shape derivative and the readers:
 
 | file | statement |
 |---|---|
-| `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the projections commute with the derivatives, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, and the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus |
+| `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the projections commute with the derivatives, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, the extracted derivatives are the raw ones, and the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus |
 | `test_solvers.py` | every solve inverts its operator: a known solution, mapped to its right-hand side by the operator's apply, comes back from `M[k]`, `L[k]` (every `part`), `S[k]`, `shifted(k, eps)`, `shifted_stiffness(k, eps)` and the Leray projection to a multiple of `seq.tol`, on the production spaces. Conjugate gradients and MINRES stop on the given norm of the true residual |
 | `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the two representations of the domain (below), preconditioners kept across a change of map still precondition the new operators, and the slab model conditions `M_1` |
 | `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the Chebyshev mass inverse keeps the Hessian symmetric, and a short run takes positive steps, lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints, and a few gradient-descent steps descend too |
@@ -22,7 +22,7 @@ the code, plus the field-line tracer, the shape derivative and the readers:
 
 The fixtures of `test/conftest.py` build the li383 equilibrium
 (`data/wout_li383_low_res_reference.nc`) at `(12, 20, 12)` per field period,
-`p = 2`, in two representations with the same mesh: `half`
+`p = 2` on the graded polar space of production, in two representations with the same mesh: `half`
 (the production sequence, stellarator symmetry, half a period integrated)
 and `period` (one field period without the reflection). `seq` is `half`,
 `b0` the equilibrium's own field on it. A manufactured solution with the

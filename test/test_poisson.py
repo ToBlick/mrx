@@ -129,41 +129,39 @@ def test_manufactured_solution(domains, k):
     assert spread < SAME
 
 
-def _torus(kappa):
-    """The map of a torus of major radius 3 whose cross-section is a circle (``kappa = 1``) or an ellipse of
-    elongation ``kappa``, right-handed in ``(r, theta, zeta)``."""
-    def Phi(x):
-        r, t, z = x
-        R = 3.0 + r * jnp.cos(2.0 * np.pi * t)
-        return jnp.array([R * jnp.cos(2.0 * np.pi * z), R * jnp.sin(2.0 * np.pi * z),
-                          -kappa * r * jnp.sin(2.0 * np.pi * t)])
-    return Phi
-
-
-def test_a_new_geometry_can_keep_the_preconditioners():
+def test_a_new_geometry_can_keep_the_preconditioners(domains):
     """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the preconditioners of the old map, which
-    still precondition the operators of the new one: the mass solve on the new map converges to the tolerance,
-    measured with the new mass matrix. The harmonic forms are set to zero. Without ``keep_preconditioners`` the
-    bundle is dropped and a solve raises. On its own small torus, so the session fixtures stay untouched."""
-    from mrx.derham_sequence import DeRhamSequence
-    s = DeRhamSequence((6, 8, 6), 2, nfp=1, symmetry="none")
-    s.set_geometry_from_map(_torus(1.0))
-    s.build_preconditioners()
+    still precondition the operators of the new one: the mass solve on li383 stretched by 10 % in ``Z`` converges
+    to the tolerance, measured with the new mass matrix. The harmonic forms are set to zero. Without
+    ``keep_preconditioners`` the bundle is dropped and a solve raises. A new map of the same resolution reuses the
+    compiled programs. The geometry, preconditioners and harmonic forms of ``period`` are restored at the end."""
+    from mrx.equilibria import build_map
+    from mrx.nullspace import compute_nullspaces
+
+    s = domains("period")
+    geometry = s.geometry
+    Phi, _ = build_map(s.equilibrium, s, stellarator_symmetric=s.half_period)
+    stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)
-    s.set_geometry_from_map(_torus(1.3), keep_preconditioners=True)
-    assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-    assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-    x, info = s.M[1].solve(b, return_info=True)
-    r = b - s.M[1] @ x
+    try:
+        s.set_geometry_from_map(lambda x: stretch * Phi(x), keep_preconditioners=True)
+        assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
+        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
+        x, info = s.M[1].solve(b, return_info=True)
+        r = b - s.M[1] @ x
 
-    def norm(v):
-        return float(jnp.sqrt(v @ s.M[1].precondition(v)))
-    assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
-    s.set_geometry_from_map(_torus(1.3))
-    assert s.operators is None
-    with pytest.raises(ValueError):
-        s.M[1].solve(b)
+        def norm(v):
+            return float(jnp.sqrt(v @ s.M[1].precondition(v)))
+        assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
+        s.set_geometry_from_map(lambda x: stretch * Phi(x))
+        assert s.operators is None
+        with pytest.raises(ValueError):
+            s.M[1].solve(b)
+    finally:
+        s.set_geometry(geometry)
+        s.build_preconditioners()
+        compute_nullspaces(s, verbose=False)
 
 
 def test_slab_mass_model_conditions_the_one_form_mass(seq):

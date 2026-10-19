@@ -8,8 +8,9 @@
   projection matrices of complementary degree are adjoint.
 - the harmonic forms span the cohomology of the solid torus, Betti numbers ``(1, 1, 0, 0)``: one free 1-form and
   one Dirichlet 2-form, harmonic to round-off and orthonormal.
-- on the graded polar space the complex is exact, the extracted derivatives are the raw ones and the harmonic
-  forms span the cohomology.
+- the extracted derivatives are the raw ones of the tensor-product space.
+
+The spaces are the graded polar ones of production.
 
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
@@ -115,7 +116,10 @@ def test_mass_and_weak_derivative(seq, k):
     assert abs(lhs - rhs) < EXACT * abs(lhs), f"P_{k}{partner}: {lhs:.6e} vs {rhs:.6e}"
 
 
-def _check_cohomology(seq):
+def test_harmonic_forms_span_the_cohomology(seq):
+    """One harmonic free 1-form and one harmonic Dirichlet 2-form (``b1 = 1`` and, by duality, the
+    Dirichlet ``b2``), none at k = 0 Dirichlet or k = 3 free, each with a Rayleigh quotient at round-off and
+    unit mass norm. Under stellarator symmetry both are odd."""
     odd = seq.odd
     for space, k in ((odd.free, 1), (odd, 2)):
         vs = space.nullspace(k)
@@ -128,26 +132,11 @@ def _check_cohomology(seq):
     assert seq.nullspace(0).shape[0] == 0 and seq.free.nullspace(3).shape[0] == 0
 
 
-def test_harmonic_forms_span_the_cohomology(seq):
-    """One harmonic free 1-form and one harmonic Dirichlet 2-form (``b1 = 1`` and, by duality, the
-    Dirichlet ``b2``), none at k = 0 Dirichlet or k = 3 free, each with a Rayleigh quotient at round-off and
-    unit mass norm. Under stellarator symmetry both are odd."""
-    _check_cohomology(seq)
-
-
-def test_the_graded_complex(domains):
-    """On the graded polar space: ``G_{k+1} G_k = 0`` on every view, the extracted derivative of a form is its raw
-    derivative, ``E_{k+1}^T G_k v = G^raw_k E_k^T v`` (k = 0, 1, 2), and the harmonic forms span the cohomology as
-    on the uniform space."""
-    seq = domains("graded")
-    for name, space in _views(seq).items():
-        for k in (0, 1):
-            g = space.G[k] @ _random(space, k, 31 + k)
-            rel = float(jnp.linalg.norm(space.G[k + 1] @ g) / jnp.linalg.norm(g))
-            assert rel < EXACT, f"{name}, k={k}: d d != 0 ({rel:.2e})"
+def test_the_extracted_derivative_is_the_raw_one(seq):
+    """The polar extraction commutes with the derivatives of the graded tensor-product space,
+    ``E_{k+1}^T G_k v = G^raw_k E_k^T v`` (k = 0, 1, 2)."""
     for k, raw in enumerate(seq.incidence):
         v = _random(seq, k, 41 + k)
         lhs = seq.E(k + 1).T @ (seq.G[k] @ v)
         rel = float(jnp.linalg.norm(lhs - raw @ (seq.E(k).T @ v)) / jnp.linalg.norm(lhs))
         assert rel < EXACT, f"k={k}: the extracted derivative is not the raw one ({rel:.2e})"
-    _check_cohomology(seq)

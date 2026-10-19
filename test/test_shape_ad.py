@@ -1,33 +1,28 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
-On QA at (12, 20, 12) p=2 the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic: closed to
-round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean rotational
+On the li383 sequence of the suite the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic:
+closed to round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean rotational
 transform with respect to every map coefficient matches central differences. The parametrisation holds the volume
 and the aspect ratio exactly, and the hand-derived ``|B|``, ``B . grad|B|`` and ``(B x grad r) . grad|B|`` of the
 quasi-symmetry residual agree with automatic differentiation of the pushed-forward field.
 """
-import os
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
+#: The finite difference below divides the error of two solves by 2 eps = 2e-3, so they are solved to 1e-10: at
+#: the default 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13).
+FD_TOL = 1e-10
 
-QA = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "wout_LandremanPaul2021_QA_lowres.nc")
 
-
-def test_vacuum_field_and_its_shape_derivative():
+def test_vacuum_field_and_its_shape_derivative(seq):
     import mrx.optimization.shape_ad as sa
     from mrx.differential_forms import DiscreteFunction, Pushforward
     from mrx.equilibria import build_map
-    from mrx.geometry import build_sequence
     from mrx.operators import dual_norm
     from mrx.precision import eps as round_off
 
-    # the finite difference below divides the error of two solves by 2 eps = 2e-3, so they are solved to 1e-10:
-    # at the default 1e-8 the comparison sits at its bound of 1e-6 (1.15e-6 and 0.9e-6 in two runs, 2026-10-13)
-    seq = build_sequence(QA, (12, 20, 12), 2, tol=1e-10)
     seed = sa.flux_seed(seq)
     h, info = sa.vacuum_two_form(seq, seed)
     assert info > 0
@@ -46,7 +41,7 @@ def test_vacuum_field_and_its_shape_derivative():
     def mean_iota(x):
         R, Z = shape.map_coefficients(seq, 1e-2 * x.reshape((2,) + shape.raw_R.shape))
         sq = seq.with_geometry(sa.cylindrical_geometry(seq, R, Z, seq.nfp))
-        return sa.mean_iota(sq, sa.vacuum_two_form(sq, seed)[0])
+        return sa.mean_iota(sq, sa.vacuum_two_form(sq, seed, tol=FD_TOL)[0])
 
     x = jnp.zeros(2 * shape.raw_R.size)
     d = jnp.asarray(np.random.default_rng(0).standard_normal(x.size))

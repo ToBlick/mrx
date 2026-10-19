@@ -1,10 +1,9 @@
-"""Shared fixtures of the test suite: the li383 equilibrium at spline degree 2 in two representations of the
-domain with the same mesh (docs/source/concepts/testing_strategy.md):
+"""Shared fixtures of the test suite: the li383 equilibrium at spline degree 2 on the graded polar space (fewer
+theta cells near the axis) in two representations of the domain with the same mesh
+(docs/source/concepts/testing_strategy.md):
 
 - ``half``: the production sequence, one field period with stellarator symmetry, integrating half of it.
 - ``period``: one field period without the reflection.
-
-``graded`` is ``half`` on the graded polar space (fewer theta cells near the axis), for the de Rham tests.
 
 The run time of the suite is dominated by XLA compilation, so a test costs the distinct solves it compiles,
 not the size of the mesh. Compiled programs are cached on disk between runs (see below).
@@ -28,17 +27,16 @@ if _CACHE:
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
 #: Resolution (r, theta, zeta) per field period and the spline degree.
 NS, P = (12, 20, 12), 2
-#: The two representations of the li383 domain and the graded space: (symmetry, graded).
-DOMAINS = {"half": ("stellarator", False), "period": ("field-period", False), "graded": ("stellarator", True)}
+#: The two representations of the li383 domain, by their symmetry.
+DOMAINS = {"half": "stellarator", "period": "field-period"}
 
 
 def _build(name):
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
-    symmetry, graded = DOMAINS[name]
     t0 = time.perf_counter()
-    s = build_sequence(GEOMETRY, NS, P, symmetry=symmetry, graded=graded)
+    s = build_sequence(GEOMETRY, NS, P, symmetry=DOMAINS[name], graded=True)
     compute_nullspaces(s, verbose=False)
     print(f"\n  li383 {name}: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
     return s
