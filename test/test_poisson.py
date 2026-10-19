@@ -26,10 +26,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, quadrature (p + 1, p, p), measured
-#: 2026-10-18: 5.051e-3 (k = 0, of grad psi), 7.341e-3, 1.461e-2 and 2.461e-2. The errors are measured with the
-#: sequence's own rule, which reads them 1.6-2.1 times lower than p + 1 points per axis (9.43e-3 to 5.22e-2).
-ERROR_BAND = {0: 0.00631, 1: 0.00918, 2: 0.0183, 3: 0.0308}
+#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, graded, quadrature (p + 1, p, p), measured
+#: 2026-10-19: 6.106e-3 (k = 0, of grad psi), 7.557e-3, 1.747e-2 and 3.418e-2 (uniform theta: 5.05e-3 to 2.46e-2).
+#: The errors are measured with the sequence's own rule.
+ERROR_BAND = {0: 0.00763, 1: 0.00945, 2: 0.0218, 3: 0.0427}
 #: The relative spread of the two representations' errors, which is below 3e-12.
 SAME = 1e-3
 NAMES = ("half", "period")

@@ -33,8 +33,9 @@ import pytest
 from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
 from mrx.solvers import minres, preconditioned_cg
 
-#: The relative error of a round trip, in units of seq.tol. Measured 2026-10-16: at most 41 (L[3] full), except
-#: the exact parts, 55 to 441 (L[3] exact), whose two solves of degree k - 1 amplify the solve error.
+#: The relative error of a round trip, in units of seq.tol. Measured on the graded li383 2026-10-19: at most 9.8
+#: (L[1] coexact), except the exact parts, 55 to 617 (L[3] exact), whose two solves of degree k - 1 amplify the
+#: solve error.
 ROUND_TRIP = 1e3
 N = 60
 

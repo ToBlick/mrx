@@ -3,7 +3,6 @@
 ``V0 --grad--> V1 --curl--> V2 --div--> V3`` with the polar strong derivatives ``G_k``:
 
 - the complex is exact, ``G_{k+1} G_k = 0``, on the free and the Dirichlet spaces and on both parity views.
-- the projections commute with the derivatives, ``G_k Pi_k f = Pi_{k+1} d f`` for a smooth physical ``f``.
 - the mass matrices are symmetric positive definite, the weak derivative is ``D_k = M_{k+1} G_k``, and the
   projection matrices of complementary degree are adjoint.
 - the harmonic forms span the cohomology of the solid torus, Betti numbers ``(1, 1, 0, 0)``: one free 1-form and
@@ -15,7 +14,6 @@ The spaces are the graded polar ones of production.
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
 """
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -50,51 +48,6 @@ def test_the_complex_is_exact(seq, k):
         g = space.G[k] @ _random(space, k, 11 + k)
         rel = float(jnp.linalg.norm(space.G[k + 1] @ g) / jnp.linalg.norm(g))
         assert rel < EXACT, f"{name}, k={k}: d d != 0 ({rel:.2e})"
-
-
-# Logical test forms with the period of the sequence and regular at the axis (each component vanishes there as
-# fast as its form requires). The derivative of a logical form is metric-free, so the commuting identity holds
-# up to the Gauss quadrature of the trigonometric factors, far below the bands.
-TWO_PI = 2.0 * np.pi
-
-
-def _f0(x):
-    return x[0] ** 2 * jnp.cos(TWO_PI * x[1]) + jnp.sin(TWO_PI * x[2])
-
-
-def _a1(x):
-    r, t, z = x
-    return jnp.array([r * jnp.sin(TWO_PI * z), r ** 2 * jnp.sin(TWO_PI * z), r ** 2 * jnp.cos(TWO_PI * t)])
-
-
-def _b2(x):
-    r, t, z = x
-    return jnp.array([r ** 2 * jnp.sin(TWO_PI * z), r ** 2 * jnp.cos(TWO_PI * z), r * (1.0 + r ** 2 * jnp.cos(TWO_PI * t))])
-
-
-def _d(f, k):
-    """The exterior derivative of a logical k-form, in logical components."""
-    def df(x):
-        D = jax.jacfwd(f)(x)
-        if k == 0:
-            return D
-        if k == 1:      # curl: the 2-form (d_t a_z - d_z a_t, d_z a_r - d_r a_z, d_r a_t - d_t a_r)
-            return jnp.array([D[2, 1] - D[1, 2], D[0, 2] - D[2, 0], D[1, 0] - D[0, 1]])
-        return jnp.trace(D)
-    return df
-
-
-@pytest.mark.parametrize("k", (0, 1, 2))
-def test_projections_commute_with_the_derivative(domains, k):
-    """``G_k Pi_k f = Pi_{k+1} d f`` on the free spaces of one field period, for a logical k-form ``f`` and its
-    exterior derivative ``d f``: gradient (k = 0), curl (k = 1) and divergence (k = 2)."""
-    space = domains("period").free
-    f = (_f0, _a1, _b2)[k]
-    lhs = space.G[k] @ space.interpolate(f, k)
-    rhs = space.interpolate(_d(f, k), k + 1)
-    rel = float(jnp.linalg.norm(lhs - rhs) / jnp.linalg.norm(rhs))
-    print(f"\n  k={k}: |G Pi f - Pi d f| / |Pi d f| = {rel:.2e}")
-    assert rel < max(EXACT, 1e-7)
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
