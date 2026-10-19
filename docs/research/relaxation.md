@@ -150,3 +150,17 @@ Variants that lost (li383 (48,64,24)):
 - The full Newton block system gives the same trajectory as Gauss-Newton under GCR. Reorthogonalised Newton-MR on
   the full Hessian takes the nonpositive-curvature exit on steps 1-13 and barely moves (3.8 s/step).
 
+Tolerance of the Gauss-Newton solve (NEWTON_TOL, relax.py library code on gp-newton, graded, new CFL weights, 30 steps
+from the file's field, H200, 2026-10-19). 1e-8 at step (time without the compile), residual after 30 steps, s/step:
+
+| tol | li383 (48,64,24) | li383 (64,80,32) | W7-X (32,64,36) |
+|---|---|---|---|
+| 0.03 | 8 (19.4 s), 6.8e-10, 2.94 | 7 (32.8 s), 8.0e-10, 5.27 | 11 (21.9 s), 2.1e-10, 2.26 |
+| 0.05 | 8 (17.0 s), 7.7e-10, 2.49 | 8 (34.2 s), 8.2e-10, 5.00 | 12 (19.8 s), 2.8e-10, 1.92 |
+| 0.1 | 11 (17.5 s), 1.6e-9, 1.78 | 8 (27.4 s), 1.9e-9, 3.55 | 15 (19.7 s), 1.1e-9, 1.60 |
+| 0.2 | 21 (25.7 s), 1.3e-8, 1.29 | 18 (46.8 s), 7.3e-9, 2.49 | 21 (20.9 s), 2.7e-9, 1.14 |
+
+- 0.1 is the fastest or level to 1e-8 on all three. Tighter solves end lower but do not get there sooner. 0.2 does
+  not stall, as it did under GCR with the old CFL weights, but needs about twice the steps.
+- Energy fell on every step of every run. The energy removed agrees to 0.5 %.
+

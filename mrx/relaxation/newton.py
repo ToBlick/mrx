@@ -34,7 +34,10 @@ from mrx.solvers import minres
 #: trajectory, 1e-5 reaches the force residual 1e-8 four steps later and 1e-4 stalls at 2e-7. MINRES is not a
 #: flexible method, and the error of the mass solves enters its operator. With tolerance 0.1 and 300 iterations the
 #: solve takes the steps of the block Gauss-Newton system under flexible GCR on li383 M, L, p = 3 and W7-X, at the
-#: same or 5-11 % less time. Without the reorthogonalisation it needs 1.6-2.6 times the iterations.
+#: same or 5-11 % less time. Without the reorthogonalisation it needs 1.6-2.6 times the iterations. Tolerance sweep
+#: on li383 (48,64,24), (64,80,32) and W7-X (32,64,36), graded, 30 steps (2026-10-19): 0.1 reaches the force residual
+#: 1e-8 first or level (17.5, 27.4, 19.7 s). 0.05 and 0.03 take fewer steps at 1.4-1.7 times the cost per step and end
+#: 2-5 times lower after 30 steps, 0.2 needs 18-21 steps.
 NEWTON_PENALTY = 3.0
 NEWTON_TOL = 0.1
 NEWTON_MAXITER = 300

@@ -195,12 +195,12 @@ def flux_seed(seq):
     return seq.odd.interpolate(lambda x_hat: flux, 2)
 
 
-def vacuum_two_form(seq, seed):
+def vacuum_two_form(seq, seed, tol=None):
     """``(h, info)``: the vacuum field, the harmonic 2-form ``h = seed - G_1 a`` with ``S_1 a = G_1^T M_2
     seed`` (see the module docstring), on the odd view of ``seq`` (a
     :meth:`~mrx.derham_sequence.DeRhamSequence.with_geometry` copy). ``h`` is differentiable in the geometry and
     has the toroidal flux of ``seed``, without normalisation. ``info`` is the signed iteration count of the
-    forward solve."""
+    forward solve. ``tol`` replaces ``seq.tol`` in the forward and the adjoint solve."""
     odd = seq.odd
     b = odd.D[1].T @ seed
 
@@ -210,7 +210,7 @@ def vacuum_two_form(seq, seed):
     def solve(_, r):
         # both right-hand sides are G_1^T of something: the forward one by construction, the adjoint one
         # because a enters h only through G_1 a
-        return odd.S[1].solve(r, return_info=True)
+        return odd.S[1].solve(r, tol=tol, return_info=True)
 
     a, info = jax.lax.custom_linear_solve(matvec, b, solve, symmetric=True, has_aux=True)
     return seed - odd.G[1] @ a, info

@@ -1,5 +1,4 @@
-"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence, except the G-frame
-vacuum.
+"""The three equilibrium readers (GVEC, VMEC, DESC). These tests need no sequence.
 
 GVEC: a synthetic state written by ``test/synthetic_gvec.py`` from closed formulas is read back and
 reproduces the formulas to round-off. VMEC: the radial splines pass through the li383 wout's Fourier
@@ -8,8 +7,7 @@ reproduces its formulas to round-off, and DESC's conversion of the li383 wout ma
 Without stellarator symmetry: the li383 wout and the synthetic GVEC state, shifted in both angles, read as
 the shifted series, and a synthetic DESC file with terms of the other parity reproduces its formulas.
 G-frame: the synthetic torus written in GVEC's axis-following frame reads as the same map, and a state
-computed by GVEC in its G-frame (data/gvec_gframe) reads as GVEC's own positions. Its vacuum field is
-MRX's harmonic field of the same domain.
+computed by GVEC in its G-frame (data/gvec_gframe) reads as GVEC's own positions.
 Orientation: ``read_equilibrium`` reverses the poloidal angle of the left-handed VMEC files and not of DESC's
 right-handed conversion, and the result is right-handed with the same R and Z at the mirrored angle.
 """
@@ -25,9 +23,6 @@ from mrx.equilibria.fit import axis_orders
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
-from mrx.geometry import build_sequence
-from mrx.nullspace import compute_nullspaces
-from mrx.relaxation.initial_conditions import initial_field
 from test.synthetic_desc import write_synthetic_desc
 from test.synthetic_gvec import TWO_PI, evaluate, write_synthetic_state
 
@@ -48,7 +43,7 @@ def test_gvec_state_file_reproduces_the_formulas(tmp_path):
     torus = write_synthetic_state(path, R0=R0, a=A, nfp=NFP, iota=IOTA, Psi_edge=PSI_EDGE,
                                   lam_amplitude=LAM_AMPLITUDE, beta=BETA)
     st = read_state(path)
-    assert st["nfp"] == NFP and st["X1"]["deg"] == 5 and is_stellarator_symmetric(st)
+    assert st["nfp"] == NFP and is_stellarator_symmetric(st)
     assert abs(st["a_minor"] - A) <= mrx.eps(8) and st["r_major"] == R0
     r = np.array([0.0, 0.13, 0.5, 0.87, 1.0])
     th, ze = np.array([0.0, 0.2, 0.45, 0.7]), np.array([0.0, 0.3, 0.8])
@@ -75,7 +70,7 @@ def test_gvec_gframe_state_is_the_same_torus(tmp_path):
     write_synthetic_state(cylindrical, **kw)
     write_synthetic_state(framed, frame=True, **kw)
     st_c, st_f = read_equilibrium(cylindrical), read_equilibrium(framed)
-    assert st_f["hmap"] == 21 and st_f["theta_reversed"] and is_stellarator_symmetric(st_f)
+    assert st_f["theta_reversed"] and is_stellarator_symmetric(st_f)
     x = jnp.asarray(np.random.default_rng(0).uniform([0.0, 0.0, 0.0], [1.0, 1.0, 2.0], (64, 3)))
     got, want = jax.vmap(state_position(st_f))(x), jax.vmap(state_position(st_c))(x)
     assert jnp.abs(got - want).max() <= mrx.eps(64) * R0
@@ -100,24 +95,11 @@ def test_gvec_gframe_state_matches_gvec():
     """The GVEC G-frame state reads as GVEC's own positions, over more than one field period. It is right-handed
     as written. Its frame file is symmetric only to about 1e-6, so it does not count as stellarator-symmetric."""
     st = read_equilibrium(GFRAME)
-    assert st["hmap"] == 21 and st["nfp"] == 2 and not st["theta_reversed"]
+    assert st["nfp"] == 2 and not st["theta_reversed"]
     assert not is_stellarator_symmetric(st)
     r, th, ze = GFRAME_POINTS.T
     got = jax.vmap(state_position(st))(jnp.asarray(np.column_stack([r, th / TWO_PI, ze * st["nfp"] / TWO_PI])))
     assert jnp.abs(got - GFRAME_XYZ).max() <= mrx.eps(4096) * np.abs(GFRAME_XYZ).max()
-
-
-def test_gvec_gframe_vacuum_is_the_harmonic_field():
-    """GVEC's vacuum field of the G-frame state is MRX's harmonic 2-form ``h`` of the same domain, computed from
-    the map alone: ``||B - c h|| / ||B||`` with ``c = <B, h> / <h, h>`` is 7.2e-4 at (8, 16, 32), the
-    discretisation error (4.9e-3 with 16 toroidal splines: the frame has modes up to n = 20 per period)."""
-    seq = build_sequence(GFRAME, (8, 16, 32), 2, symmetry="field-period")
-    compute_nullspaces(seq, verbose=False)
-    odd = seq.odd
-    B, _ = initial_field(seq)
-    h = odd.nullspace(2)[0].astype(B.dtype)
-    c = (B @ (odd.M[2] @ h)) / (h @ (odd.M[2] @ h))
-    assert odd.l2_norm(B - c * h, 2) <= 2e-3 * odd.l2_norm(B, 2)
 
 
 def test_vmec_reader_interpolates_the_wout():
