@@ -11,8 +11,10 @@ with statically shifted slices of the grid, so no index array is gathered or sca
 A band is built from the dense table and kept only if it reproduces that table exactly
 (:meth:`Band.from_dense`), so the banded and the dense contraction add the same nonzero products, in a different
 order. :func:`enabled` decides where a band exists whether the contractions use it: ``MRX_BANDED=1`` always,
-``0`` never, and ``auto`` (the default) on a TPU only. On a CPU the dense tables are as fast or faster: the
-contractions go to the matrix library and the weights dominate the apply. It is read when a function is traced,
+``0`` never, and ``auto`` (the default) on a TPU or a GPU. On an H200 they made the li383 (32,44,20) Newton step 22%
+faster (2.15 to 1.67 s, 2026-10-18), and with the structured extraction a v6e step at (12,20,12) 1.9x faster. On a
+CPU the dense tables are as fast or faster: the contractions go to the matrix library and the weights dominate the
+apply. It is read when a function is traced,
 so set it before the first call. Inside :func:`dense` the contractions are traced with the dense tables whatever the
 mode.
 """
@@ -56,7 +58,7 @@ def dense():
 def enabled() -> bool:
     """Whether the sum-factorised contractions use the banded tables where they exist (:data:`MODE`), outside
     :func:`dense`."""
-    return _DENSE_DEPTH == 0 and (MODE == "1" or (MODE == "auto" and jax.default_backend() == "tpu"))
+    return _DENSE_DEPTH == 0 and (MODE == "1" or (MODE == "auto" and jax.default_backend() != "cpu"))
 
 
 class Band(eqx.Module):
