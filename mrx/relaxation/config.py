@@ -18,7 +18,7 @@ from typing import Annotated, Optional
 
 import tyro
 
-from mrx.relaxation.newton import NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
+from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 
 
 class Symmetry(StrEnum):
@@ -118,15 +118,15 @@ class Descent:
 
 @dataclass(frozen=True)
 class Newton:
-    """Newton solve (with --descent.method newton, see mrx.relaxation.newton)."""
+    """Gauss-Newton solve (with --descent.method newton, see mrx.relaxation.newton)."""
     penalty: float = NEWTON_PENALTY
     """The weight of the penalty on flows along the field, in units of the field's strain along the field."""
     tol: float = NEWTON_TOL
-    """The relative tolerance of each Newton solve."""
+    """The relative tolerance of each Newton solve, in the norm of its preconditioner."""
     maxiter: int = NEWTON_MAXITER
     """The maximum number of MINRES iterations of each Newton solve."""
-    mass_tol: Optional[float] = NEWTON_MASS_TOL
-    """The accuracy of the Chebyshev polynomial that replaces the 1-form mass solves inside the Hessian (mrx.relaxation.newton.MassChebyshev). Its degree follows from this and the spectral interval of the mass atom. None keeps the mass solves, which cost about three times as much."""
+    mass_solve_tol: float = NEWTON_MASS_SOLVE_TOL
+    """The relative tolerance of the two 1-form mass solves inside every apply of the Gauss-Newton operator. Looser than 1e-5 the relaxation stalls."""
 
 
 @dataclass(frozen=True)
@@ -203,7 +203,7 @@ class RelaxConfig:
         from mrx.relaxation.loop import TimeStepper, radial_cell_sq
         n = self.newton
         return TimeStepper(seq=seq, newton=self.descent.newton, newton_penalty=n.penalty, newton_tol=n.tol,
-                           newton_maxiter=n.maxiter, newton_mass_tol=n.mass_tol,
+                           newton_maxiter=n.maxiter, newton_mass_solve_tol=n.mass_solve_tol,
                            resistivity=self.drive.resistivity * radial_cell_sq(seq))
 
     def relax_kwargs(self):

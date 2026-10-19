@@ -10,8 +10,8 @@ The force pairing ``-(u, J x B)_M`` must equal ``E'(0)``, and the second variati
 :func:`mrx.relaxation.newton.second_variation` must reproduce ``E''(0) = (u, H u)`` for every ``u``. Both sides
 are computed from different code: the left from the stepper's ``A_u`` alone, the right from the current and the
 product loads. By polarisation the bilinear form is checked too, ``(u, H v) = (q(u + v) - q(u) - q(v)) / 2``
-with ``q(w)`` the ``E''(0)`` of the flow along ``w``. With the Chebyshev mass inverse in place of the mass solves
-the Hessian stays symmetric.
+with ``q(w)`` the ``E''(0)`` of the flow along ``w``. Without the terms in ``J`` the second variation is its
+Gauss-Newton part, the first term ``||A_u B||^2_M`` of ``E''(0)``.
 
 A short run with the production stepper takes positive steps, lowers the energy at every step, lowers the force,
 keeps ``div B`` at round-off and the helicity up to grid-scale effects, records the best state, and writes a
@@ -25,7 +25,7 @@ import numpy as np
 from mrx.precision import eps
 from mrx.relaxation.loop import (TimeStepper, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
-from mrx.relaxation.newton import MassChebyshev, second_variation
+from mrx.relaxation.newton import second_variation
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
@@ -82,24 +82,15 @@ def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
     assert abs(polar - uHv) < band * (abs(qu) + abs(qv))
 
 
-def test_chebyshev_mass_hessian_is_symmetric(seq, b0):
-    """The Chebyshev mass inverse meets its error bound against the mass solve, and the Hessian built with it is
-    symmetric, ``(u, H v) = (v, H u)``."""
-    odd = seq.odd
-    _, _, J, _ = compute_force(b0, seq)
-    S = MassChebyshev.build(seq, 0.3)
-    lmin, lmax = (float(x) for x in S.bounds)
-    rate = (np.sqrt(lmax / lmin) - 1) / (np.sqrt(lmax / lmin) + 1)
-    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(5), (odd.n(1),))
-    x = odd.M[1].solve(b)
-    err = float(odd.l2_norm(S(odd, b) - x, 1) / odd.l2_norm(x, 1))
-    H = second_variation(seq, b0, J, mass_inverse=S)
-    u, v = _divergence_free(seq, jax.random.PRNGKey(6)), _divergence_free(seq, jax.random.PRNGKey(7))
-    uHv, vHu = float(u @ H(v)), float(v @ H(u))
-    print(f"\n  bounds [{lmin:.3f}, {lmax:.3f}], error {err:.2e} (degree {S.steps}, bound {2 * rate ** S.steps:.2e}), "
-          f"(u, H v) {uHv:+.6e} vs (v, H u) {vHu:+.6e}")
-    assert err < 2 * rate ** S.steps < 0.3
-    assert abs(uHv - vHu) < 1e3 * eps() * (abs(float(u @ H(u))) + abs(float(v @ H(v))))
+def test_gauss_newton_part_is_the_first_term(seq, b0):
+    """Without ``J`` the second variation is the first term of ``E''(0)``, ``(u, H u) = ||A_u B||^2_M``, for a random
+    ``u``. The left side comes from the stepper's flow alone."""
+    H = second_variation(seq, b0)
+    u = _divergence_free(seq, jax.random.PRNGKey(6))
+    first = float(seq.odd.l2_norm_sq(_flow(seq, u)(b0), 2))
+    uHu = float(u @ H(u))
+    print(f"\n  ||A_u B||^2 {first:.6e} vs (u, H u) without J {uHu:.6e}")
+    assert abs(first - uHu) < 1e3 * max(seq.tol, eps()) * first
 
 
 def test_newton_relaxation_descends(seq, b0, tmp_path):

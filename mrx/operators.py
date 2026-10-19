@@ -267,21 +267,22 @@ def _mass_model(seq, k: int):
 
 
 @eqx.filter_jit
-def _mass_solve(seq, rhs, k: int, guess=None, return_info: bool = False):
+def _mass_solve(seq, rhs, k: int, guess=None, tol=None, check_residual: bool = True, return_info: bool = False):
     """``M_k^{-1} rhs`` by preconditioned conjugate gradients, preconditioned by :func:`_mass_model`.
 
     The solve stops in the norm of that preconditioner, which conjugate gradients have without a second apply:
     no ``norm`` is passed. For ``k = 1, 2`` with the slab model that is the slab's norm, for the atom it is the norm
-    of :func:`dual_norm`."""
+    of :func:`dual_norm`. ``tol`` replaces ``seq.tol``. Without ``check_residual`` the solve stops on the residual of
+    its recurrence, as a solve inside another iteration does."""
     x, info = solve_singular_cg(
         lambda x: _mass(seq, x, k),
         rhs,
         jnp.zeros((0, rhs.shape[0])),
         precond_matvec=_mass_model(seq, k).apply,
         x0=guess,
-        tol=seq.tol,
+        tol=seq.tol if tol is None else tol,
         maxiter=seq.maxiter,
-        check_residual=True,
+        check_residual=check_residual,
     )
     return (x, info) if return_info else x
 
@@ -636,8 +637,8 @@ class MassMatrix(_Symmetric):
         return _mass_solve(self.seq, b, self.k, guess=guess, return_info=return_info)
 
     def precondition(self, v):
-        """The mass atom of ``M_k`` (an approximation of ``M_k^{-1}``) applied to ``v``. It is symmetric to round-off,
-        which the polynomial in it of the Newton system needs. The solves of ``M_k`` may use the slab model."""
+        """The mass atom of ``M_k`` (an approximation of ``M_k^{-1}``) applied to ``v``, symmetric to round-off. The
+        solves of ``M_k`` may use the slab model."""
         return _seq_atom(self.seq, "mass", self.k).apply(v)
 
 

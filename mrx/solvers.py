@@ -3,12 +3,11 @@
 The solvers take the operator and the preconditioner as functions ``x -> A x``, so they work
 inside ``jit`` and never form a matrix. :func:`preconditioned_cg` solves SPD systems, and
 :func:`minres` solves symmetric indefinite ones. :func:`minres` can also stop at a direction of
-nonpositive curvature, which the Newton-MR relaxation uses. :func:`solve_singular_cg` solves a
-semidefinite system with a known kernel. :func:`chebyshev` is a fixed polynomial approximate inverse
-with no loop, for use where an inverse sits inside another iteration, and :func:`lanczos_bounds`
-estimates the spectral interval it needs. :func:`refine` is the outer loop of a solve: it
-recomputes the true residual after each Krylov solve and corrects the solution until that residual
-meets the tolerance.
+nonpositive curvature and reorthogonalise its Lanczos vectors, which the Newton solve uses.
+:func:`solve_singular_cg` solves a semidefinite system with a known kernel. :func:`lanczos_bounds`
+estimates the spectral interval of a preconditioned operator. :func:`refine` is the outer loop of a
+solve: it recomputes the true residual after each Krylov solve and corrects the solution until that
+residual meets the tolerance.
 
 Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
@@ -64,33 +63,6 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
 
     x_final, _, _, _, _, k_final, converged_final = jax.lax.while_loop(cond_fn, body_fn, init_state)
     return x_final, jnp.where(converged_final, k_final, -k_final)
-
-
-def chebyshev(A_matvec, b, M, bounds, steps):
-    """Return ``x = q(M A) M b``, a fixed polynomial approximation of ``A^{-1} b``.
-
-    ``q`` is the Chebyshev polynomial of degree ``steps`` for the interval ``bounds = (lmin, lmax)``, which
-    must contain the spectrum of ``M A`` (``A`` SPD, ``M`` an SPD approximation of ``A^{-1}``). The cost is
-    ``steps`` applies of ``A`` and ``steps + 1`` of ``M``, with no loop and no stopping test. Unlike a
-    Krylov solve the result is linear in ``b``, and for symmetric ``A`` and ``M`` the map ``b -> x`` is
-    symmetric, so it can stand for ``A^{-1}`` inside another symmetric operator. The relative error in the
-    ``A``-norm falls like ``2 ((sqrt(kappa) - 1) / (sqrt(kappa) + 1))^steps`` with ``kappa = lmax / lmin``
-    (Saad 2003, Algorithm 12.1).
-    """
-    lmin, lmax = bounds
-    theta, delta = (lmax + lmin) / 2, (lmax - lmin) / 2
-    sigma = theta / delta
-    rho = 1 / sigma
-    r = b
-    d = M(r) / theta
-    x = d
-    for _ in range(steps):
-        r = r - A_matvec(d)
-        rho_new = 1 / (2 * sigma - rho)
-        d = rho_new * rho * d + (2 * rho_new / delta) * M(r)
-        rho = rho_new
-        x = x + d
-    return x
 
 
 def lanczos_bounds(A_matvec, b, M, steps):
@@ -243,9 +215,11 @@ class _MinresState(NamedTuple):
     k: int
     converged: bool
     npc: bool
+    U: jnp.ndarray
+    V: jnp.ndarray
 
 
-def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
+def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonalize=False):
     """Solve the symmetric (possibly indefinite) system ``A x = b`` by preconditioned MINRES from zero.
 
     Returns ``(x, info)``. ``M`` is an SPD approximation of ``A^{-1}``. The solve stops when
@@ -259,6 +233,14 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
     nonpositive-curvature exit of Newton-MR (Liu & Roosta 2022, Algorithm 1), and ``M r`` is a
     descent direction of nonpositive curvature. The return is then ``(x, info, npc)`` with
     ``npc`` true if the exit was taken.
+
+    With ``reorthogonalize=True`` every Lanczos vector is kept, together with its preconditioned
+    version, and each new one is made orthogonal to all earlier ones, twice. That costs
+    ``2 maxiter`` stored vectors and two products with them per iteration, and ``maxiter`` must be a
+    Python int. Without it the three-term recurrence keeps orthogonality only in exact arithmetic.
+    Once the extreme Ritz values have converged, the basis drifts, those values are found again and
+    the solve repeats work. In the Newton solve of li383 (48,64,24) this happens after about 20
+    iterations, and the top Ritz value was found 22 times in 400 (2026-10-14).
     """
     x0 = jnp.zeros_like(b)
     # A negative r^T M r means M is not SPD. The result then becomes NaN.
@@ -267,6 +249,8 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
     beta1 = jnp.sqrt(jnp.dot(r0, y0))
     bnorm = norm(b)
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+    # the Lanczos vectors (rows of U) and their preconditioned versions (rows of V): u_i . v_j = delta_ij
+    store = (maxiter if reorthogonalize else 0, b.shape[0])
 
     # The state follows SOL MINRES. y is the preconditioned residual (v = y / beta), r1 and r2
     # are the previous and current Lanczos residuals, (cs, sn) is the last Givens rotation,
@@ -276,6 +260,7 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
         x=x0, y=y0, r1=jnp.zeros_like(b), r2=r0, beta=beta1, oldbeta=0.0,
         cs=-1.0, sn=0.0, dbar=0.0, epsln=0.0, phibar=beta1,
         w_prev=jnp.zeros_like(b), w_pp=jnp.zeros_like(b), res=r0, k=0, converged=False, npc=False,
+        U=jnp.zeros(store, dtype=b.dtype), V=jnp.zeros(store, dtype=b.dtype),
     )
 
     def cond_fn(state):
@@ -283,7 +268,7 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
 
     def body_fn(state):
         (x, y, r1, r2, beta, oldbeta, cs, sn, dbar, epsln, phibar,
-         w_prev, w_pp, res, k, converged, _) = state
+         w_prev, w_pp, res, k, converged, _, U, V) = state
 
         safe_beta = jnp.where(beta > 0, beta, 1.0)
         v = y / safe_beta
@@ -293,6 +278,10 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
         old_beta = jnp.where(oldbeta > 0, oldbeta, 1.0)
         y_new = y_new - jnp.where(k >= 1, beta / old_beta, 0.0) * r1
         y_new = y_new - (alpha / safe_beta) * r2
+        if reorthogonalize:
+            U, V = U.at[k].set(r2 / safe_beta), V.at[k].set(v)
+            for _ in range(2):
+                y_new = y_new - (V @ y_new) @ U
 
         y_prec = M(y_new)
         beta_new = jnp.sqrt(jnp.dot(y_new, y_prec))
@@ -328,7 +317,7 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
             x=x_new, y=y_prec, r1=r2, r2=y_new, beta=beta_new, oldbeta=beta,
             cs=cs_new, sn=sn_new, dbar=dbar_new, epsln=epsln_new, phibar=phibar_new,
             w_prev=w_new, w_pp=w_prev, res=res_new, k=k + 1,
-            converged=converged_new & ~npc_new, npc=npc_new,
+            converged=converged_new & ~npc_new, npc=npc_new, U=U, V=V,
         )
 
     final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
