@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 import mrx.double_single as ds
+from mrx import extraction_operators
 from mrx.precision import PAIRS, eps
 
 # A row of E holds at most two entries of size one, so the two applies differ by a few roundings of the
@@ -25,6 +26,12 @@ def _extractions(seq):
     return {f"{name} k={k}{' dirichlet' if d else ''}": view.extraction[(k, d)]
             for name, view in (("full", seq), ("odd", seq.odd), ("even", seq.even))
             for k in range(4) for d in (False, True)}
+
+
+@pytest.fixture(autouse=True)
+def _structured(monkeypatch):
+    """The structured apply, which ``MRX_EXTRACTION=auto`` keeps for a TPU."""
+    monkeypatch.setattr(extraction_operators, "MODE", "structured")
 
 
 def _close(new, ref, tol):

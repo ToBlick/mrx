@@ -34,9 +34,19 @@ import numpy as np
 import mrx.double_single as ds
 from mrx.precision import PAIRS
 
-#: Whether an extraction applies through its :class:`StructuredExtraction` when it has one
-#: (``MRX_EXTRACTION=structured``, the default) or through its entries (``MRX_EXTRACTION=coo``).
-STRUCTURED = os.environ.get("MRX_EXTRACTION", "structured") != "coo"
+#: Whether an extraction applies through its :class:`StructuredExtraction` when it has one (``structured``), through
+#: its entries (``coo``), or the first on a TPU and the second elsewhere (``auto``, the default): :func:`structured`.
+#: On a TPU a gather with an index array is slow and the structured apply removes it (about 1.9x on the Newton step
+#: together with the banded tables, li383 (12,20,12), v6e); on an H200 the gather is fast and the structured apply
+#: made the Newton step about 20% slower (li383 (32,44,20), 2026-10-18). It is read when the apply is traced.
+MODE = os.environ.get("MRX_EXTRACTION", "auto")
+if MODE not in ("structured", "coo", "auto"):
+    raise ValueError(f"MRX_EXTRACTION={MODE!r}, expected 'structured', 'coo' or 'auto'")
+
+
+def structured() -> bool:
+    """Whether the extractions apply through their :class:`StructuredExtraction` (:data:`MODE`)."""
+    return MODE == "structured" or (MODE == "auto" and jax.default_backend() == "tpu")
 
 
 @functools.partial(jax.jit, static_argnames=("num_segments",))
@@ -101,7 +111,7 @@ class MatrixFreeExtraction(eqx.Module):
                                     by_cols=self.by_cols, structured=self.structured)
 
     def __matmul__(self, x):
-        if STRUCTURED and self.structured is not None:
+        if self.structured is not None and structured():
             return _apply_structured(self.structured, x if isinstance(x, ds.DS) else jnp.asarray(x),
                                      self.transposed)
         return self.coo_matmul(x)
