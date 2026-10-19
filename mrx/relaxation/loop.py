@@ -343,7 +343,7 @@ def _sample(ts, state, pw_guess):
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.J``, ...).
 
-    The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
+    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, knots and grading) are
     stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence.
     """
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
@@ -353,6 +353,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(seq.p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
+        fh.attrs["graded"] = seq.theta_counts is not None
         for name, bp in zip(_AXES, _breakpoints(seq)):
             fh.attrs[f"knots_{name}"] = bp
         for keypath, leaf in leaves:
@@ -370,7 +371,8 @@ def _breakpoints(seq):
 
 def checkpoint_attrs(path: str) -> dict:
     """Return the discretisation stored in a checkpoint as :func:`mrx.geometry.build_sequence` keywords (``ns``,
-    ``p``, ``knots``, ``symmetry``), together with ``nfp`` and ``step``."""
+    ``p``, ``knots``, ``symmetry``, ``graded``), together with ``nfp`` and ``step``. A checkpoint written before the
+    graded flag was stored is on a uniform space."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
 
@@ -381,21 +383,24 @@ def checkpoint_attrs(path: str) -> dict:
 
     return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
                 knots=[breakpoints(name) for name in _AXES],
-                symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), step=int(a["step"]))
+                symmetry=str(a["symmetry"]), graded=bool(a.get("graded", False)), nfp=int(a["nfp"]),
+                step=int(a["step"]))
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
     """Raise if the checkpoint ``path`` was written on another discretisation than that of ``seq``: another
-    resolution, degree, number of field periods, symmetry or knots."""
+    resolution, degree, number of field periods, symmetry, knots or theta grading."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
-    stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]))
+    stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]),
+              bool(a.get("graded", False)))
     same_knots = all(np.allclose(a[f"knots_{name}"], bp, rtol=0.0, atol=1e-12) if a[f"knots_{name}"].shape == bp.shape
                      else False for name, bp in zip(_AXES, _breakpoints(seq)))
-    if stored != (tuple(seq.ns), seq.p, seq.nfp, seq.symmetry) or not same_knots:
-        raise ValueError(f"{path}: written on {stored[0]} p={stored[1]} nfp={stored[2]} {stored[3]}"
+    graded = seq.theta_counts is not None
+    if stored != (tuple(seq.ns), seq.p, seq.nfp, seq.symmetry, graded) or not same_knots:
+        raise ValueError(f"{path}: written on {stored[0]} p={stored[1]} nfp={stored[2]} {stored[3]} graded={stored[4]}"
                          f"{'' if same_knots else ' with other knots'}, the sequence is {tuple(seq.ns)} p={seq.p} "
-                         f"nfp={seq.nfp} {seq.symmetry}")
+                         f"nfp={seq.nfp} {seq.symmetry} graded={graded}")
 
 
 def read_field(path: str, seq: DeRhamSequence) -> tuple[jnp.ndarray, int]:

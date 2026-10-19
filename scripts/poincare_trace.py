@@ -2,8 +2,8 @@ r"""Trace the field lines of relaxation checkpoints and save their Poincare sect
 
 Every checkpoint named on the command line (``checkpoints/state_<step>.h5``, ``best.h5``, a seeded checkpoint and
 so on) is traced with ``mrx.diagnostics.poincare.poincare``. The sequence is rebuilt from the resolution, degree,
-knots and symmetry stored in the checkpoint (:func:`mrx.relaxation.loop.checkpoint_attrs`) on the geometry file
-``--geometry``, which is the run's VMEC wout, GVEC state or DESC output. The weak pressure of each field
+knots, symmetry and grading stored in the checkpoint (:func:`mrx.relaxation.loop.checkpoint_attrs`) on the geometry
+file ``--geometry``, which is the run's VMEC wout, GVEC state or DESC output. The weak pressure of each field
 (``mrx.relaxation.physics.weak_pressure``, zero on the wall) is evaluated at every crossing.
 
 The archive ``trace.npz`` goes into the run directory of the first checkpoint, the parent of its ``checkpoints/``
@@ -74,7 +74,8 @@ def main(cli):
     archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
                                       "trace.npz")
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
-    seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"], symmetry=attrs["symmetry"])
+    seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"],
+                         symmetry=attrs["symmetry"], graded=attrs["graded"])
     fields = {field_name(path): read_field(path, seq) for path in cli.checkpoints}
     planes = planes_for(seq, cli.planes)
     print(f"[trace] {source}: fields {list(fields)}, nfp={seq.nfp}, symmetry {seq.symmetry}, planes "
