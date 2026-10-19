@@ -58,7 +58,9 @@ scales like `h^-4` instead of `h^-2`, and the CFL weights grow with it. A
 graded space gives each radial ring of basis functions its own uniform
 periodic theta space, with fewer cells near the axis.
 `build_sequence(..., graded=True)` turns it on. The map and the fields both
-live on the graded space.
+live on the graded space. The CFL weights of the relaxation loop
+(`logical_cfl_weights`) take the theta cell of the finest ring active at
+each point, not the wall's.
 
 The counts come from `graded_theta_counts(T_r, p, n_theta)`, from the radial
 knots alone. A ring's theta cell is at least `GRADED_ASPECT` (pi / 2) times

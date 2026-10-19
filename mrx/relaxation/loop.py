@@ -51,12 +51,21 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     the knot spacing of direction ``i``.
 
     Multiplied with the components of a 2-form velocity at the quadrature points they give the number of
-    logical cells crossed per unit time, the CFL number of each direction.
+    logical cells crossed per unit time, the CFL number of each direction. On a graded space the theta spacing
+    at a point is that of the finest ring whose radial basis functions are nonzero there, not the wall's.
     """
-    h = jnp.asarray(knot_spacing(seq))
-    weights = 1.0 / (seq.jacobian_j[:, None] * h[None, :])
+    h = knot_spacing(seq)
+    weights = 1.0 / (seq.jacobian_j[:, None] * jnp.asarray(h)[None, :])
     # the theta cell degenerates in the first radial span
-    return weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])
+    weights = weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])
+    if seq.theta_counts is None:
+        return weights
+    b = seq.basis_0.bases[0].bases[0]
+    T_r, counts = np.asarray(b.T), np.asarray(seq.theta_counts)
+    # the radial span of each point carries the basis functions span - p .. span
+    span = np.clip(np.searchsorted(T_r, np.asarray(seq.quad.x[:, 0]), side="right") - 1, b.p, T_r.size - b.p - 2)
+    finest = np.max([counts[span - j] for j in range(b.p + 1)], axis=0)
+    return weights.at[:, 1].multiply(jnp.asarray(finest * h[1]))
 
 
 class WarmStarts(eqx.Module):
