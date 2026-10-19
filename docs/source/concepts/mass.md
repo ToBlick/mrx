@@ -31,8 +31,9 @@ tables and the component shapes), built once per sequence.
 caller applies the extraction, `seq.M[k] @ v = E M_k E^T v`. The
 inter-degree projection masses `P_21`, `P_12`, `P_03`, `P_30`
 (`projection_plan`) are the same apply with the weight `I`.
-`build_mass_diagonal(seq, k)` gives `diag(M_k)` by the same sum
-factorisation with squared tables, with no apply.
+`build_mass_diagonal(seq, k, c)` gives the diagonal of component `c` of
+`M_k` by the same sum factorisation with squared tables, with no apply. On a
+graded ring it takes the ring's knot insertion as `theta`.
 
 ## 2. The weights
 
@@ -62,9 +63,19 @@ the quadrature grid. A stored
 
 ## 4. Quadrature: `q = p + 1`
 
-`QuadratureRule` uses `q` Gauss points per knot span on every axis
+`QuadratureRule` uses `q` Gauss points per knot span on each axis
 (`composite_quad`). `q` points integrate polynomials of degree `2q - 1`
 exactly, and with `q = p + 1` that covers the product of two degree-`p`
 splines. The metric weight is not a polynomial, so no rule is exact, and
 the quadrature error is of the order of the approximation error.
-`build_sequence` passes `q = p + 1`.
+
+The default is `q = p + 1` in `r` and `q = p` in `theta` and `zeta` (at least 2).
+`quad_points` of `build_sequence` sets the count per axis. Against `p + 1`
+everywhere the grid has `(p / (p + 1))^2` of the points, and every operator
+apply costs about that much less on meshes where the apply is bound by the
+grid. `p` points integrate degree `2p - 1` exactly, which keeps the optimal
+rates. The masses stay positive definite for `p >= 2`. At `p = 1` one point per
+span misses the alternating periodic splines, so the angles take at least 2.
+The radial axis keeps `p + 1` because of the `r` and `1 / r` factors of the
+polar metric. The discrete identities do not depend
+on the rule. Measured numbers are in `docs/research/performance.md` section 1.

@@ -19,7 +19,6 @@ from jax import Array
 
 
 import mrx
-from mrx.extraction_operators import conforming_restriction
 from mrx.spline_bases import basis_table
 
 if TYPE_CHECKING:
@@ -150,4 +149,4 @@ def interpolate(seq: "DeRhamSequence", f, k: int):
         for j, ax in enumerate(axes):
             m = _solve_tensor_collocation_axis(ax.hist if hist[j] else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))
-    return conforming_restriction(seq.E(k), jnp.concatenate(coeffs), seq.core_rows(k))
+    return seq.conforming(jnp.concatenate(coeffs), k)

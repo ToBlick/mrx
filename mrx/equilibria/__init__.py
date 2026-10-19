@@ -41,7 +41,6 @@ from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
 from mrx.quadrature import composite_quad
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
-from mrx.extraction_operators import conforming_restriction
 from mrx.spline_bases import SplineBasis
 
 TWO_PI = 2.0 * np.pi
@@ -316,7 +315,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        dofs = conforming_restriction(E, jnp.asarray(C.reshape(-1)), free.core_rows(0))
+        dofs = free.conforming(jnp.asarray(C.reshape(-1)), 0)
         return (E.T @ dofs).reshape(seq.basis_0.shape[0])
 
     if "frame" in st:

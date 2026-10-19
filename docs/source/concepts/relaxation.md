@@ -21,7 +21,7 @@ The relaxation forms the force by the potential route:
 `F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
 divergence-free fields, with no pressure solve. Every solve is warm-started from the previous step's value.
 `compute_force(B, seq, p_guess, JxB_guess, J_guess, F_guess)` returns the same projection by the Leray
-route, a k = 3 saddle solve that also gives the strong pressure `p`. The relaxation does not call it.
+route, the k = 3 Hodge split, which also gives the strong pressure `p`. The relaxation does not call it.
 
 ## 2. The step
 

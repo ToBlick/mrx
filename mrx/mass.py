@@ -26,8 +26,6 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.symmetry import symmetrize
-
 
 class SumfactPlan(eqx.Module):
     """The geometry-independent part of a mass or projection apply: the 1-D basis tables of the row and the
@@ -127,21 +125,22 @@ def sumfact_apply(plan, weights, x):
     return jnp.concatenate([y[c, :s[0], :s[1], :s[2]].reshape(-1) for c, s in enumerate(plan.shapes_r)])
 
 
-def build_mass_diagonal(seq, k):
-    """Return ``diag(M_k)`` on the installed geometry, for the full tensor-product coefficients.
+def build_mass_diagonal(seq, k, c, theta=None):
+    """Return the diagonal of component ``c`` of ``M_k`` on the installed geometry, shape ``(n_r, n_theta, n_zeta)``
+    of the component's tensor-product coefficients.
 
-    The components are concatenated. The diagonal is computed directly, without applying ``M_k``.
+    With ``theta`` (a knot insertion ``R``, :func:`mrx.extraction_operators.prolongation`) the theta functions are
+    the coarse ones ``R^T B``, the basis of a ring of a graded space, and the theta axis has their count. The
+    diagonal is computed directly, without applying ``M_k``.
     """
+    from mrx.differential_forms import DERIV_AXES  # noqa: PLC0415
+    from mrx.symmetry import mirror_component  # noqa: PLC0415
     plan, W = seq.mass_plan[k], seq.geometry.mass_weights[k]
     R, T, Z = plan.tables_c
-    parts = []
-    for c, s in enumerate(plan.shapes_c):
-        # squared basis tables: the row and column bases coincide on the diagonal
-        d = jnp.einsum('ia,jb,kd,abd->ijk', R[c] ** 2, T[c] ** 2, Z[c] ** 2, W[..., c, c])
-        parts.append(d[:s[0], :s[1], :s[2]].reshape(-1))
-    d = jnp.concatenate(parts)
-    if seq.half_period:
-        # d holds twice the half-period integrals. An entry and its mirror image each hold
-        # one half of the full integral, so their unsigned mean is the full diagonal.
-        d = symmetrize(d, seq.reflection_plan[k], 1, signed=False)
-    return d
+    s = plan.shapes_c[c]
+    T_c = T[c][:s[1]] if theta is None else jnp.asarray(theta).T @ T[c][:s[1]]
+    # squared basis tables: the row and column bases coincide on the diagonal
+    d = jnp.einsum('ia,jb,kd,abd->ijk', R[c][:s[0]] ** 2, T_c ** 2, Z[c][:s[2]] ** 2, W[..., c, c])
+    # on a half-period sequence d holds twice the half-period integrals. An entry and its mirror
+    # image each hold one half of the full integral, so their unsigned mean is the full diagonal.
+    return mirror_component(seq, d, DERIV_AXES[k][c])

@@ -21,6 +21,8 @@ same error to the solver tolerance: this checks the half-period quadrature, the 
 reduction end to end. The Leray projection, the k = 3 saddle solve of the relaxation, is divergence-free,
 idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve,
 and the one solve of ``M_1 + eps S_1`` the same curl as the shifted solve ``(M_1 + eps L_1)^-1``.
+The zeta-slab mass model conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the
+half-period domain.
 """
 import jax
 import jax.numpy as jnp
@@ -29,9 +31,10 @@ import pytest
 
 from mrx.precision import eps
 
-#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, measured 2026-10-13:
-#: 9.431e-3 (k = 0, of grad psi), 1.197e-2, 2.563e-2 and 5.215e-2.
-ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
+#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, quadrature (p + 1, p, p), measured
+#: 2026-10-18: 5.051e-3 (k = 0, of grad psi), 7.341e-3, 1.461e-2 and 2.461e-2. The errors are measured with the
+#: sequence's own rule, which reads them 1.6-2.1 times lower than p + 1 points per axis (9.43e-3 to 5.22e-2).
+ERROR_BAND = {0: 0.00631, 1: 0.00918, 2: 0.0183, 3: 0.0308}
 #: The relative spread of the three representations' errors, which is below 3e-12.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
@@ -247,3 +250,17 @@ def test_a_new_geometry_can_keep_the_preconditioners():
     assert s.operators is None
     with pytest.raises(ValueError):
         s.M[1].solve(b)
+
+
+def test_slab_mass_model_conditions_the_one_form_mass(seq):
+    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 3.30 on li383 (12, 20, 12)
+    (2026-10-16), the metric-lumping atom has 37.8. Band 4."""
+    from mrx.metric_lumping import ReducedAtom
+    from mrx.slab_mass import SlabMass
+    from mrx.solvers import lanczos_bounds
+    odd = seq.odd
+    P = ReducedAtom(SlabMass(seq, seq.operators, 1), odd.reduction[(1, odd.dirichlet)])
+    M = odd.M[1]
+    b = M @ jnp.asarray(np.random.default_rng(0).standard_normal(odd.n(1)))
+    lo, hi = lanczos_bounds(lambda x: M @ x, b, P.apply, 40)
+    assert hi / lo < 4.0

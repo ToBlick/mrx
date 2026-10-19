@@ -56,7 +56,7 @@ import numpy as np
 import mrx
 import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
-from mrx.extraction_operators import build_extraction, dirichlet_dofs, get_xi
+from mrx.extraction_operators import build_extraction, conforming_restriction, dirichlet_dofs, get_xi, gram_blocks
 from mrx.geometry import SYMMETRIES, SequenceGeometry, map_jacobian_at
 from mrx.incidence import build_matrixfree_incidence, build_polar_derivative
 from mrx.mass import attach_weights, mass_plan, projection_plan
@@ -80,7 +80,8 @@ class DeRhamSequence():
     """Discrete de Rham sequence on a mapped solid torus with a polar axis at ``r = 0``.
 
     The logical axes ``(r, theta, zeta)`` are clamped in ``r`` and periodic in ``theta`` and ``zeta``.
-    All three use splines of degree ``p`` and ``p + 1`` Gauss points per knot span.
+    All three use splines of degree ``p``. The quadrature takes ``p + 1`` Gauss points per knot span in ``r`` and
+    ``p`` in ``theta`` and ``zeta`` (at least 2) unless ``quad_points`` says otherwise.
 
     Args:
         ns: ``(n_r, n_theta, n_zeta)``, the number of splines per axis.
@@ -90,10 +91,19 @@ class DeRhamSequence():
             ``nfp = 1``. With ``"stellarator"`` and uniform angular knots the sequence integrates over
             half the zeta period only (:attr:`half_period`), which needs an even number of zeta cells.
         knots: full knot vectors ``(T_r, T_theta, T_zeta)``, ``None`` entries uniform.
+        theta_counts: the theta count of every primal radial basis function of a graded space
+            (:func:`~mrx.extraction_operators.graded_theta_counts`), or ``None`` for ``n_theta`` on
+            every ring. Each count is ``n_theta`` divided by a power of two, the counts do not
+            decrease outward and the three innermost are equal. Needs uniform theta knots.
         equilibrium: the parsed geometry file (:func:`mrx.equilibria.read_equilibrium`), kept as
             :attr:`equilibrium` for the initial conditions, or ``None``.
         tol: relative residual of every solve (:data:`mrx.precision.SOLVE_TOL` by default).
         maxiter: iteration limit of every solve.
+        quad_points: the Gauss points per knot span ``(q_r, q_theta, q_zeta)``, by default
+            ``(p + 1, p, p)``. Against ``p + 1`` everywhere this cuts the quadrature grid, and with it the cost
+            of every operator apply, by ``(p / (p + 1))^2``. One point per span would make the periodic masses
+            singular, so the angles take at least 2. The radial axis keeps ``p + 1`` for the ``r`` and
+            ``1 / r`` factors of the polar metric. See ``docs/source/concepts/mass.md``.
 
     The sequence has the Dirichlet spaces, :attr:`free` the free ones. The constructor also builds
     the parity views :attr:`even` and :attr:`odd` of a half-period sequence.
@@ -107,7 +117,8 @@ class DeRhamSequence():
             ``None`` after every :meth:`set_geometry_from_map`.
     """
 
-    def __init__(self, ns, p, *, nfp, symmetry, knots=None, equilibrium=None, tol=None, maxiter=10_000):
+    def __init__(self, ns, p, *, nfp, symmetry, knots=None, theta_counts=None, equilibrium=None, tol=None,
+                 maxiter=10_000, quad_points=None):
         if symmetry not in SYMMETRIES:
             raise ValueError(f"symmetry must be one of {SYMMETRIES}, got {symmetry!r}")
         if symmetry == "none" and int(nfp) != 1:
@@ -123,13 +134,25 @@ class DeRhamSequence():
         self.betti_numbers = SOLID_TORUS_BETTI
         Ts = [None if T is None else jnp.asarray(T, dtype=jnp.float64)
               for T in (knots if knots is not None else (None,) * 3)]
+        #: the theta count of every primal radial basis function (graded space), or ``None`` (uniform)
+        self.theta_counts = None if theta_counts is None else tuple(int(m) for m in theta_counts)
+        if self.theta_counts is not None:
+            m, nt = np.asarray(self.theta_counts), self.ns[1]
+            ratio = nt // m
+            if (len(m) != self.ns[0] or Ts[1] is not None or np.any(nt % m) or np.any(ratio & (ratio - 1))
+                    or np.any(np.diff(m) < 0) or len(set(m[:3])) != 1 or m[0] <= self.p):
+                raise ValueError(f"theta_counts {self.theta_counts} do not grade n_theta = {nt} over "
+                                 f"{self.ns[0]} radial functions (see DeRhamSequence)")
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
             DifferentialForm(i, self.ns, (self.p,) * 3, AXIS_TYPES, Ts) for i in range(0, 4)
         ]
         # the reflection is an index permutation only on uniform periodic angular bases
         self.half_period = symmetry == "stellarator" and all(
             is_uniform_periodic(self.basis_0.Lambda[a]) for a in (1, 2))
-        self.quad = QuadratureRule(self.basis_0, self.p + 1, half_zeta=self.half_period)
+        angles = max(self.p, 2)
+        self.quad_points = ((self.p + 1, angles, angles) if quad_points is None
+                            else tuple(int(q) for q in quad_points))
+        self.quad = QuadratureRule(self.basis_0, self.quad_points, half_zeta=self.half_period)
         #: the reflection of every raw DoF grid on a half-period sequence
         self.reflection_plan = ({k: reflection_plan(self, k) for k in range(4)}
                                 if self.half_period else None)
@@ -142,8 +165,11 @@ class DeRhamSequence():
         self.reduction = None
         self.extraction, self.core = self._extractions()
         # the position of each Dirichlet DoF among the free DoFs, per degree (restrict and extend)
-        self._dirichlet_dofs = {k: jnp.asarray(dirichlet_dofs(self.extraction[(k, False)], self.extraction[(k, True)]))
+        forms = (self.basis_0, self.basis_1, self.basis_2, self.basis_3)
+        self._dirichlet_dofs = {k: jnp.asarray(dirichlet_dofs(forms[k], self.theta_counts, self.extraction[(k, False)],
+                                                              self.extraction[(k, True)]))
                                 for k in range(4)}
+        self._gram = {(k, d): gram_blocks(forms[k], d, self.theta_counts) for k in range(4) for d in (False, True)}
 
         lam, dlam = self.basis_0.Lambda, self.basis_0.dLambda
         x = (self.quad.x_x, self.quad.x_y, self.quad.x_z)
@@ -156,8 +182,9 @@ class DeRhamSequence():
 
         #: grad, curl, div on the raw tensor-product coefficients (:mod:`mrx.incidence`)
         self.incidence = tuple(build_matrixfree_incidence(self, k) for k in range(3))
-        # grad and curl on the extracted DoFs of the free (False) and Dirichlet (True) spaces
-        self.g0_grad, self.g1_curl = ({d: build_polar_derivative(self, k, d) for d in (False, True)} for k in (0, 1))
+        # grad, curl and div on the extracted DoFs of the free (False) and Dirichlet (True) spaces
+        self.g0_grad, self.g1_curl, self.g2_div = ({d: build_polar_derivative(self, k, d) for d in (False, True)}
+                                                   for k in range(3))
         self.mass_plan = {k: mass_plan(self, k) for k in range(4)}
         self.projection_plan = {pair: projection_plan(self, *pair)
                                 for pair in ((1, 2), (2, 1), (0, 3), (3, 0))}
@@ -170,10 +197,14 @@ class DeRhamSequence():
         if self.half_period:
             self._parity_views = {s: self._parity_view(s) for s in (1, -1)}
 
+    def _xi(self):
+        """The polar weights on the coarsest theta count."""
+        return get_xi(self.ns[1] if self.theta_counts is None else self.theta_counts[0], self.p)
+
     def _extractions(self):
         """The extraction operators and their axis rows for every ``(k, dirichlet)``."""
-        xi = get_xi(self.ns[1], self.p)
-        built = {(k, d): build_extraction(form, xi, d)
+        xi = self._xi()
+        built = {(k, d): build_extraction(form, xi, d, self.theta_counts)
                  for k, form in enumerate((self.basis_0, self.basis_1, self.basis_2, self.basis_3))
                  for d in (False, True)}
         return {key: e for key, (e, _) in built.items()}, {key: c for key, (_, c) in built.items()}
@@ -223,6 +254,15 @@ class DeRhamSequence():
     def n(self, k):
         """The number of DoFs of the ``k``-form space."""
         return int(self.E(k).forward_shape[0])
+
+    def conforming(self, c, k):
+        """The ``k``-form DoFs whose tensor-product coefficients are closest (least squares) to ``c``,
+        ``(E E^T)^-1 E c`` (:func:`~mrx.extraction_operators.conforming_restriction`). On a parity view
+        this is ``X^T`` of the full space's, since ``E E^T`` commutes with the reflection."""
+        key = (int(k), self.dirichlet)
+        base = self if self.parity is None else self._base
+        v = conforming_restriction(base.extraction[key], c, base.core[key], base._gram[key])
+        return v if self.parity is None else self.reduction[key].T @ v
 
     def core_rows(self, k):
         """The rows of ``E(k)`` that combine several tensor-product coefficients near the axis. On
@@ -384,29 +424,33 @@ class DeRhamSequence():
         X = view.reduction
         view.g0_grad = {d: reduce_operator(X[(1, d)], g, X[(0, d)]) for d, g in self.g0_grad.items()}
         view.g1_curl = {d: reduce_operator(X[(2, d)], g, X[(1, d)]) for d, g in self.g1_curl.items()}
+        view.g2_div = {d: reduce_operator(X[(3, d)], g, X[(2, d)]) for d, g in self.g2_div.items()}
         view._dirichlet_dofs = {
             k: jnp.asarray(reduced_dirichlet_dofs(X[(k, False)], X[(k, True)], np.asarray(index)))
             for k, index in self._dirichlet_dofs.items()}
         return view
 
-    def build_preconditioners(self):
+    def build_preconditioners(self, mass_atom="slab", laplacian_atom="lumping"):
         """Build the mass and Laplacian preconditioners of every space for the installed geometry,
-        install them as :attr:`operators` and return them. The harmonic forms stay zero until
+        install them as :attr:`operators` and return them. ``mass_atom`` selects the mass
+        preconditioner of ``k = 1, 2``, one of :data:`mrx.operators.MASS_ATOMS`, and ``laplacian_atom``
+        whether the co-closed 2-form solves use the multigrid, one of :data:`mrx.operators.LAPLACIAN_ATOMS`. The harmonic forms stay zero until
         :func:`mrx.nullspace.compute_nullspaces` runs. Needs ``n_r >= p + 2``."""
         self._require_geometry()
         if self.parity is not None:
             # a parity view reuses the preconditioners of the full sequence, restricted to its space
             base = self._base.operators
             if base is None:
-                base = self._base.build_preconditioners()
+                base = self._base.build_preconditioners(mass_atom, laplacian_atom)
             ops = op.new_operators(self)
-            ops = eqx.tree_at(lambda o: (o.mass_lumping, o.laplacian_lumping), ops,
-                              ({key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.mass_lumping.items()},
-                               {key: ReducedAtom(atom, self.reduction[key]) for key, atom in base.laplacian_lumping.items()}),
+            ops = eqx.tree_at(lambda o: (o.mass_lumping, o.laplacian_lumping, o.mass_model, o.stiffness), ops,
+                              tuple({key: ReducedAtom(atom, self.reduction[key]) for key, atom in atoms.items()}
+                                    for atoms in (base.mass_lumping, base.laplacian_lumping, base.mass_model,
+                                                  base.stiffness)),
                               is_leaf=lambda x: x is None or isinstance(x, dict))
             self.operators = ops
             return ops
-        ops = op.assemble_preconditioners(self, op.new_operators(self))
+        ops = op.assemble_preconditioners(self, op.new_operators(self), mass_atom, laplacian_atom)
         self.operators = ops
         if self.half_period:
             for view in (self.odd, self.even):
@@ -452,16 +496,16 @@ class DeRhamSequence():
     def leray(self, v, k=2, p_guess=None, sigma_guess=None):
         """``(v_out, p)``: the weakly divergence-free part ``v_out = v - grad p`` of a 1- or 2-form.
 
-        For ``k = 2``, ``p`` is a 3-form from a saddle-point solve. On the Dirichlet sequence
-        ``v . n = 0`` and ``p`` is the pressure of the force. ``p_guess`` and ``sigma_guess`` (the
-        previous ``v - v_out``) warm-start the solve. For ``k = 1``, ``p`` is a 0-form from the k = 0
+        For ``k = 2``, ``p`` is a 3-form from the k = 3 Hodge split, whose second unknown is
+        ``sigma = v - v_out``. On the Dirichlet sequence ``v . n = 0`` and ``p`` is the pressure of the
+        force. ``p_guess`` and ``sigma_guess`` (the previous ``v - v_out``) warm-start the solve. For ``k = 1``, ``p`` is a 0-form from the k = 0
         Laplacian. On ``seq.free`` it satisfies ``dp/dn = v . n`` up to a constant, on the Dirichlet
         sequence ``p = 0`` on the wall (the weak pressure).
         """
         # The solves return q = -p (sigma = -grad q). p and p_guess carry the physical sign.
         if k == 2:
             p_guess = jnp.zeros(self.n(3)) if p_guess is None else p_guess
-            q, sigma, _ = op._saddle_solve(self, self.D[2] @ v, guess=-p_guess, sigma_guess=sigma_guess)
+            q, sigma, _ = op._hodge_split(self, self.D[2] @ v, 3, -p_guess, guess_lower=sigma_guess)
             return v - sigma, -q
         p_guess = jnp.zeros(self.n(0)) if p_guess is None else p_guess
         q = self.L[0].solve(-(self.D[0].T @ v), guess=-p_guess)

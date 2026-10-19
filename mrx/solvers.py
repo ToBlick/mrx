@@ -4,8 +4,7 @@ The solvers take the operator and the preconditioner as functions ``x -> A x``, 
 inside ``jit`` and never form a matrix. :func:`preconditioned_cg` solves SPD systems, and
 :func:`minres` solves symmetric indefinite ones. :func:`minres` can also stop at a direction of
 nonpositive curvature, which the Newton-MR relaxation uses. :func:`solve_singular_cg` solves a
-semidefinite system with a known kernel, and :func:`solve_saddle_point_minres` solves the
-saddle-point form of a Hodge Laplacian. :func:`chebyshev` is a fixed polynomial approximate inverse
+semidefinite system with a known kernel. :func:`chebyshev` is a fixed polynomial approximate inverse
 with no loop, for use where an inverse sits inside another iteration, and :func:`lanczos_bounds`
 estimates the spectral interval it needs. :func:`refine` is the outer loop of a solve: it
 recomputes the true residual after each Krylov solve and corrects the solution until that residual
@@ -340,68 +339,3 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False):
         d_npc = M(b - A_matvec(x_final))
         return jnp.where(final_state.npc, d_npc, x_final), info, final_state.npc
     return x_final, info
-
-
-def solve_saddle_point_minres(
-        stiffness_matvec, derivative_matvec, derivative_T_matvec,
-        mass_lower_matvec, b_upper, n_upper, n_lower, *,
-        precond_upper, precond_lower, mass_upper_matvec, vs_upper,
-        tol, maxiter, norm_upper, norm_lower,
-        x0_upper=None, x0_lower=None, eliminate_lower=None):
-    """Solve the saddle-point system of a Hodge Laplacian by MINRES and return ``(u, sigma, info)``::
-
-        | S    D   | | u     |   | f |
-        | D^T  -M  | | sigma | = | 0 |
-
-    Here ``S`` is the k-form stiffness matrix, ``D`` the weak derivative of the (k-1)-forms and
-    ``M`` the (k-1)-form mass matrix. ``precond_upper`` and ``precond_lower`` are SPD
-    preconditioners of the two diagonal blocks. The rows of ``vs_upper`` span the harmonic
-    k-forms, orthonormal in ``M_k``, and are removed from ``u``. The lower block has no kernel.
-
-    MINRES runs inside :func:`refine`, each pass solves to ``tol``, and convergence is
-    judged in the norm ``sqrt(norm_upper^2 + norm_lower^2)``, by MINRES as well. With
-    ``eliminate_lower`` (``r_lower -> D M^{-1} r_lower``) the upper part is the residual of the
-    equation for ``u`` alone, ``f - (S + D M^{-1} D^T) u``, which is ``r_upper + D M^{-1} r_lower``
-    once ``sigma`` is eliminated. The lower part stays, because ``sigma`` is returned as well.
-    An initial guess ``x0_upper`` should come with a matching
-    ``x0_lower``, since ``u`` alone leaves ``D^T x0_upper`` in the lower residual.
-    """
-    # the lower block has no kernel
-    project_primal_upper, project_dual_upper = deflation_projectors(vs_upper, mass_upper_matvec)
-
-    def pack(u, s):
-        return jnp.concatenate([u, s])
-
-    def unpack(x):
-        return x[:n_upper], x[n_upper:]
-
-    def A_matvec(x):
-        u, s = unpack(x)
-        u = project_primal_upper(u)
-        r_upper = stiffness_matvec(u) + derivative_matvec(s)
-        r_lower = derivative_T_matvec(u) - mass_lower_matvec(s)
-        return pack(project_dual_upper(r_upper), r_lower)
-
-    def precond(x):
-        u, s = unpack(x)
-        return pack(project_primal_upper(precond_upper(project_dual_upper(u))), precond_lower(s))
-
-    b = pack(project_dual_upper(b_upper), jnp.zeros(n_lower))
-    if x0_upper is None:
-        x0_upper = jnp.zeros(n_upper)
-    if x0_lower is None:
-        x0_lower = jnp.zeros(n_lower)
-    x0 = pack(project_primal_upper(x0_upper), x0_lower)
-
-    def solve(r):
-        return minres(A_matvec, r, M=precond, tol=tol, maxiter=maxiter, norm=norm)
-
-    def norm(r):
-        r_u, r_l = unpack(r)
-        if eliminate_lower is not None:
-            r_u = r_u + eliminate_lower(r_l)
-        return jnp.sqrt(norm_upper(r_u) ** 2 + norm_lower(r_l) ** 2)
-
-    x, info = refine(A_matvec, solve, b, x0=x0, tol=tol, norm=norm)
-    u, sigma = unpack(x)
-    return project_primal_upper(u), sigma, info

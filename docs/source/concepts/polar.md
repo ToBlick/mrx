@@ -32,44 +32,88 @@ stellarator symmetry needs.
 
 ## 2. The extraction
 
-`build_extraction(form, xi, dirichlet)` returns the extraction of a k-form
-space and its core rows, the rows that fuse raw DoFs. With `o = 1` under
-Dirichlet and `0` otherwise:
+`build_extraction(form, xi, dirichlet, counts)` returns the extraction of a
+k-form space and its core rows, the rows that fuse raw DoFs. `counts` are the
+theta counts of a graded space (section 3), `None` on a uniform one. With
+`o = 1` under Dirichlet and `0` otherwise:
 
 | k | extracted layout |
 |---|---|
 | 0 | `3 n_z` polar rows, then the bulk rings `2 .. n_r-1-o` |
 | 1 | `2 n_z` theta-surgery rows, `3 n_z` zeta-surgery rows, then the `r`, `theta`, `zeta` bulk components |
 | 2 | `2 n_z` surgery rows in the first component, then the bulk |
-| 3 | a pure selection, no fused rows |
+| 3 | no fused rows, the bulk rings `1 .. n_r-2` |
 
 The fused rows carry the `xi` weights (k = 0) and their radial and angular
-differences (k = 1, 2), so `E E^T != I` for k = 0, 1, 2 and `E_3 E_3^T = I`.
+differences (k = 1, 2), so `E E^T != I` for k = 0, 1, 2. On a uniform space
+every bulk row selects one raw DoF and `E_3 E_3^T = I`.
+`ring_layout(form, dirichlet, counts)` numbers the bulk rows by component,
+radial ring, theta and zeta index.
 
-## 3. The strong derivative on the polar complex
+## 3. Graded theta resolution
 
-The raw incidence through a polar extraction, `E_{k+1} G_k E_k^T`, is not
-nilpotent: the fused rows need the Gram inverse,
-`(E_{k+1} E_{k+1}^T)^{-1} E_{k+1} G_k E_k^T`. That inverse cancels
-analytically. Away from the axis the derivative is plain `+-1` differences.
-On the apex and first-ring rows it is coefficient differences weighted by
-`xi` differences. `build_grad_stencil_g0` and `build_curl_stencil_g1`
-(`mrx/incidence.py`) build these stencils from the incidence pattern and
-`xi` alone for the free and the Dirichlet spaces. The sequence
-stores them as `seq.g0_grad` and `seq.g1_curl`, keyed by `dirichlet`. The divergence needs no
-stencil because `E_3` is a selection.
+On a uniform polar space every ring has `n_theta` cells, so the theta cells
+near the axis are far narrower than the radial ones. The stiffness then
+scales like `h^-4` instead of `h^-2`, and the CFL weights grow with it. A
+graded space gives each radial ring of basis functions its own uniform
+periodic theta space, with fewer cells near the axis.
+`build_sequence(..., graded=True)` turns it on. The map and the fields both
+live on the graded space.
 
-`seq.G[k] @ v` (and `seq.G[k].T @ w`) dispatches: the grad stencil at k = 0, the curl stencil at k = 1, the raw
-incidence at k = 2. `curl grad` and `div curl` are zero to round-off
+The counts come from `graded_theta_counts(T_r, p, n_theta)`, from the radial
+knots alone. A ring's theta cell is at least `GRADED_ASPECT` (pi / 2) times
+its smallest radial cell, unless that would make it wider than a theta cell
+at the wall. Each count is the coarsest count times a power of two. The
+coarsest is `n_theta / 2^l`, the smallest such count not below
+`GRADED_THETA_MIN` (8). The counts never decrease outward, and the three
+innermost rings share the coarsest count, which carries the polar axis
+functions. A ring of derivative splines in `r` sits between two primal rings
+and takes the count of the outer one. On li383 (24,64,12) the counts are 8,
+16, 32 and 64.
+
+The raw tensor grid stays uniform. A graded basis function is the knot
+insertion of one coarse theta function into the raw functions of its ring,
+`B^m_J = sum_j R[j, J] B^n_j` (`prolongation(m, n, p, derivative)`). For
+uniform dyadic knots `R` is a product of subdivision masks with exact dyadic
+entries, for the primal and for the derivative splines. It commutes with the
+coefficient difference, so the graded spaces form an exact subcomplex. The
+uniform space is the graded one with every count equal to `n_theta`, and
+`R = I`. Away from the axis `E E^T` is one small block `R^T R` per ring and
+zeta layer (`gram_blocks`). `R` also commutes with the reflection
+`theta -> -theta`, so the parity views of a half-period sequence carry over
+unchanged.
+
+## 4. The strong derivative on the polar complex
+
+The derivative of an extracted k-form, written in the extracted (k+1)-form
+basis, is `(E_{k+1} E_{k+1}^T)^{-1} E_{k+1} G_k E_k^T` with the raw incidence
+`G_k`. `build_polar_derivative` (`mrx/incidence.py`) forms it with
+`scipy.sparse` and drops the entries at round-off. `E E^T` is the identity
+except on the polar core rows, where it is a small dense block, and on a
+graded space on the rings with fewer theta cells than the wall, where it is
+one block `R^T R` per ring and zeta layer (`gram_inverse` in
+`mrx/extraction_operators.py`). The graded spaces form an exact subcomplex,
+so the result is the exact derivative there too. The sequence stores grad,
+curl and div as `seq.g0_grad`, `seq.g1_curl` and `seq.g2_div`, keyed by
+`dirichlet`.
+
+`seq.G[k] @ v` (and `seq.G[k].T @ w`) applies the derivative of degree k.
+`curl grad` and `div curl` are zero to round-off
 under both boundary conditions. The relaxation advances `B` with this curl,
 so `div B` is conserved to round-off.
 
-## 4. Consequences elsewhere
+## 5. Consequences elsewhere
 
 - The polar rows are not tensor-product functions. The preconditioners
   treat them as a dense core (`seq.core_rows(k)`), probed through
   the operator (see [preconditioning.md](preconditioning.md)).
 - Interpolation and histopolation on a polar space (`seq.interpolate`) and
   the map fit (`mrx.equilibria.build_map`) solve on the tensor space and
-  restrict onto the extracted space, so the axis of a fitted map is one
-  point per `zeta`.
+  restrict onto the extracted space (`seq.conforming`), so the axis of a
+  fitted map is one point per `zeta`. On a graded space the restriction also
+  inverts the blocks `R^T R`. It is not a commuting projection there.
+- On a graded space the atoms have one tensor-product block per component
+  and theta count, with the Galerkin theta matrices `R^T A R` of the coarse
+  functions. The blocks of neighbouring counts are coupled through a few
+  rings, and the atoms keep that coupling (see
+  [preconditioning.md](preconditioning.md)).

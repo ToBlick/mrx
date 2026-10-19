@@ -19,10 +19,12 @@ from typing import Any, Callable, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
-from mrx.spline_bases import knot_vector
+from mrx.extraction_operators import graded_theta_counts
+from mrx.spline_bases import SplineBasis, knot_vector
 
 
 def map_jacobian_at(Phi: Callable, x: jnp.ndarray) -> jnp.ndarray:
@@ -62,7 +64,8 @@ SYMMETRIES = ("stellarator", "field-period", "none")
 
 
 def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
-                   symmetry="stellarator"):
+                   symmetry="stellarator", graded=False, mass_atom="slab", laplacian_atom="lumping",
+                   quad_points=None):
     """Build the de Rham sequence of the geometry file ``geometry`` and return it.
 
     The sequence has its map installed and its preconditioners built (``seq.operators``). The
@@ -73,7 +76,9 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     Args:
         ns: ``(n_r, n_theta, n_zeta)``, the number of splines per axis, also used for the map. An axis
             with breakpoints in ``knots`` takes its number from them instead.
-        p: spline degree in all directions. The quadrature uses ``p + 1`` Gauss points per cell.
+        p: spline degree in all directions. The quadrature uses ``p + 1`` Gauss points per cell in ``r`` and
+            ``p`` in the angles unless ``quad_points`` (see :class:`~mrx.derham_sequence.DeRhamSequence`) gives
+            a count per axis.
         maxiter, tol: iteration limit and relative tolerance of every solve on the sequence
             (``tol=None`` means :data:`mrx.precision.SOLVE_TOL`).
         nfp: overrides the ``nfp`` of the equilibrium file.
@@ -81,6 +86,13 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         symmetry: one of :data:`SYMMETRIES`, stored as ``seq.symmetry`` next to ``seq.nfp``. The
             half-period quadrature is only used with uniform angular knots. ``"none"`` needs ``nfp = 1``
             (see :class:`~mrx.derham_sequence.DeRhamSequence`).
+        mass_atom: the mass preconditioner of ``k = 1, 2``, one of :data:`mrx.operators.MASS_ATOMS`
+            (see :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`).
+        graded: give each radial ring its own theta resolution, fewer cells near the axis
+            (:func:`mrx.extraction_operators.graded_theta_counts`). The map and the fields live on the
+            graded space. Needs uniform theta knots.
+        laplacian_atom: the atoms alone, or with the multigrid of the co-closed 2-form solves, one of
+            :data:`mrx.operators.LAPLACIAN_ATOMS`.
     """
     from mrx.derham_sequence import AXIS_TYPES, DeRhamSequence      # both import this module
     from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium
@@ -94,7 +106,12 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     Ts = tuple(None if bp is None else knot_vector(bp, p, t == "periodic") for bp, t in zip(bps, AXIS_TYPES))
     ns = tuple(n if bp is None else len(bp) - 1 + (p if t == "clamped" else 0)
                for n, bp, t in zip(ns, bps, AXIS_TYPES))
-    seq = DeRhamSequence(ns, p, nfp=nfp, symmetry=symmetry, knots=Ts, equilibrium=eq, tol=tol, maxiter=maxiter)
+    counts = None
+    if graded:
+        T_r = Ts[0] if Ts[0] is not None else SplineBasis(ns[0], p, "clamped").T
+        counts = graded_theta_counts(np.asarray(T_r), p, ns[1])
+    seq = DeRhamSequence(ns, p, nfp=nfp, symmetry=symmetry, knots=Ts, theta_counts=counts, equilibrium=eq, tol=tol,
+                         maxiter=maxiter, quad_points=quad_points)
     # on a half-period sequence the map is projected onto the symmetry (see mrx.symmetry)
     Phi, info = build_map(eq, seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
     defect = f"defect {info['symmetry_defect']:.1e}"
@@ -106,6 +123,6 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
           f"det DPhi in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
           f"symmetry {symmetry} ({note})", flush=True)
     seq.set_geometry_from_map(Phi)
-    seq.build_preconditioners()
+    seq.build_preconditioners(mass_atom, laplacian_atom)
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
     return seq

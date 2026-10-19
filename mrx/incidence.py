@@ -6,15 +6,16 @@ depend only on the mesh, not on the geometry, and the sequence builds them once 
 
 - :func:`build_matrixfree_incidence` returns ``G_k`` (``k = 0, 1, 2``: grad, curl, div) on the raw
   tensor-product coefficients. Its ``.T`` is the transpose.
-- :func:`build_polar_derivative` returns grad and curl on the extracted DoFs of
-  :mod:`mrx.extraction_operators`, axis functions included. On these spaces ``curl grad = 0`` holds exactly.
+- :func:`build_polar_derivative` returns grad, curl and div on the extracted DoFs of
+  :mod:`mrx.extraction_operators`, axis functions included, on the uniform and on the graded spaces. On these
+  spaces ``curl grad = 0`` and ``div curl = 0`` hold exactly.
 """
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
 
-from mrx.extraction_operators import core_gram_inverse, summed_coo
+from mrx.extraction_operators import gram_inverse, summed_coo
 
 
 def _diff_fwd(V, axis: int, typ: str):
@@ -126,8 +127,8 @@ def diff_1d(n, typ):
 
 
 def raw_incidence_matrix(seq, k):
-    """Grad (k = 0) or curl (k = 1) on the raw tensor-product coefficients of ``seq`` as a sparse matrix, the
-    map that :func:`build_matrixfree_incidence` applies."""
+    """Grad (k = 0), curl (k = 1) or div (k = 2) on the raw tensor-product coefficients of ``seq`` as a sparse
+    matrix, the map that :func:`build_matrixfree_incidence` applies."""
     D = [diff_1d(int(n), t) for n, t in zip(seq.basis_0.shape[0], seq.basis_0.types)]
     I_p = [sp.identity(int(n)) for n in seq.basis_0.shape[0]]       # the splines of each axis
     I_d = [sp.identity(d.shape[0]) for d in D]                       # the derivative splines
@@ -137,32 +138,33 @@ def raw_incidence_matrix(seq, k):
     if k == 0:
         return sp.vstack([kron3(D[0], I_p[1], I_p[2]), kron3(I_p[0], D[1], I_p[2]),
                           kron3(I_p[0], I_p[1], D[2])]).tocsr()
-    # the curl of (a, b, c) is (-d_z b + d_t c, d_z a - d_r c, -d_t a + d_r b)
-    return sp.bmat([[None, -kron3(I_p[0], I_d[1], D[2]), kron3(I_p[0], D[1], I_d[2])],
-                    [kron3(I_d[0], I_p[1], D[2]), None, -kron3(D[0], I_p[1], I_d[2])],
-                    [-kron3(I_d[0], D[1], I_p[2]), kron3(D[0], I_d[1], I_p[2]), None]]).tocsr()
+    if k == 1:
+        # the curl of (a, b, c) is (-d_z b + d_t c, d_z a - d_r c, -d_t a + d_r b)
+        return sp.bmat([[None, -kron3(I_p[0], I_d[1], D[2]), kron3(I_p[0], D[1], I_d[2])],
+                        [kron3(I_d[0], I_p[1], D[2]), None, -kron3(D[0], I_p[1], I_d[2])],
+                        [-kron3(I_d[0], D[1], I_p[2]), kron3(D[0], I_d[1], I_p[2]), None]]).tocsr()
+    # the div of (a, b, c) is d_r a + d_t b + d_z c
+    return sp.hstack([kron3(D[0], I_d[1], I_d[2]), kron3(I_d[0], D[1], I_d[2]),
+                      kron3(I_d[0], I_d[1], D[2])]).tocsr()
 
 
 def build_polar_derivative(seq, k, dirichlet: bool):
-    """Grad (k = 0) or curl (k = 1) on the extracted DoFs of the free or the Dirichlet spaces, as a sparse matrix.
+    """Grad (k = 0), curl (k = 1) or div (k = 2) on the extracted DoFs of the free or the Dirichlet spaces, as a
+    sparse matrix.
 
     It is ``(E_{k+1} E_{k+1}^T)^{-1} E_{k+1} G_k E_k^T`` with the raw incidence ``G_k`` and the extractions
     ``E_k``: the exact derivative of an extracted k-form, written in the extracted (k+1)-form basis.
-    ``E E^T`` is the identity away from the polar core rows, so its inverse acts on those rows only. Entries
-    at round-off are dropped.
+    ``E E^T`` is the identity except on the polar core rows and, on a graded space, on the rings with fewer
+    theta cells than the wall (:func:`~mrx.extraction_operators.gram_inverse`). Entries at round-off are
+    dropped.
     """
     def csr(e):
         r, c, v = e.entries()
         return sp.csr_matrix((v, (r, c)), shape=e.forward_shape)
 
-    e_in, e_out = seq.extraction[(k, dirichlet)], seq.extraction[(k + 1, dirichlet)]
-    P = (csr(e_out) @ raw_incidence_matrix(seq, k) @ csr(e_in).T).tocsr()
-    core = np.asarray(seq.core[(k + 1, dirichlet)])
-    if core.size:
-        others = np.ones(P.shape[0])
-        others[core] = 0.0
-        to_core = sp.csr_matrix((np.ones(core.size), (core, np.arange(core.size))), shape=(P.shape[0], core.size))
-        P = sp.diags(others) @ P + to_core @ (sp.csr_matrix(core_gram_inverse(e_out, core)) @ P[core])
-    P = P.tocoo()
+    key = (k + 1, dirichlet)
+    e_in, e_out = seq.extraction[(k, dirichlet)], seq.extraction[key]
+    P = csr(e_out) @ raw_incidence_matrix(seq, k) @ csr(e_in).T
+    P = (gram_inverse(e_out, seq.core[key], seq._gram[key]) @ P).tocoo()
     keep = np.abs(P.data) > 1e3 * np.finfo(np.float64).eps * np.abs(P.data).max()
     return summed_coo(P.row[keep], P.col[keep], P.data[keep], P.shape)
