@@ -15,21 +15,21 @@ The relaxation forms the force by the potential route:
 1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl: one k = 1 mass solve.
 2. `load(J x B)`, the Lorentz force tested against the 2-form basis, not projected.
 3. `S_1 a = curl^T load(J x B)`: one curl-curl solve for the force potential `a`
-   (`seq.L[1].solve(b, part="coexact", gauge=False)`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
+   (`seq.S[1].solve(b)`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
    the even force of a half-period sequence). `a` is fixed only up to a gradient, which `curl` removes.
 
 `F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
 divergence-free fields, with no pressure solve. Every solve is warm-started from the previous step's value.
 `compute_force(B, seq, p_guess, JxB_guess, J_guess, F_guess)` returns the same projection by the Leray
-route, a k = 3 saddle solve that also gives the strong pressure `p`. The sampler calls it once per chunk
-for that pressure.
+route, a k = 3 saddle solve that also gives the strong pressure `p`. The relaxation does not call it.
 
 ## 2. The step
 
 `TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_tol, resistivity,
 resistive_reference)`
-is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
-`B_{n+1} = B_n + dt curl(u x B)`:
+is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` does
+one forward-Euler step `B_{n+1} = B_n + dt curl(u x B)` and returns `B_{n+1}`, the warm starts of the next
+step and the step's scalars:
 
 1. **Direction** `u`. With `newton`, the Newton direction (below). Without,
    the smoothed force,
@@ -39,7 +39,7 @@ is an `eqx.Module`. `relaxation_step(state)` does one forward-Euler step
    any mesh and commutes with the divergence. Only the curl enters, and
    `(M_1 + mu L_1)^{-1}` and `(M_1 + mu S_1)^{-1}` differ by an exact form,
    so it is one solve of `M_1 + mu S_1`
-   (`seq.shifted(1, mu).solve(..., part="coexact")`).
+   (`seq.shifted_stiffness(1, mu).solve(...)`).
 2. **Electric field** `E = M_1^{-1} load(u x B)`, one k = 1 mass solve.
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
@@ -98,7 +98,7 @@ inverse.
 `(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`.
 For a divergence-free `B - B_ref` the solution is a curl, `delta = G_1 a` with
 `(M_1 + eps S_1) a = -eps G_1^T M_2 (B - B_ref)`, one 1-form solve
-(`seq.shifted(1, eps).solve(..., part="coexact")`). So `div B` stays at
+(`seq.shifted_stiffness(1, eps).solve(...)`). So `div B` stays at
 round-off, since `G_2 G_1 = 0`. It is unconditionally stable. The drive
 of `scripts/relax.py --drive.resistivity C` applies it after every ideal
 step with `eps = C h_r^2` towards the reference field's current. The field
@@ -107,7 +107,7 @@ then goes to the resistive steady state of that current.
 ## 3. Diagnostics
 
 - `compute_helicity(B, seq, A_guess)`: `A` from one curl-curl solve
-  `S_1 A = D_1^T B` (`seq.L[1].solve(b, part="coexact", gauge=False)`), then `H = <A, P_{21}(B + B_harm)>` with
+  `S_1 A = D_1^T B` (`seq.S[1].solve(b)`), then `H = <A, P_{21}(B + B_harm)>` with
   `B_harm = B - curl A`.
 - `compute_divergence_norm(B, seq)`: `||G_2 B||`, no solve.
 - `force_scale(seq, B) = ||grad(|B|^2/2)||`: the scale of the force residual
@@ -116,11 +116,11 @@ then goes to the resistive steady state of that current.
 
 ### Two pressures
 
-**Strong** `p` (from `compute_force`, a 3-form, computed by the sampler once
-per chunk): the multiplier of the constrained principle. The force is projected onto the Dirichlet 2-forms
+**Strong** `p` (from `compute_force`, a 3-form, computed on request): the multiplier of the
+constrained principle. The force is projected onto the Dirichlet 2-forms
 first, which discards its normal component, so `dp/dn = 0` on the wall and
 `p` is defined up to a constant. It is the right multiplier for the
-descent and blind to the wall force. It is part of the state.
+descent and blind to the wall force.
 
 **Weak** `p_w` (from `weak_pressure`, a Dirichlet 0-form): `J x B` is
 projected onto the natural 1-forms, which keep its normal component, and
@@ -132,17 +132,18 @@ sampler at every chunk and by `scripts/poincare_trace.py` at the crossings.
 
 ## 4. The loop
 
-`State` holds `B_n`, `B_nplus1`, `dt`, `dt_star`, `cfl_max` and three
-subtrees: `warm` (the warm starts), `last` (the last step's force,
-velocity and iteration counts) and `best` (the field of lowest residual,
-its residual and step). `initial_state(B, ts)` evaluates the force once, so
-the first step's solves start warm.
+`State` holds the field `B_n` and two subtrees: `warm` (the warm starts)
+and `best` (the field of lowest residual, its residual and step). What a
+step measures (the force and velocity norms, `dt`, `dt_star`, the CFL
+number, the iteration counts) goes into the trace, not the state.
+`initial_state(B, ts)` evaluates the force once, so the first step's solves
+start warm.
 
 `relax(state, ts, steps, chunk, it0, floor_tol, on_chunk)` runs the steps
-in compiled chunks (`chunk_runner`: one `lax.scan` of `chunk` steps,
-returning the per-step trace), samples the diagnostics once per chunk
-(`make_sampler`: energy, helicity, `||J||/||B||`,
-`int J . B`, `beta_vol`), calls `on_chunk`, and stops when the chunk mean of
+in compiled chunks (one `lax.scan` of `chunk` steps, returning the per-step
+trace), samples the diagnostics once per chunk (`sample`: energy, force
+residual, helicity, `||J||/||B||`, `int J . B`, `beta_vol`, all at the
+current field), calls `on_chunk`, and stops when the chunk mean of
 `resid` falls below `floor_tol` or after `steps`. It returns a
 `RelaxResult` (the state, the trace, the samples, the stopping reason).
 `write_checkpoint` / `read_checkpoint` store and restore a state as one

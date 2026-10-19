@@ -31,16 +31,12 @@ intersphinx_mapping = {
     "jax": ("https://docs.jax.dev/en/latest", None),
 }
 
-autodoc_mock_imports = []
 autodoc_member_order = "bysource"
 autodoc_default_options = {"members": True}
 
 # Docstrings with malformed reStructuredText render as best they can and are
 # fixed at the source, not here.
 suppress_warnings = ["docutils", "ref.python"]
-
-napoleon_google_docstring = True
-napoleon_numpy_docstring = True
 
 html_theme = "sphinx_rtd_theme"
 html_theme_options = {"collapse_navigation": False}

@@ -39,7 +39,8 @@ from mrx.differential_forms import det33
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
-from mrx.mappings import stellarator_symmetric_scalar, stellarator_symmetry_defect
+from mrx.quadrature import composite_quad
+from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 from mrx.extraction_operators import conforming_restriction
 from mrx.spline_bases import SplineBasis
 
@@ -97,14 +98,19 @@ def is_stellarator_symmetric(st):
     under ``(theta, zeta) -> (-theta, -zeta)``. This holds when ``R`` has no sine and ``Z``, lambda have
     no cosine coefficients. A G-frame (``X1``, ``X2`` the frame coordinates) must also map the reflection to
     ``(x, y, z) -> (x, -y, -z)``: the axis and ``N`` have an even ``x`` and odd ``y``, ``z`` component, ``B``
-    the opposite. The frame is read from samples, so its coefficients of the wrong parity are compared to
-    round-off."""
-    symmetric = not (st["X1"]["sin"].any() or st["X2"]["cos"].any() or st["LA"]["cos"].any())
+    the opposite. Coefficients of the wrong parity count as zero below 1e-10 of those of the right one, so a
+    file written without the symmetry but symmetric to round-off (a frame read from samples, for example) is
+    symmetric."""
+    def negligible(wrong, right):
+        return np.abs(wrong).max(initial=0.0) <= 1e-10 * np.abs(right).max(initial=0.0)
+
+    symmetric = all(negligible(st[b][w], st[b][r]) for b, w, r in (("X1", "sin", "cos"), ("X2", "cos", "sin"),
+                                                                 ("LA", "cos", "sin")))
     if "frame" not in st:
         return symmetric
     cos, sin = st["frame"]["cos"], st["frame"]["sin"]
     odd = np.array([[False, True, True], [False, True, True], [True, False, False]])[:, :, None]
-    return symmetric and np.abs(np.where(odd, cos, sin)).max() <= 1e-10 * np.abs(cos).max()
+    return symmetric and negligible(np.where(odd, cos, sin), cos)
 
 
 class StateField:
@@ -172,10 +178,14 @@ def _times(block, cos, sin, n):
     C, F = block["cos"] - 1j * block["sin"], cos - 1j * sin
     terms = [(block["n"][:, None] + n[None, :], C[:, None, :] * F[None, :, None]),
              (block["n"][:, None] - n[None, :], C[:, None, :] * np.conj(F)[None, :, None])]
-    m = np.broadcast_to(block["m"][:, None], terms[0][0].shape)
+    m = np.broadcast_to(block["m"][:, None], terms[0][0].shape).ravel()
     coef = 0.5 * np.concatenate([c.reshape(-1, C.shape[1]) for _, c in terms])
-    return dict(block, m=np.concatenate([m.ravel(), m.ravel()]), n=np.concatenate([k.ravel() for k, _ in terms]),
-                cos=coef.real, sin=-coef.imag)
+    # most products share their (m, n) with another: summed into one mode each (3990 terms to 295 on N2-12)
+    modes, index = np.unique(np.stack([np.concatenate([m, m]), np.concatenate([k.ravel() for k, _ in terms])], 1),
+                             axis=0, return_inverse=True)
+    merged = np.zeros((len(modes), coef.shape[1]), dtype=coef.dtype)
+    np.add.at(merged, index.ravel(), coef)
+    return dict(block, m=modes[:, 0], n=modes[:, 1], cos=merged.real, sin=-merged.imag)
 
 
 def frame_blocks(st):
@@ -189,21 +199,13 @@ def frame_blocks(st):
              _times(st["X2"], frame["cos"][2, i], frame["sin"][2, i], frame["n"])] for i in range(3)]
 
 
-def _cell_gauss(bp, q):
-    """``q`` Gauss-Legendre points and weights per cell of the breakpoints ``bp``, float64."""
-    xi, wi = np.polynomial.legendre.leggauss(q)
-    lo, hi = bp[:-1], bp[1:]
-    pts = (0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * xi[None, :]).ravel()
-    return pts, (0.5 * (hi - lo)[:, None] * wi[None, :]).ravel()
-
-
 def _angular_coefficients(basis, freqs):
     """The L2 projections of ``exp(2 pi i f theta)`` onto the periodic ``basis``, one row per frequency."""
     freqs = np.asarray(freqs, dtype=np.float64)
     T = np.asarray(basis.T, dtype=np.float64)
     bp = np.unique(T[(T >= 0.0) & (T <= 1.0)])
     # enough points for the highest mode's phase across the widest cell
-    pts, w = _cell_gauss(bp, basis.p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * np.diff(bp).max())))
+    pts, w = composite_quad(bp, basis.p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * np.diff(bp).max())))
     B = np.asarray(basis.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
     moments = B.T @ (w[:, None] * np.exp(1j * TWO_PI * np.outer(pts, freqs)))   # (N, n_modes)
     return np.linalg.solve(B.T @ (w[:, None] * B), moments).T
@@ -214,7 +216,7 @@ def _radial_coefficients(block, C, basis_r):
     # Gauss quadrature on the union of both knot vectors integrates the products exactly
     T_s, deg_s = np.asarray(block["T"]), block["deg"]
     T_r, p_r = np.asarray(basis_r.T, dtype=np.float64), basis_r.p
-    pts, w = _cell_gauss(np.unique(np.concatenate([T_s, T_r])), (deg_s + p_r) // 2 + 1)
+    pts, w = composite_quad(np.unique(np.concatenate([T_s, T_r])), (deg_s + p_r) // 2 + 1)
     Br = BSpline.design_matrix(pts, T_r, p_r).toarray()
     Bs = BSpline.design_matrix(pts, T_s, deg_s).toarray()
     return np.linalg.solve(Br.T @ (w[:, None] * Br), Br.T @ (w[:, None] * (Bs @ C.T)))
@@ -292,7 +294,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
     (:func:`frame_blocks`) projected in the same way, ``x`` as ``R`` and ``y``, ``z`` as ``Z``.
 
     ``info`` holds ``nfp``, the range ``det_range`` of ``det DPhi`` at the sample points, the
-    ``symmetry_defect`` (:func:`mrx.mappings.stellarator_symmetry_defect`) and the tensor-product spline
+    ``symmetry_defect`` (:func:`mrx.symmetry.stellarator_symmetry_defect`) and the tensor-product spline
     coefficients that ``Phi`` evaluates, ``raw_R``, ``raw_Z`` of shape ``(n_r, n_theta, n_zeta)`` or ``raw_P``
     of shape ``(3, n_r, n_theta, n_zeta)``. Raises if ``det DPhi`` is not positive, which
     :func:`read_equilibrium` guarantees for a map that does not fold.

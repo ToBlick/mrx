@@ -19,20 +19,10 @@ from typing import Any, Callable, Optional
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
-
-
-def grad_1d(d_basis, boundary_type):
-    """The derivatives of the splines of one axis, ``(n, nq)``, from the values ``d_basis`` of the
-    derivative splines ``D_l`` of that axis, by ``B'_l = D_{l-1} - D_l``. ``boundary_type`` is
-    ``'clamped'`` or ``'periodic'``."""
-    if boundary_type == 'clamped':
-        padded = jnp.pad(d_basis, ((1, 1), (0, 0)))
-        return padded[:-1] - padded[1:]
-    return jnp.roll(d_basis, 1, axis=0) - d_basis
+from mrx.spline_bases import knot_vector
 
 
 def map_jacobian_at(Phi: Callable, x: jnp.ndarray) -> jnp.ndarray:
@@ -52,7 +42,6 @@ class SequenceGeometry(eqx.Module):
     metric_inv_jkl: jnp.ndarray = None
     jacobian_j: jnp.ndarray = None
     mass_weights: Optional[dict] = None
-    reference_weights: Optional[dict] = None
 
     @classmethod
     def from_map(cls, Phi: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
@@ -60,27 +49,6 @@ class SequenceGeometry(eqx.Module):
         DPhi_jkl = map_jacobian_at(Phi, quad_x)
         metric_jkl = jnp.einsum("qki,qkj->qij", DPhi_jkl, DPhi_jkl)
         return cls(Phi, metric_jkl, jax.vmap(inv33)(metric_jkl), jnp.linalg.det(DPhi_jkl))
-
-
-def _tp_evaluate(C_raw, M1, M2, M3):
-    """A tensor-product spline map ``sum_abc C_raw[i, a, b, c] M1[a, I] M2[b, J] M3[c, K]`` evaluated
-    on a grid, ``(3, nqr, nqt, nqz)``."""
-    T1 = jnp.einsum("iabc,aI->iIbc", C_raw, M1)
-    T2 = jnp.einsum("iIbc,bJ->iIJc", T1, M2)
-    return jnp.einsum("iIJc,cK->iIJK", T2, M3)
-
-
-def knot_vector(breakpoints, p, periodic):
-    """The knot vector of the degree-``p`` splines on the cells between ``breakpoints``, which increase
-    from 0 to 1. A clamped axis repeats each end ``p`` more times, and a periodic axis continues ``p``
-    cells periodically on either side. There are (number of cells) + ``p`` splines on a clamped axis and
-    (number of cells) on a periodic one."""
-    bp = np.asarray(breakpoints, dtype=float)
-    if bp[0] != 0.0 or bp[-1] != 1.0 or np.any(np.diff(bp) <= 0):
-        raise ValueError(f"breakpoints must increase from 0 to 1 (got {list(breakpoints)})")
-    if periodic:
-        return np.concatenate([bp[-(p + 1):-1] - 1.0, bp, bp[1:p + 1] + 1.0])
-    return np.concatenate([np.zeros(p), bp, np.ones(p)])
 
 
 #: The symmetry a map is assumed to have. In logical ``(r, theta, zeta)``, ``zeta`` in ``[0, 1]`` is one
@@ -95,9 +63,9 @@ SYMMETRIES = ("stellarator", "field-period", "none")
 
 def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
                    symmetry="stellarator"):
-    """Build the de Rham sequence of the geometry file ``geometry`` and return ``(seq, ops)``.
+    """Build the de Rham sequence of the geometry file ``geometry`` and return it.
 
-    The sequence has its map installed and its preconditioners built (``ops`` is ``seq.operators``). The
+    The sequence has its map installed and its preconditioners built (``seq.operators``). The
     harmonic forms are not computed here. Call :func:`mrx.nullspace.compute_nullspaces` next if you need
     them. The parsed file is kept as ``seq.equilibrium`` (the output of
     :func:`mrx.equilibria.read_equilibrium`).
@@ -109,13 +77,13 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         maxiter, tol: iteration limit and relative tolerance of every solve on the sequence
             (``tol=None`` means :data:`mrx.precision.SOLVE_TOL`).
         nfp: overrides the ``nfp`` of the equilibrium file.
-        knots: ``(r, theta, zeta)`` breakpoints (see :func:`knot_vector`), ``None`` for a uniform axis.
+        knots: ``(r, theta, zeta)`` breakpoints (see :func:`mrx.spline_bases.knot_vector`), ``None`` for a uniform axis.
         symmetry: one of :data:`SYMMETRIES`, stored as ``seq.symmetry`` next to ``seq.nfp``. The
             half-period quadrature is only used with uniform angular knots. ``"none"`` needs ``nfp = 1``
             (see :class:`~mrx.derham_sequence.DeRhamSequence`).
     """
-    from mrx.derham_sequence import AXIS_TYPES, DeRhamSequence  # noqa: PLC0415  (imports this module)
-    from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium  # noqa: PLC0415
+    from mrx.derham_sequence import AXIS_TYPES, DeRhamSequence      # both import this module
+    from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium
 
     t0 = time.perf_counter()
     eq = read_equilibrium(geometry)
@@ -138,6 +106,6 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
           f"det DPhi in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
           f"symmetry {symmetry} ({note})", flush=True)
     seq.set_geometry_from_map(Phi)
-    ops = seq.build_preconditioners()
+    seq.build_preconditioners()
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
-    return seq, ops
+    return seq

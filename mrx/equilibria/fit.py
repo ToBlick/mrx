@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.interpolate import BSpline
 
-from mrx.geometry import knot_vector
+from mrx.spline_bases import knot_vector
 
 
 def axis_orders(m, deg):

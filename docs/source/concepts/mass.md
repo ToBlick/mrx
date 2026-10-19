@@ -21,8 +21,7 @@ at the meshes MRX runs the apply is bound by the number of kernels, not by
 arithmetic. The batched form needs a handful of large contractions where an
 element-by-element apply (gather the local cube, two small contractions in,
 two out, scatter, per component) needed about 30 kernels for `M_1`. It is
-1.5x faster on li383 (12,16,16) and 1.4-2.2x on W7-X (16,32,32)
-(`docs/research/performance.md`).
+1.5x faster on li383 (12,16,16) and 1.4-2.2x on W7-X (16,32,32).
 
 Row and column tables are the same, so the apply is symmetric by
 construction. `mass_plan(seq, k)` is the geometry-independent part (the padded

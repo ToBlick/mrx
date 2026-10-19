@@ -51,14 +51,10 @@ os.makedirs(cli.out, exist_ok=True)
 # 2) Import MRX.
 import jax
 import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")  # headless as a script. A notebook keeps its inline backend.
-import matplotlib.pyplot as plt
 import numpy as np
-from mrx.geometry import build_sequence
 from mrx.equilibria import read_equilibrium
 from mrx.diagnostics.plotting import get_2d_grids, plot_crossections_separate, plot_torus
+from mrx.diagnostics.plotstyle import finish_figure
 
 # %%
 # 3) Inspect the input file using ``read_equilibrium``. The file stores: R, Z and lambda, the flux,
@@ -80,9 +76,9 @@ if "a_minor" in st:
 
 # %%
 # 4) Build the de Rham sequence on that geometry: the spline spaces, operators and preconditioners that
-# every solve uses.
+# every solve uses. Geometry.build calls mrx.geometry.build_sequence with the options of the command line.
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, _ = build_sequence(g.path, g.resolution, g.spline_degree, knots=g.knots, symmetry=str(g.symmetry))
+seq = g.build()
 jac = np.asarray(seq.geometry.jacobian_j)
 free = seq.free
 print(f"[seq] resolution {g.resolution}, p = {g.spline_degree}: {free.n(0)} 0-form, {free.n(1)} 1-form, "
@@ -103,24 +99,11 @@ def detDPhi(x):
 
 zetas = np.arange(cli.cuts) / cli.cuts
 n = 48
-grids_pol = [get_2d_grids(seq.map, cut_axis=2, cut_value=float(z), nx=n, ny=n, nz=1)
+grids_pol = [get_2d_grids(seq.map, 2, float(z), n, n)
              for z in zetas]
-grid_surface = get_2d_grids(seq.map, cut_axis=0, cut_value=1.0 - 1e-6,
-                            ny=4 * n, nz=4 * n, invert_z=True)
+grid_surface = get_2d_grids(seq.map, 0, 1.0 - 1e-6, 4 * n, 4 * n, invert_z=True)
 print(f"[plot] det DPhi on the torus and on {cli.cuts} poloidal cuts", flush=True)
 fig, _ = plot_torus(detDPhi, grids_pol, grid_surface, cbar_label=r"$\det D\Phi$")
-path = os.path.join(cli.out, "torus_jacobian.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "torus_jacobian.png"))
 fig, _ = plot_crossections_separate(detDPhi, grids_pol, zetas)
-path = os.path.join(cli.out, "crossections_jacobian.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "crossections_jacobian.png"))

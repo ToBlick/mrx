@@ -30,8 +30,7 @@ sets how much pressure the equilibrium carries, and where the relaxed field
 has islands or chaotic regions the pressure flattens across them. 
 
 Beta is `beta = int p dV / int |B|^2/2 dV` in code units, reported as 
-`beta_vol`. [Relaxation](concepts/relaxation.md) explains the two pressures 
-a run records.
+`beta_vol`. [Relaxation](concepts/relaxation.md) explains the two pressures.
 
 ## How expensive is MRX to run? Do I need a GPU?
 
@@ -60,10 +59,6 @@ be `field-period` or `none` ([Equilibrium input](concepts/equilibrium_input.md))
 
 ## How do I read the solver output?
 
-A solve reports a signed iteration count: positive when it converged,
-negative when it stopped without reaching its tolerance. Solves with an outer
-correction loop (the Laplacians and the pressure) add up the iterations of all
-passes, so the count can exceed `--geometry.solve-maxiter`. The
-`[nullspace]` lines give the Rayleigh quotient `v^T L v / v^T M v` of each
-harmonic form. A harmonic form reads round-off, `1e-9` or smaller. A value
-near `1e-3` means the solve that produced it did not converge.
+Every solve reports a signed iteration count, negative when it did not
+converge, and the `[nullspace]` lines report how harmonic each harmonic form
+is. [Sharp bits](sharp_bits.md) says what to look for in both.

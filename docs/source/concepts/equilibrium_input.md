@@ -147,7 +147,7 @@ override for a file that declares it wrong.
 
 **Frames.** `seq.load(f, k)` takes physical components, so a field given
 in logical components is pushed forward first. `seq.interpolate(f, k)` takes
-physical components, or logical ones with `frame='logical'`.
+logical components, so a physical field is pulled back first.
 
 ## 5. What to check on a new file
 

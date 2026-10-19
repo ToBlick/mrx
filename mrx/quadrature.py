@@ -10,7 +10,6 @@
 """
 
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from mrx.pytree import register_arrays
@@ -33,8 +32,6 @@ class QuadratureRule:
         w_x, w_y, w_z: the 1-D weights per axis.
         x, w: the ``(n, 3)`` points and ``(n,)`` weights of the tensor-product rule.
         nx, ny, nz: the number of points per axis, and ``shape = (nx, ny, nz)``.
-        ne_x, ne_y, ne_z: the number of knot spans covered per axis, counted from the start of
-            the axis.
     """
 
     def __init__(self, form, p, half_zeta=False):
@@ -49,10 +46,9 @@ class QuadratureRule:
                 raise ValueError("a half-period quadrature needs zeta = 1/2 as a knot: an even "
                                  "number of uniform zeta cells, or breakpoints containing 1/2")
             spans[2] = jnp.asarray(T_z[:int(fold[0]) + 1])
-        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [composite_quad(T, p) for T in spans]
+        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [tuple(map(jnp.asarray, composite_quad(T, p))) for T in spans]
         if half_zeta:
             w_z = 2.0 * w_z
-        self.ne_x, self.ne_y, self.ne_z = (int(T.size) - 1 for T in spans)
         n = w_x.size * w_y.size * w_z.size
         x_q = jnp.stack(jnp.meshgrid(x_x, x_y, x_z, indexing='ij'), axis=-1)
         w_q = w_x[:, None, None] * w_y[None, :, None] * w_z[None, None, :]
@@ -66,18 +62,12 @@ class QuadratureRule:
 
 
 def composite_quad(T, p):
-    """Return the points and weights ``(x_q, w_q)`` of ``p``-point Gauss on each interval between
-    consecutive breakpoints ``T``. The rule is exact for piecewise polynomials of degree
-    ``2p - 1``."""
+    """Return the points and weights ``(x_q, w_q)``, NumPy float64, of ``p``-point Gauss on each interval between
+    consecutive breakpoints ``T``. The rule is exact for piecewise polynomials of degree ``2p - 1``."""
     xi, wi = np.polynomial.legendre.leggauss(p)
-    xi = jnp.asarray(xi)
-    wi = jnp.asarray(wi)
-
-    def _rescale(a, b):
-        return (xi + 1) / 2 * (b - a) + a, wi * (b - a) / 2
-
-    x_q, w_q = jax.vmap(_rescale)(T[:-1], T[1:])
-    return jnp.ravel(x_q), jnp.ravel(w_q)
+    T = np.asarray(T, dtype=np.float64)
+    lo, hi = T[:-1], T[1:]
+    return ((0.5 * (lo + hi))[:, None] + (0.5 * (hi - lo))[:, None] * xi).ravel(), ((0.5 * (hi - lo))[:, None] * wi).ravel()
 
 
 def evaluate_at_xq(dofs, comp_info, comp_shapes, quad_shape, d):

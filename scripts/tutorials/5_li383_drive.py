@@ -16,7 +16,7 @@ reference's chains instead of the seeded ones. This is
 ``scripts/relax.py --drive.resistivity C --drive.reference REF --drive.reference-smoothing 0``.
 
 The run starts from the seeded, relaxed state of Tutorial 4 (``outputs/tutorials/4_li383_island_seed``,
-whose ``reference.h5`` is the unseeded floor), or builds the same here when that run is absent. 
+whose ``reference.h5`` is the unseeded floor), so run Tutorials 3 and 4 first. 
 It then takes ``--budget.steps`` Newton steps with the drive on. The script
 prints the step size, and after every chunk the force residual, the helicity and the distance to the 
 reference. Before and after the drive it prints the island width of every seeded chain from the sections (the
@@ -71,65 +71,34 @@ os.makedirs(cli.out, exist_ok=True)
 import glob
 import json
 
-import equinox as eqx
-import h5py
-import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
-from mrx.relaxation.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
-from mrx.diagnostics.plotting import plot_archive, plot_twin_axis
-from mrx.diagnostics.poincare import locked_width, trace_archive
+from mrx.diagnostics.plotting import plot_twin_axis, trace_and_plot
+from mrx.diagnostics.plotstyle import finish_figure
+from mrx.diagnostics.poincare import locked_width
 from mrx.relaxation.config import Drive, RelaxConfig
-from mrx.relaxation.loop import check_checkpoint, initial_state, radial_cell_sq, relax, write_checkpoint
-from mrx.relaxation.seeding import energy_seed
+from mrx.relaxation.loop import initial_state, read_field, relax, save_run, write_checkpoint
 
 
 geometry = cli.geometry
 mesh = f"{geometry.resolution} p={geometry.spline_degree}"
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, ops = geometry.build()
+seq = geometry.build()
 compute_nullspaces(seq)
-h_r_sq = radial_cell_sq(seq)
 nfp = seq.nfp
 
 # %%
-# 3) Get the seeded start and the unseeded reference from the run of Tutorial 4
-# (its last checkpoint and reference.h5). Otherwise the same is made here: the
-# equilibrium is relaxed by 10 Newton steps as in Tutorial 3, seeded by the energy
-# criterion and relaxed by 5 more Newton steps as in Tutorial 4.
-B_seeded = B_floor = rows = None
-run = cli.seeded
-ref = os.path.join(run, "reference.h5")
-ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
-if os.path.exists(ref) and ckpts:
-    with h5py.File(ckpts[-1], "r") as fh:
-        same_mesh = (tuple(int(v) for v in fh.attrs["resolution"]) == geometry.resolution
-                     and int(fh.attrs["degree"]) == geometry.spline_degree)
-        if same_mesh:
-            B_seeded = jnp.asarray(np.asarray(fh["B_n"]))
-        else:
-            print(f"[start] {run} is resolution {list(fh.attrs['resolution'])} p={fh.attrs['degree']}, skipped")
-    if same_mesh:
-        check_checkpoint(ckpts[-1], seq)
-        check_checkpoint(ref, seq)
-        with h5py.File(ref, "r") as fh:
-            B_floor = jnp.asarray(np.asarray(fh["B_n"]))
-        rows = json.load(open(os.path.join(run, "relax.json")))["seed"]
-        print(f"[start] the seeded state {ckpts[-1]} and the reference {ref}")
-if B_seeded is None:
-    B0, ic = initial_field(seq)
-    newton = RelaxConfig(geometry=geometry, budget=Budget(steps=10, chunk=5, floor_tol=0.0))
-    ts = newton.stepper(seq)
-    print("[start] no Tutorial 4 run: 10 Newton steps from the initial field, then the seed and 5 more",
-          flush=True)
-    B_floor = relax(initial_state(B0, ts), ts, **newton.relax_kwargs(), verbose=False).state.B_n
-    B_seeded, rows = energy_seed(seq, B_floor)
-    seeded = RelaxConfig(geometry=geometry, budget=Budget(steps=5, chunk=5, floor_tol=0.0))
-    B_seeded = relax(initial_state(B_seeded, ts), ts, **seeded.relax_kwargs(), verbose=False).state.B_n
+# 3) Get the seeded start and the unseeded reference from the run of Tutorial 4: its last checkpoint and
+# reference.h5, on the same mesh.
+ref = os.path.join(cli.seeded, "reference.h5")
+ckpts = sorted(glob.glob(os.path.join(cli.seeded, "checkpoints", "state_*.h5")))
+if not (ckpts and os.path.exists(ref)):
+    sys.exit(f"no run of Tutorial 4 in {cli.seeded}: run Tutorial 4 first, or point --seeded at its run")
+B_seeded, _ = read_field(ckpts[-1], seq)
+B_floor, _ = read_field(ref, seq)
+with open(os.path.join(cli.seeded, "relax.json")) as fh:
+    rows = json.load(fh)["seed"]
+print(f"[start] the seeded state {ckpts[-1]} and the reference {ref}")
 for r in rows:
     print(f"[start] seeded chain ({r['m']},{r['n']}) iota {nfp * r['n'] / r['m']:.4f} at r {r['r']:.3f}: "
           f"amplitude {r['dBr']:+.3e}, pendulum width {r['w']:.4f}")
@@ -147,7 +116,7 @@ cfg = RelaxConfig(geometry=geometry, budget=cli.budget,
 ts = cfg.stepper(seq)
 write_checkpoint(ref_path, initial_state(B_floor, ts), 0, seq)
 B_star = B_floor
-ts = eqx.tree_at(lambda t: t.resistive_reference, ts, B_star, is_leaf=lambda x: x is None)
+ts = ts.with_reference(B_star)
 print(f"[drive] eps = {cfg.drive.resistivity:g} h_r^2 = {float(ts.resistivity):.3e} per step towards the current of "
       f"B* = the unseeded floor")
 
@@ -176,32 +145,10 @@ print(f"[drive] {res.steps} steps ({res.stop}): ||F|| {F[0]:.3e} -> {F[-1]:.3e},
 fig, _ = plot_twin_axis(F, H, x_right=np.asarray(res.qoi["it"], dtype=float),
                         left_label=r"$\|F\|_M$", right_label=r"$H$",
                         left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker="o"))
-path = os.path.join(cli.out, "trace.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "trace.png"))
 
 # %%
-# 7) Draw Poincare sections of the field before and after.
-def sections(fields):
-    """Trace the fields into one archive (the trace.npz of scripts/poincare_trace.py) and draw it on one iota
-    and one pressure scale in the layout of the paper, as scripts/poincare_plot.py does."""
-    print(f"[poincare] {', '.join(fields)}: tracing {cli.lines} field lines for {cli.periods} field periods each",
-          flush=True)
-    archive, results = trace_archive(seq, fields, lines=cli.lines, periods=cli.periods,
-                                     source=f"{geometry.path} {mesh}")
-    np.savez_compressed(os.path.join(cli.out, "trace.npz"), **archive)
-    for fig in plot_archive(archive, os.path.join(cli.out, "poincare")).values():
-        if _INTERACTIVE:
-            plt.show()
-        else:
-            plt.close(fig)
-    return results
-
-
+# 7) Draw Poincare sections of the field before and after, as scripts/poincare_plot.py does.
 def chain_widths(r, what):
     for row in rows:
         target = nfp * row["n"] / row["m"]
@@ -210,7 +157,8 @@ def chain_widths(r, what):
               f"width {width:.4f}")
 
 
-results = sections({"before": (B_seeded, 0), "after": (B, res.steps)})
+results = trace_and_plot(seq, {"before": (B_seeded, 0), "after": (B, res.steps)}, cli.out, lines=cli.lines,
+                         periods=cli.periods, source=f"{geometry.path} {mesh}")
 chain_widths(results["before"], "before")
 chain_widths(results["after"], "after")
 
@@ -218,13 +166,6 @@ chain_widths(results["after"], "after")
 # 8) Save the run the way scripts/relax.py does: relax.json with the configuration of the drive and 
 # the checkpoints of the start and the end. 
 # Then scripts/poincare_trace.py --geometry ... checkpoints/state_*.h5 can trace it if needed.
-os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_seeded, ts), 0, seq)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
-params = dict(cfg.params, geometry_path=os.path.abspath(geometry.path), knots=geometry.knots, ic="seeded",
-              h_r_sq=float(h_r_sq), start_step=0)
-with open(os.path.join(cli.out, "relax.json"), "w") as fh:
-    json.dump(dict(params=params, seed=rows, trace=res.trace, qoi=res.qoi), fh, indent=1)
-print(f"  -> {cli.out}/relax.json and checkpoints/")
+save_run(cli.out, cfg, seq, initial_state(B_seeded, ts), res, "seeded", seed=rows)
 print("[done] the drive takes the seeded field towards the reference. The helicity changes, the distance to "
       "the reference shrinks and the chains become those of the reference.")

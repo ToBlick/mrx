@@ -36,6 +36,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DERIV_AXES
+from mrx.incidence import diff_1d
 from mrx.mass import build_mass_diagonal
 from mrx.precision import eps, sqrt_eps
 from mrx.pytree import register_arrays
@@ -76,18 +77,6 @@ def _simultaneous_diagonalize_pair(M, A):
     return V, lam
 
 
-def _dense_incidence_1d(n0, typ):
-    """The 1-D incidence ``(G c)_j = c_{j+1} - c_j`` of an axis of type ``typ`` (wrapped if
-    periodic, zero if constant)."""
-    if typ == 'clamped':
-        j = jnp.arange(n0 - 1)
-        return jnp.zeros((n0 - 1, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
-    if typ == 'periodic':
-        j = jnp.arange(n0)
-        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
-    return jnp.zeros((n0, n0))
-
-
 # --------------------------------------------------------------------------- #
 # Metric weights and 1-D factors                                               #
 # --------------------------------------------------------------------------- #
@@ -124,10 +113,7 @@ def weight_fields(seq):
 
 def _axis_bases(seq):
     """The per-axis spline and derivative-spline tables and the 1-D quadrature weights."""
-    primal = (seq.basis_r_jk, seq.basis_t_jk, seq.basis_z_jk)
-    deriv = (seq.d_basis_r_jk, seq.d_basis_t_jk, seq.d_basis_z_jk)
-    quad_w = (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
-    return primal, deriv, quad_w
+    return seq.basis_jk, seq.d_basis_jk, (seq.quad.w_x, seq.quad.w_y, seq.quad.w_z)
 
 
 def _fd_stiffness_degree0(seq, axis, profile):
@@ -239,7 +225,7 @@ def component_factors(seq, k, c, window):
                 kt = kt + _face_term(seq, k, c, window)
             stiffs.append(kt)
         else:
-            G = _dense_incidence_1d(int(m_full.shape[0]), seq.basis_0.types[a])
+            G = jnp.asarray(diff_1d(int(m_full.shape[0]), seq.basis_0.types[a]).toarray())
             k_full = _symmetrize(G.T @ (_assemble_weighted_1d_mass(deriv[a], quad_w[a] * prof) @ G))
             if a == 2:
                 k_full = mirror_zeta_1d(seq, k_full, False)
@@ -531,7 +517,7 @@ class MetricLumpingLaplacian(_Atom):
     """
 
     def __init__(self, seq, operators, k):
-        from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
+        from mrx.operators import apply_laplacian_approx   # imports this module
         core, raw_blocks, probe = self._prologue(seq, k)
         specs, strong = [], []
         for c, rows, vals, (r0, nr), shape in raw_blocks:
@@ -547,7 +533,7 @@ class MetricLumpingLaplacian(_Atom):
         core_inv = _dense_symmetric_inverse(
             probe(lambda x: apply_laplacian_approx(seq, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
-        mass_core = probe(lambda x: seq.M[k] @ x)
+        mass_core = operators.mass_lumping[(k, seq.dirichlet)].core_block    # probed by the mass preconditioner
         stiffness_core = probe(lambda x: seq.S[k] @ x)
         self._core_pair = (_simultaneous_diagonalize_pair(mass_core, stiffness_core) if core.size
                            else (mass_core, jnp.zeros(0)))
@@ -574,7 +560,7 @@ class MetricLumpingMass(_Atom):
     :meth:`apply`.
     """
 
-    def __init__(self, seq, operators, k):
+    def __init__(self, seq, k):
         core, raw_blocks, probe = self._prologue(seq, k)
         mass_1d, lam = _kron_mass_model_1d(seq, k)
         specs = [dict(rows=rows, vals=vals, shape=shape, pre=1.0 / lam[c][r0:r0 + nr],
@@ -582,7 +568,9 @@ class MetricLumpingMass(_Atom):
                       left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
                                  for a, m in enumerate(mass_1d[c])))
                  for c, rows, vals, (r0, nr), shape in raw_blocks]
-        core_inv = _dense_symmetric_inverse(probe(lambda x: seq.M[k] @ x), f"the mass preconditioner, k = {k}")
+        #: the mass matrix on the axis rows, which the Laplacian preconditioner of the same space reuses
+        self.core_block = probe(lambda x: seq.M[k] @ x)
+        core_inv = _dense_symmetric_inverse(self.core_block, f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 

@@ -4,8 +4,7 @@
   It fixes the number of components, their coefficient grids and the number of coefficients.
 - :class:`DiscreteFunction` turns a coefficient vector on such a basis into a function that can
   be evaluated at logical points.
-- :class:`Pushforward` and :class:`Pullback` move a k-form between the logical cube and the
-  physical domain under the map ``Phi``.
+- :class:`Pushforward` takes a logical k-form to the physical domain under the map ``Phi``.
 - :func:`det33`, :func:`adj33` and :func:`inv33` are the determinant, adjugate and inverse of a
   3x3 matrix in closed form.
 """
@@ -56,8 +55,8 @@ class DifferentialForm:
         self.bases = tuple(TensorBasis([(self.dLambda if a in d else self.Lambda)[a] for a in range(3)])
                            for d in self._deriv_axes)
         self.shape = tuple(tuple(n_axis[a in d][a] for a in range(3)) for d in self._deriv_axes)
-        sizes = [math.prod(s) for s in self.shape] + [0, 0]
-        self.n1, self.n2, self.n3 = sizes[:3]
+        sizes = [math.prod(s) for s in self.shape] + [0]
+        self.n1, self.n2 = sizes[:2]
         self.n = sum(sizes)
 
     def derivative_axes(self, c):
@@ -127,32 +126,6 @@ class Pushforward:
         if self.k == 2:
             return DPhi @ self.f(x) / det33(DPhi)
         return self.f(x) / det33(DPhi)
-
-
-class Pullback:
-    """The pullback of the physical k-form ``f`` under the map ``Phi``.
-
-    Calling it at a logical point ``x`` returns the logical form there. With ``y = Phi(x)`` and
-    ``J = det DPhi`` the rules are ``f(y)`` for ``k = 0``, ``DPhi^T f(y)`` for ``k = 1``,
-    ``J DPhi^-1 f(y)`` for ``k = 2`` and ``J f(y)`` for ``k = 3``. The ``k = 2`` rule stays
-    finite on the polar axis, where ``J = 0``.
-    """
-
-    def __init__(self, f, Phi, k):
-        self.k = k
-        self.f = f
-        self.Phi = Phi
-
-    def __call__(self, x):
-        y = self.Phi(x)
-        if self.k == 0:
-            return self.f(y)
-        DPhi = jax.jacfwd(self.Phi)(x)
-        if self.k == 1:
-            return DPhi.T @ self.f(y)
-        if self.k == 2:
-            return adj33(DPhi) @ self.f(y)      # J DPhi^-1 = adj(DPhi), finite where J = 0
-        return self.f(y) * det33(DPhi)
 
 
 def det33(mat: jnp.ndarray) -> jnp.ndarray:

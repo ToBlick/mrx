@@ -75,17 +75,15 @@ import time
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize
 from mrx.equilibria import build_map
 from mrx.diagnostics.plotting import plot_twin_axis
+from mrx.diagnostics.plotstyle import finish_figure
 from mrx.optimization.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota,
                                        normal_field_fraction, quasisymmetry_residual, section_moments,
-                                       vacuum_two_form, with_geometry)
+                                       vacuum_two_form)
 from mrx.spline_bases import basis_derivative_table, basis_table
 
 ASPECT = 6.0         # the aspect ratio held exactly
@@ -99,7 +97,7 @@ IOTA_TOL, P_TOL = 1e-5, 1.01e-8   # met when |<iotabar>_s - iotabar*| <= IOTA_TO
 # the raw R and Z coefficients, (n_r, n_theta, n_zeta) each.
 t0 = time.perf_counter()
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, _ = g.build()
+seq = g.build()
 nfp = seq.nfp
 _, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
 lp = BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], nfp)
@@ -113,22 +111,20 @@ r_min = float(np.min(T[T > 0.0]))   # h_r, the end of the first radial knot span
 # change of the boundary ring is extended harmonically into the interior, and every inner ring changes on
 # its own too. map_coefficients rescales the map to the device's volume and to ASPECT. The field is
 # h = seed - curl A on the changed map, and from it come the criterion, the mean iota and P.
-shape = BoundaryShape.from_coefficients(seq, lp.raw_R, lp.raw_Z, nfp, aspect=ASPECT,
-                                        extension="harmonic", free="all")
+shape = BoundaryShape.from_coefficients(seq, lp.raw_R, lp.raw_Z, nfp, aspect=ASPECT)
 seed = flux_seed(seq)
 n_var = 2 * lp.raw_R.size
 
 
 def mapped(x, seq, shape):
     """The raw coefficients (R, Z) of the map at the variables x."""
-    R, Z, _, _ = shape.map_coefficients(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.raw_R.shape)))
-    return R, Z
+    return shape.map_coefficients(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.raw_R.shape)))
 
 
 def terms(x, seq, shape, seed):
     """<Q_QA^2>_{r >= h_r}, <iotabar>_s (signed), P and min det DPhi at x."""
     R, Z = mapped(x, seq, shape)
-    sq = with_geometry(seq, cylindrical_geometry(seq, R, Z, nfp))
+    sq = seq.with_geometry(cylindrical_geometry(seq, R, Z, nfp))
     h, _ = vacuum_two_form(sq, seed)
     F_qs, _ = quasisymmetry_residual(sq, h, R, Z, nfp, r_min)
     return dict(F_qs=F_qs, iota=mean_iota(sq, h), P=normal_field_fraction(sq, h), jmin=jnp.min(sq.jacobian_j))
@@ -333,13 +329,7 @@ fig, (ax_F, ax_i) = plot_twin_axis(F_path, iota_path,
                                    left_plot_kwargs=dict(marker=""), right_plot_kwargs=dict(marker=""))
 ax_F.axhline(F_lp, color=ax_F.get_lines()[0].get_color(), ls=":", lw=1)
 ax_i.axhline(target, color=ax_i.get_lines()[0].get_color(), ls=":", lw=1)
-path = os.path.join(cli.out, "trace.png")
-fig.savefig(path, dpi=200, bbox_inches="tight")
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "trace.png"), bbox_inches="tight")
 
 # %%
 # 9) Draw the boundary of the device, the start and the end in three toroidal planes of a field period.
@@ -357,10 +347,4 @@ for ax, zeta in zip(axes, planes):
     ax.set_xlabel(r"$R$ [m]")
 axes[0].set_ylabel(r"$Z$ [m]")
 axes[1].legend(frameon=False, loc="upper right")
-path = os.path.join(cli.out, "sections.png")
-fig.savefig(path, dpi=200)
-if _INTERACTIVE:
-    plt.show()
-else:
-    plt.close(fig)
-print(f"  -> {path}")
+finish_figure(fig, os.path.join(cli.out, "sections.png"))

@@ -17,8 +17,7 @@ field lines (160 by default, the paper's li383 figures trace 320 for 600 periods
 automatic seed.
 
 The tutorial starts from the Newton state of Tutorial 3 (``outputs/tutorials/3_li383_newton``) on the same
-``(12, 16, 16) p = 2`` mesh. Without it, it takes 10 Newton steps from the equilibrium initial condition
-itself.
+``(12, 16, 16) p = 2`` mesh, so run Tutorial 3 first.
 
     python -u scripts/tutorials/4_li383_island_seed.py
     python -u scripts/tutorials/4_li383_island_seed.py --iotas 0.5 0.6 --amplitudes 3e-3 -2e-3
@@ -72,21 +71,13 @@ os.makedirs(cli.out, exist_ok=True)
 # %%
 # 2) Import MRX.
 import glob
-import json
 
-import h5py
-import jax.numpy as jnp
-import matplotlib
-if not _INTERACTIVE:
-    matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
-from mrx.relaxation.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
-from mrx.diagnostics.plotting import plot_archive
-from mrx.diagnostics.poincare import locked_width, trace_archive
+from mrx.diagnostics.plotting import trace_and_plot
+from mrx.diagnostics.poincare import locked_width
 from mrx.relaxation.config import RelaxConfig, Seed
-from mrx.relaxation.loop import check_checkpoint, initial_state, radial_cell_sq, relax, write_checkpoint
+from mrx.relaxation.loop import initial_state, radial_cell_sq, read_field, relax, save_run, write_checkpoint
 from mrx.relaxation.seeding import energy_seed
 
 
@@ -95,37 +86,18 @@ from mrx.relaxation.seeding import energy_seed
 geometry = cli.geometry
 mesh = f"{geometry.resolution} p={geometry.spline_degree}"
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
-seq, ops = geometry.build()
+seq = geometry.build()
 compute_nullspaces(seq)
 h_r_sq = radial_cell_sq(seq)
 nfp = seq.nfp
 
 # %%
-# 3) Get the nested state: the Newton state of Tutorial 3 when its run is on disk and matches this mesh.
-# Otherwise Tutorial 3 is repeated here: 10 Newton steps from the equilibrium initial condition.
-B_floor = None
-run = cli.warm_start
-ckpts = sorted(glob.glob(os.path.join(run, "checkpoints", "state_*.h5")))
-if os.path.exists(os.path.join(run, "relax.json")) and ckpts:
-    with open(os.path.join(run, "relax.json")) as fh:
-        ws = json.load(fh)["params"]
-    if tuple(ws["resolution"]) == geometry.resolution and int(ws["spline_degree"]) == geometry.spline_degree:
-        check_checkpoint(ckpts[-1], seq)
-        with h5py.File(ckpts[-1], "r") as fh:
-            B_floor = jnp.asarray(np.asarray(fh["B_n"]))
-        print(f"[floor] warm-started from {ckpts[-1]} (resolution {ws['resolution']} p={ws['spline_degree']})")
-    else:
-        print(f"[floor] run {run} is resolution {ws['resolution']} p={ws['spline_degree']} "
-              f"(need {list(geometry.resolution)} p={geometry.spline_degree}), skipped")
-if B_floor is None:
-    B0, ic = initial_field(seq)
-    print(f"[floor] built the equilibrium IC: ||B||_M {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}")
-    newton = RelaxConfig(geometry=geometry, budget=Budget(steps=10, chunk=5, floor_tol=0.0))
-    ts = newton.stepper(seq)
-    print("[floor] no Tutorial 3 run: 10 Newton steps from the initial field", flush=True)
-    res = relax(initial_state(B0, ts), ts, **newton.relax_kwargs(), verbose=False)
-    B_floor = res.state.B_n
-    print(f"[floor] {res.steps} Newton steps: ||F|| {res.trace['F'][0]:.3e} -> {res.trace['F'][-1]:.3e}")
+# 3) Get the nested state: the last checkpoint of the Newton run of Tutorial 3, on the same mesh.
+ckpts = sorted(glob.glob(os.path.join(cli.warm_start, "checkpoints", "state_*.h5")))
+if not ckpts:
+    sys.exit(f"no checkpoints in {cli.warm_start}: run Tutorial 3 first, or point --warm-start at its run")
+B_floor, _ = read_field(ckpts[-1], seq)
+print(f"[floor] warm-started from {ckpts[-1]}")
 
 # %%
 # 4) Seed the floor by the energy criterion: every resonance in range, at the
@@ -151,23 +123,7 @@ B_hand, rows_hand = energy_seed(seq, B_floor, iotas=iotas, amplitudes=amplitudes
 report(rows_hand, f"seed by hand, iotas {iotas}" + (f" at {amplitudes}" if amplitudes else ", the criterion's amplitudes"))
 
 # %%
-# 5) A helper for the Poincare sections, drawn in step 7 once the seeded field is relaxed.
-def sections(fields):
-    """Trace the fields into one archive (the trace.npz of scripts/poincare_trace.py) and draw it on one iota
-    and one pressure scale in the layout of the paper, as scripts/poincare_plot.py does."""
-    print(f"[poincare] {', '.join(fields)}: tracing {cli.lines} field lines for {cli.periods} field periods each",
-          flush=True)
-    archive, results = trace_archive(seq, fields, lines=cli.lines, periods=cli.periods,
-                                     source=f"{geometry.path} {mesh}")
-    np.savez_compressed(os.path.join(cli.out, "trace.npz"), **archive)
-    for fig in plot_archive(archive, os.path.join(cli.out, "poincare")).values():
-        if _INTERACTIVE:
-            plt.show()
-        else:
-            plt.close(fig)
-    return results
-
-
+# 5) A helper that measures the seeded chains in the Poincare sections of step 7.
 def chain_widths(res, rows, what):
     for row in rows:
         target = nfp * row["n"] / row["m"]
@@ -189,10 +145,11 @@ print(f"[newton] {res.steps} steps: ||F|| {F[0]:.3e} -> {F[-1]:.3e} (lowest {F.m
 B = res.state.B_n
 
 # %%
-# 7) Draw the Poincare sections of all four fields on one iota and one pressure scale, and measure the
-# chains in them.
-results = sections({"floor": (B_floor, 0), "seeded": (B_auto, 0), "seeded_by_hand": (B_hand, 0),
-                    "seeded_relaxed": (B, res.steps)})
+# 7) Draw the Poincare sections of all four fields on one iota and one pressure scale (the trace.npz of
+# scripts/poincare_trace.py, drawn as scripts/poincare_plot.py does), and measure the chains in them.
+results = trace_and_plot(seq, {"floor": (B_floor, 0), "seeded": (B_auto, 0), "seeded_by_hand": (B_hand, 0),
+                               "seeded_relaxed": (B, res.steps)}, cli.out, lines=cli.lines, periods=cli.periods,
+                         source=f"{geometry.path} {mesh}")
 chain_widths(results["seeded"], rows_auto, "seeded")
 chain_widths(results["seeded_by_hand"], rows_hand, "seeded by hand")
 chain_widths(results["seeded_relaxed"], rows_auto, "seeded, relaxed")
@@ -200,14 +157,9 @@ chain_widths(results["seeded_relaxed"], rows_auto, "seeded, relaxed")
 # %%
 # 8) Save the run the way scripts/relax.py does. Tutorial 5 drives the seeded field
 # back towards the nested state.
-os.makedirs(os.path.join(cli.out, "checkpoints"), exist_ok=True)
-write_checkpoint(os.path.join(cli.out, "checkpoints", "state_000000.h5"), initial_state(B_auto, ts_newton), 0, seq)
-write_checkpoint(os.path.join(cli.out, "checkpoints", f"state_{res.steps:06d}.h5"), res.state, res.steps, seq)
+save_run(cli.out, cfg, seq, initial_state(B_auto, ts_newton), res, "warmstart", seed=rows_auto,
+         seed_by_hand=rows_hand)
 write_checkpoint(os.path.join(cli.out, "reference.h5"), initial_state(B_floor, ts_newton), 0, seq)
-params = dict(cfg.params, geometry_path=os.path.abspath(geometry.path), knots=geometry.knots, ic="warmstart",
-              h_r_sq=float(h_r_sq), start_step=0)
-with open(os.path.join(cli.out, "relax.json"), "w") as fh:
-    json.dump(dict(params=params, seed=rows_auto, seed_by_hand=rows_hand, trace=res.trace, qoi=res.qoi), fh, indent=1)
-print(f"  -> {cli.out}/relax.json, checkpoints/ and reference.h5 (the unseeded floor)")
+print(f"  -> {cli.out}/reference.h5 (the unseeded floor)")
 print("[done] the chains the criterion found are island chains in the seeded sections and survive the ideal "
       "relaxation. Tutorial 5 drives the field back towards the unseeded floor.")

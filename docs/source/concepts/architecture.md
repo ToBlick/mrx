@@ -62,9 +62,10 @@ operator object indexed by the form degree and applied with `@`
 | mass `M_k` | `seq.M[k] @ v` | `seq.M[k].solve(b)` |
 | strong derivative `G_k` (grad, curl, div) | `seq.G[k] @ v`, `seq.G[k].T @ w`, with the polar stencils of [polar.md](polar.md) | |
 | weak derivative `D_k = M_{k+1} G_k` | `seq.D[k] @ v`, `seq.D[k].T @ w` | |
-| stiffness `S_k = G_k^T M_{k+1} G_k` | `seq.S[k] @ v` | |
+| stiffness `S_k = G_k^T M_{k+1} G_k` | `seq.S[k] @ v` | `seq.S[k].solve(b)`, `b = G_k^T w`, up to a closed form |
 | Hodge Laplacian `L_k = S_k + M_k G_{k-1} M_{k-1}^{-1} G_{k-1}^T M_k` | `seq.L[k] @ v` | `seq.L[k].solve(b)` |
 | shifted Laplacian `M_k + eps L_k` | | `seq.shifted(k, eps).solve(b)` |
+| shifted stiffness `M_k + eps S_k` | | `seq.shifted_stiffness(k, eps).solve(b)` |
 | projection masses `P_{k->l}` | `seq.P[k, l] @ v` | |
 
 `seq.M[k].precondition(r)` and `seq.L[k].precondition(r)` apply the
@@ -83,8 +84,7 @@ H = A @ (seq.P[2, 1] @ (2 * B - seq.G[1] @ A))
 exposed as L2 loads: the factors are evaluated at the quadrature points
 (`evaluate_at_quadrature`) and the product is integrated against the
 output basis. `cross_product_load_values` covers `w x u` for every degree
-combination, `dot_product_load_values`, `scalar_product_load_values` and
-`scalar_vector_load_values` the others. In reference components a 1-form is
+combination and `dot_product_load_values` the inner products. In reference components a 1-form is
 covariant (`DPhi^T a`), a 2-form a contravariant density (`det DPhi DPhi^{-1} b`), a
 3-form a density. Wedge products and contractions are metric-free in these
 components, so the induction `dB/dt = curl(u x B)` conserves flux exactly,
@@ -95,7 +95,7 @@ and the metric enters only where a Hodge star does.
 Assembly runs on the unconstrained tensor-product basis. An extraction
 operator `E_k` of shape `(n_k, n_k_raw)` maps it onto the conforming space,
 `A = E_k A_raw E_k^T`. `build_extraction` (`mrx/extraction_operators.py`)
-returns it as a `MatrixFreeExtraction` (COO triplets, applied by a gather
+returns it as a `SparseMatrix` (COO triplets, applied by a gather
 and a segment sum): the polar functions at the axis ([polar.md](polar.md))
 and, in the Dirichlet spaces, the `r = 1` functions dropped.
 
@@ -105,13 +105,13 @@ Dirichlet spaces (no flux through the wall, tangential `E` and `A` zero,
 `seq.free` has the free spaces. It shares every array with `seq`, and all
 operators, `seq.E(k)`, `seq.n(k)`, `seq.load` and `seq.interpolate` act on
 the spaces of the object they are called on. No operator takes a boundary
-condition argument. `seq.restrict(v, k)` drops the wall DoFs of a free form
-and `seq.extend(v, k)` pads a Dirichlet form with zeros. The initial field,
+condition argument. `seq.restrict(v, k)` drops the wall DoFs of a free form.
+The initial field,
 for example, is the curl of a free vector potential restricted to the
 Dirichlet 2-forms:
 
 ```python
-A = seq.free.interpolate(A_ref, 1, frame='logical')
+A = seq.free.interpolate(A_ref, 1)
 B = seq.restrict(seq.free.G[1] @ A, 2)
 ```
 
@@ -189,7 +189,7 @@ geometry file:
 4. Harmonic forms: `compute_nullspaces(seq)`, a separate call.
 
 ```python
-seq, ops = build_sequence("data/wout_li383_low_res_reference.nc", (8, 12, 12), 2)   # steps 1-3
+seq = build_sequence("data/wout_li383_low_res_reference.nc", (8, 12, 12), 2)   # steps 1-3
 compute_nullspaces(seq)                                                             # step 4
 ```
 

@@ -51,7 +51,7 @@ def main(cli):
     import numpy as np
 
     from mrx.derham_sequence import DeRhamSequence
-    from mrx.geometry import knot_vector
+    from mrx.spline_bases import knot_vector
     from mrx.equilibria import build_map, read_equilibrium
     from mrx.diagnostics.plotstyle import LEFT, house_style, save_figure
 

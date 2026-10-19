@@ -20,7 +20,7 @@ from mrx.geometry import build_sequence
 from mrx.relaxation.initial_conditions import initial_field
 from mrx.nullspace import compute_nullspaces
 
-seq, ops = build_sequence("data/wout_li383_1.4m.nc", (16, 32, 32), 2)
+seq = build_sequence("data/wout_li383_1.4m.nc", (16, 32, 32), 2)
 compute_nullspaces(seq)
 B0, info = initial_field(seq)
 ```
@@ -57,7 +57,7 @@ the pair `--seed` / `--no-seed`:
 The `params` of `relax.json` hold the same settings as one flat dict with
 the keys of earlier runs (`geometry`, `resolution`, `spline_degree`,
 `seed_iotas`, `method`, `newton_tol`, `steps`, `drive_resistivity`, `out`
-and so on). `RelaxConfig.from_params` rebuilds the configuration from it.
+and so on).
 
 The tutorials build the same configuration in Python
 (`RelaxConfig(geometry=Geometry(...), ...)`).
@@ -77,7 +77,7 @@ chunk restarts it (`--output.restart`).
 | file | content |
 |---|---|
 | `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`. |
-| `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.p`, ...), the discretisation as attributes |
+| `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
@@ -88,24 +88,22 @@ grid-scale reconnection and `div` at round-off.
 To evaluate a checkpoint's field:
 
 ```python
-import h5py
 from mrx.differential_forms import DiscreteFunction, Pushforward
-from mrx.relaxation.loop import checkpoint_attrs
+from mrx.relaxation.loop import checkpoint_attrs, read_field
 
 path = "outputs/relax/<date>/<time>/checkpoints/best.h5"
 a = checkpoint_attrs(path)
-seq, ops = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"])
-with h5py.File(path) as fh:
-    B = fh["B_n"][...]
+seq = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"])
+B, step = read_field(path, seq)
 odd = seq.odd                     # B is odd under the stellarator symmetry
 B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)
 ```
 
 ## Pressure
 
-The run carries two pressures: the strong `p` of the descent (state,
-`warm.p` in every checkpoint) and the weak `p_w`, zero on the wall, from
-which `beta_vol` is computed ([Relaxation](concepts/relaxation.md)).
+MRX has two pressures: the strong `p` of the descent (`compute_force`, on
+request) and the weak `p_w`, zero on the wall, from which `beta_vol` is
+computed at every chunk ([Relaxation](concepts/relaxation.md)).
 
 ## Poincare sections
 
@@ -130,6 +128,4 @@ In code, `poincare(seq, B, lines=160, periods=400, planes=5)` seeds the
 lines from the axis to the edge, measures iota per line, flags the chaotic
 ones and cuts the trajectories at the planes (five over half a period for a
 stellarator-symmetric map). The returned `drift` (step h against h/2)
-justifies the step count. `mrx.diagnostics.islands.islands(seq, B)` finds
-the island chains of a field by Newton on the Poincare map (`poincare_map`) and measures their
-widths on a ray through each O-point.
+justifies the step count.

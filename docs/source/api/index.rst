@@ -10,7 +10,6 @@ documented in their source and in the concept pages.
    :caption: Discretisation
 
    geometry
-   mappings
    derham_sequence
    differential_forms
    symmetry
@@ -40,7 +39,6 @@ documented in their source and in the concept pages.
    :caption: Diagnostics
 
    diagnostics.poincare
-   diagnostics.islands
    diagnostics.plotting
 
 .. toctree::

@@ -19,6 +19,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 from mrx.equilibria import StateField
+from mrx.relaxation.physics import compute_divergence_norm
 
 
 def _clebsch_potential(st, nfp):
@@ -54,7 +55,7 @@ def potential_two_form(seq):
     seq = seq.odd
     free = seq.free
     # interpolate A' without a boundary condition: its tangential part on the wall carries the toroidal flux
-    A = free.interpolate(_clebsch_potential(seq.equilibrium, seq.nfp), 1, frame='logical')
+    A = free.interpolate(_clebsch_potential(seq.equilibrium, seq.nfp), 1)
     B_full = free.G[1] @ A
     B = seq.restrict(B_full, 2)
     n_full, norm = float(free.l2_norm(B_full, 2)), float(seq.l2_norm(B, 2))
@@ -67,8 +68,6 @@ def initial_field(seq):
 
     ``info`` holds numbers worth recording: ``kind``, ``B_norm_raw``, the divergence ``div``, ``nfp``,
     ``iota_axis`` and ``iota_edge`` (per full turn) and ``wall_discarded``."""
-    from mrx.relaxation.physics import compute_divergence_norm  # noqa: PLC0415
-
     eq = seq.equilibrium
     B, norm, wall = potential_two_form(seq)
     iota = eq["profiles"]["iota"]

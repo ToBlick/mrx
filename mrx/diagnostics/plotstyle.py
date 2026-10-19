@@ -7,11 +7,13 @@
 * The named colours and colormaps: :data:`LEFT` and :data:`RIGHT` for twin-axis plots, :data:`IOTA_COLOR` and
   :data:`P_COLOR` for section figures, and :data:`FIELD_CMAP`, :data:`PRESSURE_CMAP` and :data:`SECTION_CMAP`.
 * :func:`save_figure` saves a figure as a PNG and, when ``xelatex`` is available, as a ``.pgf`` file for LaTeX
-  in a ``pgf/`` folder next to it.
+  in a ``pgf/`` folder next to it. :func:`finish_figure` saves a figure and then shows it in a notebook or
+  closes it in a script.
 """
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -59,6 +61,19 @@ def house_style(**overrides):
         yield
 
 
+def finish_figure(fig, path=None, dpi=200, **savefig_kw):
+    """Save ``fig`` as ``path`` (unless ``None``) and print the path, then show the figure in a notebook or close
+    it in a script."""
+    import matplotlib.pyplot as plt
+    if path is not None:
+        fig.savefig(path, dpi=dpi, **savefig_kw)
+        print(f"  -> {path}", flush=True)
+    if "ipykernel" in sys.modules:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 @house_style()
 def save_figure(fig, png_path, dpi=None):
     """Save ``fig`` as ``png_path`` and as ``pgf/<stem>.pgf`` in the same folder. The ``.pgf`` keeps text and
@@ -75,4 +90,6 @@ def save_figure(fig, png_path, dpi=None):
     except Exception as exc:      # noqa: BLE001 -- the .pgf is an optional artifact
         if os.path.exists(pgf_path):
             os.remove(pgf_path)   # a half-written .pgf is not a usable file
+        if not os.listdir(pgf_dir):
+            os.rmdir(pgf_dir)
         print(f"  (pgf skipped -- needs xelatex on PATH: {type(exc).__name__}: {str(exc)[:80]})", flush=True)

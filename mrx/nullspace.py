@@ -38,7 +38,7 @@ def harmonic_rayleigh(seq, v, k):
 def _closed_seed(seq, components, k):
     """The form with constant logical components ``components``, checked to be closed up to round-off."""
     components = jnp.asarray(components)
-    seed = seq.interpolate(lambda x_hat: components, k, frame='logical')
+    seed = seq.interpolate(lambda x_hat: components, k)
     closed = float(seq.l2_norm(seq.G[k] @ seed, k + 1) / seq.l2_norm(seed, k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(
@@ -46,12 +46,22 @@ def _closed_seed(seq, components, k):
     return seed
 
 
+def _constant(space, k):
+    """The constant ``k``-form (k = 0, 3) of ``space``: the vector of ones, reduced on a parity view, where a
+    mirror pair of DoFs carries the weight ``1 / sqrt 2``."""
+    if space.parity is None:
+        return jnp.ones(space.n(k))
+    X = space.reduction[(k, space.dirichlet)]
+    return X.T @ jnp.ones(X.forward_shape[0])
+
+
 def compute_nullspaces(seq, *, verbose=True):
-    """Compute the harmonic forms of ``seq``, install them on ``seq.operators`` and return the operators.
+    """Compute the harmonic forms of ``seq``, install them on its operators and return ``seq.operators``.
 
     Call it after :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`. The domain is a solid
-    torus (Betti numbers ``(1, 1, 0, 0)``, of which the odd parity view keeps ``b1`` and the even view
-    ``b0``). The forms are, in order:
+    torus (Betti numbers ``(1, 1, 0, 0)``). On a half-period sequence the forms are computed on the parity
+    views, which hold the fields: the odd view the 1- and 2-forms, the even view the constants. The full
+    half-period sequence is not solved on and keeps zero forms. The forms are:
 
     - k = 3 with Dirichlet conditions: ``M_3^{-1}`` applied to the constant.
     - k = 2 with Dirichlet conditions: the toroidal flux form ``dr ^ dtheta`` minus its exact part, found
@@ -59,62 +69,38 @@ def compute_nullspaces(seq, *, verbose=True):
     - k = 0 without boundary conditions: the constant.
     - k = 1 without boundary conditions: the Leray projection of ``d zeta``, found with one ``L_0`` solve.
 
-    The parity views of ``seq`` get their forms as well. With ``verbose`` the
-    :func:`harmonic_rayleigh` of each form is printed.
+    With ``verbose`` the :func:`harmonic_rayleigh` of each form is printed.
     """
-    operators = _commit(seq, op.init_nullspaces(seq, seq._require_operators()))
+    for space in ((seq.odd, seq.even) if seq.half_period and seq.parity is None else (seq,)):
+        _compute(space, verbose)
+    return seq.operators
 
-    def store(space, k, v):
-        v = v / space.l2_norm(v, k)
-        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, v[None, :]))
 
-    if op.n_vectors(seq.betti_numbers, 3, True):
-        operators = store(seq, 3, seq.M[3].solve(jnp.ones(seq.n(3))))
+def _compute(space, verbose):
+    """The harmonic forms of ``space``, a full-period sequence or a parity view, installed on its operators."""
+    _commit(space, op.init_nullspaces(space, space._require_operators()))
 
-    if op.n_vectors(seq.betti_numbers, 2, True):
+    def store(sp, k, v):
+        # sp.free is taken anew after every store: a view copies the operators it sees
+        v = v / sp.l2_norm(v, k)
+        _commit(space, op.set_nullspace(space.operators, k, sp.dirichlet, v[None, :]))
+        if verbose:
+            name = "" if space.parity is None else ("odd " if space.parity == -1 else "even ")
+            print(f"[nullspace] {name}k={k} {'dbc' if sp.dirichlet else 'free'}: v^T L v / v^T M v = "
+                  f"{harmonic_rayleigh(sp, v, k):.2e}", flush=True)
+
+    betti = space.betti_numbers
+    if op.n_vectors(betti, 3, True):
+        store(space, 3, space.M[3].solve(_constant(space, 3)))
+    if op.n_vectors(betti, 2, True):
         # the closed seed has no coexact part, so removing its exact part (the image of curl, one
         # curl-curl solve) leaves the harmonic form
-        seed2 = _closed_seed(seq, (0.0, 0.0, 1.0), 2)
-        a = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ seed2), part="coexact", gauge=False,
-                           tol=HARMONIC_TOL * seq.tol)
-        operators = store(seq, 2, seed2 - seq.G[1] @ a)
-
-    # seq.free is taken anew after every store: a view copies the operators it sees
-    if op.n_vectors(seq.betti_numbers, 0, False):
-        operators = store(seq.free, 0, jnp.ones(seq.free.n(0)))
-
-    if op.n_vectors(seq.betti_numbers, 1, False):
+        seed2 = _closed_seed(space, (0.0, 0.0, 1.0), 2)
+        a = space.S[1].solve(space.G[1].T @ (space.M[2] @ seed2), tol=HARMONIC_TOL * space.tol)
+        store(space, 2, seed2 - space.G[1] @ a)
+    if op.n_vectors(betti, 0, False):
+        store(space.free, 0, _constant(space.free, 0))
+    if op.n_vectors(betti, 1, False):
         # curl-free since the seed is closed, weakly divergence-free by the projection
-        v1, _ = seq.free.leray(_closed_seed(seq.free, (0.0, 0.0, 1.0), 1), k=1)
-        operators = store(seq.free, 1, v1)
-
-    if verbose:
-        for space, k in ((seq, 3), (seq, 2), (seq.free, 0), (seq.free, 1)):
-            for i, v in enumerate(space.nullspace(k)):
-                print(f"[nullspace] k={k} {'dbc' if space.dirichlet else 'free'} "
-                      f"form {i}: v^T L v / v^T M v = {harmonic_rayleigh(space, v, k):.2e}", flush=True)
-
-    if seq.half_period and seq.parity is None:
-        for view in (seq.odd, seq.even):
-            _reduce_to_view(seq, view, verbose)
-    return operators
-
-
-def _reduce_to_view(seq, view, verbose):
-    """Install on a parity view the forms of its parity (the odd view holds the 1- and 2-forms, the even
-    view the constants), reduced from the full sequence's forms by the view's expansion ``X``."""
-    # X^T v is exact for a field of the view's parity. Building the forms on the view itself is not: a
-    # vector of ones is not the constant there, since a mirror pair of DoFs carries the weight 1 / sqrt 2
-    # and a DoF the reflection maps to itself the weight 1.
-    operators = _commit(view, op.init_nullspaces(view, view._require_operators()))
-    for k, dirichlet in ((3, True), (2, True), (0, False), (1, False)):
-        if not op.n_vectors(view.betti_numbers, k, dirichlet):
-            continue
-        base, space = (seq, view) if dirichlet else (seq.free, view.free)
-        v = view.reduction[(k, dirichlet)].T @ base.nullspace(k)[0]
-        v = v / space.l2_norm(v, k)
-        operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v[None, :]))
-        if verbose:
-            print(f"[nullspace] {'odd' if view.parity == -1 else 'even'} view k={k} "
-                  f"{'dbc' if dirichlet else 'free'}: v^T L v / v^T M v = "
-                  f"{harmonic_rayleigh(view if dirichlet else view.free, v, k):.2e}", flush=True)
+        v1, _ = space.free.leray(_closed_seed(space.free, (0.0, 0.0, 1.0), 1), k=1)
+        store(space.free, 1, v1)

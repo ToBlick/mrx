@@ -31,7 +31,7 @@ def compute_helicity(B: jnp.ndarray, seq: DeRhamSequence, A_guess: jnp.ndarray) 
     """
     seq = seq.odd
     # A enters the helicity up to a gradient, which pairs to zero with the divergence-free B + B_harm
-    A = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ B), part="coexact", gauge=False, guess=A_guess)
+    A = seq.S[1].solve(seq.G[1].T @ (seq.M[2] @ B), guess=A_guess)
     B_harm = B - seq.G[1] @ A
     helicity = A @ (seq.P[2, 1] @ (B + B_harm))
     return helicity, A
@@ -45,6 +45,13 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
 
 
 @eqx.filter_jit
+def current(B: jnp.ndarray, seq: DeRhamSequence, guess: jnp.ndarray | None = None) -> jnp.ndarray:
+    """The current ``J = curl B`` of the odd 2-form ``B``, a 1-form computed weakly: ``M_1 J = D_1^T B``."""
+    odd = seq.odd
+    return odd.M[1].solve(odd.D[1].T @ B, guess=guess)
+
+
+@eqx.filter_jit
 def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | None = None,
                   JxB_guess: jnp.ndarray | None = None, J_guess: jnp.ndarray | None = None,
                   F_guess: jnp.ndarray | None = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
@@ -55,7 +62,7 @@ def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | No
     The optional guesses are the results of a previous call and only speed up the linear solves.
     """
     odd, even = seq.odd, seq.even
-    J = odd.M[1].solve(odd.D[1].T @ B, guess=J_guess)      # the weak curl of B
+    J = current(B, seq, J_guess)
     JxB_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
                                               odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
     JxB = even.M[2].solve(JxB_dual, guess=JxB_guess)
@@ -70,8 +77,8 @@ def weak_pressure(J: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence,
     """Return the weak pressure ``p_w``, a 0-form that vanishes on the wall.
 
     It is the gradient part of the Helmholtz split ``J x B = F_w + grad p_w`` of the force as a 1-form. Unlike the
-    pressure of :func:`compute_force` it does not absorb the force normal to the wall. Pass the ``J`` returned by
-    :func:`compute_force`.
+    pressure of :func:`compute_force` it does not absorb the force normal to the wall. ``J`` is the current of
+    ``B`` (:func:`current`).
     """
     odd, even = seq.odd, seq.even
     # the Dirichlet 1-forms suffice: p_w only sees J x B tested against gradients of 0-forms that vanish on the wall
@@ -103,7 +110,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
 
     because ``L_2 (B - B_ref) = M_2 G_1 M_1^{-1} G_1^T M_2 (B - B_ref)`` and
     ``(M_2 + eps L_2) G_1 a = M_2 G_1 M_1^{-1} (M_1 + eps S_1) a``. That is one 1-form solve
-    (``seq.shifted(1, eps).solve(..., part="coexact")``), and ``div B`` stays at round-off, since ``G_2 G_1 = 0``.
+    (``seq.shifted_stiffness(1, eps).solve(...)``), and ``div B`` stays at round-off, since ``G_2 G_1 = 0``.
 
     Returns ``(B + delta, info, ||delta|| / ||B||, a)``, where ``info`` is the iteration count of the solve
     (positive when converged, negative when not). ``guess`` is a starting guess for ``a``.
@@ -111,7 +118,7 @@ def resistive_step(B: jnp.ndarray, seq: DeRhamSequence, eps, B_ref: Optional[jnp
     seq = seq.odd
     # solve for the small increment, not for B itself
     rhs = -eps * (seq.G[1].T @ (seq.M[2] @ (B if B_ref is None else B - B_ref)))
-    a, info = seq.shifted(1, eps).solve(rhs, guess=guess, return_info=True, part="coexact")
+    a, info = seq.shifted_stiffness(1, eps).solve(rhs, guess=guess, return_info=True)
     delta = seq.G[1] @ a
     rel = seq.l2_norm(delta, 2) / seq.l2_norm(B, 2)
     return B + delta, info.astype(jnp.int32), rel, a

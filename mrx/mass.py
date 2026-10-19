@@ -26,6 +26,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.symmetry import symmetrize
+
 
 class SumfactPlan(eqx.Module):
     """The geometry-independent part of a mass or projection apply: the 1-D basis tables of the row and the
@@ -38,6 +40,8 @@ class SumfactPlan(eqx.Module):
     tables_c: tuple
     shapes_r: tuple = eqx.field(static=True)
     shapes_c: tuple = eqx.field(static=True)
+    #: whether the weight is the quadrature weight alone, ``(Q_r, Q_theta, Q_zeta)``, times the identity
+    scalar_weight: bool = eqx.field(static=True, default=False)
 
 
 def _padded_tables(seq, k):
@@ -63,11 +67,11 @@ def mass_plan(seq, k):
 def projection_plan(seq, k_row, k_col):
     """The :class:`SumfactPlan` of the projection mass ``int Lambda^{k_row} . Lambda^{k_col}`` (weight 1).
 
-    It maps ``k_col``-form coefficients to ``k_row``-form moments.
+    It maps ``k_col``-form coefficients to ``k_row``-form moments. Its weight is the quadrature weight alone.
     """
     tables_r, shapes_r = _padded_tables(seq, k_row)
     tables_c, shapes_c = _padded_tables(seq, k_col)
-    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c)
+    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c, scalar_weight=True)
 
 
 def _mass_weight(k, metric, metric_inv, jac):
@@ -81,12 +85,12 @@ def _mass_weight(k, metric, metric_inv, jac):
 
 
 def attach_weights(seq, geometry):
-    """Return ``geometry`` with the weights of all mass and projection matrices attached.
+    """Return ``geometry`` with the weights of the mass matrices attached.
 
-    ``mass_weights[k]`` holds the weight of ``M_k`` and ``reference_weights[n]`` that of the projection masses
-    between forms of ``n`` components, both times the quadrature weights and of shape ``(Q_r, Q_theta, Q_zeta,
-    n, n)``. The sequence calls this when a map is installed. Code that installs a geometry by hand, such as the
-    shape-derivative code, must call it too.
+    ``mass_weights[k]`` holds the weight of ``M_k`` times the quadrature weights, of shape ``(Q_r, Q_theta,
+    Q_zeta, n, n)`` for a form of ``n`` components. The projection masses need no geometry. The sequence calls
+    this when a map is installed. Code that installs a geometry by hand, such as the shape-derivative code, must
+    call it too.
     """
     metric, metric_inv, jac = geometry.metric_jkl, geometry.metric_inv_jkl, geometry.jacobian_j
     q = tuple(int(n) for n in seq.quad.shape)
@@ -96,9 +100,7 @@ def attach_weights(seq, geometry):
         return (W * w).reshape(q + W.shape[1:])
 
     mass_weights = {k: grid(_mass_weight(k, metric, metric_inv, jac)) for k in range(4)}
-    reference = {n: grid(jnp.broadcast_to(jnp.eye(n, dtype=jac.dtype), (jac.shape[0], n, n))) for n in (1, 3)}
-    return eqx.tree_at(lambda g: (g.mass_weights, g.reference_weights), geometry,
-                       (mass_weights, reference), is_leaf=lambda x: x is None)
+    return eqx.tree_at(lambda g: g.mass_weights, geometry, mass_weights, is_leaf=lambda x: x is None)
 
 
 @eqx.filter_jit
@@ -116,7 +118,10 @@ def sumfact_apply(plan, weights, x):
         parts.append(jnp.pad(x[offset:offset + n].reshape(s), [(0, n_max[a] - s[a]) for a in range(3)]))
         offset += n
     u = jnp.einsum('cijk,cia,cjb,ckd->abdc', jnp.stack(parts), R, T, Z)
-    v = jnp.einsum('abdrc,abdc->rabd', weights, u)
+    if plan.scalar_weight:
+        v = jnp.einsum('abd,abdc->cabd', weights, u)
+    else:
+        v = jnp.einsum('abdrc,abdc->rabd', weights, u)
     R, T, Z = plan.tables_r
     y = jnp.einsum('ria,rjb,rkd,rabd->rijk', R, T, Z, v)
     return jnp.concatenate([y[c, :s[0], :s[1], :s[2]].reshape(-1) for c, s in enumerate(plan.shapes_r)])
@@ -138,6 +143,5 @@ def build_mass_diagonal(seq, k):
     if seq.half_period:
         # d holds twice the half-period integrals. An entry and its mirror image each hold
         # one half of the full integral, so their unsigned mean is the full diagonal.
-        from mrx.symmetry import symmetrize  # noqa: PLC0415
         d = symmetrize(d, seq.reflection_plan[k], 1, signed=False)
     return d

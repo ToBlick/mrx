@@ -8,8 +8,8 @@ raw tensor-product ones, so an extracted DoF vector ``v`` has the raw coefficien
 
 - :func:`build_extraction` builds ``E`` of a k-form space, free or with homogeneous Dirichlet
   conditions at ``r = 1``, together with its polar core rows (the axis functions).
-- :class:`MatrixFreeExtraction` is the sparse matrix type of ``E`` and of the other topological
-  operators. It acts by ``E @ x`` and ``E.T @ x``.
+- :class:`SparseMatrix` is the sparse matrix type of ``E`` and of the other topological operators (the polar
+  grad and curl, the parity reductions). It acts by ``E @ x`` and ``E.T @ x``.
 - :func:`conforming_restriction` maps raw coefficients to the closest extracted DoF vector.
 - :func:`dirichlet_dofs` locates the DoFs of a Dirichlet space among those of the free space.
 - :func:`get_xi` returns the polar weights that define the axis functions.
@@ -37,7 +37,7 @@ def _apply_coo(vals, gather_idx, segment_idx, x, num_segments):
                                num_segments=num_segments)
 
 
-class MatrixFreeExtraction(eqx.Module):
+class SparseMatrix(eqx.Module):
     """A sparse matrix stored as its nonzero entries ``(rows, cols, vals)``.
 
     ``A @ x`` applies it to a vector, or to each column of a matrix ``x``, and ``A.T`` is its
@@ -73,7 +73,7 @@ class MatrixFreeExtraction(eqx.Module):
 
     @property
     def T(self):
-        return MatrixFreeExtraction(rows=self.rows, cols=self.cols, vals=self.vals,
+        return SparseMatrix(rows=self.rows, cols=self.cols, vals=self.vals,
                                     forward_shape=self.forward_shape,
                                     transposed=not self.transposed)
 
@@ -99,11 +99,11 @@ class MatrixFreeExtraction(eqx.Module):
 
 
 def summed_coo(rows, cols, vals, shape):
-    """A :class:`MatrixFreeExtraction` of ``shape`` from the given entries, with duplicate
+    """A :class:`SparseMatrix` of ``shape`` from the given entries, with duplicate
     entries summed into one and the entries sorted by row."""
     key = np.asarray(rows, dtype=np.int64) * shape[1] + np.asarray(cols, dtype=np.int64)
     uniq, inv = np.unique(key, return_inverse=True)
-    return MatrixFreeExtraction.from_coo(uniq // shape[1], uniq % shape[1],
+    return SparseMatrix.from_coo(uniq // shape[1], uniq % shape[1],
                                          np.bincount(inv, weights=vals, minlength=uniq.size), shape)
 
 
@@ -186,7 +186,7 @@ def build_extraction(form, xi, dirichlet):
     with the derivative basis in ``r``). With ``dirichlet`` the outermost ring of the primal
     radial basis is dropped, which imposes homogeneous Dirichlet conditions at ``r = 1``.
 
-    Returns ``(E, core_rows)``, ``E`` a :class:`MatrixFreeExtraction` of shape
+    Returns ``(E, core_rows)``, ``E`` a :class:`SparseMatrix` of shape
     ``(n_extracted, form.n)``.
     """
     xi = np.asarray(xi)
@@ -240,11 +240,7 @@ def build_extraction(form, xi, dirichlet):
         data.append(np.ones(i.shape[0], dtype=np.float64))
         row0 += i.shape[0]
 
-    e = MatrixFreeExtraction(
-        rows=jnp.asarray(np.concatenate(rows), dtype=jnp.int32),
-        cols=jnp.asarray(np.concatenate(cols), dtype=jnp.int32),
-        vals=jnp.asarray(np.concatenate(data), dtype=jnp.float64),
-        forward_shape=(row0, form.n), transposed=False)
+    e = SparseMatrix.from_coo(np.concatenate(rows), np.concatenate(cols), np.concatenate(data), (row0, form.n))
     return e, np.unique(np.asarray(core, dtype=np.int32))
 
 

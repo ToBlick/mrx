@@ -35,7 +35,6 @@ ERROR_BAND = {0: 0.0118, 1: 0.0150, 2: 0.0320, 3: 0.0652}
 #: The relative spread of the three representations' errors, which is below 3e-12.
 SAME = 1e-3
 NAMES = ("half", "period", "full")
-_ERRORS = {}
 
 
 def psi(X):
@@ -120,20 +119,16 @@ def _solve(seq, k):
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
 
 
-@pytest.mark.parametrize("name", NAMES)
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_manufactured_solution(domains, k, name):
+def test_manufactured_solution(domains, k):
     """The k-th manufactured solution is recovered within its band, and with the same error on the three
     representations of the domain."""
-    err = _solve(domains(name), k)
-    _ERRORS[k, name] = err
-    print(f"\n  k={k} {name}: relative L2 error {err:.6e}")
-    assert err < ERROR_BAND[k]
-    if name == NAMES[-1]:
-        errs = [_ERRORS[k, n] for n in NAMES if (k, n) in _ERRORS]
-        spread = (max(errs) - min(errs)) / min(errs)
-        print(f"  k={k}: spread of the errors over {len(errs)} representations {spread:.2e}")
-        assert spread < SAME
+    errs = {name: _solve(domains(name), k) for name in NAMES}
+    spread = (max(errs.values()) - min(errs.values())) / min(errs.values())
+    print(f"\n  k={k}: relative L2 errors " + ", ".join(f"{n} {e:.6e}" for n, e in errs.items())
+          + f", spread {spread:.2e}")
+    assert max(errs.values()) < ERROR_BAND[k]
+    assert spread < SAME
 
 
 def test_leray_projection(seq):
@@ -152,41 +147,13 @@ def test_leray_projection(seq):
     assert float(even.l2_norm(Pv, 2)) < 1.0
 
 
-def test_a_new_geometry_can_keep_the_preconditioners(domains):
-    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the atoms and zeroes the harmonic forms, so
-    a solve runs without a new build. Without it the bundle is gone and a solve raises. The map installed here
-    is the sequence's own, and the preconditioners and harmonic forms are built again at the end."""
-    from mrx.equilibria import build_map
-    from mrx.nullspace import compute_nullspaces
-
-    s = domains("period")
-    Phi, _ = build_map(s.equilibrium, s, nfp=s.nfp, stellarator_symmetric=s.half_period)
-    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
-    x_ref = s.M[1].solve(b)
-    Pb = s.M[1].precondition(b)
-    try:
-        s.set_geometry_from_map(Phi, keep_preconditioners=True)
-        assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
-        x, info = s.M[1].solve(b, return_info=True)
-        assert info > 0
-        assert float(s.l2_norm(x - x_ref, 1) / s.l2_norm(x_ref, 1)) <= 1e3 * s.tol
-        s.set_geometry_from_map(Phi)
-        assert s.operators is None
-        with pytest.raises(ValueError):
-            s.M[1].solve(b)
-    finally:
-        s.build_preconditioners()
-        compute_nullspaces(s, verbose=False)
-
-
-def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq, b0):
-    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``L[1].solve(part="coexact", gauge=False)``
-    and ``L[1].solve`` converge and differ by a closed form only, so their curls agree. With the gauge solve they
-    agree themselves."""
+def test_stiffness_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
+    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``S[1].solve`` and ``L[1].solve`` converge
+    and differ by a closed form only, so their curls agree. With the gauge solve (``part="coexact"``) they agree
+    themselves."""
     odd = seq.odd
     b = odd.G[1].T @ (odd.M[2] @ b0)
-    a, info = odd.L[1].solve(b, return_info=True, part="coexact", gauge=False)
+    a, info = odd.S[1].solve(b, return_info=True)
     a_g = odd.L[1].solve(b, part="coexact")
     a_L, info_L = odd.L[1].solve(b, return_info=True)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
@@ -199,15 +166,15 @@ def test_coexact_solve_without_the_gauge_has_the_curl_of_the_laplacian_solve(seq
 
 
 @pytest.mark.parametrize("shift", ["smoothing", "one"])
-def test_coexact_shifted_solve_has_the_curl_of_the_shifted_solve(seq, shift):
-    """For a right-hand side ``M_1 z`` with every part, ``shifted(1, eps).solve(part="coexact")`` (one solve of
-    ``M_1 + eps S_1``) and the full shifted solve converge and differ by an exact form, so their curls agree. At the
-    velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
+def test_shifted_stiffness_solve_has_the_curl_of_the_shifted_solve(seq, shift):
+    """For a right-hand side ``M_1 z`` with every part, ``shifted_stiffness(1, eps).solve`` (one solve of
+    ``M_1 + eps S_1``) and the shifted Laplacian solve converge and differ by an exact form, so their curls agree. At
+    the velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
     from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
     odd = seq.odd
     eps = SMOOTHING_C * radial_cell_sq(seq) if shift == "smoothing" else jnp.asarray(1.0)
     b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(4), (odd.n(1),), dtype=jnp.float64)
-    a, info = odd.shifted(1, eps).solve(b, return_info=True, part="coexact")
+    a, info = odd.shifted_stiffness(1, eps).solve(b, return_info=True)
     a_f, info_f = odd.shifted(1, eps).solve(b, return_info=True)
     diff = float(odd.l2_norm(odd.G[1] @ (a - a_f), 2) / odd.l2_norm(odd.G[1] @ a_f, 2))
     print(f"\n  eps {float(eps):.2e}: one solve {int(info)} iterations, full {int(info_f)}, "
@@ -245,38 +212,38 @@ def test_parts_of_the_laplacian_solve(domains, k):
     assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
 
 
-@pytest.mark.parametrize("k", [1, 2])
-def test_the_coexact_solve_without_its_gauge_takes_a_guess(domains, k):
-    """Started from its own result, the co-exact solve without the gauge is converged at once."""
-    s = domains("period")
-    b = s.G[k].T @ jnp.asarray(np.random.default_rng(10 + k).standard_normal(s.n(k + 1)))
-    y, info = s.L[k].solve(b, return_info=True, part="coexact", gauge=False)
-    y2, info2 = s.L[k].solve(b, return_info=True, part="coexact", gauge=False, guess=y)
-    assert 0 <= info2 < info
-    assert float(s.l2_norm(s.G[k] @ (y2 - y), k + 1) / s.l2_norm(s.G[k] @ y, k + 1)) <= 1e3 * s.tol
+def _torus(kappa):
+    """The map of a torus of major radius 3 whose cross-section is a circle (``kappa = 1``) or an ellipse of
+    elongation ``kappa``, right-handed in ``(r, theta, zeta)``."""
+    def Phi(x):
+        r, t, z = x
+        R = 3.0 + r * jnp.cos(2.0 * np.pi * t)
+        return jnp.array([R * jnp.cos(2.0 * np.pi * z), R * jnp.sin(2.0 * np.pi * z),
+                          -kappa * r * jnp.sin(2.0 * np.pi * t)])
+    return Phi
 
 
-def test_the_coexact_part_of_a_0_form_solve_is_the_solve(domains):
-    """Every 0-form solution is co-exact, so ``L[0].solve(b, part="coexact")`` is ``L[0].solve(b)``."""
-    s = domains("period")
-    b = s.G[0].T @ jnp.asarray(np.random.default_rng(7).standard_normal(s.n(1)))
-    x, info = s.L[0].solve(b, return_info=True, part="coexact")
-    x_full = s.L[0].solve(b)
-    assert info > 0
-    assert float(s.l2_norm(x - x_full, 0) / s.l2_norm(x_full, 0)) <= 1e3 * s.tol
+def test_a_new_geometry_can_keep_the_preconditioners():
+    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the preconditioners of the old map, which
+    still precondition the operators of the new one: the mass solve on the new map converges to the tolerance,
+    measured with the new mass matrix. The harmonic forms are set to zero. Without ``keep_preconditioners`` the
+    bundle is dropped and a solve raises. On its own small torus, so the session fixtures stay untouched."""
+    from mrx.derham_sequence import DeRhamSequence
+    s = DeRhamSequence((6, 8, 6), 2, nfp=1, symmetry="none")
+    s.set_geometry_from_map(_torus(1.0))
+    s.build_preconditioners()
+    b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
+    Pb = s.M[1].precondition(b)
+    s.set_geometry_from_map(_torus(1.3), keep_preconditioners=True)
+    assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
+    assert not any(np.any(np.asarray(v)) for v in s.operators.nullspaces.values())
+    x, info = s.M[1].solve(b, return_info=True)
+    r = b - s.M[1] @ x
 
-
-def test_parts_that_do_not_exist_are_refused(domains):
-    s = domains("period")
+    def norm(v):
+        return float(jnp.sqrt(v @ s.M[1].precondition(v)))
+    assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
+    s.set_geometry_from_map(_torus(1.3))
+    assert s.operators is None
     with pytest.raises(ValueError):
-        s.L[0].solve(jnp.zeros(s.n(0)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[3].solve(jnp.zeros(s.n(3)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), part="closed")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="exact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), guess=jnp.zeros(s.n(1)), part="coexact")
-    with pytest.raises(ValueError):
-        s.L[1].solve(jnp.zeros(s.n(1)), gauge=False)
+        s.M[1].solve(b)
