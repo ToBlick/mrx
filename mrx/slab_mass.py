@@ -350,17 +350,20 @@ class SlabMass:
             mz = np.asarray(mass_1d[group[0]][2])
             d = np.sqrt(np.diag(mz))
             factors.append((idx, Linv, B, np.linalg.inv(mz / np.outer(d, d))))
-        # one sweep for both groups: the second group padded to the block size of the first
+        # one sweep for both groups: the second group padded to the block count and size of the first. On the free
+        # 2-forms the first group reaches one ring further out (the outer ring of the radial component), a block of
+        # its own when (n_r - 1) % p == 0.
         nz, ns, b = factors[0][0].shape
         tinv = np.zeros((2 * nz, 2 * nz))
         tinv[:nz, :nz], tinv[nz:, nz:] = factors[0][3], factors[1][3]
         self._tinv = jnp.asarray(tinv, FACTOR_DTYPE)
-        idx_all = [np.pad(idx, ((0, 0), (0, 0), (0, b - idx.shape[2])), constant_values=n) for idx, *_ in factors]
+        idx_all = [np.pad(idx, ((0, 0), (0, ns - idx.shape[1]), (0, b - idx.shape[2])), constant_values=n)
+                   for idx, *_ in factors]
         # block-major storage, so that each sweep step reads one contiguous block
         self._idx = jnp.asarray(np.swapaxes(np.concatenate(idx_all), 0, 1))
-        Linv = jnp.concatenate([jnp.broadcast_to(jnp.eye(b), (nz, ns, b, b)).at[:, :, :idx.shape[2], :idx.shape[2]]
-                                .set(L) for idx, L, *_ in factors])
-        B = jnp.concatenate([jnp.zeros((nz, ns, b, b)).at[:, :, :idx.shape[2], :idx.shape[2]].set(Bg)
+        Linv = jnp.concatenate([jnp.broadcast_to(jnp.eye(b), (nz, ns, b, b))
+                                .at[:, :idx.shape[1], :idx.shape[2], :idx.shape[2]].set(L) for idx, L, *_ in factors])
+        B = jnp.concatenate([jnp.zeros((nz, ns, b, b)).at[:, :idx.shape[1], :idx.shape[2], :idx.shape[2]].set(Bg)
                              for idx, _, Bg, _ in factors])
         if THETA_HALF_WIDTH is None:
             self._w = jnp.swapaxes(_rows(Linv, B), 0, 1).astype(FACTOR_DTYPE)
