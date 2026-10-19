@@ -6,7 +6,7 @@ three ways of running them:
 
 ``serial``
     One chip, the fields one after another through the compiled chunk of ``relax.py``
-    (:func:`mrx.relaxation.loop.chunk_runner`). This is the baseline.
+    (``mrx.relaxation.loop._run_chunk``). This is the baseline.
 ``shard_map``
     ``jax.jit(jax.shard_map(f, mesh=mesh, in_specs=..., out_specs=P("eq")))`` over a 1-D mesh of the chips. The
     stacked fields are a global ``jax.Array`` with ``NamedSharding(mesh, P("eq"))`` and the stepper is replicated
@@ -173,9 +173,9 @@ def main():
     from mrx.precision import inner, lift  # noqa: PLC0415
     from mrx.relaxation.config import Budget, Descent, Geometry, Method, RelaxConfig  # noqa: PLC0415
     from mrx.relaxation.initial_conditions import initial_field  # noqa: PLC0415
-    # _chunk_body is private: it is the step that chunk_runner scans. chunk_runner closes over the stepper, and
-    # chunk_of below rebuilds its scan with the stepper's arrays as an argument, replicated by shard_map and jit_vmap.
-    from mrx.relaxation.loop import _chunk_body, chunk_runner, initial_state  # noqa: PLC0415
+    # _chunk_body and _run_chunk are private: _chunk_body is the step that _run_chunk scans, and chunk_of below
+    # rebuilds that scan with the stepper's arrays as an argument, replicated by shard_map and jit_vmap.
+    from mrx.relaxation.loop import _chunk_body, _run_chunk, initial_state  # noqa: PLC0415
 
     os.makedirs(args.out, exist_ok=True)
     out_path = os.path.join(args.out, "multichip_results.json")
@@ -258,7 +258,8 @@ def main():
         # --- serial: one chip, one field after another ------------------------------------------------
         serial_final = None
         if "serial" in args.modes:
-            run = chunk_runner(ts, chunk)
+            def run(state, it0):
+                return _run_chunk(ts, state, jnp.asarray(it0), chunk)
 
             def relax_one(state):
                 """All chunks of one field on one chip, with the best residual after each chunk."""
