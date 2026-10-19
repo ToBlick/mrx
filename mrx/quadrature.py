@@ -19,7 +19,7 @@ from mrx.pytree import register_arrays
 class QuadratureRule:
     """Tensor-product Gauss quadrature on the logical unit cube ``(r, theta, zeta)``.
 
-    Each axis uses ``p`` Gauss points on every knot span of the spline basis. The flattened
+    Each axis uses a fixed number of Gauss points on every knot span of the spline basis. The flattened
     points are ordered r-major (``zeta`` varies fastest, then ``theta``, then ``r``), so a field
     given at the flat points reshapes to the ``(nx, ny, nz)`` grid with ``field.reshape(shape)``.
 
@@ -34,10 +34,10 @@ class QuadratureRule:
         nx, ny, nz: the number of points per axis, and ``shape = (nx, ny, nz)``.
     """
 
-    def __init__(self, form, p, half_zeta=False):
+    def __init__(self, form, qs, half_zeta=False):
         """Build the rule on the knot spans of ``form`` (a
-        :class:`~mrx.differential_forms.DifferentialForm`, usually the 0-forms) with ``p`` Gauss
-        points per span."""
+        :class:`~mrx.differential_forms.DifferentialForm`, usually the 0-forms) with ``qs = (q_r,
+        q_theta, q_zeta)`` Gauss points per span of each axis."""
         spans = [b.T[b.p:-b.p] for b in form.bases[0].bases]
         if half_zeta:
             T_z = np.asarray(spans[2])
@@ -46,7 +46,7 @@ class QuadratureRule:
                 raise ValueError("a half-period quadrature needs zeta = 1/2 as a knot: an even "
                                  "number of uniform zeta cells, or breakpoints containing 1/2")
             spans[2] = jnp.asarray(T_z[:int(fold[0]) + 1])
-        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [tuple(map(jnp.asarray, composite_quad(T, p))) for T in spans]
+        (x_x, w_x), (x_y, w_y), (x_z, w_z) = [tuple(map(jnp.asarray, composite_quad(T, n))) for T, n in zip(spans, qs)]
         if half_zeta:
             w_z = 2.0 * w_z
         n = w_x.size * w_y.size * w_z.size

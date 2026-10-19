@@ -46,7 +46,7 @@ the pair `--seed` / `--no-seed`:
 
 | group | flags |
 |---|---|
-| geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
+| geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.graded`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-tol` |

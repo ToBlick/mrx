@@ -51,6 +51,8 @@ class Geometry:
     """The cell boundaries in theta, increasing from 0 to 1, instead of a uniform grid."""
     knots_zeta: Optional[tuple[float, ...]] = None
     """The cell boundaries in zeta, increasing from 0 to 1, instead of a uniform grid."""
+    graded: bool = False
+    """The graded polar space: fewer theta cells on the rings near the axis (see mrx.geometry.build_sequence)."""
     solve_tol: Optional[float] = None
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000
@@ -75,7 +77,7 @@ class Geometry:
         from mrx.geometry import build_sequence
         mrx.MAP_BATCH_SIZE_INNER = self.max_batch
         return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
-                              tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry))
+                              tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry), graded=self.graded)
 
 
 @dataclass(frozen=True)

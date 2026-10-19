@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.extraction_operators import build_extraction, core_gram_inverse, get_xi, row_products, summed_coo
+from mrx.extraction_operators import core_gram_inverse, ring_layout, row_products, summed_coo
 
 
 def reflection_permutation(n: int, p: int) -> np.ndarray:
@@ -147,13 +147,14 @@ def mirror_component(seq, X, derivative_axes):
     one component, computed on a half-period sequence (for example a squared basis function
     integrated against an even weight). It is the mean of ``X`` and its mirror image under the
     angular index permutation. ``derivative_axes`` lists the axes that carry the derivative basis.
-    On a full-period sequence ``X`` is returned unchanged."""
+    The angular counts are read off ``X``, so a graded ring's own theta count works too. On a
+    full-period sequence ``X`` is returned unchanged."""
     if not seq.half_period:
         return X
     perms = []
     for axis in (1, 2):
         b = seq.basis_0.dLambda[axis] if axis in derivative_axes else seq.basis_0.Lambda[axis]
-        perms.append(reflection_permutation(b.n, b.p))
+        perms.append(reflection_permutation(X.shape[axis], b.p))
     return 0.5 * (X + _reflect_angles(X, *perms))
 
 
@@ -183,26 +184,20 @@ def _free_reflection(seq, k, dirichlet, e):
     ``(perm, sign, core, ERE_core)``. Away from the polar core rows ``R_free`` is the signed
     permutation ``(perm, sign)``, which is the identity on the core rows. On the core rows the
     dense block ``ERE_core = (E R E^T)[core, core]`` is returned instead."""
-    # a bulk row selects one raw DoF, so its image is the bulk row that owns the reflected DoF
+    # a ring's theta functions on its own count reflect like the raw ones: the knot insertion commutes with
+    # the reflection (its subdivision mask is symmetric), so bulk row (c, a, g, l) maps to (c, a, g', l')
     perm, sign = raw_reflection(seq.reflection_plan[k])
-    rows, cols, vals = e.entries()
+    form = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
+    p = form.Lambda[1].p
     n_free = e.forward_shape[0]
     core = np.asarray(seq.core[(k, dirichlet)])
-    is_core = np.zeros(n_free, dtype=bool)
-    is_core[core] = True
-    bulk = ~is_core[rows]
-    owner = np.full(e.forward_shape[1], -1)
-    owner[cols[bulk]] = rows[bulk]
-    target = owner[perm[cols[bulk]]]
-    if np.bincount(rows[bulk], minlength=n_free)[~is_core].min() != 1 or (target < 0).any() or is_core[target].any():
-        raise RuntimeError("the free-space reflection is not a signed permutation of the bulk rows")
-    if (owner[perm[cols[~bulk]]] >= 0).any():
-        raise RuntimeError("the free-space reflection couples core and bulk rows")
-    value = np.zeros(n_free)
-    value[rows[bulk]] = vals[bulk]
     perm_free, sign_free = np.arange(n_free), np.ones(n_free)
-    perm_free[rows[bulk]] = target
-    sign_free[rows[bulk]] = vals[bulk] * sign[cols[bulk]] * value[target]
+    for c, a, m, derivative, first, nz in ring_layout(form, dirichlet, seq.theta_counts):
+        _, perm_z, sgn, _ = seq.reflection_plan[k][c]
+        g, iz = np.meshgrid(np.arange(m), np.arange(nz), indexing="ij")
+        g_r = reflection_permutation(m, p - 1 if derivative else p)[g]
+        perm_free[first + g * nz + iz] = first + g_r * nz + np.asarray(perm_z)[iz]
+        sign_free[first + g * nz + iz] = sgn
     core_rows = e.entries(core)
     reflected = (core_rows[0], perm[core_rows[1]], core_rows[2] * sign[core_rows[1]])
     return perm_free, sign_free, core, row_products(reflected, core_rows, (core.size, core.size))
@@ -216,8 +211,7 @@ def _orbits(seq, k, dirichlet, parity):
     ``e_i`` for a fixed point of sign ``s``. The reduced DoFs built from the polar core rows
     (``core_red``) come last."""
     s = int(parity)
-    basis = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
-    e, _ = build_extraction(basis, get_xi(seq.ns[1], basis.Lambda[1].p), dirichlet)
+    e = seq.extraction[(k, dirichlet)]
     perm_free, sign_free, core, ERE_core = _free_reflection(seq, k, dirichlet, e)
     if core.size:
         # a signed permutation on the core rows too: the surgery weights sit at the splines' centres (get_xi)

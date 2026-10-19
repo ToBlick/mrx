@@ -27,24 +27,23 @@ into float64.
 residual's space (a cheap proxy of the `M^{-1}` norm, so the criterion is
 mesh-independent), corrected by the Krylov solve until
 `norm(b - A x) <= tol norm(b)`. A Krylov iteration carries its residual by
-a recurrence, and the loop checks that this did not stop short.
+a recurrence, and the loop checks that this did not stop short. A mass solve
+stops in the norm of its own preconditioner instead, which conjugate gradients
+carry without a second apply: the slab model's for `k = 1, 2`, the atom's for
+`k = 0, 3`.
 
 The residual that is judged is that of the equation posed, not of the
 blocks a composite solve works with. The Hodge split runs under one outer
 loop on the pair `(x, w)` with block residuals `upper` and `lower`. With
 `w` eliminated the residual of `(eps M_k + L_k) x = b` is
-`upper - M_k G M_{k-1}^{-1} lower`, and that is what the loop measures. Its
-three solves stop at a third of the pass tolerance and the two of the
-shifted split at a half, because the residual of a split is at most the sum
-of those of its solves. The saddle solve of `L_3` is judged on the residual
-of the equation for `u`, `r_u + D_2 M_2^{-1} r_sigma`, and on `r_sigma`,
-because `sigma` is returned as well. The mass atom stands for each inverse
+`upper - M_k G M_{k-1}^{-1} lower`, and that is what the loop measures. The
+tolerances of its three solves are set by how their residuals count in that
+residual ([Preconditioning](preconditioning.md), Hodge split), so that one
+pass normally meets the tolerance. At k = 3 the pair is `(u, sigma)` and the
+block residual is that of the saddle-point system. The mass atom stands for each inverse
 mass in these expressions. The number the loop stops on and the residual
 computed outside the solve then differ by up to a factor 1.6
-(li383 (48,64,24) and (64,80,32), 2026-10-12). A Hodge solve whose
-right-hand side has an exact part takes two passes: the first
-leaves a lower residual at the tolerance, which counts about `1 / h` times
-in the residual of the equation.
+(li383 (48,64,24) and (64,80,32), 2026-10-12).
 
 ## Tolerances
 
