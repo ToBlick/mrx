@@ -22,9 +22,9 @@ import time
 import urllib.request
 
 MRX_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The project of gcp.env (gke/settings.sh)
-PROJECT = subprocess.run(["bash", "-c", 'eval "$(bash gke/settings.sh --export)"; echo "${PROJECT_ID}"'],
-                         capture_output=True, text=True, cwd=MRX_ROOT).stdout.strip()
+# The project and the user of gcp.env (gke/settings.sh)
+PROJECT, MRX_USER = (subprocess.run(["bash", "-c", 'eval "$(bash gke/settings.sh --export)"; echo "${PROJECT_ID} ${MRX_USER}"'],
+                                    capture_output=True, text=True, cwd=MRX_ROOT).stdout.split() + ["", ""])[:2]
 COMPUTE_SERVICE = "6F81-5844-456A"
 # SKU description prefix -> (family, TPU API accelerator type of one 4-chip node)
 FAMILIES = {"TpuV6e": ("v6e", "v6e-4"), "TpuV5p": ("v5p", "v5p-8")}
@@ -132,7 +132,7 @@ def check():
 def cost_since(since):
     """Chip-hours and Spot cost of the MRX pods of $MRX_USER that started after `since` (ISO 8601, UTC)."""
     cache = json.load(open(CACHE)) if os.path.exists(CACHE) else {"spot_usd_per_chip_hour": {}}
-    user = os.environ["MRX_USER"]
+    user = os.environ.get("MRX_USER") or MRX_USER
     clusters = gcloud("container", "clusters", "list", f"--project={PROJECT}", "--format=value(name,location)").split("\n")
     total = 0.0
     for line in filter(None, clusters):
