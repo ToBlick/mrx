@@ -35,6 +35,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
+from mrx import banded
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
 from mrx.precision import eps, lift, sqrt_eps, to_working
@@ -343,7 +344,9 @@ def _probe_columns(column, rows, size):
     # padded with zero columns to whole batches, so the apply is compiled once and not again for a remainder
     n = rows.size
     units = jnp.zeros((-(-n // PROBE_BATCH) * PROBE_BATCH, size)).at[jnp.arange(n), rows].set(1.0)
-    blocks = jax.tree.map(lambda b: b[:n].T, jax.lax.map(column, units, batch_size=PROBE_BATCH))
+    # the batched contractions with the dense tables: XLA on a TPU can fail to compile them banded (banded.dense)
+    with banded.dense():
+        blocks = jax.tree.map(lambda b: b[:n].T, jax.lax.map(column, units, batch_size=PROBE_BATCH))
     return jax.tree.map(lambda b: 0.5 * (b + b.T), blocks)
 
 

@@ -13,9 +13,11 @@ A band is built from the dense table and kept only if it reproduces that table e
 order. :func:`enabled` decides where a band exists whether the contractions use it: ``MRX_BANDED=1`` always,
 ``0`` never, and ``auto`` (the default) on a TPU only. On a CPU the dense tables are as fast or faster: the
 contractions go to the matrix library and the weights dominate the apply. It is read when a function is traced,
-so set it before the first call.
+so set it before the first call. Inside :func:`dense` the contractions are traced with the dense tables whatever the
+mode.
 """
 
+import contextlib
 import os
 from typing import Optional
 
@@ -31,9 +33,30 @@ if MODE not in ("0", "1", "auto"):
     raise ValueError(f"MRX_BANDED={MODE!r}, expected '0', '1' or 'auto'")
 
 
+#: The depth of :func:`dense` blocks being traced: inside one the contractions use the dense tables.
+_DENSE_DEPTH = 0
+
+
+@contextlib.contextmanager
+def dense():
+    """Trace the contractions inside the block with the dense tables, whatever :data:`MODE` says.
+
+    The batched probes of the preconditioner setup (:func:`mrx.metric_lumping._probe_columns`) use it. On a TPU v6e
+    (JAX 0.11.2, libtpu 0.0.48.1) XLA aborts compiling the banded contraction batched by their ``lax.map`` at li383
+    (32,44,20) ("Check failed ... Cannot find a valid window" in fusion_emitter.cc), while it compiles the unbatched
+    contraction of the relaxation steps. The probes run once per sequence, so the dense tables cost little there."""
+    global _DENSE_DEPTH
+    _DENSE_DEPTH += 1
+    try:
+        yield
+    finally:
+        _DENSE_DEPTH -= 1
+
+
 def enabled() -> bool:
-    """Whether the sum-factorised contractions use the banded tables where they exist (:data:`MODE`)."""
-    return MODE == "1" or (MODE == "auto" and jax.default_backend() == "tpu")
+    """Whether the sum-factorised contractions use the banded tables where they exist (:data:`MODE`), outside
+    :func:`dense`."""
+    return _DENSE_DEPTH == 0 and (MODE == "1" or (MODE == "auto" and jax.default_backend() == "tpu"))
 
 
 class Band(eqx.Module):
