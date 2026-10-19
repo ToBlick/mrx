@@ -9,6 +9,7 @@ In float32 the forms are computed and stored as :class:`~mrx.double_single.DS`. 
 1e-7 from the kernel, and a solve that removes it does not get below that.
 """
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -18,6 +19,7 @@ import mrx.operators as op
 from mrx.differential_forms import DERIV_AXES
 from mrx.extraction_operators import conforming_restriction
 from mrx.precision import PAIRS, inner, lift, to_working
+from mrx.pytree import compiled_when_eager
 
 
 #: The co-closed solve of the harmonic 2-form stops this factor below the tolerance of the sequence. The Rayleigh
@@ -41,6 +43,7 @@ def harmonic_rayleigh(seq, v, k):
     return inner(v, seq.L[k] @ v) / inner(v, seq.M[k] @ v)
 
 
+@compiled_when_eager
 def _normalised(space, v, k):
     """``v`` scaled to unit norm in ``M_k``. The projections that remove a form assume that norm to the
     accuracy of the form."""
@@ -57,6 +60,36 @@ def _constant_seed(seq, k):
     derivative basis. They are written down rather than interpolated, so that along the spline axes they are
     exactly equal and the form is closed to the round-off of the derivative, in float32 as well.
     """
+    seed = conforming_restriction(seq.E(k), lift(_constant_raw(seq, k)), seq.core_rows(k))
+    # The cell integrals come from the knots, which in float32 are uniform only to their rounding, so the seed
+    # has the parity of the form only that far. Its part of that parity is closed as well, since the reflection
+    # commutes with the derivative, and it is what the parity views reduce exactly.
+    projector = seq.free_projector(k)
+    if projector is not None:
+        seed = _own_parity(projector, seed)
+    closed = float(seq.l2_norm(to_working(seq.G[k] @ seed), k + 1) / seq.l2_norm(to_working(seed), k))
+    if closed > mrx.sqrt_eps():
+        raise RuntimeError(
+            f"compute_nullspaces: the k={k} seed is not closed (|G seed| / |seed| = {closed:.2e})")
+    return seed
+
+
+@compiled_when_eager
+def _normalised_row(space, v, k):
+    """:func:`_normalised` as a row of the harmonic forms."""
+    return _normalised(space, v, k)[None, :]
+
+
+@compiled_when_eager
+def _reduced_form(space, X, forms, k):
+    """The first of the harmonic ``forms`` of the full sequence reduced by the expansion ``X`` of a parity view,
+    normalised on its ``space``."""
+    return _normalised(space, X.T @ forms[0], k)
+
+
+@eqx.filter_jit
+def _constant_raw(seq, k: int):
+    """The raw tensor-product coefficients of the seed of :func:`_constant_seed`."""
     form = (seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)[k]
     shapes = [tuple(int(n) for n in s) for s in form.shape]
     factors = []
@@ -67,20 +100,21 @@ def _constant_seed(seq, k):
         else:
             factors.append(jnp.ones(shapes[2][a]))
     third = jnp.einsum('i,j,k->ijk', *factors).ravel()
-    raw = jnp.concatenate([jnp.zeros(shapes[0][0] * shapes[0][1] * shapes[0][2]),
-                           jnp.zeros(shapes[1][0] * shapes[1][1] * shapes[1][2]), third])
-    seed = conforming_restriction(seq.E(k), lift(raw), seq.core_rows(k))
-    # The cell integrals come from the knots, which in float32 are uniform only to their rounding, so the seed
-    # has the parity of the form only that far. Its part of that parity is closed as well, since the reflection
-    # commutes with the derivative, and it is what the parity views reduce exactly.
-    projector = seq.free_projector(k)
-    if projector is not None:
-        seed = projector.post(seed, projector.parity(seed))
-    closed = float(seq.l2_norm(to_working(seq.G[k] @ seed), k + 1) / seq.l2_norm(to_working(seed), k))
-    if closed > mrx.sqrt_eps():
-        raise RuntimeError(
-            f"compute_nullspaces: the k={k} seed is not closed (|G seed| / |seed| = {closed:.2e})")
-    return seed
+    return jnp.concatenate([jnp.zeros(shapes[0][0] * shapes[0][1] * shapes[0][2]),
+                            jnp.zeros(shapes[1][0] * shapes[1][1] * shapes[1][2]), third])
+
+
+@eqx.filter_jit
+def _own_parity(projector, v):
+    """``v`` projected onto its own stellarator parity."""
+    return projector.post(v, projector.parity(v))
+
+
+@eqx.filter_jit
+def _plus_exact(space, seed, a, k: int, subtract: bool = False):
+    """``seed + G_{k-1} a``, or ``seed - G_{k-1} a`` if ``subtract``."""
+    exact = space.G[k - 1] @ a
+    return seed - exact if subtract else seed + exact
 
 
 def compute_nullspaces(seq, *, verbose=True):
@@ -102,7 +136,7 @@ def compute_nullspaces(seq, *, verbose=True):
     operators = _commit(seq, op.init_nullspaces(seq, seq._require_operators()))
 
     def store(space, k, v):
-        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, _normalised(space, lift(v), k)[None, :]))
+        return _commit(seq, op.set_nullspace(operators, k, space.dirichlet, _normalised_row(space, lift(v), k)))
 
     if op.n_vectors(seq.betti_numbers, 3, True):
         operators = store(seq, 3, seq.M[3].solve(jnp.ones(seq.n(3)), accurate=True))
@@ -113,7 +147,7 @@ def compute_nullspaces(seq, *, verbose=True):
         seed2 = _constant_seed(seq, 2)
         a = seq.L[1].solve(seq.G[1].T @ (seq.M[2] @ seed2), part="coexact", gauge=False,
                            tol=HARMONIC_TOL * seq.tol, accurate=True)
-        operators = store(seq, 2, seed2 - seq.G[1] @ a)
+        operators = store(seq, 2, _plus_exact(seq, seed2, a, 2, subtract=True))
 
     # seq.free is taken anew after every store: a view copies the operators it sees
     if op.n_vectors(seq.betti_numbers, 0, False):
@@ -124,7 +158,7 @@ def compute_nullspaces(seq, *, verbose=True):
         free = seq.free
         seed1 = _constant_seed(free, 1)
         q = free.L[0].solve(-(free.D[0].T @ seed1), accurate=True)
-        operators = store(free, 1, seed1 + free.G[0] @ q)
+        operators = store(free, 1, _plus_exact(free, seed1, q, 1))
 
     if verbose:
         for space, k in ((seq, 3), (seq, 2), (seq.free, 0), (seq.free, 1)):
@@ -150,7 +184,7 @@ def _reduce_to_view(seq, view, verbose):
         if not op.n_vectors(view.betti_numbers, k, dirichlet):
             continue
         base, space = (seq, view) if dirichlet else (seq.free, view.free)
-        v = _normalised(space, view.reduction[(k, dirichlet)].T @ op._harmonic(base, k)[0], k)
+        v = _reduced_form(space, view.reduction[(k, dirichlet)], op._harmonic(base, k), k)
         operators = _commit(view, op.set_nullspace(operators, k, dirichlet, v[None, :]))
         if verbose:
             print(f"[nullspace] {'odd' if view.parity == -1 else 'even'} view k={k} "

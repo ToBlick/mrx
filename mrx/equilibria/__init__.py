@@ -41,6 +41,7 @@ from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
 from mrx.mappings import stellarator_symmetric_scalar, stellarator_symmetry_defect
 from mrx.extraction_operators import conforming_restriction
+from mrx.pytree import to_device
 from mrx.spline_bases import SplineBasis
 
 TWO_PI = 2.0 * np.pi
@@ -68,8 +69,8 @@ def _left_handed(st):
     sign."""
     position = state_position(st)
     t, z = np.meshgrid(np.arange(16) / 16, np.arange(8) / 8, indexing="ij")
-    x = jnp.stack([jnp.full(t.size, 0.5), jnp.asarray(t.ravel()), jnp.asarray(z.ravel())], axis=1)
-    d = np.asarray(jax.vmap(lambda xi: det33(jax.jacfwd(position)(xi)))(x))
+    x = jnp.stack([jnp.full(t.size, 0.5), to_device(t.ravel()), to_device(z.ravel())], axis=1)
+    d = np.asarray(jax.jit(jax.vmap(lambda xi: det33(jax.jacfwd(position)(xi))))(x))
     if not ((d > 0).all() or (d < 0).all()):
         raise ValueError(f"{st['path']}: the Jacobian of the map changes sign at r = 0.5")
     return bool(d[0] < 0)
@@ -113,11 +114,11 @@ class StateField:
     field periods, as in the logical domain of the map."""
 
     def __init__(self, block, nfp):
-        self.basis = SplineBasis(block["cos"].shape[1], block["deg"], "clamped", T=jnp.asarray(block["T"]))
-        self.C_cos = jnp.asarray(block["cos"])                           # (n_modes, n_base)
-        self.C_sin = jnp.asarray(block["sin"])
-        self.m = jnp.asarray(block["m"], dtype=float)
-        self.n_per = jnp.asarray(block["n"], dtype=float) / nfp          # per field period
+        self.basis = SplineBasis(block["cos"].shape[1], block["deg"], "clamped", T=to_device(block["T"]))
+        self.C_cos = to_device(block["cos"])                           # (n_modes, n_base)
+        self.C_sin = to_device(block["sin"])
+        self.m = to_device(block["m"], dtype=float)
+        self.n_per = to_device(block["n"], dtype=float) / nfp          # per field period
 
     def __call__(self, x):
         # r is not clipped to [0, 1]. A clip halves the autodiff radial derivative at r = 1 (JAX splits
@@ -153,8 +154,8 @@ def state_position(st):
 
 def _frame_arrays(frame, nfp):
     """The coefficients of a state's ``frame`` and its mode numbers per field period of ``nfp``, as JAX arrays."""
-    return (jnp.asarray(frame["cos"], dtype=jnp.float64), jnp.asarray(frame["sin"], dtype=jnp.float64),
-            jnp.asarray(frame["n"], dtype=jnp.float64) / nfp)
+    return (to_device(frame["cos"], dtype=jnp.float64), to_device(frame["sin"], dtype=jnp.float64),
+            to_device(frame["n"], dtype=jnp.float64) / nfp)
 
 
 def _frame_at(cos, sin, n_per, zeta):
@@ -204,7 +205,7 @@ def _angular_coefficients(basis, freqs):
     bp = np.unique(T[(T >= 0.0) & (T <= 1.0)])
     # enough points for the highest mode's phase across the widest cell
     pts, w = _cell_gauss(bp, basis.p + 7 + int(np.ceil(TWO_PI * np.abs(freqs).max() * np.diff(bp).max())))
-    B = np.asarray(basis.collocation_matrix(jnp.asarray(pts)), dtype=np.float64)
+    B = np.asarray(basis.collocation_matrix(to_device(pts)), dtype=np.float64)
     moments = B.T @ (w[:, None] * np.exp(1j * TWO_PI * np.outer(pts, freqs)))   # (N, n_modes)
     return np.linalg.solve(B.T @ (w[:, None] * B), moments).T
 
@@ -279,6 +280,12 @@ class FrameMap(eqx.Module):
         return jnp.linalg.solve(NB.T @ NB, NB.T @ d)
 
 
+@eqx.filter_jit
+def _map_det(Phi, x):
+    """``det DPhi`` of the map ``Phi`` at the logical points ``x``, ``(n, 3)``."""
+    return jax.vmap(lambda xi: det33(jax.jacfwd(Phi)(xi)))(x)
+
+
 def build_map(st, seq, nfp=None, stellarator_symmetric=False):
     """Return ``(Phi, info)``, the spline map of the state ``st`` in the 0-form space of ``seq``, a
     :class:`CylindricalMap`, or a :class:`FrameMap` for a G-frame state.
@@ -314,7 +321,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        dofs = conforming_restriction(E, jnp.asarray(C.reshape(-1)), free.core_rows(0))
+        dofs = conforming_restriction(E, to_device(C.reshape(-1)), free.core_rows(0))
         return (E.T @ dofs).reshape(seq.basis_0.shape[0])
 
     if "frame" in st:
@@ -332,9 +339,9 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
         Phi, coefficients = CylindricalMap(raw_R, raw_Z, seq.basis_0.bases[0], nfp), {"raw_R": raw_R, "raw_Z": raw_Z}
     # sample points away from the axis, where det DPhi = 0
     rng = np.random.default_rng(0)
-    pts = jnp.asarray(np.column_stack([rng.uniform(0.15, 1.0, 64), rng.uniform(0.0, 1.0, 64),
+    pts = to_device(np.column_stack([rng.uniform(0.15, 1.0, 64), rng.uniform(0.0, 1.0, 64),
                                        rng.uniform(0.0, 1.0, 64)]))
-    d = np.asarray(jax.vmap(lambda x: det33(jax.jacfwd(Phi)(x)))(pts))
+    d = np.asarray(_map_det(Phi, pts))
     if not (np.isfinite(d).all() and d.min() > 0):
         raise RuntimeError(f"{st['path']}: det DPhi of the spline map in [{d.min():.3e}, {d.max():.3e}] is not "
                            "positive (a map that folds, or a resolution too coarse for the file)")

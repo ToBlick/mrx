@@ -22,10 +22,12 @@ from typing import Optional
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 
 import mrx.double_single as ds
 from mrx.mass import sumfact_apply
 from mrx.precision import PAIRS, lift, to_working
+from mrx.pytree import compiled_when_eager, to_device
 from mrx.solvers import deflation_projectors, refine, solve_saddle_point_minres, solve_singular_cg
 from mrx.symmetry import symmetrize_like
 
@@ -65,8 +67,15 @@ def init_nullspaces(seq, operators):
     """A copy of ``operators`` whose harmonic forms are all zero, with the shapes that
     ``seq.betti_numbers`` gives."""
     return _replace(operators, "nullspaces", {
-        (k, d): lift(jnp.zeros((n_vectors(seq.betti_numbers, k, d), seq.extraction[(k, d)].forward_shape[0])))
+        (k, d): _zeros((n_vectors(seq.betti_numbers, k, d), seq.extraction[(k, d)].forward_shape[0]))
         for k in range(4) for d in (False, True)})
+
+
+def _zeros(shape):
+    """Zeros of ``shape`` as the solves carry them (:func:`mrx.precision.lift`), made on the host: a device
+    ``zeros`` compiles once per shape."""
+    z = np.zeros(shape)
+    return ds.DS(to_device(z, np.float32), to_device(z, np.float32)) if PAIRS else to_device(z)
 
 
 def new_operators(seq) -> SequenceOperators:
@@ -159,6 +168,7 @@ def _raw_incidence(seq, k: int):
     return getattr(seq, f"g{k}"), getattr(seq, f"g{k}_T")
 
 
+@compiled_when_eager
 def _grad(seq, v, k: int, transpose: bool = False):
     """``G_k v``, the exterior derivative of the ``k``-form ``v``, or ``G_k^T v`` if ``transpose``."""
     if k < 2:
@@ -173,12 +183,14 @@ def _grad(seq, v, k: int, transpose: bool = False):
     return e_out @ (sp @ (e_in.T @ v))
 
 
+@compiled_when_eager
 def _mass(seq, v, k: int):
     """``M_k v``."""
     e = seq.E(k)
     return e @ _mass_core(seq, k)(e.T @ v)
 
 
+@compiled_when_eager
 def _projection(seq, v, k_in: int, k_out: int):
     """``P v`` with the metric-free pairing ``P_ij = int Lambda^{k_out}_i . Lambda^{k_in}_j`` over the
     logical domain, for ``(k_in, k_out)`` = (1, 2), (2, 1), (0, 3) or (3, 0)."""
@@ -188,6 +200,7 @@ def _projection(seq, v, k_in: int, k_out: int):
     return seq.E(k_out) @ core(seq.E(k_in).T @ v)
 
 
+@compiled_when_eager
 def _weak_derivative(seq, v, k: int, transpose: bool = False):
     """``D_k v`` with ``D_k = M_{k+1} G_k``, or ``D_k^T v`` if ``transpose``."""
     g_sp, g_sp_T = _raw_incidence(seq, k)
@@ -198,6 +211,7 @@ def _weak_derivative(seq, v, k: int, transpose: bool = False):
     return e_out @ m_apply(g_sp @ (e_in.T @ v))
 
 
+@compiled_when_eager
 def _stiffness(seq, v, k: int):
     """``S_k v`` with ``S_k = G_k^T M_{k+1} G_k``, which is zero for k = 3."""
     if k == 3:

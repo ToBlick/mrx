@@ -38,7 +38,7 @@ import jax.numpy as jnp
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
 from mrx.precision import eps, lift, sqrt_eps, to_working
-from mrx.pytree import register_arrays
+from mrx.pytree import register_arrays, to_device
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
 #: Axis rows probed per batch when the dense axis block is built. The probe holds one field at every
@@ -79,13 +79,17 @@ def _simultaneous_diagonalize_pair(M, A):
 def _dense_incidence_1d(n0, typ):
     """The 1-D incidence ``(G c)_j = c_{j+1} - c_j`` of an axis of type ``typ`` (wrapped if
     periodic, zero if constant)."""
+    # built on the host: it is a constant, and under a trace it is folded in
     if typ == 'clamped':
-        j = jnp.arange(n0 - 1)
-        return jnp.zeros((n0 - 1, n0)).at[j, j].set(-1.0).at[j, j + 1].set(1.0)
-    if typ == 'periodic':
-        j = jnp.arange(n0)
-        return jnp.zeros((n0, n0)).at[j, j].set(-1.0).at[j, (j + 1) % n0].set(1.0)
-    return jnp.zeros((n0, n0))
+        j = np.arange(n0 - 1)
+        G = np.zeros((n0 - 1, n0))
+        G[j, j], G[j, j + 1] = -1.0, 1.0
+    else:
+        G = np.zeros((n0, n0))
+        if typ == 'periodic':
+            j = np.arange(n0)
+            G[j, j], G[j, (j + 1) % n0] = -1.0, 1.0
+    return to_device(G)
 
 
 # --------------------------------------------------------------------------- #
@@ -305,21 +309,42 @@ def _parity_split(seq, k):
     return lambda x: (projector.post(x, 1.0), projector.post(x, -1.0))
 
 
-def _probe_rows(apply, size, rows, split):
+def _probe_rows(apply, size, rows, split, n_out=None):
     """The dense, symmetrised block of the operator ``apply`` on ``rows``, one apply per row. In float32 the
-    operator is applied in double-single and the block is its rounded value."""
+    operator is applied in double-single and the block is its rounded value. With ``n_out``, ``apply`` returns
+    a tuple of that many results and the blocks of all of them come back as a tuple, from one compiled
+    program."""
     if rows.size == 0:
-        return jnp.zeros((0, 0))
-    rows_j = jnp.asarray(rows)
+        return jnp.zeros((0, 0)) if n_out is None else (jnp.zeros((0, 0)),) * n_out
+    rows_j = to_device(rows)
 
     def column(e):
-        parts = (e,) if split is None else split(e)
-        return to_working(sum(apply(lift(part)) for part in parts))[rows_j]
+        if split is None:
+            outs = [apply(lift(e))]
+        else:
+            # both parity parts in one batched apply: the program holds the operator once, not twice
+            parts = lift(jnp.stack(split(e)))
+            batched = jax.vmap(apply)(parts)
+            outs = [jax.tree.map(lambda a, i=i: a[i], batched) for i in range(2)]
+        if n_out is not None:
+            return tuple(to_working(sum(o))[rows_j] for o in zip(*outs))
+        return to_working(sum(outs))[rows_j]
 
+    # one compiled program per block: run eagerly, a map with fewer rows than PROBE_BATCH is a plain vmap that
+    # compiles every operation of the apply on its own. The closure conversion passes the arrays the apply
+    # closes over as inputs instead of baking them in as constants
+    return _probe_columns(eqx.filter_closure_convert(column, jnp.zeros(size)), rows_j, size)
+
+
+@eqx.filter_jit
+def _probe_columns(column, rows, size):
+    """The symmetrised block of :func:`_probe_rows` from its ``column`` function."""
     # the columns in batches of PROBE_BATCH inside one call: one host dispatch instead of one per axis row
-    units = jnp.zeros((rows.size, size)).at[jnp.arange(rows.size), rows_j].set(1.0)
-    block = jax.lax.map(column, units, batch_size=PROBE_BATCH).T
-    return 0.5 * (block + block.T)
+    # padded with zero columns to whole batches, so the apply is compiled once and not again for a remainder
+    n = rows.size
+    units = jnp.zeros((-(-n // PROBE_BATCH) * PROBE_BATCH, size)).at[jnp.arange(n), rows].set(1.0)
+    blocks = jax.tree.map(lambda b: b[:n].T, jax.lax.map(column, units, batch_size=PROBE_BATCH))
+    return jax.tree.map(lambda b: 0.5 * (b + b.T), blocks)
 
 
 def _dense_symmetric_inverse(block, name):
@@ -331,13 +356,48 @@ def _dense_symmetric_inverse(block, name):
     is not above the round-off of its largest raises, with ``name`` in the message."""
     if block.size == 0:
         return block
-    w, v = jnp.linalg.eigh(block)
+    w, inverse = _eigh_inverse(block)
     if not isinstance(w, jax.core.Tracer):
         floor = eps(block.shape[0]) * float(w[-1])
         if not float(w[0]) > floor:
             raise ValueError(f"the axis block of {name} is not positive definite: its eigenvalues span "
                              f"[{float(w[0]):.3e}, {float(w[-1]):.3e}]")
-    return (v / w) @ v.T
+    return inverse
+
+
+@jax.jit
+def _eigh_inverse(block):
+    """The eigenvalues of the symmetric ``block`` and its inverse from them."""
+    w, v = jnp.linalg.eigh(block)
+    return w, (v / w) @ v.T
+
+
+def _laplacian_block_factors(seq, k, blocks):
+    """Per block ``(c, r0, nr)`` of :func:`_tensor_blocks`, the 1-D factors ``(V, lam, D^-1/2)`` of the Laplacian
+    preconditioner: the simultaneous diagonalisations of the 1-D masses and stiffnesses and the diagonal
+    scaling."""
+    out = []
+    for c, r0, nr in blocks:
+        masses, stiffs = component_factors(seq, k, c, (r0, nr))
+        v, lam = zip(*map(_simultaneous_diagonalize_pair, masses, stiffs))
+        # D_i is a ratio of two positive integrals
+        out.append((v, lam, 1.0 / jnp.sqrt(component_diagonal(seq, k, c)[r0:r0 + nr])))
+    return out
+
+
+# one compiled program per space and degree instead of one per operation
+_laplacian_block_factors_jit = eqx.filter_jit(_laplacian_block_factors)
+_diagonalize_pair_jit = jax.jit(_simultaneous_diagonalize_pair)
+
+
+@eqx.filter_jit
+def _mass_block_factors(seq, k, blocks):
+    """Per block ``(c, r0, nr)`` of :func:`_tensor_blocks`, the factors ``(pre, post, left)`` of the mass
+    preconditioner: the diagonal scalings and the inverse 1-D masses."""
+    mass_1d, lam = _kron_mass_model_1d(seq, k)
+    return [(1.0 / lam[c][r0:r0 + nr], 1.0 / lam[c][r0:r0 + nr],
+             tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m) for a, m in enumerate(mass_1d[c])))
+            for c, r0, nr in blocks]
 
 
 def _tensor_blocks(seq, k):
@@ -461,12 +521,12 @@ def _batch(specs, core, core_inv, n_full, X=None):
     o_cols, o_vals = _rows_table(*out_rows, n_out)
 
     def dev(arrays):
-        return tuple(jnp.asarray(m) for m in arrays)
-    return _Batched(jnp.asarray(in_idx), jnp.asarray(in_w), jnp.asarray(pre),
-                    jnp.asarray(post), dev(left), dev(right) if laplacian else None,
-                    dev(lam) if laplacian else None, jnp.asarray(x_cols[core]), jnp.asarray(x_vals[core]),
-                    jnp.asarray(core_inv), jnp.asarray(source[o_cols, 0].astype(np.int64)),
-                    jnp.asarray(o_vals * source[o_cols, 1]), N)
+        return tuple(to_device(m) for m in arrays)
+    return _Batched(to_device(in_idx), to_device(in_w), to_device(pre),
+                    to_device(post), dev(left), dev(right) if laplacian else None,
+                    dev(lam) if laplacian else None, to_device(x_cols[core]), to_device(x_vals[core]),
+                    to_device(core_inv), to_device(source[o_cols, 0].astype(np.int64)),
+                    to_device(o_vals * source[o_cols, 1]), N)
 
 
 @eqx.filter_jit
@@ -504,12 +564,12 @@ class _Atom:
         core, raw_blocks = _tensor_blocks(seq, k)
         size, split = seq.n(k), _parity_split(seq, k)
         self._n = size
-        return core, raw_blocks, lambda apply: _probe_rows(apply, size, core, split)
+        return core, raw_blocks, lambda apply, n_out=None: _probe_rows(apply, size, core, split, n_out)
 
     def _install(self, core, specs, core_inv):
         # device arrays, not NumPy: NumPy attributes are static and a new geometry would recompile
-        self._core = jnp.asarray(core)
-        self._specs = [dict(s, rows=jnp.asarray(s["rows"]), vals=jnp.asarray(s["vals"])) for s in specs]
+        self._core = to_device(core)
+        self._specs = [dict(s, rows=to_device(s["rows"]), vals=to_device(s["vals"])) for s in specs]
         self._payload = _batch(self._specs, core, core_inv, self._n)
 
     def reduced(self, X):
@@ -536,22 +596,22 @@ class MetricLumpingLaplacian(_Atom):
         from mrx.operators import apply_laplacian_approx  # noqa: PLC0415
         core, raw_blocks, probe = self._prologue(seq, k)
         specs, strong = [], []
-        for c, rows, vals, (r0, nr), shape in raw_blocks:
-            masses, stiffs = component_factors(seq, k, c, (r0, nr))
-            v, lam = zip(*map(_simultaneous_diagonalize_pair, masses, stiffs))
-            # D_i is a ratio of two positive integrals
-            dscale = 1.0 / jnp.sqrt(component_diagonal(seq, k, c)[r0:r0 + nr])
+        # the finite-volume stiffness of p = 1 is assembled on the host
+        factors = _laplacian_block_factors if seq.p < 2 else _laplacian_block_factors_jit
+        blocks = tuple((c, r0, nr) for c, _, _, (r0, nr), _ in raw_blocks)
+        for (c, rows, vals, _, shape), (v, lam, dscale) in zip(raw_blocks, factors(seq, k, blocks)):
             specs.append(dict(rows=rows, vals=vals, shape=shape, pre=dscale, post=dscale,
                               left=tuple(m.T for m in v), right=v, lam=lam))
             # the strong half S_k: the Kronecker terms of the primal axes
             strong.append([0.0 if a in DERIV_AXES[k][c] else 1.0 for a in range(3)])
-        self._strong = jnp.asarray(strong)
-        core_inv = _dense_symmetric_inverse(
-            probe(lambda x: apply_laplacian_approx(seq, operators, x, k)), f"the Laplacian preconditioner, k = {k}")
+        self._strong = to_device(np.asarray(strong))
+        # the stiffness on the core is probed together with the Laplacian, and the mass is the mass atom's
+        approx_core, stiffness_core = probe(lambda x: (apply_laplacian_approx(seq, operators, x, k), seq.S[k] @ x),
+                                            n_out=2)
+        core_inv = _dense_symmetric_inverse(approx_core, f"the Laplacian preconditioner, k = {k}")
         # (M_k, S_k) on the core, diagonalised once for the shifted apply's (M + eps S)^-1
-        mass_core = probe(lambda x: seq.M[k] @ x)
-        stiffness_core = probe(lambda x: seq.S[k] @ x)
-        self._core_pair = (_simultaneous_diagonalize_pair(mass_core, stiffness_core) if core.size
+        mass_core = operators.mass_lumping[(k, seq.dirichlet)].core_block
+        self._core_pair = (_diagonalize_pair_jit(mass_core, stiffness_core) if core.size
                            else (mass_core, jnp.zeros(0)))
         self._install(core, specs, core_inv)
 
@@ -578,13 +638,13 @@ class MetricLumpingMass(_Atom):
 
     def __init__(self, seq, operators, k):
         core, raw_blocks, probe = self._prologue(seq, k)
-        mass_1d, lam = _kron_mass_model_1d(seq, k)
-        specs = [dict(rows=rows, vals=vals, shape=shape, pre=1.0 / lam[c][r0:r0 + nr],
-                      post=1.0 / lam[c][r0:r0 + nr],
-                      left=tuple(jnp.linalg.inv(m[r0:r0 + nr, r0:r0 + nr] if a == 0 else m)
-                                 for a, m in enumerate(mass_1d[c])))
-                 for c, rows, vals, (r0, nr), shape in raw_blocks]
-        core_inv = _dense_symmetric_inverse(probe(lambda x: seq.M[k] @ x), f"the mass preconditioner, k = {k}")
+        blocks = tuple((c, r0, nr) for c, _, _, (r0, nr), _ in raw_blocks)
+        factors = _mass_block_factors(seq, k, blocks)
+        specs = [dict(rows=rows, vals=vals, shape=shape, pre=pre, post=post, left=left)
+                 for (_, rows, vals, _, shape), (pre, post, left) in zip(raw_blocks, factors)]
+        #: the dense block of M_k on the axis rows, which the Laplacian preconditioner of the space reuses
+        self.core_block = probe(lambda x: seq.M[k] @ x)
+        core_inv = _dense_symmetric_inverse(self.core_block, f"the mass preconditioner, k = {k}")
         self._install(core, specs, core_inv)
 
 

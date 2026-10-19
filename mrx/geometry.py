@@ -23,6 +23,7 @@ import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
+from mrx.pytree import compiled_when_eager
 
 
 def grad_1d(d_basis, boundary_type):
@@ -57,9 +58,16 @@ class SequenceGeometry(eqx.Module):
     @classmethod
     def from_map(cls, Phi: Callable, quad_x: jnp.ndarray) -> "SequenceGeometry":
         """The geometry of a differentiable map ``Phi: R^3 -> R^3`` at the quadrature points ``quad_x``."""
-        DPhi_jkl = map_jacobian_at(Phi, quad_x)
-        metric_jkl = jnp.einsum("qki,qkj->qij", DPhi_jkl, DPhi_jkl)
-        return cls(Phi, metric_jkl, jax.vmap(inv33)(metric_jkl), jnp.linalg.det(DPhi_jkl))
+        return cls(Phi, *_metric_at(Phi, quad_x, mrx.MAP_BATCH_SIZE_INNER))
+
+
+@compiled_when_eager
+def _metric_at(Phi, quad_x, batch_size):
+    """``(G, G^-1, det DPhi)`` of :meth:`SequenceGeometry.from_map`, with ``DPhi`` evaluated in batches of
+    ``batch_size`` points (:func:`map_jacobian_at`)."""
+    DPhi_jkl = jax.lax.map(jax.jacfwd(Phi), quad_x, batch_size=batch_size)
+    metric_jkl = jnp.einsum("qki,qkj->qij", DPhi_jkl, DPhi_jkl)
+    return metric_jkl, jax.vmap(inv33)(metric_jkl), jnp.linalg.det(DPhi_jkl)
 
 
 def _tp_evaluate(C_raw, M1, M2, M3):
