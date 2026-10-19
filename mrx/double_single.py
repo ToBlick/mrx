@@ -20,6 +20,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.pytree import compiled_when_eager, to_device
+
 _F32 = jnp.float32
 #: Veltkamp's constant ``2^12 + 1`` for the 24-bit mantissa of float32.
 _SPLITTER = 4097.0
@@ -125,7 +127,7 @@ def from_host(x):
     """The :class:`DS` of a NumPy float64 array, each number split exactly into its float32 parts."""
     x = np.asarray(x, dtype=np.float64)
     hi = x.astype(np.float32)
-    return DS(jnp.asarray(hi), jnp.asarray((x - hi).astype(np.float32)))
+    return DS(to_device(hi), to_device((x - hi).astype(np.float32)))
 
 
 def to_host(x):
@@ -217,17 +219,20 @@ def _products(a, b):
     return p, e
 
 
+@compiled_when_eager
 def contract(a, b):
     """``sum_j a[..., j] b[..., j]`` over the last axis, as a :class:`DS`. ``a`` and ``b`` broadcast."""
     return _sum_last(*_products(a, b))
 
 
+@compiled_when_eager
 def dot(a, b):
     """The dot product of two vectors as a :class:`DS`."""
     a, b = (x.ravel() for x in (lift(a), lift(b)))
     return contract(a, b)
 
 
+@compiled_when_eager
 def rsqrt(x):
     """``1 / sqrt(x)`` of a :class:`DS` scalar, by one Newton step on the float32 value."""
     y = 1.0 / jnp.sqrt(x.hi)
@@ -235,6 +240,7 @@ def rsqrt(x):
     return lift(y) + y * (0.5 * (1.0 - x * y * y).round())
 
 
+@compiled_when_eager
 def matvec(A, x):
     """``A x`` for a dense matrix and a vector. With a :class:`DS` among them the result is a :class:`DS`."""
     if not isinstance(A, DS) and not isinstance(x, DS):
@@ -242,6 +248,7 @@ def matvec(A, x):
     return contract(A, lift(x)[None, :])
 
 
+@compiled_when_eager
 def set_at(x, index, values):
     """``x.at[index].set(values)`` for a float array or a :class:`DS`."""
     if not isinstance(x, DS):
@@ -282,13 +289,14 @@ class Rows(eqx.Module):
             i, v = np.zeros((group.size, w), dtype=np.int32), np.zeros((group.size, w))
             i[position[rows[by_row][keep]], rank[keep]] = cols[by_row][keep]
             v[position[rows[by_row][keep]], rank[keep]] = vals[by_row][keep]
-            idx.append(jnp.asarray(i))
+            idx.append(to_device(i))
             val.append(from_host(v))
             members.append(group)
         order = np.empty(n_rows, dtype=np.int32)
         order[np.concatenate(members)] = np.arange(n_rows)
-        return cls(tuple(idx), tuple(val), jnp.asarray(order))
+        return cls(tuple(idx), tuple(val), to_device(order))
 
+    @compiled_when_eager
     def __matmul__(self, x):
         x = lift(x)
         return concatenate([contract(v, x[i]) for i, v in zip(self.idx, self.val)])[self.order]
@@ -315,7 +323,7 @@ class Tables(eqx.Module):
             for c, r in np.ndindex(*t.shape[:2]):
                 (cols,) = np.nonzero(t[c, r])
                 idx[c, r, :cols.size], val[c, r, :cols.size] = cols, t[c, r, cols]
-            return jnp.asarray(idx), jnp.asarray(val)
+            return to_device(idx), to_device(val)
         return cls(*gather(table.transpose(0, 2, 1)), *gather(table))
 
 
@@ -332,6 +340,7 @@ def along(x, idx, val, axis):
     return moveaxis(DS(hi, lo), 1, axis)
 
 
+@compiled_when_eager
 def sumfact(tables_r, tables_c, shapes_r, shapes_c, weights, x):
     """The sum-factorised apply of :func:`mrx.mass.sumfact_apply` for a :class:`DS` vector ``x``, with the same
     float32 tables and weights. ``tables_r`` and ``tables_c`` are the three :class:`Tables` of the row and the

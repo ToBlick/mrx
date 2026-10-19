@@ -14,6 +14,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from mrx.pytree import to_device
+
 
 def _nonzero_bsplines(T, p, x):
     """Return the values at ``x`` of the ``p + 1`` B-splines that can be nonzero there, and the
@@ -137,6 +139,10 @@ class SplineBasis:
         """Return the Greville points. For spline ``i`` this is the average of the knots
         ``T[i + 1], ..., T[i + p]``, or the midpoint of its support at ``p = 0``. On a periodic
         basis the points are wrapped into ``[0, 1)``."""
+        key, T = basis_key(self)
+        return _greville_points(T, key=key)
+
+    def _greville_points(self) -> jnp.ndarray:
         if self.p == 0:
             points = 0.5 * (self.T[:self.n] + self.T[1:self.n + 1])
         else:
@@ -152,7 +158,7 @@ class SplineBasis:
         ``points[k]``. The points default to the Greville points."""
         if points is None:
             points = self.greville_points()
-        return basis_table(self, jnp.asarray(points)).T
+        return basis_table(self, to_device(points)).T
 
 
 class TensorBasis:
@@ -214,7 +220,11 @@ class DerivativeSpline:
     def greville_spans(self) -> jnp.ndarray:
         """Return the ``(n, 2)`` intervals ``[a, b]`` between consecutive Greville points of the
         parent basis. On a periodic basis the last interval ends past 1."""
-        points = self.parent.greville_points()
+        key, T = basis_key(self)
+        return _greville_spans(T, key=key)
+
+    def _greville_spans(self) -> jnp.ndarray:
+        points = self.parent._greville_points()
         if self.type == 'periodic':
             # The last span crosses x = 1, so users of it evaluate the periodic extension there.
             points = jnp.sort(points)
@@ -230,8 +240,8 @@ class DerivativeSpline:
         xi_ref, w_ref = np.polynomial.legendre.leggauss(max(2, self.p + 2))
         # A span can contain a knot, so it is integrated piece by piece between the knots.
         key, T = basis_key(self)
-        return _histopolation(T, jnp.asarray(spans), jnp.asarray(xi_ref),
-                              jnp.asarray(w_ref), jnp.unique(self.T),
+        return _histopolation(T, to_device(spans), to_device(xi_ref),
+                              to_device(w_ref), to_device(np.unique(np.asarray(self.T))),
                               key=key, periodic=self.type == 'periodic')
 
 
@@ -257,6 +267,16 @@ def basis_table(basis, x):
     """Return the ``(n, n_q)`` table of every function of ``basis`` at every point of ``x``."""
     key, T = basis_key(basis)
     return _basis_table(T, x, key=key)
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _greville_points(T, *, key):
+    return rebuild_basis(key, T)._greville_points()
+
+
+@functools.partial(jax.jit, static_argnames=("key",))
+def _greville_spans(T, *, key):
+    return rebuild_basis(key, T)._greville_spans()
 
 
 @functools.partial(jax.jit, static_argnames=("key",))

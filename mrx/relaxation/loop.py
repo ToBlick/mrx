@@ -21,6 +21,7 @@ import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, inner, lift
+from mrx.pytree import compiled_when_eager, to_device
 from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
                                    newton_direction)
 from mrx.relaxation.physics import (compute_divergence_norm, compute_force, compute_helicity, resistive_step,
@@ -37,6 +38,7 @@ def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
     return np.array(h)
 
 
+@compiled_when_eager
 def radial_cell_sq(seq: DeRhamSequence) -> jnp.ndarray:
     """Return the squared physical size of a radial cell, ``h_r^2 = <g_rr>_V dr^2``.
 
@@ -47,6 +49,7 @@ def radial_cell_sq(seq: DeRhamSequence) -> jnp.ndarray:
     return knot_spacing(seq)[0] ** 2 * jnp.sum(wJ * seq.metric_jkl[:, 0, 0]) / jnp.sum(wJ)
 
 
+@compiled_when_eager
 def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     """Return the weights ``1 / (J h_i)``, shape ``(n_q, 3)``, with ``J`` the Jacobian determinant and ``h_i``
     the knot spacing of direction ``i``.
@@ -54,7 +57,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     Multiplied with the components of a 2-form velocity at the quadrature points they give the number of
     logical cells crossed per unit time, the CFL number of each direction.
     """
-    h = jnp.asarray(knot_spacing(seq))
+    h = to_device(knot_spacing(seq))
     weights = 1.0 / (seq.jacobian_j[:, None] * h[None, :])
     # the theta cell degenerates in the first radial span
     return weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])

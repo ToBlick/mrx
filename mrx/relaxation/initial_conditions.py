@@ -19,6 +19,7 @@ import numpy as np
 from scipy.interpolate import CubicSpline
 
 from mrx.equilibria import StateField
+from mrx.pytree import to_device
 
 
 def _clebsch_potential(st, nfp):
@@ -30,9 +31,9 @@ def _clebsch_potential(st, nfp):
     psi, iota = st["profiles"]["phi"], st["profiles"]["iota"]
     r = np.linspace(0.0, 1.0, 2001)
     dPsi = psi.derivative()(r)
-    Psi = jnp.asarray(psi(r) - psi(0.0))
-    chi = jnp.asarray(CubicSpline(r, iota(r) * dPsi).antiderivative()(r))
-    r, dPsi = jnp.asarray(r), jnp.asarray(dPsi)
+    Psi = to_device(psi(r) - psi(0.0))
+    chi = to_device(CubicSpline(r, iota(r) * dPsi).antiderivative()(r))
+    r, dPsi = to_device(r), to_device(dPsi)
     lam = StateField(st["LA"], nfp)
     two_pi = 2.0 * jnp.pi
 

@@ -63,7 +63,7 @@ from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
 from mrx.precision import SOLVE_TOL, to_working
 from mrx.projectors import greville_axes, load as _load, interpolate as _interpolate
-from mrx.pytree import register_arrays
+from mrx.pytree import compiled_when_eager, register_arrays, to_device
 from mrx.quadrature import QuadratureRule, evaluate_at_xq, integrate_against
 from mrx.spline_bases import basis_derivative_table, basis_table
 from mrx.symmetry import (FreeProjector, is_uniform_periodic, parity_extraction, reduce_operator,
@@ -74,6 +74,10 @@ from mrx.symmetry import (FreeProjector, is_uniform_periodic, parity_extraction,
 AXIS_TYPES = ("clamped", "periodic", "periodic")
 #: The Betti numbers ``(b0, b1, b2, b3)`` of the logical domain, a solid torus.
 SOLID_TORUS_BETTI = (1, 1, 0, 0)
+
+
+# one compiled program instead of one per operation when a new map is installed from the host
+_attach_weights = compiled_when_eager(attach_weights)
 
 
 class DeRhamSequence():
@@ -121,7 +125,7 @@ class DeRhamSequence():
         self.geometry = None
         self.operators = None
         self.betti_numbers = SOLID_TORUS_BETTI
-        Ts = [None if T is None else jnp.asarray(T, dtype=float)
+        Ts = [None if T is None else to_device(T, dtype=float)
               for T in (knots if knots is not None else (None,) * 3)]
         self.basis_0, self.basis_1, self.basis_2, self.basis_3 = [
             DifferentialForm(i, self.ns, (self.p,) * 3, AXIS_TYPES, Ts) for i in range(0, 4)
@@ -142,7 +146,7 @@ class DeRhamSequence():
         self.reduction = None
         self.extraction, self.core = self._extractions()
         # the position of each Dirichlet DoF among the free DoFs, per degree (restrict and extend)
-        self._dirichlet_dofs = {k: jnp.asarray(dirichlet_dofs(self.extraction[(k, False)], self.extraction[(k, True)]))
+        self._dirichlet_dofs = {k: to_device(dirichlet_dofs(self.extraction[(k, False)], self.extraction[(k, True)]))
                                 for k in range(4)}
 
         lam, dlam = self.basis_0.Lambda, self.basis_0.dLambda
@@ -328,7 +332,7 @@ class DeRhamSequence():
                 return None
             return op.init_nullspaces(seq, seq.operators)
 
-        self.geometry = attach_weights(self, geometry)
+        self.geometry = _attach_weights(self, geometry)
         self.operators = stale(self)
         for view in self._parity_views.values():
             view.geometry, view.operators = view._base.geometry, stale(view)
@@ -371,7 +375,7 @@ class DeRhamSequence():
         view.g0_grad = {d: reduce_operator(X[(1, d)], g, X[(0, d)]) for d, g in self.g0_grad.items()}
         view.g1_curl = {d: reduce_operator(X[(2, d)], g, X[(1, d)]) for d, g in self.g1_curl.items()}
         view._dirichlet_dofs = {
-            k: jnp.asarray(reduced_dirichlet_dofs(X[(k, False)], X[(k, True)], np.asarray(index)))
+            k: to_device(reduced_dirichlet_dofs(X[(k, False)], X[(k, True)], np.asarray(index)))
             for k, index in self._dirichlet_dofs.items()}
         return view
 
@@ -483,6 +487,7 @@ class DeRhamSequence():
     # 0-forms J. A 1-form against the 2-forms, a 2-form against the 1-forms and a value
     # against the 3-forms carry no metric.
 
+    @compiled_when_eager
     def evaluate_at_quadrature(self, dofs, k):
         """The reference components of the k-form ``dofs`` at the quadrature points, shape
         ``(n_q, 3)`` for ``k = 1, 2`` and ``(n_q, 1)`` for ``k = 0, 3``. These are the inputs of
@@ -491,6 +496,7 @@ class DeRhamSequence():
         return evaluate_at_xq(self.E(k).T @ dofs, self._form_comp_info(k), list(form.shape),
                               self.quad.shape, 3 if k in (1, 2) else 1)
 
+    @compiled_when_eager
     def cross_product_load_values(self, w_jk, u_jk, n, m, k, parity=None):
         """The integrals of ``w x u`` against the n-form basis, from the quadrature values
         (:meth:`evaluate_at_quadrature`) of the m-form ``w`` and the k-form ``u``, with n, m, k in
@@ -523,6 +529,7 @@ class DeRhamSequence():
         return self.E(n) @ self.symmetrize(integrate_against(
             (s_jk * weight)[:, None], self._form_comp_info(n)), n, parity)
 
+    @compiled_when_eager
     def vector_load_values(self, c_jk, rep, n, parity=None):
         """The integrals of a vector field against the n-form basis (n = 1, 2), from its
         covariant (``rep = 1``) or contravariant-density (``rep = 2``) reference components

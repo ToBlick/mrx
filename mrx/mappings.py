@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.differential_forms import DifferentialForm
+from mrx.pytree import compiled_when_eager
 from mrx.symmetry import reflection_permutation
 
 
@@ -17,6 +18,7 @@ from mrx.symmetry import reflection_permutation
 STELLARATOR_REFLECTION = jnp.array([1.0, -1.0, -1.0])
 
 
+@compiled_when_eager
 def stellarator_symmetric_scalar(raw: jnp.ndarray, basis_0: DifferentialForm, even: bool) -> jnp.ndarray:
     """Project the ``(n_r, n_t, n_z)`` coefficients of a scalar spline onto its even part (for ``R``) or
     its odd part (for ``Z``) under ``(theta, zeta) -> (-theta, -zeta)``. Both angular axes must be
@@ -27,6 +29,7 @@ def stellarator_symmetric_scalar(raw: jnp.ndarray, basis_0: DifferentialForm, ev
     return 0.5 * (raw + reflected) if even else 0.5 * (raw - reflected)
 
 
+@compiled_when_eager
 def stellarator_symmetry_defect(Phi: Callable, x: jnp.ndarray) -> jnp.ndarray:
     """``max |Phi(r, -t, -z) - S Phi(r, t, z)|`` over the logical points ``x`` (``(n, 3)``). It is zero
     exactly when ``Phi`` is stellarator symmetric at these points."""

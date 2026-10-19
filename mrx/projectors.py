@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -26,6 +27,7 @@ import mrx
 from mrx.differential_forms import adj33
 from mrx.extraction_operators import conforming_restriction
 from mrx.geometry import map_jacobian_at
+from mrx.pytree import compiled_when_eager, to_device
 from mrx.quadrature import integrate_against
 
 if TYPE_CHECKING:
@@ -62,7 +64,7 @@ def _span_quadrature(basis, spans: Array) -> tuple[Array, Array]:
     halfwidths = 0.5 * (hi - lo)
     xs = (centers[:, :, None] + halfwidths[:, :, None] * xi_ref).reshape(len(spans), -1)
     ws = (halfwidths[:, :, None] * w_ref).reshape(len(spans), -1)
-    return jnp.asarray(xs), jnp.asarray(ws)
+    return to_device(xs), to_device(ws)
 
 
 class _GrevilleAxis(NamedTuple):
@@ -172,6 +174,14 @@ def interpolate(seq: "DeRhamSequence", f, k: int, frame: str = 'physical'):
     density times ``det DPhi``)."""
     if frame not in ('physical', 'logical'):
         raise ValueError(f"frame must be 'physical' or 'logical', got {frame!r}")
+    # the arrays f closes over become inputs of the compiled program rather than constants
+    coeffs = _greville_coefficients(seq, eqx.filter_closure_convert(f, jnp.zeros(3)), k, frame)
+    return conforming_restriction(seq.E(k), coeffs, seq.core_rows(k))
+
+
+@compiled_when_eager
+def _greville_coefficients(seq, f, k: int, frame: str):
+    """The tensor-product coefficients of :func:`interpolate`, before the extraction."""
     axes = seq.greville
     pullback = _pullback(seq, f, k, frame) if k else None
     coeffs = []
@@ -190,4 +200,4 @@ def interpolate(seq: "DeRhamSequence", f, k: int, frame: str = 'physical'):
         for j, ax in enumerate(axes):
             m = _solve_tensor_collocation_axis(ax.hist if hist[j] else ax.coll, m, axis=j)
         coeffs.append(m.reshape(-1))
-    return conforming_restriction(seq.E(k), jnp.concatenate(coeffs), seq.core_rows(k))
+    return jnp.concatenate(coeffs)

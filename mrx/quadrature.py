@@ -15,7 +15,7 @@ import jax.numpy as jnp
 
 from mrx import banded
 from mrx.banded import Band
-from mrx.pytree import register_arrays
+from mrx.pytree import register_arrays, to_device
 
 
 @register_arrays
@@ -50,7 +50,7 @@ class QuadratureRule:
             if fold.size != 1:
                 raise ValueError("a half-period quadrature needs zeta = 1/2 as a knot: an even "
                                  "number of uniform zeta cells, or breakpoints containing 1/2")
-            spans[2] = jnp.asarray(T_z[:int(fold[0]) + 1])
+            spans[2] = to_device(T_z[:int(fold[0]) + 1])
         (x_x, w_x), (x_y, w_y), (x_z, w_z) = [composite_quad(T, p) for T in spans]
         if half_zeta:
             w_z = 2.0 * w_z
@@ -72,9 +72,11 @@ def composite_quad(T, p):
     consecutive breakpoints ``T``. The rule is exact for piecewise polynomials of degree
     ``2p - 1``."""
     xi, wi = np.polynomial.legendre.leggauss(p)
-    xi = jnp.asarray(xi)
-    wi = jnp.asarray(wi)
+    return _composite_quad(to_device(T), to_device(xi), to_device(wi))
 
+
+@jax.jit
+def _composite_quad(T, xi, wi):
     def _rescale(a, b):
         return (xi + 1) / 2 * (b - a) + a, wi * (b - a) / 2
 

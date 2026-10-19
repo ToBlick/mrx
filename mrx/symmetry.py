@@ -29,6 +29,7 @@ import mrx.double_single as ds
 from mrx.extraction_operators import (StructuredExtraction, build_extraction, core_gram_inverse, get_xi, row_products,
                                       summed_coo)
 from mrx.precision import PAIRS, to_working
+from mrx.pytree import to_device
 
 
 def reflection_permutation(n: int, p: int) -> np.ndarray:
@@ -319,12 +320,12 @@ class FreeProjector(eqx.Module):
             core_block = core_gram_inverse(e, core) @ ERE_core
         else:
             core_block = np.zeros((0, 0))
-        self.perm = jnp.asarray(perm_free)
-        self.inv_perm = jnp.asarray(np.argsort(perm_free))
-        self.sign = jnp.asarray(sign_free, dtype=float)
-        self.core = jnp.asarray(core)
-        self.block = jnp.asarray(core_block)
-        self.blockT = jnp.asarray(core_block.T)
+        self.perm = to_device(perm_free)
+        self.inv_perm = to_device(np.argsort(perm_free))
+        self.sign = to_device(sign_free, dtype=float)
+        self.core = to_device(core)
+        self.block = to_device(core_block)
+        self.blockT = to_device(core_block.T)
         self.has_core = bool(core.size)
         if PAIRS and core.size:
             self.block_pair, self.blockT_pair = ds.from_host(core_block), ds.from_host(core_block.T)
