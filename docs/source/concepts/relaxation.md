@@ -25,7 +25,7 @@ route, the k = 3 Hodge split, which also gives the strong pressure `p`. The rela
 
 ## 2. The step
 
-`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_tol, resistivity,
+`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_solve_tol, resistivity,
 resistive_reference)`
 is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` does
 one forward-Euler step `B_{n+1} = B_n + dt curl(u x B)` and returns `B_{n+1}`, the warm starts of the next
@@ -64,31 +64,33 @@ with the gradient `-load(J x B)` and the symmetric Hessian
 ```
 
 at an equilibrium minus the ideal-MHD force operator at `p = 0`
-(`mrx.relaxation.newton.second_variation`). `newton_direction` solves
-`curl^T H curl a = curl^T load(J x B)` for `u = curl a`, divergence-free by
-construction. The right-hand side needs no projection, because `curl^T`
-annihilates the gradient and the harmonic part of the force exactly
-(`G_2 G_1 = 0`). It is solved by MINRES preconditioned by the harmonic atom (the Laplacian
-atom scaled by the lumped parallel derivative of `B`), warm-started from
-the previous potential, until the residual falls below `newton_tol` of the
-right-hand side or after `newton_maxiter` iterations, with an exit on
-nonpositive curvature. `H` vanishes on field-aligned flows `u = f B`, and a
-penalty of `newton_penalty` times the strain along the field lifts that
-null space.
+(`mrx.relaxation.newton.second_variation`). Without the two terms in `J` what
+remains is the Gauss-Newton part `(u, H v) = (Q_u, Q_v)_M`, positive
+semidefinite. `newton_direction` solves `curl^T H curl a = curl^T load(J x B)`
+with that part for `u = curl a`, divergence-free by construction. The
+right-hand side needs no projection, because `curl^T` annihilates the gradient
+and the harmonic part of the force exactly (`G_2 G_1 = 0`). It is solved by
+MINRES preconditioned by the harmonic atom (the Laplacian atom scaled by the
+lumped parallel derivative of `B`), warm-started from the previous potential,
+until the residual in the norm of the preconditioner falls below `newton_tol`
+(0.1) of the right-hand side or after `newton_maxiter` (300) iterations. `H`
+vanishes on field-aligned flows `u = f B`, and a penalty of `newton_penalty`
+times the strain along the field lifts that null space.
 
-Every apply of `H` contains two k = 1 mass solves, so the Newton solve runs
-a Krylov solve inside MINRES, and the mass solves dominate its cost. By
-default (`newton_mass_tol = 1e-4`, `None` keeps the solves) they are
-replaced by `MassChebyshev`, the Chebyshev polynomial of degree `k` in the
-mass atom times `M_1`
-(`mrx.solvers.chebyshev`). It costs `k` mass applies and runs no loop. It is
-linear and symmetric, so `H` stays symmetric and MINRES applies unchanged.
-The spectral interval comes from 60 PCG iterations at construction
-(`mrx.solvers.lanczos_bounds`), widened by 5 %, and `k` is the smallest
-degree whose error bound `2 rho^k` is below `newton_mass_tol`. The
-right-hand side and the line search are unchanged, so only the Newton
-direction is approximate. The error of `H` is 3 to 4 times that of the mass
-inverse.
+MINRES keeps its Lanczos vectors and makes each new one orthogonal to all
+earlier ones. Without that the basis loses orthogonality within about 20
+iterations, the converged top of the spectrum is found again and again, and
+the solve needs 1.6 to 2.6 times the iterations. The cost is
+`2 newton_maxiter` stored vectors of the 1-form space, about 0.4 GB on li383
+graded (48,64,24).
+
+Every apply of `H` contains two k = 1 mass solves, conjugate gradients with
+the slab model to `newton_mass_solve_tol` (1e-6). MINRES is not a flexible
+method, so the error of these solves enters its operator. At 1e-6 and 1e-8
+the relaxation follows the same trajectory, at 1e-5 it reaches the force
+residual 1e-8 four steps later, and at 1e-4 it stalls at 2e-7 (li383 graded
+(48,64,24)). The right-hand side and the line search use the full accuracy,
+so only the direction is approximate.
 
 ### Resistive step and drive
 

@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
-from mrx.relaxation.newton import (NEWTON_MASS_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, MassChebyshev,
+from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL,
                                    newton_direction)
 from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
                                    weak_pressure)
@@ -51,12 +51,21 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
     the knot spacing of direction ``i``.
 
     Multiplied with the components of a 2-form velocity at the quadrature points they give the number of
-    logical cells crossed per unit time, the CFL number of each direction.
+    logical cells crossed per unit time, the CFL number of each direction. On a graded space the theta spacing
+    at a point is that of the finest ring whose radial basis functions are nonzero there, not the wall's.
     """
-    h = jnp.asarray(knot_spacing(seq))
-    weights = 1.0 / (seq.jacobian_j[:, None] * h[None, :])
+    h = knot_spacing(seq)
+    weights = 1.0 / (seq.jacobian_j[:, None] * jnp.asarray(h)[None, :])
     # the theta cell degenerates in the first radial span
-    return weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])
+    weights = weights.at[:, 1].multiply(seq.quad.x[:, 0] >= h[0])
+    if seq.theta_counts is None:
+        return weights
+    b = seq.basis_0.bases[0].bases[0]
+    T_r, counts = np.asarray(b.T), np.asarray(seq.theta_counts)
+    # the radial span of each point carries the basis functions span - p .. span
+    span = np.clip(np.searchsorted(T_r, np.asarray(seq.quad.x[:, 0]), side="right") - 1, b.p, T_r.size - b.p - 2)
+    finest = np.max([counts[span - j] for j in range(b.p + 1)], axis=0)
+    return weights.at[:, 1].multiply(jnp.asarray(finest * h[1]))
 
 
 class WarmStarts(eqx.Module):
@@ -119,12 +128,10 @@ class TimeStepper(eqx.Module):
 
     The force is ``F = curl a + c h``, the divergence-free part of ``J x B`` computed from a vector potential
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
-    With ``newton=True`` the velocity ``u`` is the Newton direction of
-    :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol`` and
-    ``newton_maxiter``. The mass solves inside the Hessian are replaced by a
-    :class:`~mrx.relaxation.newton.MassChebyshev` of accuracy ``newton_mass_tol``, built once at construction
-    (``None`` keeps the solves). Otherwise ``u``
-    is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
+    With ``newton=True`` the velocity ``u`` is the Gauss-Newton direction of
+    :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol``,
+    ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator.
+    Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
     2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
 
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
@@ -136,14 +143,13 @@ class TimeStepper(eqx.Module):
     newton_penalty: float = NEWTON_PENALTY
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
-    newton_mass_tol: Optional[float] = eqx.field(static=True, default=NEWTON_MASS_TOL)
+    newton_mass_solve_tol: float = eqx.field(static=True, default=NEWTON_MASS_SOLVE_TOL)
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
     velocity_smoothing_scale: float = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
-    mass_inverse: Optional[MassChebyshev] = None
     resistive: bool = eqx.field(static=True, default=False)
 
     def __post_init__(self):
@@ -160,8 +166,6 @@ class TimeStepper(eqx.Module):
         self.resistive = bool(self.resistivity != 0)
         self.resistivity = jnp.asarray(self.resistivity, dtype=jnp.float64)
         self.cfl_weights = logical_cfl_weights(self.seq)
-        self.mass_inverse = (MassChebyshev.build(self.seq, self.newton_mass_tol)
-                             if self.newton and self.newton_mass_tol is not None else None)
 
     def with_reference(self, B_ref: jnp.ndarray) -> "TimeStepper":
         """This stepper with ``B_ref`` as the reference field of the resistive drive."""
@@ -205,8 +209,8 @@ class TimeStepper(eqx.Module):
         if self.newton:
             # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
-            u, a, newton_it = newton_direction(seq, B, J, JxB_dual, w.a, self.newton_penalty, self.newton_tol,
-                                               self.newton_maxiter, self.mass_inverse)
+            u, a, newton_it = newton_direction(seq, B, JxB_dual, w.a, self.newton_penalty, self.newton_tol,
+                                               self.newton_maxiter, self.newton_mass_solve_tol)
         else:
             u, a, newton_it = self._smooth(F, a_F), a_F, jnp.int32(0)    # u the smoothed force
         Mu = even.M[2] @ u

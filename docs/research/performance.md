@@ -24,22 +24,22 @@ p Gauss points per span in theta and zeta against p + 1, both in one job. Record
 
 ## 2. Newton step cost
 
-Mass inverse in the Hessian (2026-10-05, s/step without diagnostics):
-- li383 (12,16,16): 3.23 with refined M_1 solves -> 0.83 with a Chebyshev M_1^-1 (mass-tol 1e-3, degree 23) ->
-  0.68 with a batched mass apply -> 0.49 with batched atoms -> 0.44 with two M_1^-1 per Hessian. W7-X FMM002
-  (16,32,32) 4.96 -> 0.83 (degree 20). Same floors and energy.
-- MINRES stopping at --newton.tol instead of always 200: li383 (16,32,32) 1.32 -> 0.82 s/step with diagnostics,
-  W7-X unchanged.
-- The Hessian error is 3-4x the error of the M_1^-1 approximation. mass-tol 1e-2 (degree 17) stalls li383 at 1e-6.
-- LANCZOS_STEPS = 60: 20 Lanczos steps put the bottom of the atom M_1 interval 20 % high (kappa ~34 on li383), 60
-  are converged to 3 %.
+Gauss-Newton by reorthogonalised MINRES, M_1 solves to 1e-6 (li383 graded (48,64,24), p = 2, H200, 2026-10-18,
+study driver on gp-review before #38):
+- One MINRES iteration 11.8 ms, of which the two M_1 solves (slab, 1e-6, about 11 its) 11.4 ms. The block
+  Gauss-Newton system under flexible GCR needs 12.7 ms per iteration (two M_1 solves at 1e-4, outer norm,
+  orthogonalisation) for the same iteration counts.
+- Stored Lanczos vectors 2 x 300 of the 1-form space, 0.4 GB, against 1.8 GB for the 3 x 300 block vectors of GCR.
+- Steady s/step over 40 steps from the file's field: 1.36 (float32 slab factors), GCR 1.58, production Newton-MR
+  2.62.
 
-NEWTON_MASS_TOL = 1e-4 (li383, 20 Newton steps from the wout field, 2026-10-08):
-- At (32,64,64) mass-tol 1e-3 stalls at resid 2e-6. 1e-4 and tighter reach 1e-9 like exact solves. At (16,32,32)
-  1e-3 is only 2x above the floor.
-- Chebyshev degree for 1e-3 / 1e-4 / 1e-5: 27 / 35 / 43 at (16,32,32), 28 / 36 / 45 at (32,64,64). kappa of atom
-  M_1 does not grow with n.
-- Wall time at (32,64,64): 118 s at 1e-3, 186 s at 1e-4, 260 s with exact solves.
+Replaced 2026-10-18, Newton-MR on the full Hessian with MassChebyshev, a fixed Chebyshev polynomial for M_1^-1
+(s/step without diagnostics, 2026-10-05):
+- li383 (12,16,16): 3.23 with refined M_1 solves -> 0.83 with the polynomial (mass-tol 1e-3, degree 23) -> 0.44 with
+  batched applies. W7-X FMM002 (16,32,32) 4.96 -> 0.83 (degree 20). Same floors and energy.
+- The Hessian error was 3-4x that of the polynomial. mass-tol 1e-2 (degree 17) stalled li383 at 1e-6, at
+  (32,64,64) 1e-3 stalled at 2e-6, 1e-4 reached 1e-9 like exact solves (2026-10-08). Wall time at (32,64,64): 118 s
+  at 1e-3, 186 s at 1e-4, 260 s with exact solves.
 
 ## 3. Kernel-level profile (XProf, H100, 2026-10-05)
 

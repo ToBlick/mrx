@@ -8,13 +8,13 @@ in ``u``. Its gradient is ``-load(J x B)`` and its symmetric Hessian is
 
 At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
 
-* :func:`second_variation` returns the map ``u -> H u``, optionally with a penalty on flows along the field.
-* :func:`newton_direction` computes one Newton step. It writes ``u = curl a``, so that ``u`` is exactly
-  divergence-free, and solves ``curl^T H curl a = curl^T M_2 F`` for the potential ``a`` by Newton-MR, a MINRES
-  solve that can stop at a direction of nonpositive curvature. The preconditioner is
-  :func:`harmonic_preconditioner`.
-* :class:`MassChebyshev` is a fixed polynomial approximation of the 1-form mass inverse. With it the two mass
-  solves of every Hessian apply become a few mass applies, so no Krylov solve runs inside MINRES.
+* :func:`second_variation` returns the map ``u -> H u``, optionally with a penalty on flows along the field, or
+  its Gauss-Newton part without the two terms in the current ``J``.
+* :func:`newton_direction` computes one Gauss-Newton step. It writes ``u = curl a``, so that ``u`` is exactly
+  divergence-free, and solves ``curl^T H curl a = curl^T M_2 F`` with the Gauss-Newton part of ``H`` for the
+  potential ``a`` by Newton-MR, a MINRES solve that keeps and reorthogonalises its Lanczos vectors. The
+  preconditioner is :func:`harmonic_preconditioner`. The two mass solves of every Hessian apply run to a
+  tolerance inside the operator, which MINRES tolerates once they are accurate enough.
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
 them as its defaults.
@@ -24,29 +24,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.operators import dual_norm
-from mrx.solvers import chebyshev, lanczos_bounds, minres
+from mrx.operators import _mass_solve
+from mrx.solvers import minres
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
-#: tolerance of the Newton solve, the maximum number of MINRES iterations per solve and the accuracy of the
-#: :class:`MassChebyshev` that replaces the mass solves in the Hessian. At 1e-3 (degree 20 to 23) li383 (12, 16, 16)
-#: and W7-X (16, 32, 32) reach the floor of the mass solves at 2.7 to 3.9 times less cost per step, at 1e-2 li383
-#: stalls at 1e-6.
-#: The tolerance is in the norm the solve is judged in (the M_1^-1 norm of the residual), which does not follow the
-#: Newton decrement: on li383 (48,64,24), (64,80,32) and W7-X (32,64,36) at p = 2 no solve meets even 0.1 within
-#: ``NEWTON_MAXITER``, which is then the control. At 0.1 a solve can be met by the warm start of a state that
-#: barely moved, and the old direction is taken again: li383 (48,64,24) at p = 3 then stops moving after 10 steps.
-#: At 1e-2 and 1e-3 it does not (2026-10-13).
+#: tolerance of the Newton solve in the norm of its preconditioner, the maximum number of MINRES iterations per
+#: solve and the relative tolerance of the two 1-form mass solves inside every apply of the Gauss-Newton operator.
+#: li383 graded (48,64,24), p = 2, from the file's field (2026-10-18): mass solves to 1e-6 and to 1e-8 give the same
+#: trajectory, 1e-5 reaches the force residual 1e-8 four steps later and 1e-4 stalls at 2e-7. MINRES is not a
+#: flexible method, and the error of the mass solves enters its operator. With tolerance 0.1 and 300 iterations the
+#: solve takes the steps of the block Gauss-Newton system under flexible GCR on li383 M, L, p = 3 and W7-X, at the
+#: same or 5-11 % less time. Without the reorthogonalisation it needs 1.6-2.6 times the iterations.
 NEWTON_PENALTY = 3.0
-NEWTON_TOL = 1e-3
-NEWTON_MAXITER = 200
-NEWTON_MASS_TOL = 1e-4
-#: PCG iterations of the spectral estimate of :meth:`MassChebyshev.build`. At 20 the lower end came out 20 %
-#: high on li383 (12, 16, 16), at 40 3 % and at 80 converged.
-LANCZOS_STEPS = 60
-#: Relative widening of the estimated interval. Ritz values lie inside the spectrum, and a Chebyshev polynomial
-#: diverges on eigenvalues outside its interval.
-LANCZOS_MARGIN = 0.05
+NEWTON_TOL = 0.1
+NEWTON_MAXITER = 300
+NEWTON_MASS_SOLVE_TOL = 1e-6
 
 
 def _ddx(f, x, axis, periodic):
@@ -146,51 +138,12 @@ class HarmonicAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
-@eqx.filter_jit
-def _mass_interval(odd):
-    """The Ritz interval of the mass atom times ``M_1`` on ``odd``, one compiled program that a new geometry
-    reuses."""
-    M = odd.M[1]
-    b = jax.random.normal(jax.random.PRNGKey(0), (odd.n(1),))
-    return lanczos_bounds(lambda x: M @ x, b, M.precondition, LANCZOS_STEPS)
-
-
-class MassChebyshev(eqx.Module):
-    """A fixed approximate inverse of the 1-form mass matrix ``M_1`` of the odd view, applied as ``S(view, x)``.
-
-    ``S`` is the Chebyshev polynomial of :func:`mrx.solvers.chebyshev` in the mass atom times ``M_1``, of degree
-    ``steps``. It is linear and symmetric, so the Hessian of :func:`second_variation` stays symmetric when ``S``
-    replaces ``M_1^{-1}`` in it. It costs ``steps`` mass applies and has no loop, so no Krylov solve runs inside
-    the MINRES iteration of the Newton solve. ``bounds`` is the spectral interval of the atom times ``M_1``,
-    estimated once per geometry by :meth:`build`, which also picks ``steps`` for a given accuracy. ``steps`` is
-    static: a new geometry whose interval needs another degree compiles the Newton step again.
-    """
-
-    bounds: jnp.ndarray
-    steps: int = eqx.field(static=True)
-
-    @classmethod
-    def build(cls, seq, tol):
-        """Estimate the interval on ``seq.odd`` by :func:`mrx.solvers.lanczos_bounds` and take
-        the smallest degree whose error bound ``2 rho^steps`` is below ``tol``, with
-        ``rho = (sqrt(kappa) - 1) / (sqrt(kappa) + 1)`` and ``kappa`` the ratio of the interval's ends."""
-        lmin, lmax = _mass_interval(seq.odd)
-        bounds = jnp.stack([lmin * (1 - LANCZOS_MARGIN), lmax * (1 + LANCZOS_MARGIN)])
-        root = np.sqrt(float(bounds[1] / bounds[0]))
-        steps = int(np.ceil(np.log(tol / 2) / np.log((root - 1) / (root + 1))))
-        return cls(bounds=bounds, steps=steps)
-
-    def __call__(self, odd, x):
-        M = odd.M[1]
-        return chebyshev(lambda y: M @ y, x, M.precondition, self.bounds, self.steps)
-
-
-def second_variation(seq, B, J, penalty=None, mass_inverse=None):
+def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
     ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
-    or, with ``mass_inverse`` (a :class:`MassChebyshev`), two applies of that approximation of ``M_1^{-1}``.
-    The map then stays exactly symmetric.
+    to the relative tolerance ``mass_tol`` (``seq.tol`` if ``None``). ``J=None`` leaves out the two terms in ``J``.
+    What remains is the Gauss-Newton part ``(u, H v) = (Q_u, Q_v)_M``, which is positive semidefinite.
     Flows along the field, ``u = f B``, do not change ``B`` and form a null space of ``H``. ``penalty`` (the
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
     ``(v, M_par u) = int w(r) (v . B)(u . B) / |B|^2 dx``, which leaves flows across the field unchanged.
@@ -199,29 +152,35 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     # B, J and the intermediate forms live in the odd parity view, u and H u in the even one
     odd, even = seq.odd, seq.even
     B_jk = odd.evaluate_at_quadrature(B, 2)
-    J_jk = odd.evaluate_at_quadrature(J, 1)
     if penalty is not None:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
         weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
 
     curl = odd.G[1]
-    if mass_inverse is None:
-        m1_inv = odd.M[1].solve
-    else:
-        def m1_inv(x):
-            return mass_inverse(odd, x)
+    if J is not None:
+        J_jk = odd.evaluate_at_quadrature(J, 1)
+
+    tol = seq.tol if mass_tol is None else mass_tol
+
+    def m1_inv(x):
+        # stopped on the residual of its recurrence, as every solve inside another iteration
+        return _mass_solve(odd, x, 1, tol=tol, check_residual=False)
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
         E = m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
         Q = curl @ E
-        Q_jk = odd.evaluate_at_quadrature(Q, 2)
-        JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
-        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
-        Y = m1_inv(odd.D[1].T @ Q + 0.5 * (curl.T @ JxU))
-        Y_jk = odd.evaluate_at_quadrature(Y, 1)
-        Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
-              + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        if J is None:
+            Y = m1_inv(odd.D[1].T @ Q)
+            Hu = even.cross_product_load_values(B_jk, odd.evaluate_at_quadrature(Y, 1), 2, 2, 1)
+        else:
+            Q_jk = odd.evaluate_at_quadrature(Q, 2)
+            JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
+            # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
+            Y = m1_inv(odd.D[1].T @ Q + 0.5 * (curl.T @ JxU))
+            Y_jk = odd.evaluate_at_quadrature(Y, 1)
+            Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
+                  + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
         if penalty is None:
             return Hu
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
@@ -230,33 +189,39 @@ def second_variation(seq, B, J, penalty=None, mass_inverse=None):
     return apply
 
 
-def newton_direction(seq, B, J, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
-                     mass_inverse=None):
-    """The Newton direction at ``B``. Returns ``(u, a, info)`` with ``u = curl a``.
+def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
+                     mass_tol=NEWTON_MASS_SOLVE_TOL):
+    """The Gauss-Newton direction at ``B``. Returns ``(u, a, info)`` with ``u = curl a``.
 
-    ``J`` is the weak curl of ``B`` and ``load`` the Lorentz force ``J x B`` as a dual 2-form. It need not be
-    projected: the right-hand side ``curl^T load`` is blind to its gradient and harmonic parts. ``a_guess`` is the warm start for the potential ``a`` (pass the previous step's ``a``) and
-    ``kappa`` the weight of the parallel-flow penalty. The solve (:func:`newton_mr`) stops when its residual is
-    below ``tol`` times the right-hand side or after ``maxiter`` MINRES iterations. ``mass_inverse`` (a
-    :class:`MassChebyshev`) replaces the mass solves inside the Hessian, ``None`` keeps them. ``info`` is the number of MINRES iterations,
-    positive when ``tol`` was met and negative when not.
+    ``load`` is the Lorentz force ``J x B`` as a dual 2-form. It need not be projected: the right-hand side
+    ``curl^T load`` is blind to its gradient and harmonic parts. ``a_guess`` is the warm start for the potential
+    ``a`` (pass the previous step's ``a``) and ``kappa`` the weight of the parallel-flow penalty. The operator is
+    the Gauss-Newton part of the Hessian (:func:`second_variation` without ``J``) with its mass solves to
+    ``mass_tol``. The solve (:func:`newton_mr`) stops when its residual, in the norm of the preconditioner, is
+    below ``tol`` times the right-hand side or after ``maxiter`` MINRES iterations. ``info`` is the number of MINRES
+    iterations, positive when ``tol`` was met and negative when not.
     """
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
     # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
     profiles = harmonic_atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
-    curl, curl_t, A = _newton_system(seq, B, J, penalty, mass_inverse)
+    curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol)
     atom = harmonic_preconditioner(seq, profiles, penalty)
-    rhs = curl_t(load)
-    a, info = newton_mr(A, lambda x: atom(even, x), rhs, a_guess, tol, maxiter, dual_norm(even, 1))
+
+    def P(x):
+        return atom(even, x)
+
+    def norm(r):
+        return jnp.sqrt(r @ P(r))
+    a, info = newton_mr(A, P, curl_t(load), a_guess, tol, maxiter, norm)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-def _newton_system(seq, B, J, penalty, mass_inverse):
-    """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Newton system on the even view of the full
-    sequence ``seq``."""
-    Hs = second_variation(seq, B, J, penalty, mass_inverse)
+def _newton_system(seq, B, penalty, mass_tol):
+    """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Gauss-Newton system on the even view of the
+    full sequence ``seq``."""
+    Hs = second_variation(seq, B, None, penalty, mass_tol)
     even = seq.even
 
     def curl(a):
@@ -278,8 +243,9 @@ def newton_mr(A, P, b, x0, tol, maxiter, norm):
     estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. MINRES
     stops early at a direction of nonpositive curvature. Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
-    from zero. ``info`` is the number
-    of MINRES iterations, positive when the tolerance was met and negative when not.
+    from zero. MINRES keeps its Lanczos vectors and reorthogonalises each new one (``reorthogonalize`` of
+    :func:`mrx.solvers.minres`), which stores ``2 maxiter`` vectors. ``info`` is the number of MINRES iterations,
+    positive when the tolerance was met and negative when not.
     """
     x = x0
     bnorm = norm(b)
@@ -288,11 +254,11 @@ def newton_mr(A, P, b, x0, tol, maxiter, norm):
     def solve(_):
         rnorm = norm(r0)
         d, info, npc = minres(A, r0 / rnorm, M=P, tol=tol * bnorm / rnorm, maxiter=maxiter,
-                              npc_exit=True, norm=norm)
+                              npc_exit=True, norm=norm, reorthogonalize=True)
 
         def from_zero(_):
             d0, info0, _ = minres(A, b / bnorm, M=P, tol=tol, maxiter=maxiter, npc_exit=True,
-                                  norm=norm)
+                                  norm=norm, reorthogonalize=True)
             return d0 * bnorm, jnp.abs(info0).astype(jnp.int32)
 
         x_new, its_npc = jax.lax.cond(npc, from_zero,

@@ -62,7 +62,7 @@ F2 with the penalty against the previous configuration (2026-09-17/18):
 | W7-X (16,32,32) | 7.8e-11 at dt 1.00 | 7.4e-11 at dt 0.34 |
 | W7-X (32,64,64) | 6.6e-11 | 9.7e-11 |
 
-## 4. Newton tolerance and MINRES budget (2026-10-05 .. 13)
+## 4. Tolerance and MINRES budget of Newton-MR on the full Hessian (2026-10-05 .. 13, replaced 2026-10-18)
 
 - NEWTON_TOL = 1e-3 in the M_1^-1 norm of the residual (2026-10-13). At 0.1 the warm start of a state that barely
   moved meets the test and the step is zero. li383 (48,64,24) at p = 3 then stops moving after 10 steps (E_0 - E
@@ -111,3 +111,42 @@ Helicity:
 - A Dirichlet-H auxiliary field removes 1.7x more energy with a 5x higher force floor from the H_t = 0 wall layer.
   With a Newton direction it does not relax, dt* = 1e-3 every step (2026-09-07/11).
 - Implicit midpoint: solvers_precision.md 8.
+
+## 7. Gauss-Newton direction (li383 and W7-X graded, p = 2 unless stated, 2026-10-18)
+
+Study driver on gp-review before #38, 40 steps from the file's field, H200, times without the compile. The harmonic
+atom of #38 (one-sided zeta differences, Greville radial points) moves these numbers somewhat.
+
+Force residual 1e-8 reached at step (time), standard CFL weights:
+
+| case | Gauss-Newton, reorthogonalised MINRES | block Gauss-Newton, flexible GCR | Newton-MR, full Hessian |
+|---|---|---|---|
+| li383 (48,64,24), float32 slab factors | 25 (26.7 s) | 25 (29.4 s) | never, 1.8e-8 at 40 |
+| li383 (64,80,32) | 19 (47.6 s) | 19 (53.6 s) | never, 1.5e-8 at 40 |
+| W7-X FMM002 (32,64,36) | 28 (31.5 s) | 28 (34.8 s) | never, 4.7e-5 at 40 |
+| li383 (48,64,24), p = 3 | 9 (23.3 s) | 9 (24.5 s) | 16 (72.0 s) |
+
+- MINRES and GCR take the same steps with the same residual trace to two digits. Energy removed and helicity drift
+  agree to 3 digits. On graded W7-X the helicity drifts 4.8e-4 relative over 40 steps under both, 20x the uniform
+  record, so it belongs to the Gauss-Newton step, not the solver.
+- With the theta width of each ring in the CFL weights (li383 (48,64,24)): MINRES 1e-8 at step 11 (19.5 s), GCR 11
+  (21.5 s), Newton-MR 37 (99 s). The old weights capped dt at about 0.15 for 15 steps.
+- Newton-MR on the full Hessian stalls on graded meshes: MINRES capped at 200 on every step on li383, nonpositive
+  curvature exits on W7-X (residual 1.5e-4 for 30 steps).
+
+Variants that lost (li383 (48,64,24)):
+- MINRES without reorthogonalisation: 1.6-2.6x the iterations. At cap 300 1e-8 at step 39 (91.4 s), at cap 600
+  step 25 (51.5 s).
+- M_1 solves inside the operator: 1e-5 reaches 1e-8 at step 29 (31.8 s), 1e-4 stalls at 2e-7. 1e-8 equals 1e-6
+  in steps and costs 14.2 against 10.9 ms per iteration.
+- One MINRES on the 3 x 3 Gauss-Newton system with a fixed block-diagonal preconditioner (harmonic atom, shifted
+  Laplacian atom, M^-1 (M + K) M^-1): the 3 x 3 residual reaches 0.1 in 30-140 its, 1.7e-2 in 1500 (slab blocks),
+  2.8e-3 in 1500 with degree-8 Chebyshev mass blocks accurate to 1e-4. Even 3e-3 floors the relaxation at 1.6e-6,
+  at 34.5 s/step. The error left in the constraint rows reaches a through K, lambda_max(M^-1 K) about 1e5.
+- Block GCR with M_1 solves to 1e-2 in its triangular preconditioner stalls (cap 300 on 32 of 40 steps, 1.7e-6 at
+  40). 1e-3, 1e-4 and 1e-6 give the same trajectory.
+- 32 PCG steps on S_1 inside the a-block of GCR: the right-hand side is not in the range of S_1, the inner PCG drifts
+  along its kernel and GCR stalls at 2.7e-4 (5.2 s/step).
+- The full Newton block system gives the same trajectory as Gauss-Newton under GCR. Reorthogonalised Newton-MR on
+  the full Hessian takes the nonpositive-curvature exit on steps 1-13 and barely moves (3.8 s/step).
+
