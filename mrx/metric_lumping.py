@@ -333,8 +333,10 @@ def _probe_rows(apply, size, rows, split, n_out=None):
 
     # one compiled program per block: run eagerly, a map with fewer rows than PROBE_BATCH is a plain vmap that
     # compiles every operation of the apply on its own. The closure conversion passes the arrays the apply
-    # closes over as inputs instead of baking them in as constants
-    return _probe_columns(eqx.filter_closure_convert(column, jnp.zeros(size)), rows_j, size)
+    # closes over as inputs instead of baking them in as constants. The closure conversion traces the apply, so it
+    # is inside banded.dense too: XLA on a TPU can fail to compile the batched contractions banded
+    with banded.dense():
+        return _probe_columns(eqx.filter_closure_convert(column, jnp.zeros(size)), rows_j, size)
 
 
 @eqx.filter_jit
@@ -344,9 +346,7 @@ def _probe_columns(column, rows, size):
     # padded with zero columns to whole batches, so the apply is compiled once and not again for a remainder
     n = rows.size
     units = jnp.zeros((-(-n // PROBE_BATCH) * PROBE_BATCH, size)).at[jnp.arange(n), rows].set(1.0)
-    # the batched contractions with the dense tables: XLA on a TPU can fail to compile them banded (banded.dense)
-    with banded.dense():
-        blocks = jax.tree.map(lambda b: b[:n].T, jax.lax.map(column, units, batch_size=PROBE_BATCH))
+    blocks = jax.tree.map(lambda b: b[:n].T, jax.lax.map(column, units, batch_size=PROBE_BATCH))
     return jax.tree.map(lambda b: 0.5 * (b + b.T), blocks)
 
 

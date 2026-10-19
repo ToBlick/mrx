@@ -135,19 +135,27 @@ def attach_weights(seq, geometry):
                        (mass_weights, reference), is_leaf=lambda x: x is None)
 
 
-@eqx.filter_jit
 def sumfact_apply(plan, weights, x):
     """Apply ``x -> int Lambda_row . W . Lambda_col x`` given a :class:`SumfactPlan` and its weights.
 
     ``x`` holds the full tensor-product coefficients. Boundary and polar constraints are left to
     the caller. On a half-period sequence the result is twice the integral over the half period.
     A :class:`~mrx.double_single.DS` ``x`` gives a double-single result from the same tables and weights.
+
+    The choice of tables (:func:`mrx.banded.enabled`) is made here, outside the compiled applies: inside one jit
+    its first trace would be reused whatever :func:`mrx.banded.dense` says later.
     """
     if isinstance(x, ds.DS):
-        return ds.sumfact(plan.gather_r, plan.gather_c, plan.shapes_r, plan.shapes_c, weights, x)
+        return _apply_ds(plan, weights, x)
     if banded.enabled() and plan.bands_r is not None and plan.bands_c is not None:
         return _apply_banded(plan, weights, x)
     return _apply_dense(plan, weights, x)
+
+
+@eqx.filter_jit
+def _apply_ds(plan, weights, x):
+    """:func:`sumfact_apply` of a :class:`~mrx.double_single.DS` vector."""
+    return ds.sumfact(plan.gather_r, plan.gather_c, plan.shapes_r, plan.shapes_c, weights, x)
 
 
 def _stack_padded(x, shapes, n_max):
@@ -164,6 +172,7 @@ def _unstack(y, shapes):
     return jnp.concatenate([y[c, :s[0], :s[1], :s[2]].reshape(-1) for c, s in enumerate(shapes)])
 
 
+@eqx.filter_jit
 def _apply_dense(plan, weights, x):
     """:func:`sumfact_apply` with the dense tables."""
     R, T, Z = plan.tables_c
@@ -174,6 +183,7 @@ def _apply_dense(plan, weights, x):
     return _unstack(jnp.einsum('ria,rjb,rkd,rabd->rijk', R, T, Z, v), plan.shapes_r)
 
 
+@eqx.filter_jit
 def _apply_banded(plan, weights, x):
     """:func:`sumfact_apply` with the banded tables: one shifted-slice contraction per axis (:mod:`mrx.banded`)."""
     u = _stack_padded(x, plan.shapes_c, tuple(b.n for b in plan.bands_c))

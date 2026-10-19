@@ -104,3 +104,20 @@ def test_banded_apply_has_no_gather(seq):
     lowered = jax.jit(mass._apply_banded).lower(plan, weights, x)
     assert not re.search(r"stablehlo\.(gather|scatter)", lowered.as_text())
     assert not re.search(r"\s(gather|scatter)\(", lowered.compile().as_text())
+
+
+def test_dense_block_traces_the_dense_tables(seq, monkeypatch):
+    """Inside :func:`mrx.banded.dense` the sum-factorised apply is traced with the dense tables, also after the
+    banded apply was compiled: the choice is made outside the compiled applies. The preconditioner probes rely on
+    it (:func:`mrx.metric_lumping._probe_rows`)."""
+    monkeypatch.setattr(banded, "MODE", "1")
+    plan, weights = seq.mass_plan[1], seq.geometry.mass_weights[1]
+    x = _random(sum(int(np.prod(s)) for s in plan.shapes_c), 7)
+    mass.sumfact_apply(plan, weights, x)
+    used = []
+    for name in ("_apply_banded", "_apply_dense"):
+        monkeypatch.setattr(mass, name, lambda *a, f=getattr(mass, name), n=name: used.append(n) or f(*a))
+    jax.jit(lambda v: mass.sumfact_apply(plan, weights, v)).lower(x)
+    with banded.dense():
+        jax.jit(lambda v: mass.sumfact_apply(plan, weights, v)).lower(x)
+    assert used == ["_apply_banded", "_apply_dense"]
