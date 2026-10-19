@@ -35,7 +35,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from mrx import banded
+from mrx import banded, extraction_operators
 from mrx.differential_forms import DERIV_AXES
 from mrx.mass import build_mass_diagonal
 from mrx.precision import eps, lift, sqrt_eps, to_working
@@ -333,9 +333,10 @@ def _probe_rows(apply, size, rows, split, n_out=None):
 
     # one compiled program per block: run eagerly, a map with fewer rows than PROBE_BATCH is a plain vmap that
     # compiles every operation of the apply on its own. The closure conversion passes the arrays the apply
-    # closes over as inputs instead of baking them in as constants. The closure conversion traces the apply, so it
-    # is inside banded.dense too: XLA on a TPU can fail to compile the batched contractions banded
-    with banded.dense():
+    # closes over as inputs instead of baking them in as constants. The closure conversion traces the apply, so the
+    # whole probe is traced with the dense tables and the extraction from its entries: XLA on a TPU can fail to
+    # compile the batched applies otherwise (banded.dense, extraction_operators.coo)
+    with banded.dense(), extraction_operators.coo():
         return _probe_columns(eqx.filter_closure_convert(column, jnp.zeros(size)), rows_j, size)
 
 

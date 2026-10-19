@@ -21,6 +21,7 @@ builds them once when it is created.
 """
 
 import dataclasses
+import contextlib
 import functools
 import math
 import os
@@ -44,9 +45,31 @@ if MODE not in ("structured", "coo", "auto"):
     raise ValueError(f"MRX_EXTRACTION={MODE!r}, expected 'structured', 'coo' or 'auto'")
 
 
+#: The depth of :func:`coo` blocks being traced: inside one the extractions apply through their entries.
+_COO_DEPTH = 0
+
+
+@contextlib.contextmanager
+def coo():
+    """Trace the extractions inside the block through their entries, whatever :data:`MODE` says.
+
+    The batched probes of the preconditioner setup (:func:`mrx.metric_lumping._probe_rows`) use it. On a TPU v6e
+    (JAX 0.11.2, libtpu 0.0.48.1) XLA aborts compiling their double-single sum-factorised apply batched by
+    ``lax.map`` and ``vmap`` at li383 (32,44,20) when the extraction is structured ("Check failed ... Cannot find a
+    valid window" in fusion_emitter.cc), and compiles it with the extraction from the entries. The probes run once
+    per sequence."""
+    global _COO_DEPTH
+    _COO_DEPTH += 1
+    try:
+        yield
+    finally:
+        _COO_DEPTH -= 1
+
+
 def structured() -> bool:
-    """Whether the extractions apply through their :class:`StructuredExtraction` (:data:`MODE`)."""
-    return MODE == "structured" or (MODE == "auto" and jax.default_backend() == "tpu")
+    """Whether the extractions apply through their :class:`StructuredExtraction` (:data:`MODE`), outside
+    :func:`coo`."""
+    return _COO_DEPTH == 0 and (MODE == "structured" or (MODE == "auto" and jax.default_backend() == "tpu"))
 
 
 @functools.partial(jax.jit, static_argnames=("num_segments",))
