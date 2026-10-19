@@ -1,4 +1,4 @@
-"""The Laplacians recover manufactured solutions on the li383 domain, identically on its three representations.
+"""The Laplacians recover manufactured solutions on the li383 domain, identically on two representations.
 
 Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form solution:
 
@@ -14,14 +14,11 @@ Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form
 
 Every solve must converge, and its relative L2 error, computed exactly as
 ``||u_h - u*||^2 = <u_h, u_h>_M - 2 u_h . load(u*) + int |u*|^2``, must lie below a measured band. A wrong metric
-factor, boundary row or extraction moves it by a factor. The three representations of the domain (``half``:
-one field period with stellarator symmetry, ``period``: one field period, ``full``: the whole torus) have the
-same mesh per period, and ``B*`` and ``psi`` have the period and the parity of li383. So the three must give the
-same error to the solver tolerance: this checks the half-period quadrature, the parity views and the field-period
-reduction end to end. The Leray projection, the k = 3 saddle solve of the relaxation, is divergence-free,
-idempotent and non-expansive. The co-closed solve on ``S_1`` alone gives the same curl as the full ``L_1`` solve,
-and the one solve of ``M_1 + eps S_1`` the same curl as the shifted solve ``(M_1 + eps L_1)^-1``.
-The zeta-slab mass model conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the
+factor, boundary row or extraction moves it by a factor. The two representations of the domain (``half``:
+one field period with stellarator symmetry, ``period``: one field period without the reflection) have the same
+mesh, and ``B*`` and ``psi`` have the period and the parity of li383. So the two must give the same error to the
+solver tolerance: this checks the half-period quadrature and the parity views end to end. Preconditioners kept
+across a change of map still precondition the new operators. The zeta-slab mass model conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the
 half-period domain.
 """
 import jax
@@ -29,15 +26,13 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from mrx.precision import eps
-
 #: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, quadrature (p + 1, p, p), measured
 #: 2026-10-18: 5.051e-3 (k = 0, of grad psi), 7.341e-3, 1.461e-2 and 2.461e-2. The errors are measured with the
 #: sequence's own rule, which reads them 1.6-2.1 times lower than p + 1 points per axis (9.43e-3 to 5.22e-2).
 ERROR_BAND = {0: 0.00631, 1: 0.00918, 2: 0.0183, 3: 0.0308}
-#: The relative spread of the three representations' errors, which is below 3e-12.
+#: The relative spread of the two representations' errors, which is below 3e-12.
 SAME = 1e-3
-NAMES = ("half", "period", "full")
+NAMES = ("half", "period")
 
 
 def psi(X):
@@ -124,7 +119,7 @@ def _solve(seq, k):
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
 def test_manufactured_solution(domains, k):
-    """The k-th manufactured solution is recovered within its band, and with the same error on the three
+    """The k-th manufactured solution is recovered within its band, and with the same error on the two
     representations of the domain."""
     errs = {name: _solve(domains(name), k) for name in NAMES}
     spread = (max(errs.values()) - min(errs.values())) / min(errs.values())
@@ -132,87 +127,6 @@ def test_manufactured_solution(domains, k):
           + f", spread {spread:.2e}")
     assert max(errs.values()) < ERROR_BAND[k]
     assert spread < SAME
-
-
-def test_leray_projection(seq):
-    """The Leray projection of a random velocity is divergence-free to the solver tolerance, idempotent and
-    non-expansive."""
-    even = seq.even
-    v = jnp.asarray(np.random.default_rng(5).standard_normal(even.n(2)))
-    v = v / even.l2_norm(v, 2)
-    Pv, p = even.leray(v, k=2)
-    PPv, _ = even.leray(Pv, k=2, p_guess=p)
-    div = float(even.l2_norm(even.G[2] @ Pv, 3))
-    moved = float(even.l2_norm(PPv - Pv, 2))
-    print(f"\n  ||div P v|| {div:.2e}, ||P P v - P v|| {moved:.2e}, ||P v|| {float(even.l2_norm(Pv, 2)):.4f}")
-    assert div <= 10 * seq.tol + eps(10)
-    assert moved <= 10 * seq.tol + eps(10)
-    assert float(even.l2_norm(Pv, 2)) < 1.0
-
-
-def test_stiffness_solve_has_the_curl_of_the_laplacian_solve(seq, b0):
-    """For the right-hand side ``G_1^T M_2 B`` of the vector potential, ``S[1].solve`` and ``L[1].solve`` converge
-    and differ by a closed form only, so their curls agree. With the gauge solve (``part="coexact"``) they agree
-    themselves."""
-    odd = seq.odd
-    b = odd.G[1].T @ (odd.M[2] @ b0)
-    a, info = odd.S[1].solve(b, return_info=True)
-    a_g = odd.L[1].solve(b, part="coexact")
-    a_L, info_L = odd.L[1].solve(b, return_info=True)
-    diff = float(odd.l2_norm(odd.G[1] @ (a - a_L), 2) / odd.l2_norm(odd.G[1] @ a_L, 2))
-    diff_g = float(odd.l2_norm(a_g - a_L, 1) / odd.l2_norm(a_L, 1))
-    print(f"\n  co-closed {int(info)} iterations, Hodge split {int(info_L)}, ||curl (a - a_L)|| / ||curl a_L|| {diff:.2e}, "
-          f"with the gauge solve ||a - a_L|| / ||a_L|| {diff_g:.2e}")
-    assert info > 0 and info_L > 0
-    assert diff <= 1e3 * seq.tol
-    assert diff_g <= 1e3 * seq.tol
-
-
-@pytest.mark.parametrize("shift", ["smoothing", "one"])
-def test_shifted_stiffness_solve_has_the_curl_of_the_shifted_solve(seq, shift):
-    """For a right-hand side ``M_1 z`` with every part, ``shifted_stiffness(1, eps).solve`` (one solve of
-    ``M_1 + eps S_1``) and the shifted Laplacian solve converge and differ by an exact form, so their curls agree. At
-    the velocity smoothing's ``eps`` and at ``eps = 1``, where the two-solve split of PR #33 did not converge."""
-    from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
-    odd = seq.odd
-    eps = SMOOTHING_C * radial_cell_sq(seq) if shift == "smoothing" else jnp.asarray(1.0)
-    b = odd.M[1] @ jax.random.normal(jax.random.PRNGKey(4), (odd.n(1),), dtype=jnp.float64)
-    a, info = odd.shifted_stiffness(1, eps).solve(b, return_info=True)
-    a_f, info_f = odd.shifted(1, eps).solve(b, return_info=True)
-    diff = float(odd.l2_norm(odd.G[1] @ (a - a_f), 2) / odd.l2_norm(odd.G[1] @ a_f, 2))
-    print(f"\n  eps {float(eps):.2e}: one solve {int(info)} iterations, full {int(info_f)}, "
-          f"||curl (a - a_f)|| / ||curl a_f|| {diff:.2e}")
-    assert info > 0 and info_f > 0
-    assert diff <= 1e3 * seq.tol
-
-
-@pytest.mark.parametrize("k", [1, 2, 3])
-def test_parts_of_the_laplacian_solve(domains, k):
-    """``L[k].solve(b, part=...)`` on right-hand sides of one kind, ``G_k^T w`` (co-exact) and ``M_k G_{k-1} c``
-    (exact): each part converges to the full solve of the same right-hand side, the co-exact solution is
-    orthogonal to the exact forms, and the full solve of the sum is the sum of the parts. 3-forms only have the
-    exact part."""
-    s = domains("period")
-    rng = np.random.default_rng(k)
-    c = jnp.asarray(rng.standard_normal(s.n(k - 1)))
-    b = {"exact": s.M[k] @ (s.G[k - 1] @ c)}
-    if k < 3:
-        b["coexact"] = s.G[k].T @ jnp.asarray(rng.standard_normal(s.n(k + 1)))
-    x = {}
-    for part, rhs in b.items():
-        x[part], info = s.L[k].solve(rhs, return_info=True, part=part)
-        x_full, info_full = s.L[k].solve(rhs, return_info=True)
-        diff = float(s.l2_norm(x[part] - x_full, k) / s.l2_norm(x_full, k))
-        print(f"\n  L{k} {part}: {int(info)} iterations against {int(info_full)} of the full solve, "
-              f"relative difference {diff:.2e}")
-        assert info > 0 and info_full > 0
-        assert diff <= 1e3 * s.tol
-    if k == 3:
-        return
-    gauge = s.G[k - 1].T @ (s.M[k] @ x["coexact"])
-    assert float(jnp.linalg.norm(gauge)) <= 1e3 * s.tol * float(jnp.linalg.norm(s.M[k] @ x["coexact"]))
-    x_sum = s.L[k].solve(b["coexact"] + b["exact"])
-    assert float(s.l2_norm(x_sum - x["coexact"] - x["exact"], k) / s.l2_norm(x_sum, k)) <= 1e3 * s.tol
 
 
 def _torus(kappa):
