@@ -135,12 +135,11 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
     to the tolerance, measured with the new mass matrix. The harmonic forms are set to zero. Without
     ``keep_preconditioners`` the bundle is dropped and a solve raises. A new map of the same resolution reuses the
     compiled programs. The geometry, preconditioners and harmonic forms of ``period`` are restored at the end."""
-    from mrx.equilibria import build_map
     from mrx.nullspace import compute_nullspaces
 
     s = domains("period")
     geometry = s.geometry
-    Phi, _ = build_map(s.equilibrium, s, stellarator_symmetric=s.half_period)
+    Phi = s.map
     stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)

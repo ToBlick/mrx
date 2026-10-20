@@ -78,7 +78,6 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.optimize
-from mrx.equilibria import build_map
 from mrx.diagnostics.plotting import plot_twin_axis
 from mrx.diagnostics.plotstyle import finish_figure
 from mrx.optimization.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota,
@@ -93,14 +92,13 @@ P_MAX = 1e-8         # the bound on P
 IOTA_TOL, P_TOL = 1e-5, 1.01e-8   # met when |<iotabar>_s - iotabar*| <= IOTA_TOL and P <= P_TOL
 
 # %%
-# 3) Build the sequence on the device's VMEC map and take the map's spline coefficients (``build_map``):
+# 3) Build the sequence on the device's VMEC map and take the map's spline coefficients (``seq.map``):
 # the raw R and Z coefficients, (n_r, n_theta, n_zeta) each.
 t0 = time.perf_counter()
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
 seq = g.build()
 nfp = seq.nfp
-_, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
-lp = BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], nfp)
+lp = BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, nfp)
 _, _, S_lp = section_moments(seq, lp.raw_R, lp.raw_Z, nfp)
 a_lp = float(np.sqrt(S_lp / np.pi))
 T = np.asarray(seq.basis_0.Lambda[0].T)

@@ -19,7 +19,6 @@ FD_TOL = 1e-10
 def test_vacuum_field_and_its_shape_derivative(seq):
     import mrx.optimization.shape_ad as sa
     from mrx.differential_forms import DiscreteFunction, Pushforward
-    from mrx.equilibria import build_map
     from mrx.operators import dual_norm
     from mrx.precision import eps as round_off
 
@@ -35,8 +34,7 @@ def test_vacuum_field_and_its_shape_derivative(seq):
     assert closed <= round_off(1e4)
     assert coclosed <= 1e2 * seq.tol
 
-    _, info = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)
-    shape = sa.BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], seq.nfp)
+    shape = sa.BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, seq.nfp)
 
     def mean_iota(x):
         R, Z = shape.map_coefficients(seq, 1e-2 * x.reshape((2,) + shape.raw_R.shape))
@@ -52,7 +50,7 @@ def test_vacuum_field_and_its_shape_derivative(seq):
 
     # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off
     aspect = 6.0
-    held = sa.BoundaryShape.from_coefficients(seq, info["raw_R"], info["raw_Z"], seq.nfp, aspect=aspect)
+    held = sa.BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, seq.nfp, aspect=aspect)
     beta = 1e-2 * jnp.asarray(np.random.default_rng(2).standard_normal((2,) + held.raw_R.shape))
     R, Z = held.map_coefficients(seq, beta)
     V, _, S = sa.section_moments(seq, R, Z, seq.nfp)
