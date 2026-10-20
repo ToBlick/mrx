@@ -22,7 +22,7 @@ jobs:
 
     - name: Run ruff
       run: |
-        pip install ruff==0.16.10
+        pip install --upgrade ruff
         ruff check .
 
   test:
