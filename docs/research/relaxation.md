@@ -164,3 +164,46 @@ from the file's field, H200, 2026-10-19). 1e-8 at step (time without the compile
   not stall, as it did under GCR with the old CFL weights, but needs about twice the steps.
 - Energy fell on every step of every run. The energy removed agrees to 0.5 %.
 
+## 8. Preconditioning the Gauss-Newton solve (li383 p = 2, 2026-10-19)
+
+Harness: `scripts/bench/newton_precond.py` (branch newton-precond, not merged) freezes the Newton systems of a
+relaxation at given steps and runs the production MINRES (reorthogonalised) with each candidate preconditioner; its
+count at tol 0.1 equals the relax.py `newton_it` on every state checked. CPU float64 unless stated.
+
+Starting point (harmonic atom, tol 0.1, warm start): 16-34 MINRES iterations per step at the start and 25-65 later at
+(12,20,12); more than 95 % of an iteration is the Hessian apply (two M_1 solves), the atom 0.3 ms. Ritz values of
+P A: a clustered bulk, a few outliers at 1e-4..6e-4, and a top end growing with the mesh (95 at (8,12,12), 580 at
+(12,20,12)); it is the polar-axis zeta functions. An exact Gauss-Newton model inverse (section 9 of
+preconditioners.md, condition 12.7) would need about 5-8 iterations.
+
+Krylov recycling (`--newton.recycle k`, `mrx.relaxation.recycle`, branch newton-precond, not merged):
+- 16 consecutive steps, MINRES iterations at tol 0.1, harmonic -> k = 32 (8 bottom + 24 top) -> 64: (8,12,12) 380 ->
+  172; (12,20,12) 935 -> 509 -> 399; (12,20,12) graded 662 -> 349 -> 291. Top Ritz value 95-580 -> 5-27.
+- Variants that lost at (8,12,12): the exact coarse operator (k applies per step: 0.5-0.98x net), additive (1.13x, it
+  cannot move the top), the start correction alone (1.2x), bottom vectors only (1.1-1.2x).
+- relax.py (12,20,12) graded, 20 steps, CPU: 801 / 489 / 397 iterations for k = 0 / 32 / 64, 13.0 / 9.0 / 7.8 s per 10
+  steps, final residual 4.4 / 4.3 / 4.1e-8.
+- H200, graded, 30 steps from the file's field (1e-8 at step, s per step without the compile, residual after 30):
+
+| setting | (48,64,24) | (64,80,32) |
+|---|---|---|
+| k = 0, tol 0.1 (production) | 11, 1.88, 1.4e-9 | 8, 3.90, 1.8e-9 |
+| k = 64, tol 0.1 | 13, 1.53, 3.4e-9 | |
+| k = 64, tol 0.05 | 8, 1.92, 1.9e-9 | 8, 3.87, 2.1e-9 |
+| k = 64, tol 0.03 | 8, 2.64, 1.3e-9 | |
+| k = 0, tol 0.03 | 8, 3.43, 6.3e-10 | |
+
+  Recycling makes the iterations cheaper but, at the same tolerance, the steps no better: without it 23 of 30
+  solves at (48,64,24) stop at the cap and overshoot 0.1. Paid into a tighter tolerance it reaches 1e-8 1.4x sooner at
+  (48,64,24) and level at (64,80,32). Not merged.
+
+Per-Fourier-mode radial block (branch np-block, `mrx/relaxation/radial_block.py`, not merged): angle-averaged model
+operators made block diagonal per (m, n) and inverted exactly per block (polar axis modes |m| <= 1 as one joint block
+per n), applied by rfft2 and batched matmuls.
+- Inside the harmonic atom (the Hodge model in place of the Laplacian atom): 0.38-0.81x the iterations, but the top
+  Ritz value rises (584 -> 928 at (12,20,12)).
+- The full Gauss-Newton model (mixed spline symbols regularised at Nyquist, harmonic-symbol floor): top Ritz 584 ->
+  173; relax.py (12,20,12) uniform, 20 steps: 36.4 against 56.5 iterations per step, 2.10 against 2.51 s per step,
+  final residual 1.6e-8 against 1.2e-8. Uniform meshes only; its remaining top end is the first ring outside the axis
+  at high m, the anisotropy the graded spaces address, and no model moves the low tail.
+
