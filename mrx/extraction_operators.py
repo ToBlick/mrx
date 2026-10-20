@@ -184,6 +184,12 @@ GRADED_THETA_MIN = 8
 #: Grading rule: the theta width of a ring is at least this times its smallest radial cell.
 GRADED_ASPECT = np.pi / 2
 
+#: Grading rule: a ring at radius ``r`` has at least ``n_theta r^GRADED_EXPONENT`` theta cells. With the exponent 1 the
+#: rings near the axis keep their opening angle under refinement and the L2 error stalls (li383 p = 2, true L2,
+#: 36 -> 48: rates 0.8-1.0, 2.7x the uniform error). With 1/3 it converges at order 2 with the uniform error to 1 %,
+#: and the stiffness solves keep flat counts (2026-10-20).
+GRADED_EXPONENT = 1.0 / 3.0
+
 
 def prolongation(m, n, p, derivative):
     """The knot insertion ``R`` (shape ``(n, m)``) from the uniform periodic splines of degree ``p`` with ``m``
@@ -207,11 +213,12 @@ def prolongation(m, n, p, derivative):
 def graded_theta_counts(T_r, p, nt):
     """The theta count of every primal radial basis function of a graded space with ``nt`` theta cells at the wall.
 
-    The theta width ``2 pi r_i / m`` of ring ``i`` (``r_i`` its Greville point) is at least the smaller of
-    :data:`GRADED_ASPECT` times its smallest radial cell and the theta width at the wall. ``m`` is the coarsest
-    count (``nt / 2^l``, at least :data:`GRADED_THETA_MIN`) times a power of two, at most ``nt``, and does not
-    decrease outward. The three innermost rings carry the polar axis functions and share the coarsest count of
-    the first."""
+    Ring ``i`` (``r_i`` its Greville point) has at least ``nt r_i^GRADED_EXPONENT`` theta cells
+    (:data:`GRADED_EXPONENT`), or a theta width ``2 pi r_i / m`` of at most :data:`GRADED_ASPECT` times its smallest
+    radial cell if that asks for more. ``m`` is the coarsest count (``nt / 2^l``, at least :data:`GRADED_THETA_MIN`)
+    times the smallest power of two that reaches this, at most ``nt``, and does not decrease outward. The three
+    innermost rings carry the polar axis functions and share the count of the third, so the axis functions are not
+    coarser than the ring next to them."""
     T_r = np.asarray(T_r)
     m_min = nt
     while m_min % 2 == 0 and m_min // 2 >= GRADED_THETA_MIN:
@@ -221,10 +228,10 @@ def graded_theta_counts(T_r, p, nt):
         knots = T_r[i:i + p + 2]
         r_i = knots[1:-1].mean()
         h_i = np.diff(np.unique(knots)).min()
-        allowed = max(2 * np.pi * r_i / (GRADED_ASPECT * h_i), nt * r_i)
-        counts.append(min(nt, m_min * 2 ** int(np.floor(np.log2(max(allowed / m_min, 1.0))))))
+        allowed = max(2 * np.pi * r_i / (GRADED_ASPECT * h_i), nt * r_i ** GRADED_EXPONENT)
+        counts.append(min(nt, m_min * 2 ** int(np.ceil(np.log2(max(allowed / m_min, 1.0))))))
     counts = np.maximum.accumulate(np.asarray(counts))
-    counts[:3] = counts[0]
+    counts[:3] = counts[2]
     return tuple(int(m) for m in counts)
 
 

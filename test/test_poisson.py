@@ -29,10 +29,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
-#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20: 1.491e-2 (k = 0, of grad psi), 1.415e-2, 2.722e-2 and
-#: 5.655e-2. The sequence's own rule gave 1.253e-2, 1.046e-2, 1.715e-2 and 3.273e-2.
-ERROR_BAND = {0: 0.0186, 1: 0.0177, 2: 0.0340, 3: 0.0707}
+#: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
+#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
+#: 3.989e-2.
+ERROR_BAND = {0: 0.0105, 1: 0.0147, 2: 0.0303, 3: 0.0499}
 #: The relative spread of the two representations' errors, which is below 3e-10.
 SAME = 1e-3
 NAMES = ("half", "period")
@@ -187,8 +187,8 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
 
 
 def test_slab_mass_model_conditions_the_one_form_mass(seq):
-    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 3.30 on li383 (12, 20, 12)
-    (2026-10-16), the metric-lumping atom has 37.8. Band 4."""
+    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 4.04 on li383 (16, 32, 12)
+    (2026-10-20). The metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
     from mrx.metric_lumping import ReducedAtom
     from mrx.slab_mass import SlabMass
     from mrx.solvers import lanczos_bounds
@@ -197,4 +197,4 @@ def test_slab_mass_model_conditions_the_one_form_mass(seq):
     M = odd.M[1]
     b = M @ jnp.asarray(np.random.default_rng(0).standard_normal(odd.n(1)))
     lo, hi = lanczos_bounds(lambda x: M @ x, b, P.apply, 40)
-    assert hi / lo < 4.0
+    assert hi / lo < 5.0

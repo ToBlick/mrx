@@ -57,21 +57,33 @@ near the axis are far narrower than the radial ones. The stiffness then
 scales like `h^-4` instead of `h^-2`, and the CFL weights grow with it. A
 graded space gives each radial ring of basis functions its own uniform
 periodic theta space, with fewer cells near the axis.
-`build_sequence(..., graded=True)` turns it on. The map and the fields both
-live on the graded space. The CFL weights of the relaxation loop
+`build_sequence(..., graded=True)` turns it on. The fields live on the graded
+space. The map lives on the uniform polar space with `map_theta` theta cells on
+every ring (default `n_theta`), written in the fields' basis by knot insertion,
+because a map on the graded space would change its metric where the count
+changes. The CFL weights of the relaxation loop
 (`logical_cfl_weights`) take the theta cell of the finest ring active at
 each point, not the wall's.
 
 The counts come from `graded_theta_counts(T_r, p, n_theta)`, from the radial
-knots alone. A ring's theta cell is at least `GRADED_ASPECT` (pi / 2) times
-its smallest radial cell, unless that would make it wider than a theta cell
-at the wall. Each count is the coarsest count times a power of two. The
-coarsest is `n_theta / 2^l`, the smallest such count not below
-`GRADED_THETA_MIN` (8). The counts never decrease outward, and the three
-innermost rings share the coarsest count, which carries the polar axis
-functions. A ring of derivative splines in `r` sits between two primal rings
-and takes the count of the outer one. On li383 (24,64,12) the counts are 8,
-16, 32 and 64.
+knots alone. A ring at radius `r` has at least `n_theta r^(1/3)` theta cells
+(`GRADED_EXPONENT`), and its theta cell is at most `GRADED_ASPECT` (pi / 2)
+times its smallest radial cell. Each count is the coarsest count times the
+smallest power of two that meets both. The coarsest is `n_theta / 2^l`, the
+smallest such count not below `GRADED_THETA_MIN` (8). The counts never decrease
+outward. The three innermost rings carry the polar axis functions and take the
+count of the third, so the axis functions are not coarser than the ring next to
+them.
+
+The exponent 1/3 is what keeps the order. With `n_theta r` the rings near the
+axis keep their opening angle under refinement, and a spline on a cell with a
+fixed opening angle does not converge. On li383 p = 2 the L2 error of the
+manufactured solutions then stalls from (36,60,36) to (48,80,48), at 2.7 times
+the uniform error. With `n_theta r^(1/3)` it converges at order 2 with the
+uniform error to 1 %, and the stiffness solves keep flat counts (89 and 218 at
+(48,80,48), against 185 and 464 on the uniform space). A ring of derivative splines in `r` sits between two primal rings
+and takes the count of the outer one. On li383 (24,64,12) the counts are
+32 on the first four rings and 64 outside.
 
 The raw tensor grid stays uniform. A graded basis function is the knot
 insertion of one coarse theta function into the raw functions of its ring,

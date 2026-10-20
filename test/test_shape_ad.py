@@ -1,19 +1,24 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
 On the li383 sequence of the suite the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic:
-closed to round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean rotational
-transform with respect to every map coefficient matches central differences. The parametrisation holds the volume
-and the aspect ratio exactly, and the hand-derived ``|B|``, ``B . grad|B|`` and ``(B x grad r) . grad|B|`` of the
-quasi-symmetry residual agree with automatic differentiation of the pushed-forward field.
+closed to round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean
+rotational transform with respect to every map coefficient matches Richardson-extrapolated central differences. The
+parametrisation holds the volume and the aspect ratio exactly, and the hand-derived ``|B|``, ``B . grad|B|`` and
+``(B x grad r) . grad|B|`` of the quasi-symmetry residual agree with automatic differentiation of the pushed-forward
+field.
 """
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-#: The finite difference below divides the error of two solves by 2 eps = 2e-3, so they are solved to 1e-10: at
-#: the default 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13).
+#: The finite differences below divide the error of two solves by 2 eps, so they are solved to 1e-10: at the default
+#: 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13).
 FD_TOL = 1e-10
+#: The central difference has an eps^2 error: on li383 (16, 32, 12) it is 3.14e-6 of the derivative at eps = 1e-3 and
+#: 7.16e-7 at 5e-4, below that the solves dominate (1.5e-6 at 2.5e-4). Richardson's combination of 1e-3 and 5e-4
+#: removes the eps^2 term and leaves 9.1e-8 (2026-10-20), against the bound of 1e-6.
+FD_EPS = 1e-3
 
 
 def test_vacuum_field_and_its_shape_derivative(seq):
@@ -44,8 +49,9 @@ def test_vacuum_field_and_its_shape_derivative(seq):
     x = jnp.zeros(2 * shape.raw_R.size)
     d = jnp.asarray(np.random.default_rng(0).standard_normal(x.size))
     f = eqx.filter_jit(mean_iota)
-    eps = 1e-3
-    fd = (f(x + eps * d) - f(x - eps * d)) / (2 * eps)
+    def central(eps):
+        return (f(x + eps * d) - f(x - eps * d)) / (2 * eps)
+    fd = (4 * central(FD_EPS / 2) - central(FD_EPS)) / 3
     assert abs(jax.grad(mean_iota)(x) @ d - fd) <= 1e-6 * abs(fd)
 
     # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off
