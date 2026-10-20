@@ -343,8 +343,9 @@ def _sample(ts, state, pw_guess):
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.J``, ...).
 
-    The step number and the discretisation (resolution, degree, ``nfp``, symmetry and the knots) are
-    stored as attributes, so :func:`checkpoint_attrs` can rebuild the matching sequence.
+    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, knots, the theta count of
+    every ring and the theta cells of the map) are stored as attributes, so :func:`checkpoint_attrs` can rebuild
+    the matching sequence.
     """
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     with h5py.File(path, "w") as fh:
@@ -353,6 +354,9 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(seq.p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
+        fh.attrs["graded"] = seq.theta_counts is not None
+        fh.attrs["theta_counts"] = _theta_counts(seq)
+        fh.attrs["map_theta"] = int(seq.map_theta)
         for name, bp in zip(_AXES, _breakpoints(seq)):
             fh.attrs[f"knots_{name}"] = bp
         for keypath, leaf in leaves:
@@ -368,9 +372,16 @@ def _breakpoints(seq):
     return [np.unique(T[(T >= 0.0) & (T <= 1.0)]) for T in Ts]
 
 
+def _theta_counts(seq):
+    """The theta count of every primal radial basis function of ``seq``, ``n_theta`` on each ring of a uniform space."""
+    return np.asarray(seq.theta_counts or (seq.ns[1],) * seq.ns[0], dtype=np.int64)
+
+
 def checkpoint_attrs(path: str) -> dict:
     """Return the discretisation stored in a checkpoint as :func:`mrx.geometry.build_sequence` keywords (``ns``,
-    ``p``, ``knots``, ``symmetry``), together with ``nfp`` and ``step``."""
+    ``p``, ``knots``, ``symmetry``, ``graded``, ``map_theta``), together with ``nfp`` and ``step``. A checkpoint
+    written before the graded flag was stored is on a uniform space, one written before ``map_theta`` was stored has
+    the map on ``n_theta`` cells."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
 
@@ -381,21 +392,30 @@ def checkpoint_attrs(path: str) -> dict:
 
     return dict(ns=tuple(int(v) for v in a["resolution"]), p=int(a["degree"]),
                 knots=[breakpoints(name) for name in _AXES],
-                symmetry=str(a["symmetry"]), nfp=int(a["nfp"]), step=int(a["step"]))
+                symmetry=str(a["symmetry"]), graded=bool(a.get("graded", False)),
+                map_theta=int(a.get("map_theta", a["resolution"][1])), nfp=int(a["nfp"]), step=int(a["step"]))
 
 
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
     """Raise if the checkpoint ``path`` was written on another discretisation than that of ``seq``: another
-    resolution, degree, number of field periods, symmetry or knots."""
+    resolution, degree, number of field periods, symmetry, knots, theta count of a ring or theta cells of the map.
+    The ring counts of a checkpoint written before they were stored are not checked, only its graded flag."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
-    stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]))
+    stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]),
+              bool(a.get("graded", False)), int(a.get("map_theta", a["resolution"][1])))
     same_knots = all(np.allclose(a[f"knots_{name}"], bp, rtol=0.0, atol=1e-12) if a[f"knots_{name}"].shape == bp.shape
                      else False for name, bp in zip(_AXES, _breakpoints(seq)))
-    if stored != (tuple(seq.ns), seq.p, seq.nfp, seq.symmetry) or not same_knots:
-        raise ValueError(f"{path}: written on {stored[0]} p={stored[1]} nfp={stored[2]} {stored[3]}"
-                         f"{'' if same_knots else ' with other knots'}, the sequence is {tuple(seq.ns)} p={seq.p} "
-                         f"nfp={seq.nfp} {seq.symmetry}")
+    counts, stored_counts = _theta_counts(seq), a.get("theta_counts")
+    same_counts = stored_counts is None or np.array_equal(stored_counts, counts)
+    graded = seq.theta_counts is not None
+    if stored != (tuple(seq.ns), seq.p, seq.nfp, seq.symmetry, graded, seq.map_theta) or not same_knots \
+            or not same_counts:
+        mismatch = (("" if same_knots else " with other knots")
+                    + ("" if same_counts else f" with ring counts {stored_counts.tolist()} against {counts.tolist()}"))
+        raise ValueError(f"{path}: written on {stored[0]} p={stored[1]} nfp={stored[2]} {stored[3]} graded={stored[4]}"
+                         f" map_theta={stored[5]}{mismatch}, the sequence is {tuple(seq.ns)} p={seq.p} "
+                         f"nfp={seq.nfp} {seq.symmetry} graded={graded} map_theta={seq.map_theta}")
 
 
 def read_field(path: str, seq: DeRhamSequence) -> tuple[jnp.ndarray, int]:

@@ -10,11 +10,11 @@ import numpy as np
 
 from mrx.diagnostics.poincare import poincare
 
-#: 1.25x ``max |iota_traced - |iota_file|| / max |iota_file|`` on li383 (12, 20, 12) p=2, 8 lines over 60 periods,
-#: measured 2.64e-3 (2026-10-18). A tracer that missed the factor nfp or a wrong winding would be off by O(1).
-IOTA_BAND = 3.3e-3
-#: 1.25x the step-halving drift of the same trace in logical radius, measured 2.09e-4.
-DRIFT_BAND = 2.6e-4
+#: 1.25x ``max |iota_traced - |iota_file|| / max |iota_file|`` on li383 (16, 32, 12) p=2, 8 lines over 60 periods,
+#: measured 1.06e-3 (2026-10-20). A tracer that missed the factor nfp or a wrong winding would be off by O(1).
+IOTA_BAND = 1.33e-3
+#: 1.25x the step-halving drift of the same trace in logical radius, measured 3.23e-4.
+DRIFT_BAND = 4.1e-4
 
 
 def test_traced_iota_is_the_file_iota(seq, b0):

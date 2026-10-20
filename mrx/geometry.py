@@ -23,7 +23,7 @@ import numpy as np
 
 import mrx
 from mrx.differential_forms import inv33
-from mrx.extraction_operators import graded_theta_counts
+from mrx.extraction_operators import graded_theta_counts, prolongation
 from mrx.spline_bases import SplineBasis, knot_vector
 
 
@@ -65,7 +65,7 @@ SYMMETRIES = ("stellarator", "field-period", "none")
 
 def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
                    symmetry="stellarator", graded=False, mass_atom="slab", laplacian_atom="lumping",
-                   quad_points=None):
+                   quad_points=None, map_theta=None):
     """Build the de Rham sequence of the geometry file ``geometry`` and return it.
 
     The sequence has its map installed and its preconditioners built (``seq.operators``). The
@@ -88,9 +88,14 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
             (see :class:`~mrx.derham_sequence.DeRhamSequence`).
         mass_atom: the mass preconditioner of ``k = 1, 2``, one of :data:`mrx.operators.MASS_ATOMS`
             (see :meth:`~mrx.derham_sequence.DeRhamSequence.build_preconditioners`).
-        graded: give each radial ring its own theta resolution, fewer cells near the axis
-            (:func:`mrx.extraction_operators.graded_theta_counts`). The map and the fields live on the
-            graded space. Needs uniform theta knots.
+        graded: give each radial ring of the fields its own theta resolution, fewer cells near the axis
+            (:func:`mrx.extraction_operators.graded_theta_counts`). Needs uniform theta knots.
+        map_theta: the number of theta cells of the map, the same on every ring. The map is projected onto the
+            uniform polar 0-forms with this count and written in the fields' tensor basis by dyadic knot insertion
+            (:func:`mrx.extraction_operators.prolongation`), so it must be ``n_theta / 2^l``. ``None`` is
+            ``n_theta``. A map on a graded space would change its theta content where the count changes, and the
+            step in its metric puts a current sheet into a smooth field. The spectrum of the operators is set
+            by the field spaces, not by the map.
         laplacian_atom: the atoms alone, or with the multigrid of the co-closed 2-form solves, one of
             :data:`mrx.operators.LAPLACIAN_ATOMS`.
     """
@@ -112,8 +117,15 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         counts = graded_theta_counts(np.asarray(T_r), p, ns[1])
     seq = DeRhamSequence(ns, p, nfp=nfp, symmetry=symmetry, knots=Ts, theta_counts=counts, equilibrium=eq, tol=tol,
                          maxiter=maxiter, quad_points=quad_points)
+    # the map on the uniform polar 0-forms with map_theta cells in theta, the same on every ring
+    m = ns[1] if map_theta is None else int(map_theta)
+    map_seq = seq if counts is None and m == ns[1] else DeRhamSequence(
+        (ns[0], m, ns[2]), p, nfp=nfp, symmetry=symmetry, knots=Ts, equilibrium=eq, tol=tol, maxiter=maxiter,
+        quad_points=quad_points)
     # on a half-period sequence the map is projected onto the symmetry (see mrx.symmetry)
-    Phi, info = build_map(eq, seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
+    Phi, info = build_map(eq, map_seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
+    if m != ns[1]:
+        Phi = _prolong_map(Phi, seq, m)
     defect = f"defect {info['symmetry_defect']:.1e}"
     note = (f"map projected, {defect}, half-period quadrature" if seq.half_period
             else f"{defect}, not exploited: non-uniform angular knots" if symmetry == "stellarator"
@@ -123,6 +135,18 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
           f"det DPhi in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
           f"symmetry {symmetry} ({note})", flush=True)
     seq.set_geometry_from_map(Phi)
+    seq.map_theta = m
     seq.build_preconditioners(mass_atom, laplacian_atom)
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
     return seq
+
+
+def _prolong_map(Phi, seq, m):
+    """The map ``Phi`` of the tensor basis with ``m`` theta cells written in the basis of ``seq`` (``n_theta = m 2^l``
+    cells) by dyadic knot insertion along theta, which represents the same function exactly."""
+    import dataclasses
+    import jax.numpy as jnp
+    R = jnp.asarray(prolongation(m, seq.ns[1], seq.p, False))
+    lift = lambda raw: jnp.einsum("jJ,...aJl->...ajl", R, raw)
+    raw = {name: lift(getattr(Phi, name)) for name in (("raw_R", "raw_Z") if hasattr(Phi, "raw_R") else ("raw_P",))}
+    return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], **raw)

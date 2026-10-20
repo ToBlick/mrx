@@ -405,7 +405,7 @@ def _lower_norm(seq, k: int):
     return lambda r: nu(_mass(seq, _grad(seq, P(r), k - 1), k))
 
 
-def _lower_solve(seq, k: int, solve, apply, c, target):
+def _lower_solve(seq, k: int, solve, apply, c, target, consistent=None):
     """``(y, info)`` with ``A y = c`` for the (k-1)-form unknown of a split of a k-form solve, stopped where
     the residual ``r = c - A y`` counts at most ``target`` in the residual of the k-form equation.
 
@@ -417,10 +417,23 @@ def _lower_solve(seq, k: int, solve, apply, c, target):
     solve of that residual takes it to ``target``. The ratio changes little as a solve converges, and the
     outer check of :func:`_pair_loop` catches what is left. Measuring :func:`_lower_norm` in every iteration
     instead costs a mass apply each.
+
+    A singular ``A`` (the stiffness ``S_{k-1}``) needs ``consistent(r, tol)``, which returns ``r`` without its part
+    outside the range of ``A`` up to ``tol`` relative to ``r`` in ``dual_norm(seq, k - 1)``, and its count. ``c`` is
+    consistent only as far as the gauge of the Hodge split made ``z`` co-exact. The first solve takes the rest of
+    ``c`` to a third of the tolerance and leaves that part in ``r``, about 2e-2 of it in ``dual_norm(seq, k - 1)`` on
+    li383 p = 2. The second solve asks for ``target / _lower_norm(r)`` of ``r``, which falls with the smallest
+    angular cell at the axis. Below that 2e-2 the conjugate gradients on the inconsistent ``r`` diverge until
+    ``seq.maxiter``: about 7e-3 at uniform (36,60,36), 1.6e-2 with 30 theta cells on the axis rings, against 2.1e-2
+    with 15 (2026-10-20). So ``r`` is made consistent to a tenth of what the second solve asks for.
     """
     y, info = solve(c, seq.tol / 3.0)
     r = c - apply(y)
-    dy, info_r = solve(r, target / _lower_norm(seq, k)(r))
+    tol = target / _lower_norm(seq, k)(r)
+    if consistent is not None:
+        r, info_c = consistent(r, tol / 10.0)
+        info = _merge_info(info, info_c)
+    dy, info_r = solve(r, tol)
     return y + dy, _merge_info(info, info_r)
 
 
@@ -464,6 +477,13 @@ def _hodge_split(seq, b, k, guess, delta=None, guess_lower=None):
             return _shifted_cg(seq, j, delta, c, tol)
         return _stiffness_solve(seq, c, j, tol)
 
+    def consistent(r, tol):
+        # r without its exact part M G q (G = G_{k-2}): S_{k-2} q = G^T r, stopped where the exact form left by
+        # the residual of q is at most tol relative to r, as in _gauge
+        c = _grad(seq, r, k - 2, transpose=True)
+        q, info = _consistent_solve(seq, c, k - 2, tol=tol * nu_lower(r) / dual_norm(seq, k - 2)(c))
+        return r - _mass(seq, _grad(seq, q, k - 2), k - 1), info
+
     def apply_lower(y):
         S = _stiffness(seq, y, k - 1)
         return S if delta is None else delta * _mass(seq, y, k - 1) + S
@@ -484,7 +504,7 @@ def _hodge_split(seq, b, k, guess, delta=None, guess_lower=None):
             x_perp, info_x = solve(c, k, seq.tol / 3.0 * nu(b) / nu(c))
         a, info_a = _lower_solve(seq, k, lambda c, tol: solve(c, k - 1, tol), apply_lower,
                                  _mass(seq, z, k - 1) - _grad(seq, _mass(seq, x_perp, k), k - 1, transpose=True),
-                                 nu(b) * seq.tol / 3.0)
+                                 nu(b) * seq.tol / 3.0, consistent if delta is None and k >= 2 else None)
         # w = M_{k-1}^-1 G^T M_k x of the returned x, the second unknown of _pair_loop:
         # G^T M_k x = M_{k-1} (z - delta a)
         w = z if delta is None else z - delta * a

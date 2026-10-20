@@ -26,7 +26,9 @@ the axis block of the atoms. The dense factor stores about ``7 n_theta`` numbers
 (``n^4`` in all, 262M numbers on li383 (64,80,32)). Its entries decay fast in theta, so the factor is
 cut to a theta band of half-width :data:`THETA_HALF_WIDTH` and stored row by row with the kept
 columns: a fixed number per degree of freedom (``n^3``, about 270 on li383 (48,64,24)), with the condition
-number of the full factor.
+number of the full factor. The build never holds the dense factor either. The probe keeps the mass on its own theta
+band, and the factor is computed one radial block at a time and cut to the band before the next block, so the memory
+of the build also grows like the number of degrees of freedom.
 It preconditions the mass solves of ``k = 1, 2`` by default (``mass_atom="slab"`` in
 :meth:`mrx.derham_sequence.DeRhamSequence.build_preconditioners`). The atom stays the norm of the solves, every
 ``M^{-1}`` inside an iteration and ``seq.M[k].precondition``, whose users need a symmetric apply. The scalar
@@ -125,67 +127,108 @@ def _layout(E, shapes, rows, records, groups=GROUPS):
     return tables, (theta, ntheta, axis, nt)
 
 
-def _probe(apply, idx, sizes, n):
-    """The diagonal blocks ``D[j, s]`` and the sub-diagonal blocks ``Lo[j, s]`` (block ``s`` against
-    ``s - 1``) of every slab, from colored unit vectors: slabs ``ncz >= 5`` apart and blocks 5 apart
-    in one probe, one column position at a time. Raises if the slab blocks are not block tridiagonal."""
+def _probe(apply, idx, sizes, n, info, w):
+    """The blocks of the slab matrices of one group, from colored unit vectors: slabs ``ncz >= 5`` apart and blocks 5
+    apart in one probe, one column position at a time. The result is the pair of functions ``s -> D[:, s]`` and
+    ``s -> Lo[:, s]`` that return the diagonal block and the sub-diagonal block (block ``s`` against ``s - 1``) of
+    radial block ``s`` of every slab, dense with shape ``(n_slabs, b, b)``, ``D`` symmetrised and with unit padding.
+
+    The mass couples a degree of freedom only to those less than ``p + 1`` theta cells away, so the probe keeps each
+    block on the theta band of half-width ``w`` of :func:`_band_mask`, column by column. This holds a fixed number of
+    entries per degree of freedom. The blocks with axis rows (the first ``nd`` blocks) and the sub-diagonal blocks
+    below them couple to whole rings and are kept dense, ``n_slabs nd b^2`` numbers. Raises if the slab blocks are not
+    block tridiagonal or if the mass reaches beyond the band."""
     nz, ns, b = idx.shape
     ncz = next(c for c in range(5, nz + 1) if nz % c == 0)
     idx_p = jnp.asarray(np.concatenate([idx, np.full((nz, 1, b), n)], axis=1))     # block ns: padding only
     nsel = -(-ns // 5)
+    nd = int(np.flatnonzero(info[2][idx[0]].any(-1)).max(initial=-1)) + 1
+    prev = np.concatenate([np.full_like(idx[0, :1], n), idx[0, :-1]])
+    tables, kept = [], []
+    for mask, dense in ((_band_mask(idx[0], idx[0], info, w, False), np.arange(ns) < nd),
+                        (_band_mask(idx[0], prev, info, w, False), (np.arange(ns) >= 1) & (np.arange(ns) <= nd))):
+        # per block and column the rows of the band (b for none), and per block the entries the probe may not drop
+        cols = np.swapaxes(mask & ~dense[:, None, None], 1, 2)
+        order = np.argsort(~cols, axis=-1, kind="stable")[..., :max(1, int(cols.sum(-1).max()))]
+        rows = np.where(np.take_along_axis(cols, order, -1), order, b)
+        tables.append(jnp.asarray(np.concatenate([rows, np.full((1,) + rows.shape[1:], b)]).astype(np.int32)))
+        kept.append(jnp.asarray(np.concatenate([mask | dense[:, None, None], np.ones((1, b, b), bool)])))
 
     @jax.jit
-    def one(D, Lo, js, ss):
+    def one(D, Lo, Dd, Lod, js, ss):
         cols = idx_p[js][:, ss]
+        below = jnp.minimum(ss + 1, ns)
 
         def column(t):
             x = jnp.zeros(n + 1).at[cols[:, :, t]].set(1.0).at[n].set(0.0)
-            return jnp.concatenate([apply(x[:n]), jnp.zeros(1)])[idx_p[js]]
-        Y = jnp.transpose(jax.lax.map(column, jnp.arange(b), batch_size=PROBE_BATCH), (1, 2, 3, 0))
+            y = jnp.concatenate([apply(x[:n]), jnp.zeros(1)])
+            out, dropped = [], 0.0
+            for s, table, keep in ((ss, tables[0], kept[0]), (below, tables[1], kept[1])):
+                block = y[idx_p[js][:, s]]
+                padded = jnp.concatenate([block, jnp.zeros(block.shape[:2] + (1,))], -1)
+                at = jnp.broadcast_to(table[s, t][None], block.shape[:2] + table.shape[-1:])
+                out.append(jnp.take_along_axis(padded, at, -1))
+                dropped = jnp.maximum(dropped, jnp.max(jnp.abs(jnp.where(keep[s, :, t][None], 0.0, block))))
+            two = jnp.where((ss + 2 < ns)[None, :, None], y[idx_p[js][:, jnp.minimum(ss + 2, ns)]], 0.0)
+            # the rows of the dense blocks i and i + 1
+            near = [y[idx_p[js][:, i:i + 2]] for i in range(nd)]
+            return out[0], out[1], dropped, jnp.max(jnp.abs(two)), near
+        vd, vl, dropped, far, near = jax.lax.map(column, jnp.arange(b), batch_size=PROBE_BATCH)
         jj = js[:, None]
-        D = D.at[jj, ss[None, :]].set(Y[:, ss], mode="drop")
-        below = jnp.where(ss + 1 < ns, ss + 1, ns + 5)
-        Lo = Lo.at[jj, below[None, :]].set(Y[:, jnp.minimum(ss + 1, ns)], mode="drop")
-        two = jnp.where((ss + 2 < ns)[None, :, None, None], Y[:, jnp.minimum(ss + 2, ns)], 0.0)
-        return D, Lo, jnp.max(jnp.abs(two))
+        D = D.at[jj, ss[None, :]].set(jnp.moveaxis(vd, 0, 2), mode="drop")
+        Lo = Lo.at[jj, jnp.where(ss + 1 < ns, ss + 1, ns + 5)[None, :]].set(jnp.moveaxis(vl, 0, 2), mode="drop")
+        for i, rows in enumerate(near):
+            hit = jnp.any(ss == i)
+            rows = jnp.moveaxis(rows, 0, -1)
+            Dd = Dd.at[js, i].set(jnp.where(hit, rows[:, 0], Dd[js, i]))
+            Lod = Lod.at[js, i].set(jnp.where(hit, rows[:, 1], Lod[js, i]))
+        return D, Lo, Dd, Lod, jnp.max(dropped), jnp.max(far)
 
-    D = jnp.zeros((nz, ns, b, b))
-    Lo = jnp.zeros((nz, ns, b, b))
-    far = 0.0
+    D = jnp.zeros((nz, ns, b, tables[0].shape[-1]))
+    Lo = jnp.zeros((nz, ns, b, tables[1].shape[-1]))
+    Dd, Lod = jnp.zeros((nz, nd, b, b)), jnp.zeros((nz, nd, b, b))
+    dropped = far = 0.0
     for cz in range(ncz):
         js = jnp.asarray(np.arange(cz, nz, ncz))
         for cs in range(5):
             ss = np.arange(cs, ns, 5)
             ss = jnp.asarray(np.concatenate([ss, np.full(nsel - ss.size, ns)]))      # pad with the padding block
-            D, Lo, f = one(D, Lo, js, ss)
-            far = max(far, float(f))
-    scale = float(jnp.max(jnp.abs(D)))
+            D, Lo, Dd, Lod, d, f = one(D, Lo, Dd, Lod, js, ss)
+            dropped, far = max(dropped, float(d)), max(far, float(f))
+    scale = max(float(jnp.max(jnp.abs(D))), float(jnp.max(jnp.abs(Dd), initial=0.0)))
     if far > 1e-12 * scale:
         raise ValueError(f"the slab blocks are not block tridiagonal ({far / scale:.1e}): too few rings per block")
-    pad = jnp.asarray(np.arange(b)[None, :] >= sizes[:, None])                       # (ns, b)
-    D = 0.5 * (D + jnp.swapaxes(D, -1, -2))
-    D = D + jnp.where(pad[None, :, :, None] & pad[None, :, None, :], jnp.eye(b), 0.0) * scale
-    return D, Lo
+    if dropped > 1e-12 * scale:
+        raise ValueError(f"the mass reaches beyond the theta band of the probe ({dropped / scale:.1e})")
+    pad = np.arange(b)[None, :] >= sizes[:, None]                                    # (ns, b)
+
+    def unpack(values, rows):
+        # the dense blocks (n_slabs, b, b) from the band columns: entry k of column t sits in row rows[t, k]
+        return jnp.zeros((nz, b + 1, b)).at[:, rows, np.arange(b)[:, None]].set(values)[:, :b]
+
+    def diagonal(s):
+        Ds = Dd[:, s] if s < nd else unpack(D[:, s], tables[0][s])
+        return 0.5 * (Ds + jnp.swapaxes(Ds, -1, -2)) + np.where(pad[s][:, None] & pad[s][None, :], np.eye(b), 0.0) * scale
+
+    def lower(s):
+        return Lod[:, s - 1] if 1 <= s <= nd else unpack(Lo[:, s], tables[1][s])
+    return diagonal, lower
 
 
 @jax.jit
-def _factor(D, Lo):
-    """Block Cholesky factor of the block-tridiagonal slab matrices, batched over the slabs:
-    ``Linv[:, s] = L_ss^-1`` and ``B[:, s] = L_{s,s-1}``."""
-    nz, ns, b, _ = D.shape
-
-    def body(previous, s):
-        Lss = jnp.linalg.cholesky(D[:, s] - previous @ jnp.swapaxes(previous, -1, -2))
-        Linv = jax.scipy.linalg.solve_triangular(Lss, jnp.broadcast_to(jnp.eye(b), Lss.shape), lower=True)
-        following = Lo[:, jnp.minimum(s + 1, ns - 1)] @ jnp.swapaxes(Linv, -1, -2)
-        return following, (Linv, previous)
-    _, (Linv, B) = jax.lax.scan(body, jnp.zeros((nz, b, b)), jnp.arange(ns))
-    return jnp.swapaxes(Linv, 0, 1), jnp.swapaxes(B, 0, 1)
+def _factor_step(D, previous, below):
+    """Step ``s`` of the block Cholesky factorisation of the block-tridiagonal slab matrices, batched over the slabs:
+    from the diagonal block ``D = D_s``, ``previous = L_{s,s-1}`` and the sub-diagonal block ``below`` (block
+    ``s + 1`` against ``s``) it returns ``L_ss^-1`` and ``L_{s+1,s}``."""
+    Lss = jnp.linalg.cholesky(D - previous @ jnp.swapaxes(previous, -1, -2))
+    Linv = jax.scipy.linalg.solve_triangular(Lss, jnp.broadcast_to(jnp.eye(D.shape[-1]), Lss.shape), lower=True)
+    return Linv, below @ jnp.swapaxes(Linv, -1, -2)
 
 
 def _rows(Linv, B):
-    """The forward rows ``W[:, s] = [L_ss^-1 | -L_ss^-1 L_{s,s-1}]`` of the factor ``(Linv, B)`` of :func:`_factor`, as
-    ``(n_slabs, n_blocks, b, 2 b)``. Block ``s`` of ``L^-1 x`` is ``W[:, s] (x_s, y_{s-1})``, one product per step."""
+    """The forward rows ``W[:, s] = [L_ss^-1 | -L_ss^-1 L_{s,s-1}]`` of radial block ``s`` from ``Linv = L_ss^-1`` and
+    ``B = L_{s,s-1}`` of :func:`_factor_step`, as ``(n_slabs, b, 2 b)``. Block ``s`` of ``L^-1 x`` is
+    ``W[:, s] (x_s, y_{s-1})``, one product per step."""
     return jnp.concatenate([Linv, -(Linv @ B)], -1)
 
 
@@ -234,20 +277,15 @@ def _band_mask(rows_idx, cols_idx, info, w, lower):
 
 
 def _ell(A, mask):
-    """ELL rows of the blocks ``A`` (n_slabs, n_blocks, R, m) on the mask (n_groups, n_blocks, R, m) of each group of
-    consecutive slabs, one pair per block: the column table ``(n_groups, R, K)`` shared by the slabs of a group, with
-    the zero slot ``m``, and the values ``(n_slabs, R, K)``. ``K`` is the widest row of the block, so blocks with
-    narrow rows (near the axis, or on coarse rings of a graded space) store and read less."""
+    """ELL rows of the blocks ``A`` (n_slabs, R, m) on the mask (n_groups, R, m) of each group of consecutive slabs: the
+    column table ``(n_groups, R, K)`` shared by the slabs of a group, with the zero slot ``m``, and the values
+    ``(n_slabs, R, K)``. ``K`` is the widest row of the block, so blocks with narrow rows (near the axis, or on coarse
+    rings of a graded space) store and read less."""
     S, G = A.shape[0], mask.shape[0]
-    blocks = []
-    for s in range(A.shape[1]):
-        m = mask[:, s]
-        order = np.argsort(~m, axis=-1, kind="stable")[..., :max(1, int(m.sum(-1).max()))]
-        valid = np.take_along_axis(m, order, -1)
-        vals = jnp.take_along_axis(A[:, s], jnp.asarray(np.repeat(order.astype(np.int32), S // G, 0)), -1)
-        blocks.append((jnp.asarray(np.where(valid, order, A.shape[-1]).astype(np.int32)),
-                       vals * np.repeat(valid, S // G, 0)))
-    return tuple(blocks)
+    order = np.argsort(~mask, axis=-1, kind="stable")[..., :max(1, int(mask.sum(-1).max()))]
+    valid = np.take_along_axis(mask, order, -1)
+    vals = jnp.take_along_axis(A, jnp.asarray(np.repeat(order.astype(np.int32), S // G, 0)), -1)
+    return jnp.asarray(np.where(valid, order, A.shape[-1]).astype(np.int32)), vals * np.repeat(valid, S // G, 0)
 
 
 def _gather(c, V, v):
@@ -265,30 +303,32 @@ def _scatter(c, V, v, m):
     return jnp.zeros((S, m + 1), v.dtype).at[jnp.arange(S)[:, None, None], c].add(V * v[:, :, None])[:, :m]
 
 
-def _banded(Linv, B, rows, n, info, w, dtype):
-    """The sweep tables of the factor ``(Linv, B)`` of :func:`_factor` cut to the theta band of half-width ``w``.
+def _banded(Linv, B, B_next, mL, mB, mB_next, dtype, first=False):
+    """The sweep tables of radial block ``s`` of the factor of :func:`_factor_step` cut to the theta band.
 
-    ``Linv`` and ``B`` hold the slabs of all groups, ``(n_slabs, n_blocks, b, b)``, ``rows`` the index tables of the
-    groups ``(n_groups, n_blocks, b)`` with padding ``n``, and ``info`` the theta positions of :func:`_layout`. The
-    tables hold the forward rows ``[Linv_s | -C_s]`` with ``C_s = Linv_s B_s``, the backward rows
-    ``[Linv_s^T | -E_s^T]`` of the blocks ``s >= 1`` with ``E_s = B_{s+1} Linv_s``, so that
-    ``z_s = Linv_s^T y_s - E_s^T z_{s+1}``, and the rows of ``Linv_0`` and ``-E_0`` stacked for block 0, applied by a
-    scatter because its axis columns are dense. All products are formed from the banded factors, so the sweeps
-    apply the banded factor exactly."""
-    S, G = Linv.shape[0], rows.shape[0]
-    prev = np.concatenate([np.full_like(rows[:, :1], n), rows[:, :-1]], 1)
-    mL = np.stack([_band_mask(r, r, info, w, True) for r in rows])
-    mB = np.stack([_band_mask(r, p, info, w, False) for r, p in zip(rows, prev)])
-    Linv = Linv * np.repeat(mL, S // G, 0)
-    B = B * np.repeat(mB, S // G, 0)
+    ``Linv = L_ss^-1``, ``B = L_{s,s-1}`` and ``B_next = L_{s+1,s}`` hold the slabs of all groups,
+    ``(n_slabs, b, b)``, and ``mL``, ``mB``, ``mB_next`` their band masks of :func:`_band_mask` per group,
+    ``(n_groups, b, b)``. ``mB_next`` is ``None`` for the last block. The tables hold the forward rows
+    ``[Linv_s | -C_s]`` with ``C_s = Linv_s B_s``, the backward rows ``[Linv_s^T | -E_s^T]`` with
+    ``E_s = B_{s+1} Linv_s`` (``E = 0`` on the last block), so that ``z_s = Linv_s^T y_s - E_s^T z_{s+1}``, and the
+    rows of ``Linv_s`` and ``-E_s`` stacked in place of the backward rows on the ``first`` block, which is applied
+    by a scatter because its axis columns are dense. All products are formed from the banded factors, so the sweeps
+    apply the banded factor exactly. Returns the forward and the backward table of the block."""
+    S, G = Linv.shape[0], mL.shape[0]
+    Linv, B = Linv * np.repeat(mL, S // G, 0), B * np.repeat(mB, S // G, 0)
     C, mC = Linv @ B, mL.astype(np.float32) @ mB.astype(np.float32) > 0
-    E = jnp.concatenate([B[:, 1:] @ Linv[:, :-1], jnp.zeros_like(Linv[:, :1])], 1)
-    mE = np.concatenate([mB[:, 1:].astype(np.float32) @ mL[:, :-1].astype(np.float32) > 0, np.zeros_like(mL[:, :1])], 1)
+    if mB_next is None:
+        E, mE = jnp.zeros_like(Linv), np.zeros_like(mL)
+    else:
+        E = (B_next * np.repeat(mB_next, S // G, 0)) @ Linv
+        mE = mB_next.astype(np.float32) @ mL.astype(np.float32) > 0
     forward = _ell(jnp.concatenate([Linv, -C], -1), np.concatenate([mL, mC], -1))
-    backward = _ell(jnp.concatenate([jnp.swapaxes(Linv, -1, -2), -jnp.swapaxes(E, -1, -2)], -1)[:, 1:],
-                    np.concatenate([np.swapaxes(mL, -1, -2), np.swapaxes(mE, -1, -2)], -1)[:, 1:])
-    axis = _ell(jnp.concatenate([Linv[:, :1], -E[:, :1]], -2), np.concatenate([mL[:, :1], mE[:, :1]], -2))
-    return tuple(tuple((c, V.astype(dtype)) for c, V in t) for t in (forward, backward, axis))
+    if first:
+        backward = _ell(jnp.concatenate([Linv, -E], -2), np.concatenate([mL, mE], -2))
+    else:
+        backward = _ell(jnp.concatenate([jnp.swapaxes(Linv, -1, -2), -jnp.swapaxes(E, -1, -2)], -1),
+                        np.concatenate([np.swapaxes(mL, -1, -2), np.swapaxes(mE, -1, -2)], -1))
+    return tuple((c, V.astype(dtype)) for c, V in (forward, backward))
 
 
 def _band_forward(tables, x):
@@ -341,37 +381,58 @@ class SlabMass:
             # exact only per parity on a half-period sequence, so the probe sums the two parts
             return mass @ x if split is None else sum(mass @ part for part in split(x))
         mass_1d = _kron_mass_model_1d(seq, k)
-        tables, info = _layout(E, shapes, seq.p, ring_layout(getattr(seq, f"basis_{k}"), seq.dirichlet,
-                                                              seq.theta_counts))
-        factors = []
-        for (idx, sizes), group in zip(tables, GROUPS):
-            D, Lo = _probe(apply_mass, idx, sizes, n)
-            Linv, B = _factor(D, Lo)
-            mz = np.asarray(mass_1d[group[0]][2])
-            d = np.sqrt(np.diag(mz))
-            factors.append((idx, Linv, B, np.linalg.inv(mz / np.outer(d, d))))
+        layouts, info = _layout(E, shapes, seq.p, ring_layout(getattr(seq, f"basis_{k}"), seq.dirichlet,
+                                                               seq.theta_counts))
+        # the mass couples degrees of freedom less than p + 1 theta cells apart
+        blocks = [_probe(apply_mass, idx, sizes, n, info, seq.p + 1) for idx, sizes in layouts]
+        nz, ns, b = layouts[0][0].shape
         # one sweep for both groups: the second group padded to the block count and size of the first. On the free
         # 2-forms the first group reaches one ring further out (the outer ring of the radial component), a block of
         # its own when (n_r - 1) % p == 0.
-        nz, ns, b = factors[0][0].shape
         tinv = np.zeros((2 * nz, 2 * nz))
-        tinv[:nz, :nz], tinv[nz:, nz:] = factors[0][3], factors[1][3]
+        for g, group in enumerate(GROUPS):
+            mz = np.asarray(mass_1d[group[0]][2])
+            d = np.sqrt(np.diag(mz))
+            tinv[g * nz:(g + 1) * nz, g * nz:(g + 1) * nz] = np.linalg.inv(mz / np.outer(d, d))
         self._tinv = jnp.asarray(tinv, FACTOR_DTYPE)
         idx_all = [np.pad(idx, ((0, 0), (0, ns - idx.shape[1]), (0, b - idx.shape[2])), constant_values=n)
-                   for idx, *_ in factors]
+                   for idx, _ in layouts]
         # block-major storage, so that each sweep step reads one contiguous block
         self._idx = jnp.asarray(np.swapaxes(np.concatenate(idx_all), 0, 1))
-        Linv = jnp.concatenate([jnp.broadcast_to(jnp.eye(b), (nz, ns, b, b))
-                                .at[:, :idx.shape[1], :idx.shape[2], :idx.shape[2]].set(L) for idx, L, *_ in factors])
-        B = jnp.concatenate([jnp.zeros((nz, ns, b, b)).at[:, :idx.shape[1], :idx.shape[2], :idx.shape[2]].set(Bg)
-                             for idx, _, Bg, _ in factors])
+        if THETA_HALF_WIDTH is not None:
+            rows = np.stack([idx[0] for idx in idx_all])
+            prev = np.concatenate([np.full_like(rows[:, :1], n), rows[:, :-1]], 1)
+            mL = np.stack([_band_mask(r, r, info, THETA_HALF_WIDTH, True) for r in rows])
+            mB = np.stack([_band_mask(r, q, info, THETA_HALF_WIDTH, False) for r, q in zip(rows, prev)])
+        # the factor block by block, each block cut to the band before the next, so that the build holds the dense
+        # factor of one radial block at a time
+        previous = [jnp.zeros((nz, idx.shape[2], idx.shape[2])) for idx, _ in layouts]
+        steps = []
+        for s in range(ns):
+            Linv, B, B_next = [], [], []
+            for g, (diagonal, lower) in enumerate(blocks):
+                bg, ng = previous[g].shape[-1], layouts[g][0].shape[1]
+                if s < ng:
+                    L, following = _factor_step(diagonal(s), previous[g],
+                                                lower(s + 1) if s + 1 < ng else jnp.zeros((nz, bg, bg)))
+                else:
+                    # a padding block of the shorter group: the identity, coupled to nothing
+                    L, following = jnp.broadcast_to(jnp.eye(bg), (nz, bg, bg)), jnp.zeros((nz, bg, bg))
+                Linv.append(jnp.broadcast_to(jnp.eye(b), (nz, b, b)).at[:, :bg, :bg].set(L))
+                B.append(jnp.zeros((nz, b, b)).at[:, :bg, :bg].set(previous[g]))
+                B_next.append(jnp.zeros((nz, b, b)).at[:, :bg, :bg].set(following))
+                previous[g] = following
+            Linv, B, B_next = (jnp.concatenate(a) for a in (Linv, B, B_next))
+            if THETA_HALF_WIDTH is None:
+                steps.append(_rows(Linv, B).astype(FACTOR_DTYPE))
+            else:
+                steps.append(_banded(Linv, B, B_next, mL[:, s], mB[:, s], mB[:, s + 1] if s + 1 < ns else None,
+                                     FACTOR_DTYPE, first=s == 0))
         if THETA_HALF_WIDTH is None:
-            self._w = jnp.swapaxes(_rows(Linv, B), 0, 1).astype(FACTOR_DTYPE)
-            self._band = None
+            self._w, self._band = jnp.stack(steps), None
         else:
-            self._w = None
-            self._band = _banded(Linv, B, np.stack([idx[0] for idx in idx_all]), n, info, THETA_HALF_WIDTH,
-                                 FACTOR_DTYPE)
+            forward, backward = zip(*steps)
+            self._w, self._band = None, (forward, backward[1:], backward[:1])
 
     def _apply_full(self, x):
         n = x.shape[0]

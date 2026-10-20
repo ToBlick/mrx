@@ -13,24 +13,27 @@ Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form
   The weak gradient of the free 2-forms only represents such functions.
 
 Every solve must converge, and its relative L2 error, computed exactly as
-``||u_h - u*||^2 = <u_h, u_h>_M - 2 u_h . load(u*) + int |u*|^2``, must lie below a measured band. A wrong metric
-factor, boundary row or extraction moves it by a factor. The two representations of the domain (``half``:
-one field period with stellarator symmetry, ``period``: one field period without the reflection) have the same
-mesh, and ``B*`` and ``psi`` have the period and the parity of li383. So the two must give the same error to the
-solver tolerance: this checks the half-period quadrature and the parity views end to end. Preconditioners kept
-across a change of map still precondition the new operators. The zeta-slab mass model conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the
-half-period domain.
+``||u_h - u*||^2 = <u_h, u_h>_M - 2 u_h . load(u*) + int |u*|^2``, must lie below a measured band. The error is
+integrated with ``p + 1`` Gauss points per span on every axis, on a copy of the sequence with the same mesh and map.
+The sequence's own rule has ``p`` points in the angles, at the zeros of the degree-``p`` Legendre polynomial, and
+there it misses the ``h^2`` error of the degree-``p - 1`` directions of the forms (order 3 instead of the true 2 at
+``p = 2``). A wrong metric factor, boundary row or extraction moves the error by a factor. The two representations of
+the domain (``half``: one field period with stellarator symmetry, ``period``: one field period without the
+reflection) have the same mesh, and ``B*`` and ``psi`` have the period and the parity of li383. So the two must
+give the same error to the solver tolerance: this checks the half-period quadrature and the parity views end to
+end. Preconditioners kept across a change of map still precondition the new operators. The zeta-slab mass model
+conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the half-period domain.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-#: 1.25x the relative L2 errors on li383 (12, 20, 12 per period) p = 2, graded, quadrature (p + 1, p, p), measured
-#: 2026-10-19: 6.106e-3 (k = 0, of grad psi), 7.557e-3, 1.747e-2 and 3.418e-2 (uniform theta: 5.05e-3 to 2.46e-2).
-#: The errors are measured with the sequence's own rule.
-ERROR_BAND = {0: 0.00763, 1: 0.00945, 2: 0.0218, 3: 0.0427}
-#: The relative spread of the two representations' errors, which is below 3e-12.
+#: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
+#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
+#: 3.989e-2.
+ERROR_BAND = {0: 0.0105, 1: 0.0147, 2: 0.0303, 3: 0.0499}
+#: The relative spread of the two representations' errors, which is below 3e-10.
 SAME = 1e-3
 NAMES = ("half", "period")
 
@@ -60,6 +63,30 @@ def _integral(seq, values):
     return float(jnp.sum(seq.quad.w * seq.jacobian_j * values))
 
 
+_FINE = {}
+
+
+def _fine(seq):
+    """A copy of ``seq`` with ``p + 1`` Gauss points per span on every axis and the same map, for the errors. Its
+    spaces have the same degrees of freedom, so a solution on a view of ``seq`` is one on the same view of the copy."""
+    from mrx.derham_sequence import DeRhamSequence
+
+    if id(seq) not in _FINE:
+        fine = DeRhamSequence(seq.ns, seq.p, nfp=seq.nfp, symmetry=seq.symmetry, theta_counts=seq.theta_counts,
+                              equilibrium=seq.equilibrium, quad_points=(seq.p + 1,) * 3)
+        fine.set_geometry_from_map(seq.map)
+        _FINE[id(seq)] = fine
+    return _FINE[id(seq)]
+
+
+def _error_sq(seq, parity, uh, f, k):
+    """``(||u_h - f||^2, ||f||^2)`` for the free k-form ``u_h`` of the ``parity`` view (``"odd"``, ``"even"``) of
+    ``seq`` and the physical field ``f`` of logical points, integrated on :func:`_fine`."""
+    fine = getattr(_fine(seq), parity).free
+    target_sq = _integral(fine, jnp.sum(jax.vmap(f)(fine.quad.x) ** 2, axis=1))
+    return float(uh @ (fine.M[k] @ uh)) - 2.0 * float(uh @ fine.load(f, k)) + target_sq, target_sq
+
+
 def _converged(seq, info, residual, rhs, k_res):
     """The solve's sign and its true residual in the norm of its stopping criterion."""
     def norm(v):
@@ -73,7 +100,6 @@ def _solve(seq, k):
     if k in (1, 2):
         space = seq.odd.free                  # B* is odd, and the solves are natural
         f = vacuum_field(space)
-        target_sq = _integral(space, jnp.sum(jax.vmap(f)(space.quad.x) ** 2, axis=1))
         load = space.load(f, k)
         if k == 1:
             rhs = space.G[0].T @ load
@@ -86,7 +112,7 @@ def _solve(seq, k):
             A, info = space.L[1].solve(rhs, return_info=True)
             _converged(space, info, space.L[1] @ A - rhs, rhs, 1)
             uh = space.G[1] @ A
-        err_sq = float(uh @ (space.M[k] @ uh)) - 2.0 * float(uh @ load) + target_sq
+        err_sq, target_sq = _error_sq(seq, "odd", uh, f, k)
     elif k == 0:
         space = seq.even.free                 # psi is even
         grad_psi = jax.grad(psi)
@@ -96,9 +122,7 @@ def _solve(seq, k):
         _converged(space, info, space.S[0] @ u - rhs, rhs, 0)
         # psi is determined up to a constant, so the error is that of its gradient. (The error of psi itself
         # would be a small difference of large numbers, ||psi|| being dominated by its mean.)
-        Gu = space.G[0] @ u
-        target_sq = _integral(space, jnp.sum(jax.vmap(lambda x: grad_psi(space.map(x)))(space.quad.x) ** 2, axis=1))
-        err_sq = float(Gu @ (space.M[1] @ Gu)) - 2.0 * float(Gu @ load) + target_sq
+        err_sq, target_sq = _error_sq(seq, "even", space.G[0] @ u, lambda x: grad_psi(space.map(x)), 1)
     else:
         space = seq.even.free
 
@@ -112,8 +136,7 @@ def _solve(seq, k):
         r3, info = space.L[3].solve(rhs, return_info=True)
         _converged(space, info, space.L[3] @ r3 - rhs, rhs, 3)
         g = -space.M[2].solve(space.D[2].T @ r3)
-        target_sq = _integral(space, jnp.sum(jax.vmap(grad_rho)(space.quad.x) ** 2, axis=1))
-        err_sq = float(g @ (space.M[2] @ g)) - 2.0 * float(g @ load) + target_sq
+        err_sq, target_sq = _error_sq(seq, "even", g, grad_rho, 2)
     return float(np.sqrt(max(err_sq, 0.0) / target_sq))
 
 
@@ -135,12 +158,11 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
     to the tolerance, measured with the new mass matrix. The harmonic forms are set to zero. Without
     ``keep_preconditioners`` the bundle is dropped and a solve raises. A new map of the same resolution reuses the
     compiled programs. The geometry, preconditioners and harmonic forms of ``period`` are restored at the end."""
-    from mrx.equilibria import build_map
     from mrx.nullspace import compute_nullspaces
 
     s = domains("period")
     geometry = s.geometry
-    Phi, _ = build_map(s.equilibrium, s, stellarator_symmetric=s.half_period)
+    Phi = s.map
     stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)
@@ -165,8 +187,8 @@ def test_a_new_geometry_can_keep_the_preconditioners(domains):
 
 
 def test_slab_mass_model_conditions_the_one_form_mass(seq):
-    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 3.30 on li383 (12, 20, 12)
-    (2026-10-16), the metric-lumping atom has 37.8. Band 4."""
+    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 4.04 on li383 (16, 32, 12)
+    (2026-10-20). The metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
     from mrx.metric_lumping import ReducedAtom
     from mrx.slab_mass import SlabMass
     from mrx.solvers import lanczos_bounds
@@ -175,4 +197,4 @@ def test_slab_mass_model_conditions_the_one_form_mass(seq):
     M = odd.M[1]
     b = M @ jnp.asarray(np.random.default_rng(0).standard_normal(odd.n(1)))
     lo, hi = lanczos_bounds(lambda x: M @ x, b, P.apply, 40)
-    assert hi / lo < 4.0
+    assert hi / lo < 5.0

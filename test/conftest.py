@@ -26,7 +26,7 @@ if _CACHE:
 #: The wout geometry, tracked in the repository.
 GEOMETRY = "data/wout_li383_low_res_reference.nc"
 #: Resolution (r, theta, zeta) per field period and the spline degree.
-NS, P = (12, 20, 12), 2
+NS, P = (16, 32, 12), 2
 #: The two representations of the li383 domain, by their symmetry.
 DOMAINS = {"half": "stellarator", "period": "field-period"}
 

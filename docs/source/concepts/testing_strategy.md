@@ -21,7 +21,7 @@ the code, plus the field-line tracer, the shape derivative and the readers:
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
 
 The fixtures of `test/conftest.py` build the li383 equilibrium
-(`data/wout_li383_low_res_reference.nc`) at `(12, 20, 12)` per field period,
+(`data/wout_li383_low_res_reference.nc`) at `(16, 32, 12)` per field period,
 `p = 2` on the graded polar space of production, in two representations with the same mesh: `half`
 (the production sequence, stellarator symmetry, half a period integrated)
 and `period` (one field period without the reflection). `seq` is `half`,
