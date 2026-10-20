@@ -135,6 +135,7 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
           f"det DPhi in [{info['det_range'][0]:.3e}, {info['det_range'][1]:.3e}], "
           f"symmetry {symmetry} ({note})", flush=True)
     seq.set_geometry_from_map(Phi)
+    seq.map_theta = m
     seq.build_preconditioners(mass_atom, laplacian_atom)
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
     return seq

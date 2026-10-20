@@ -113,6 +113,8 @@ class DeRhamSequence():
         quad: the :class:`~mrx.quadrature.QuadratureRule`.
         half_period: whether the quadrature covers only half the zeta period (:mod:`mrx.symmetry`).
         geometry: the installed geometry (:meth:`set_geometry_from_map`), ``None`` before the first map.
+        map_theta: the theta cells of the installed map, the same on every ring (``n_theta`` unless
+            :func:`mrx.geometry.build_sequence` was given another).
         operators: the preconditioners and harmonic forms (:meth:`build_preconditioners`),
             ``None`` after every :meth:`set_geometry_from_map`.
     """
@@ -130,6 +132,8 @@ class DeRhamSequence():
         self.tol = SOLVE_TOL if tol is None else tol
         self.maxiter = maxiter
         self.geometry = None
+        #: the theta cells of the installed map on every ring, set by :func:`mrx.geometry.build_sequence`
+        self.map_theta = self.ns[1]
         self.operators = None
         self.betti_numbers = SOLID_TORUS_BETTI
         Ts = [None if T is None else jnp.asarray(T, dtype=jnp.float64)
