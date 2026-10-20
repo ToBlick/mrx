@@ -87,6 +87,14 @@ All slab mass-solve timings in this section were measured with the solves stoppi
   chunk). It stays out for symmetry, not speed: its float32 factors leave the Hessian symmetric only to 2.5e-5.
 - As the norm of the Laplacian solves and inside the hat solves the slab made them slower: co-exact S_1 121 against
   58 ms, L_2 4.8 against 2.7 s (2026-10-17).
+- Build one radial block at a time (2026-10-20, li383 graded p = 2, model k = 1 Dirichlet, at 36 new the k = 1 free
+  model because the first one also compiles). Peak memory of the build above its start, old -> new, CPU 32 cores:
+  (36,60,36) 6.4 -> 0.67 GB, (48,80,48) 21.4 -> 2.1 GB, (60,100,60)
+  50.4 -> 3.5 GB, (72,120,72) 105 -> 5.8 GB. Per DoF 33 / 47 / 55 / 67 kB old, 3.4 / 4.5 / 3.8 / 3.7 kB new, the
+  stored tables included. H200: 53 -> 4.0 GB at 60, the old build ran out of memory at 72, the new one peaks 23.2 GB
+  with the rest of the build. Build per model on the H200 30-46 s at 60 for both, 63-83 s new at 72. CPU 72 2321 s
+  old, 1376 s new (different nodes). On one node the new build takes 15-30 % longer at (16,32,12), 12-17 % at
+  (24,40,24) and 0-12 % at (36,60,36).
 
 ## 5. Slab Laplacian model for S_0 (2026-10-17, removed 2026-10-18)
 
