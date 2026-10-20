@@ -54,15 +54,21 @@ class Trace:
     def __post_init__(self):
         if not self.checkpoints:
             raise ValueError("name at least one checkpoint to trace")
-        # the archive keys a field by its file name, so two best.h5 of different runs would overwrite each other
-        names = [field_name(path) for path in self.checkpoints]
+        names = field_names(self.checkpoints)
         if len(set(names)) != len(names):
-            raise ValueError(f"the checkpoints must have distinct file names, got {names}")
+            raise ValueError(f"the checkpoints must have distinct names, got {names}")
 
 
-def field_name(path):
-    """The archive name of the field in the checkpoint ``path``: its file name without the extension."""
-    return os.path.splitext(os.path.basename(path))[0]
+def field_names(paths):
+    """The archive names of the fields in the checkpoints ``paths``: the file names without the extension, those
+    that occur more than once (``best.h5`` of two runs) prefixed by their run directory, the parent of
+    ``checkpoints/``."""
+    stems = [os.path.splitext(os.path.basename(path))[0] for path in paths]
+
+    def run(path):
+        d = os.path.dirname(os.path.abspath(path))
+        return os.path.basename(os.path.dirname(d) if os.path.basename(d) == "checkpoints" else d)
+    return [f"{run(path)}_{stem}" if stems.count(stem) > 1 else stem for path, stem in zip(paths, stems)]
 
 
 def main(cli):
@@ -76,7 +82,7 @@ def main(cli):
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
     seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"],
                          symmetry=attrs["symmetry"], graded=attrs["graded"])
-    fields = {field_name(path): read_field(path, seq) for path in cli.checkpoints}
+    fields = {name: read_field(path, seq) for name, path in zip(field_names(cli.checkpoints), cli.checkpoints)}
     planes = planes_for(seq, cli.planes)
     print(f"[trace] {source}: fields {list(fields)}, nfp={seq.nfp}, symmetry {seq.symmetry}, planes "
           f"{[f'{v:g}' for v in planes]} ({steps_for(planes)} steps per period)", flush=True)
