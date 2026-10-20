@@ -132,7 +132,7 @@ class DeRhamSequence():
         self.tol = SOLVE_TOL if tol is None else tol
         self.maxiter = maxiter
         self.geometry = None
-        #: the theta cells of the installed map on every ring, set by :func:`mrx.geometry.build_sequence`
+        # the theta cells of the installed map on every ring, set by mrx.geometry.build_sequence
         self.map_theta = self.ns[1]
         self.operators = None
         self.betti_numbers = SOLID_TORUS_BETTI
