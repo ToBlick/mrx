@@ -8,12 +8,15 @@
 - the harmonic forms span the cohomology of the solid torus, Betti numbers ``(1, 1, 0, 0)``: one free 1-form and
   one Dirichlet 2-form, harmonic to round-off and orthonormal.
 - the extracted derivatives are the raw ones of the tensor-product space.
+- interpolation commutes with the derivative, ``G_k Pi_k f = Pi_{k+1} df``, for fields with the regularity of a smooth
+  form at the axis, axis rows included.
 
 The spaces are the graded polar ones of production.
 
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
 """
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -93,3 +96,52 @@ def test_the_extracted_derivative_is_the_raw_one(seq):
         lhs = seq.E(k + 1).T @ (seq.G[k] @ v)
         rel = float(jnp.linalg.norm(lhs - raw @ (seq.E(k).T @ v)) / jnp.linalg.norm(lhs))
         assert rel < EXACT, f"k={k}: the extracted derivative is not the raw one ({rel:.2e})"
+
+
+def test_interpolation_commutes_with_the_derivative(seq):
+    """``G_k Pi_k f = Pi_{k+1} df`` (k = 0, 1, 2) for ``seq.interpolate`` on the free graded spaces, relative to
+    ``||Pi_{k+1} df||``.
+
+    In theta and zeta ``f`` is a random spline on the knots of the sequence and in ``r`` a polynomial, so every
+    integral of the histopolation is exact and the identity holds to round-off, axis rows included. The fields do not
+    vanish at the axis. They meet only the conditions of a smooth form there: a 0-form and the zeta part of a
+    1-form do not depend on theta at ``r = 0``, and the theta part of a 1-form and the ``dtheta dzeta`` part of a
+    2-form vanish at ``r = 0``."""
+    space = seq.free
+    theta, zeta = seq.basis_0.Lambda[1], seq.basis_0.Lambda[2]
+    rng = np.random.default_rng(7)
+    a_t, a_z = (jnp.asarray(rng.standard_normal((3, b.n))) for b in (theta, zeta))
+    a_0 = jnp.asarray(rng.standard_normal(zeta.n))
+
+    def g(x, i):
+        (vt, it), (vz, iz) = theta.evaluate_local(x[1]), zeta.evaluate_local(x[2])
+        return (vt @ a_t[i, it]) * (vz @ a_z[i, iz])
+
+    def h(x):
+        # constant in theta, the value of a 0-form on the axis
+        vz, iz = zeta.evaluate_local(x[2])
+        return vz @ a_0[iz]
+
+    def q(r):
+        return r + r ** 2
+
+    fields = (lambda x: h(x) + q(x[0]) * g(x, 0),
+              lambda x: jnp.array([(1 + x[0]) * g(x, 0), q(x[0]) * g(x, 1), h(x) + q(x[0]) * g(x, 2)]),
+              lambda x: jnp.array([q(x[0]) * g(x, 0), (1 + x[0]) * g(x, 1), (1 + x[0]) * g(x, 2)]))
+
+    def d(f, k):
+        # the exterior derivative in logical components
+        if k == 0:
+            return jax.grad(f)
+        if k == 1:
+            def curl(x):
+                j = jax.jacfwd(f)(x)            # j[i, a] = d_a f_i
+                return jnp.array([j[2, 1] - j[1, 2], j[0, 2] - j[2, 0], j[1, 0] - j[0, 1]])
+            return curl
+        return lambda x: jnp.trace(jax.jacfwd(f)(x))
+
+    for k, f in enumerate(fields):
+        rhs = space.interpolate(d(f, k), k + 1)
+        rel = float(jnp.linalg.norm(space.G[k] @ space.interpolate(f, k) - rhs) / jnp.linalg.norm(rhs))
+        print(f"\n  k={k}: |G Pi f - Pi df| / |Pi df| = {rel:.1e}")
+        assert rel < EXACT, f"k={k}: interpolation does not commute with the derivative ({rel:.2e})"

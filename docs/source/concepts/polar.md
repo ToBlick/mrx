@@ -121,13 +121,64 @@ so `div B` is conserved to round-off.
 - The polar rows are not tensor-product functions. The preconditioners
   treat them as a dense core (`seq.core_rows(k)`), probed through
   the operator (see [preconditioning.md](preconditioning.md)).
-- Interpolation and histopolation on a polar space (`seq.interpolate`) and
-  the map fit (`mrx.equilibria.build_map`) solve on the tensor space and
-  restrict onto the extracted space (`seq.conforming`), so the axis of a
-  fitted map is one point per `zeta`. On a graded space the restriction also
-  inverts the blocks `R^T R`. It is not a commuting projection there.
+- The map fit (`mrx.equilibria.build_map`) solves on the tensor space and
+  restricts onto the extracted space by the coefficient fit `(E E^T)^-1 E`
+  (`seq.conforming`), so the axis of a fitted map is one point per `zeta`.
+  On a graded space this fit also inverts the blocks `R^T R`. Interpolation
+  restricts differently, see section 6.
 - On a graded space the atoms have one tensor-product block per component
   and theta count, with the Galerkin theta matrices `R^T A R` of the coarse
   functions. The blocks of neighbouring counts are coupled through a few
   rings, and the atoms keep that coupling (see
   [preconditioning.md](preconditioning.md)).
+
+## 6. Interpolation
+
+`seq.interpolate(f, k)` interpolates at the Greville points (k = 0) or
+matches the integrals over the Greville edges, faces and cells (k = 1, 2, 3)
+on the tensor space. These projections commute with the derivative there.
+The tensor coefficients are then restricted onto the extracted space, and
+the restriction decides whether the result still commutes,
+`G_k Pi_k f = Pi_{k+1} df`.
+
+On a ring with `n_theta` cells the restriction keeps the tensor
+coefficients. On a ring with fewer cells it is the ring's own projection in
+theta: interpolation at its Greville points, or histopolation over its
+Greville cells for the derivative splines in theta. These two commute with
+the theta difference. The coefficient fit of `seq.conforming` does not.
+
+The radial difference couples rings of different counts. Where the count
+grows, the ring of radial derivative splines between the two primal rings
+also takes a term from the theta derivative on its inner ring. The term is
+`K = (rho_out - R rho_in) D^+`, with `rho` the interpolation onto a ring's
+count, `R` the knot insertion between the two counts and `D^+` the inverse
+of the raw theta difference on mean-free vectors. It vanishes on graded
+forms, so the restriction stays a projection. `ring_projections` in
+`mrx/projectors.py` builds these matrices once per sequence.
+
+At the axis the restriction is the conforming projection onto the C^1
+polar splines of Güçlü, Patrizi and Campos Pinto (arXiv:2505.15996). It
+acts on each zeta layer of the two innermost rings, after their theta
+projection onto the coarsest count. The three axis functions of a 0-form,
+and of the zeta part of a 1-form, take the mean of ring 0 as their value
+on the axis and the part of ring 1 in the span of `cos theta_j` and
+`sin theta_j`, with `theta_j` the angles of the polar weights. The two axis
+functions of a 1-form, and of the `dtheta dzeta` and `dzeta dr` parts of a
+2-form, take the part of the radial ring 0 in that span. Ring 1 of a
+component with radial derivative splines takes ring 0 on top of its own,
+except the part the axis functions carry. With derivative splines in theta
+that is all of ring 0. So the restriction also changes these ring-1 rows of
+the uniform space, and keeps every other row.
+
+This commutes with the derivative whenever the tensor coefficients have
+the regularity of a smooth form at the axis. Ring 0 of a 0-form, and of
+the zeta part of a 1-form, does not depend on theta. Ring 0 of the theta
+part of a 1-form, and of the `dtheta dzeta` part of a 2-form, vanishes. The
+pullback of a smooth field in space has both properties. A field that
+breaks them is singular at the axis, and the identity is not claimed for
+it. On the axis functions the restriction is the identity, so
+`interpolate` stays a projection.
+
+`test_derham.py` checks the identity on the graded fixture to round-off,
+axis rows included, with fields that have these properties and do not
+vanish at the axis.

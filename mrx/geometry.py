@@ -147,6 +147,8 @@ def _prolong_map(Phi, seq, m):
     import dataclasses
     import jax.numpy as jnp
     R = jnp.asarray(prolongation(m, seq.ns[1], seq.p, False))
-    lift = lambda raw: jnp.einsum("jJ,...aJl->...ajl", R, raw)
+
+    def lift(raw):
+        return jnp.einsum("jJ,...aJl->...ajl", R, raw)
     raw = {name: lift(getattr(Phi, name)) for name in (("raw_R", "raw_Z") if hasattr(Phi, "raw_R") else ("raw_P",))}
     return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], **raw)

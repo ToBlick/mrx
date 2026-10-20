@@ -62,7 +62,7 @@ from mrx.incidence import build_matrixfree_incidence, build_polar_derivative
 from mrx.mass import attach_weights, mass_plan, projection_plan
 from mrx.metric_lumping import ReducedAtom
 from mrx.precision import SOLVE_TOL
-from mrx.projectors import greville_axes, interpolate as _interpolate
+from mrx.projectors import greville_axes, interpolate as _interpolate, ring_projections
 from mrx.pytree import register_arrays
 from mrx.quadrature import QuadratureRule, evaluate_at_xq, integrate_against
 from mrx.spline_bases import basis_derivative_table, basis_table
@@ -132,7 +132,7 @@ class DeRhamSequence():
         self.tol = SOLVE_TOL if tol is None else tol
         self.maxiter = maxiter
         self.geometry = None
-        #: the theta cells of the installed map on every ring, set by :func:`mrx.geometry.build_sequence`
+        # the theta cells of the installed map on every ring, set by mrx.geometry.build_sequence
         self.map_theta = self.ns[1]
         self.operators = None
         self.betti_numbers = SOLID_TORUS_BETTI
@@ -183,6 +183,8 @@ class DeRhamSequence():
         self.d_basis_jk = tuple(basis_table(b, xa) for b, xa in zip(dlam, x))
         self.dd_basis_jk = tuple(basis_derivative_table(b, xa) for b, xa in zip(dlam, x))
         self.greville = greville_axes(self)
+        #: the commuting restriction of :meth:`interpolate` onto the axis and the graded rings, per ``(k, dirichlet)``
+        self.ring_projections = ring_projections(self)
 
         #: grad, curl, div on the raw tensor-product coefficients (:mod:`mrx.incidence`)
         self.incidence = tuple(build_matrixfree_incidence(self, k) for k in range(3))
@@ -226,7 +228,8 @@ class DeRhamSequence():
     def interpolate(self, f, k: int):
         """The k-form DoFs of ``f``, which returns the logical components of the form at a logical point, by
         interpolation at the Greville points (k = 0) or by integrals over edges, faces and cells (k = 1, 2, 3),
-        see :func:`mrx.projectors.interpolate`."""
+        see :func:`mrx.projectors.interpolate`. It commutes with the derivative, ``G[k]`` of the result is the
+        result for ``df``, also at the axis and on a graded space, when ``f`` is smooth at the axis."""
         return _interpolate(self, f, k)
 
     @property
