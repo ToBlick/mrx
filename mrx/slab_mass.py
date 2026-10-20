@@ -43,6 +43,7 @@ import jax
 import jax.numpy as jnp
 
 from mrx.extraction_operators import ring_layout
+from mrx.precision import eps
 from mrx.metric_lumping import PROBE_BATCH, _kron_mass_model_1d, _parity_split
 from mrx.pytree import register_arrays
 
@@ -196,9 +197,10 @@ def _probe(apply, idx, sizes, n, info, w):
             D, Lo, Dd, Lod, d, f = one(D, Lo, Dd, Lod, js, ss)
             dropped, far = max(dropped, float(d)), max(far, float(f))
     scale = max(float(jnp.max(jnp.abs(D))), float(jnp.max(jnp.abs(Dd), initial=0.0)))
-    if far > 1e-12 * scale:
+    # outside the band and beyond the next block the mass is zero, so what the probe sees there is round-off
+    if far > eps(1e4) * scale:
         raise ValueError(f"the slab blocks are not block tridiagonal ({far / scale:.1e}): too few rings per block")
-    if dropped > 1e-12 * scale:
+    if dropped > eps(1e4) * scale:
         raise ValueError(f"the mass reaches beyond the theta band of the probe ({dropped / scale:.1e})")
     pad = np.arange(b)[None, :] >= sizes[:, None]                                    # (ns, b)
 
