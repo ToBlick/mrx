@@ -215,7 +215,10 @@ probing the assembled mass, once per geometry. The full factor would store
 about `7 n_theta` numbers per degree of freedom. Its entries fall off fast
 in theta, so it is cut to a band of a few theta cells (`THETA_HALF_WIDTH`)
 and keeps a fixed number of entries per degree of freedom, still many times
-more than the atom.
+more than the atom. The build never forms the full factor either. The probe
+keeps the mass on its own theta band. The factor is computed one group of
+rings at a time and cut to the band before the next group, so the memory of
+the build also grows only like the number of degrees of freedom.
 It is the preconditioner of the mass solves of `k = 1, 2` by default
 (`mass_atom="slab"`, `"lumping"` keeps the atom). A mass solve stops in the
 norm of its own preconditioner, the slab's for `k = 1, 2`. The atom stays the
