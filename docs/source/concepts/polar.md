@@ -156,11 +156,29 @@ of the raw theta difference on mean-free vectors. It vanishes on graded
 forms, so the restriction stays a projection. `ring_projections` in
 `mrx/projectors.py` builds these matrices once per sequence.
 
-The axis rows keep the coefficient fit onto the axis functions, on uniform
-and graded spaces alike. The fit commutes only when the tensor coefficients
-of the two innermost rings lie in the span of the axis functions. A field
-that vanishes to second order at the axis satisfies this, a general smooth
-field does not, and its defect sits in the first two radial cells. Off the
-axis the restriction commutes on every ring. `test_derham.py` checks the
-identity on the graded fixture to round-off, with fields that vanish to
-second order at the axis.
+At the axis the restriction is the conforming projection onto the C^1
+polar splines of Güçlü, Patrizi and Campos Pinto (arXiv:2505.15996). It
+acts on each zeta layer of the two innermost rings, after their theta
+projection onto the coarsest count. The three axis functions of a 0-form,
+and of the zeta part of a 1-form, take the mean of ring 0 as their value
+on the axis and the part of ring 1 in the span of `cos theta_j` and
+`sin theta_j`, with `theta_j` the angles of the polar weights. The two axis
+functions of a 1-form, and of the `dtheta dzeta` and `dzeta dr` parts of a
+2-form, take the part of the radial ring 0 in that span. Ring 1 of a
+component with radial derivative splines takes ring 0 on top of its own,
+except the part the axis functions carry. With derivative splines in theta
+that is all of ring 0. So the restriction also changes these ring-1 rows of
+the uniform space, and keeps every other row.
+
+This commutes with the derivative whenever the tensor coefficients have
+the regularity of a smooth form at the axis. Ring 0 of a 0-form, and of
+the zeta part of a 1-form, does not depend on theta. Ring 0 of the theta
+part of a 1-form, and of the `dtheta dzeta` part of a 2-form, vanishes. The
+pullback of a smooth field in space has both properties. A field that
+breaks them is singular at the axis, and the identity is not claimed for
+it. On the axis functions the restriction is the identity, so
+`interpolate` stays a projection.
+
+`test_derham.py` checks the identity on the graded fixture to round-off,
+axis rows included, with fields that have these properties and do not
+vanish at the axis.

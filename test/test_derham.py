@@ -8,8 +8,8 @@
 - the harmonic forms span the cohomology of the solid torus, Betti numbers ``(1, 1, 0, 0)``: one free 1-form and
   one Dirichlet 2-form, harmonic to round-off and orthonormal.
 - the extracted derivatives are the raw ones of the tensor-product space.
-- interpolation commutes with the derivative, ``G_k Pi_k f = Pi_{k+1} df``, for fields that vanish to second order
-  at the axis.
+- interpolation commutes with the derivative, ``G_k Pi_k f = Pi_{k+1} df``, for fields with the regularity of a smooth
+  form at the axis, axis rows included.
 
 The spaces are the graded polar ones of production.
 
@@ -102,23 +102,32 @@ def test_interpolation_commutes_with_the_derivative(seq):
     """``G_k Pi_k f = Pi_{k+1} df`` (k = 0, 1, 2) for ``seq.interpolate`` on the free graded spaces, relative to
     ``||Pi_{k+1} df||``.
 
-    In theta and zeta ``f`` is a random spline on the knots of the sequence, so every integral of the histopolation is
-    exact and the identity holds to round-off, also on the rings with fewer theta cells. The radial factor is ``r^2``
-    on the components with primal radial splines and ``r`` on the others, so that the two innermost rings of the
-    tensor-product coefficients vanish. The fit onto the axis functions commutes only on their span, and the axis
-    rows drop out of the claim."""
+    In theta and zeta ``f`` is a random spline on the knots of the sequence and in ``r`` a polynomial, so every
+    integral of the histopolation is exact and the identity holds to round-off, axis rows included. The fields do not
+    vanish at the axis. They meet only the conditions of a smooth form there: a 0-form and the zeta part of a
+    1-form do not depend on theta at ``r = 0``, and the theta part of a 1-form and the ``dtheta dzeta`` part of a
+    2-form vanish at ``r = 0``."""
     space = seq.free
     theta, zeta = seq.basis_0.Lambda[1], seq.basis_0.Lambda[2]
     rng = np.random.default_rng(7)
     a_t, a_z = (jnp.asarray(rng.standard_normal((3, b.n))) for b in (theta, zeta))
+    a_0 = jnp.asarray(rng.standard_normal(zeta.n))
 
     def g(x, i):
         (vt, it), (vz, iz) = theta.evaluate_local(x[1]), zeta.evaluate_local(x[2])
         return (vt @ a_t[i, it]) * (vz @ a_z[i, iz])
 
-    fields = (lambda x: x[0] ** 2 * g(x, 0),
-              lambda x: jnp.array([x[0] * g(x, 0), x[0] ** 2 * g(x, 1), x[0] ** 2 * g(x, 2)]),
-              lambda x: jnp.array([x[0] ** 2 * g(x, 0), x[0] * g(x, 1), x[0] * g(x, 2)]))
+    def h(x):
+        # constant in theta, the value of a 0-form on the axis
+        vz, iz = zeta.evaluate_local(x[2])
+        return vz @ a_0[iz]
+
+    def q(r):
+        return r + r ** 2
+
+    fields = (lambda x: h(x) + q(x[0]) * g(x, 0),
+              lambda x: jnp.array([(1 + x[0]) * g(x, 0), q(x[0]) * g(x, 1), h(x) + q(x[0]) * g(x, 2)]),
+              lambda x: jnp.array([q(x[0]) * g(x, 0), (1 + x[0]) * g(x, 1), (1 + x[0]) * g(x, 2)]))
 
     def d(f, k):
         # the exterior derivative in logical components

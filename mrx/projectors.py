@@ -7,12 +7,18 @@ spline spaces these projections commute with the exterior derivative. The result
 polar (axis-regular) subspace the sequence works in. The function is evaluated at logical points and returns
 the logical components of the form.
 
+At the axis the restriction is the conforming projection onto the C^1 polar splines of Güçlü, Patrizi and
+Campos Pinto (arXiv:2505.15996). The three axis functions of a 0-form take the mean of the innermost ring and the
+first Fourier modes of the next one. Ring 1 of a component with radial derivative splines takes what the axis
+functions leave of ring 0. This commutes with the derivative for every form with the regularity of a smooth form at
+the axis (:func:`_axis_projections`).
+
 On a graded space the restriction onto a ring with fewer theta cells is the coarse ring's own projection in
 theta: interpolation at its Greville points of the tensor-product splines, or histopolation over its Greville
 cells of the derivative splines. Where the theta count grows between two primal rings, the ring of radial
-derivative splines between them also takes a term from the theta derivative of the inner ring
-(:func:`ring_projections`). With these, the restriction commutes with the derivative on every ring off the axis.
-The sequence builds the matrices once as ``seq.ring_projections``.
+derivative splines between them also takes a term from the theta derivative of the inner ring. With these, the
+restriction commutes with the derivative on every ring, axis included. The sequence builds the matrices once as
+``seq.ring_projections`` (:func:`ring_projections`).
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from jax import Array
 
 
 import mrx
-from mrx.extraction_operators import conforming_restriction, prolongation, ring_layout
+from mrx.extraction_operators import _SURGERY, prolongation, ring_layout
 from mrx.spline_bases import DerivativeSpline, SplineBasis, basis_table
 
 if TYPE_CHECKING:
@@ -177,17 +183,82 @@ def _jump_correction(theta, m_in, m_out):
     return gap @ inverse_difference
 
 
-def ring_projections(seq):
-    """The restriction of :func:`interpolate` onto the rings of a graded space with fewer theta cells than the wall,
-    per ``(k, dirichlet)``, as groups ``(rows, cols, matrix)``. The DoFs ``rows`` (shape ``(g, m, n_z)``) of ``g``
-    rings with ``m`` theta cells take ``matrix @ c[cols]`` of the raw coefficients ``c``, ``cols`` of shape
-    ``(g, n_cols, n_z)``.
+def _axis_projections(form, xi, theta, counts):
+    """The restriction of :func:`interpolate` onto the polar axis functions of the k-form space ``form`` and onto the
+    ring of radial derivative splines next to them, as groups ``(rows, cols, matrix)`` like
+    :func:`ring_projections`, for the free and the Dirichlet space alike. ``xi`` are the polar weights of
+    :func:`~mrx.extraction_operators.get_xi` on the coarsest theta count ``m``, the count of the three
+    innermost rings, and ``counts`` the theta counts of :func:`~mrx.extraction_operators.ring_layout`.
 
-    A ring takes the coarse theta projection of its raw coefficients (:func:`_theta_projection`). A ring of radial
-    derivative splines and primal theta splines between primal rings of ``m_in < m_out`` cells (k = 1, 2) also takes
-    the correction :func:`_jump_correction` of the theta derivative on its inner primal ring, so that the
-    restriction commutes with the radial difference. Rings with ``n_theta`` cells and no such correction keep their
-    raw coefficients and are left out, all of them on a uniform space. The restriction commutes with the reflection
+    It is the conforming projection onto the C^1 polar splines of Güçlü, Patrizi and Campos Pinto
+    (arXiv:2505.15996, eq. 66-71), written per zeta layer for each axis block of the space and taken after the
+    theta projection of the two innermost rings onto ``m`` cells:
+
+    - Three axis functions (a 0-form, or the zeta part of a 1-form) take the mean of ring 0 and the part of ring 1
+      in the span of ``cos theta_j`` and ``sin theta_j``, the angles of the axis functions.
+    - Two axis functions (the gradients of the 0-form ones, or their curls in a 2-form) take the part of ring 0 of the
+      radial component in that span.
+    - Ring 1 of a component with radial derivative splines takes ring 0 on top of its own, except the part the axis
+      functions carry. With derivative splines in theta that is all of ring 0.
+
+    Applied to the tensor-product interpolation this commutes with the derivative when the tensor coefficients meet
+    the conditions of a smooth form at the axis: ring 0 of a 0-form (and of the zeta part of a 1-form) does not depend
+    on theta, and the theta part of a 1-form (and the ``dtheta dzeta`` part of a 2-form) vanishes on ring 0. On the
+    axis functions themselves it is the identity, so the restriction stays a projection."""
+    xi = np.asarray(xi)
+    m = xi.shape[2]
+    offsets = np.cumsum([0] + [math.prod(s) for s in form.shape])
+    project = (_theta_projection(theta, m, False), _theta_projection(theta, m, True))
+    rings = xi[:, 1, :]                                       # (3, m) ring 1 of the three axis functions
+    radial = xi[1:, 1, :] - xi[1:, 0, :]                      # (2, m) their radial differences: span{cos, sin}
+    span = radial.T @ np.linalg.solve(radial @ radial.T, radial)
+    mean = np.full((m, m), 1.0 / m)
+
+    def raw(c, a):
+        nt, nz = form.shape[c][1], form.shape[c][2]
+        return offsets[c] + np.ravel_multi_index((a, np.arange(nt)[:, None], np.arange(nz)[None, :]), form.shape[c])
+
+    axis, row0 = [], 0
+    for block in _SURGERY[form.k]:
+        nz = form.shape[block[1]][2]
+        if block[0] == "rings":
+            c = block[1]
+            matrix = np.linalg.solve(rings @ rings.T, rings) @ np.hstack([mean @ project[0], span @ project[0]])
+            axis.append((row0 + np.arange(3)[:, None] * nz + np.arange(nz)[None, :],
+                         np.concatenate([raw(c, 0), raw(c, 1)]), matrix))
+            row0 += 3 * nz
+        else:
+            _, _, c_r, sign = block
+            matrix = sign * np.linalg.solve(radial @ radial.T, radial) @ project[0]
+            axis.append((row0 + np.arange(2)[:, None] * nz + np.arange(nz)[None, :], raw(c_r, 0), matrix))
+            row0 += 2 * nz
+
+    built = {}
+    for dirichlet in (False, True):
+        groups = list(axis)
+        for c, a, _, derivative, first, nz in ring_layout(form, dirichlet, counts):
+            if a != 1 or 0 not in form.derivative_axes(c):
+                continue
+            # the part of ring 0 the axis functions carry: none with derivative splines in theta
+            kept = np.zeros((m, m)) if derivative else span
+            matrix = np.hstack([(np.eye(m) - kept) @ project[derivative], project[derivative]])
+            groups.append((first + np.arange(m)[:, None] * nz + np.arange(nz)[None, :],
+                           np.concatenate([raw(c, 0), raw(c, 1)]), matrix))
+        built[dirichlet] = groups
+    return built
+
+
+def ring_projections(seq):
+    """The restriction of :func:`interpolate` away from the coefficients it keeps, per ``(k, dirichlet)``, as groups
+    ``(rows, cols, matrix)``. The DoFs ``rows`` (shape ``(g, m, n_z)``) of ``g`` rings with ``m`` basis functions per
+    zeta layer take ``matrix @ c[cols]`` of the raw coefficients ``c``, ``cols`` of shape ``(g, n_cols, n_z)``.
+
+    The axis functions and the ring of radial derivative splines next to them take :func:`_axis_projections`. On a
+    graded space every other ring with fewer theta cells than the wall takes the coarse theta projection of its raw
+    coefficients (:func:`_theta_projection`). A ring of radial derivative splines and primal theta splines between
+    primal rings of ``m_in < m_out`` cells (k = 1, 2) also takes the correction :func:`_jump_correction` of the theta
+    derivative on its inner primal ring, so that the restriction commutes with the radial difference. All other
+    rings keep their raw coefficients and are left out. The restriction commutes with the reflection
     ``theta -> -theta``, so a parity view reduces its result like the coefficient fit of ``seq.conforming``."""
     counts = seq.theta_counts
     theta = seq.basis_0.Lambda[1]
@@ -195,6 +266,7 @@ def ring_projections(seq):
     for k, form in enumerate((seq.basis_0, seq.basis_1, seq.basis_2, seq.basis_3)):
         offsets = np.cumsum([0] + [math.prod(s) for s in form.shape])
         c_jump, c_partner, sign = _JUMP_PARTNER.get(k, (None, None, 0.0))
+        axis = _axis_projections(form, seq._xi(), theta, counts)
 
         def raw(c, a):
             nt, nz = form.shape[c][1], form.shape[c][2]
@@ -205,12 +277,14 @@ def ring_projections(seq):
             records = () if counts is None else ring_layout(form, dirichlet, counts)
             for c, a, m, derivative, first, nz in records:
                 m_in = counts[a] if c == c_jump else m
-                if m == theta.n and m_in == m:
+                if (m == theta.n and m_in == m) or (a == 1 and 0 in form.derivative_axes(c)):
                     continue
                 rows = first + np.arange(m)[:, None] * nz + np.arange(nz)[None, :]
                 cols = raw(c, a) if m_in == m else np.concatenate([raw(c, a), raw(c_partner, a)])
                 groups.setdefault((c, m, m_in, derivative), []).append((rows, cols))
             built[(k, dirichlet)] = tuple(
+                (jnp.asarray(rows[None]), jnp.asarray(cols[None]), jnp.asarray(matrix))
+                for rows, cols, matrix in axis[dirichlet]) + tuple(
                 (jnp.asarray(np.stack([r for r, _ in rings])), jnp.asarray(np.stack([q for _, q in rings])),
                  jnp.asarray(_theta_projection(theta, m, derivative) if m_in == m else
                              np.hstack([_theta_projection(theta, m, False), sign * _jump_correction(theta, m_in, m)])))
@@ -224,10 +298,11 @@ def interpolate(seq: "DeRhamSequence", f, k: int):
     on ``seq.free``). ``f`` returns the logical components of the form at a logical point (for k = 3 the
     density times ``det DPhi``).
 
-    The tensor-product coefficients are restricted to the polar space by the coefficient fit
-    ``(E E^T)^-1 E`` on the axis rows and by :func:`ring_projections` on the graded rings. Off the axis
-    ``G_k`` of the result is the result for ``df``, on uniform and graded spaces alike. The axis rows commute
-    only when the tensor-product coefficients of the two innermost rings lie in the span of the axis functions."""
+    The tensor-product coefficients are restricted to the polar space by :func:`ring_projections`. ``G_k`` of the
+    result is the result for ``df``, on uniform and graded spaces alike and at the axis too, when ``f`` has the
+    regularity of a smooth form at the axis: a 0-form and the zeta part of a 1-form do not depend on theta at
+    ``r = 0``, and the theta part of a 1-form and the ``dtheta dzeta`` part of a 2-form vanish there. The pullback
+    of a smooth field in space has these properties."""
     axes = seq.greville
     logical = _wrapped(seq, f, k) if k else None
     coeffs = []
@@ -250,12 +325,12 @@ def interpolate(seq: "DeRhamSequence", f, k: int):
 
 
 def _restrict(seq, raw, k):
-    """The ``k``-form DoFs of ``seq`` from the tensor-product coefficients ``raw``: the coefficient fit
-    ``(E E^T)^-1 E`` on the axis rows, the raw coefficients on the other rings with ``n_theta`` cells and
-    :func:`ring_projections` on the graded rings. On a parity view it is ``X^T`` of the full space's."""
+    """The ``k``-form DoFs of ``seq`` from the tensor-product coefficients ``raw``: :func:`ring_projections` on the
+    axis functions, the ring next to them and the graded rings, the raw coefficients on all other rings. On a parity
+    view it is ``X^T`` of the full space's."""
     key = (int(k), seq.dirichlet)
     base = seq if seq.parity is None else seq._base
-    v = conforming_restriction(base.extraction[key], raw, base.core[key])
+    v = base.extraction[key] @ raw
     for rows, cols, matrix in base.ring_projections[key]:
         v = v.at[rows].set(jnp.einsum('ij,gjl->gil', matrix, raw[cols]))
     return v if seq.parity is None else seq.reduction[key].T @ v
