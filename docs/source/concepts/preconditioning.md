@@ -67,12 +67,14 @@ solution plus a closed form that nothing controls, of which only `G_k x` is dete
 force potential, the vector potential of the helicity, the harmonic 2-form and the vacuum field of the
 shape optimisation use, since only `G_k x` enters them.
 
-The stiffness solve needs a consistent right-hand side. A right-hand side that is only approximately in the range of
-`G_k^T`, such as the middle one of the Hodge split, makes the iteration diverge. The second solve of the
-exact part, `S_{k-1} a = M_{k-1} g`, is consistent only as far as `g` is co-exact. So `g` is gauged first by
-one solve of degree `k - 2`. That solve stops relative to `M_{k-1} g` and not to its own right-hand side,
-which weights the high modes up to `h^-1` more. Without the gauge the second solve diverges. A 0-form
-solution has no exact part and a 3-form solution no co-exact part. For k = 3 the exact part is the whole solve.
+The stiffness solve needs a consistent right-hand side. In float32 `G_k^T w` is formed from a lifted vector
+([Precision](precision.md)), since computed in float32 it is inconsistent at about `1e-7`. A right-hand side that
+is only approximately in the range of `G_k^T`, such as the middle one of the Hodge split, makes the iteration
+diverge. The second solve of the exact part, `S_{k-1} a = M_{k-1} g`, is consistent only as far as `g` is co-exact.
+So `g` is gauged first by one solve of degree `k - 2`. That solve stops relative to `M_{k-1} g` and not to its own
+right-hand side, which weights the high modes up to `h^-1` more. Without the gauge the second solve diverges. A
+0-form solution has no exact part and a 3-form solution no co-exact part. For k = 3 the exact part is the whole
+solve.
 
 **k = 3.** `S_3 = 0`, so the middle solve of the split has nothing to do and is left out. What remains is
 

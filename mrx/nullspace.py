@@ -4,12 +4,19 @@ The Laplacian and Leray solves on a sequence use these forms to remove the null 
 Run :func:`compute_nullspaces` once the preconditioners are built. The forms depend on the geometry, so
 installing a new map drops them together with the preconditioners, and both must be built again.
 :func:`harmonic_rayleigh` checks how harmonic a given form is.
+
+In float32 the forms are computed and stored as :class:`~mrx.double_single.DS`. A form rounded to float32 is
+1e-7 from the kernel, and a solve that removes it does not get below that.
 """
 
+import jax
 import jax.numpy as jnp
 
 import mrx
+import mrx.double_single as ds
 import mrx.operators as op
+from mrx.differential_forms import DERIV_AXES
+from mrx.precision import PAIRS, inner, lift, to_working
 
 
 #: The co-closed solve of the harmonic 2-form stops this factor below the tolerance of the sequence. The Rayleigh
@@ -29,17 +36,43 @@ def harmonic_rayleigh(seq, v, k):
     in the space of ``seq``. It is zero for a harmonic form and of the order of the smallest nonzero
     eigenvalue otherwise. It takes a mass solve, so it is meant as a diagnostic.
     """
-    v = jnp.asarray(v)
-    lv = seq.L[k] @ v
-    mv = seq.M[k] @ v
-    return float(jnp.dot(v, lv) / jnp.dot(v, mv))
+    v = lift(v)
+    return inner(v, seq.L[k] @ v) / inner(v, seq.M[k] @ v)
 
 
-def _closed_seed(seq, components, k):
-    """The form with constant logical components ``components``, checked to be closed up to round-off."""
-    components = jnp.asarray(components)
-    seed = seq.interpolate(lambda x_hat: components, k)
-    closed = float(seq.l2_norm(seq.G[k] @ seed, k + 1) / seq.l2_norm(seed, k))
+def _normalised(space, v, k):
+    """``v`` scaled to unit norm in ``M_k``. The projections that remove a form assume that norm to the
+    accuracy of the form."""
+    if PAIRS:
+        return v * ds.rsqrt(ds.dot(v, space.M[k] @ v))
+    return v / space.l2_norm(v, k)
+
+
+def _constant_seed(space, k):
+    """The 1-form ``d zeta`` (k = 1) or the 2-form ``dr ^ dtheta`` (k = 2) in ``space``, checked to be closed up
+    to round-off.
+
+    Its third component is the constant 1 and the others vanish. The coefficients of a constant are 1 along an
+    axis with the spline basis and the cell integrals of the unit-integral splines along an axis with the
+    derivative basis. They are written down rather than interpolated, so that along the spline axes they are
+    exactly equal and the form is closed to the round-off of the derivative, in float32 as well. On a parity
+    view the restriction keeps the part of the view's parity, which is closed as well, since the reflection
+    commutes with the derivative.
+    """
+    form = (space.basis_0, space.basis_1, space.basis_2, space.basis_3)[k]
+    shapes = [tuple(int(n) for n in s) for s in form.shape]
+    factors = []
+    for a in range(3):
+        if a in DERIV_AXES[k][2]:
+            d = space.basis_0.dLambda[a]
+            factors.append(1.0 / jax.vmap(d._scale)(jnp.arange(d.n)))
+        else:
+            factors.append(jnp.ones(shapes[2][a]))
+    third = jnp.einsum('i,j,k->ijk', *factors).ravel()
+    raw = jnp.concatenate([jnp.zeros(shapes[0][0] * shapes[0][1] * shapes[0][2]),
+                           jnp.zeros(shapes[1][0] * shapes[1][1] * shapes[1][2]), third])
+    seed = space.conforming(lift(raw), k)
+    closed = float(space.l2_norm(to_working(space.G[k] @ seed), k + 1) / space.l2_norm(to_working(seed), k))
     if closed > mrx.sqrt_eps():
         raise RuntimeError(
             f"compute_nullspaces: the k={k} seed is not closed (|G seed| / |seed| = {closed:.2e})")
@@ -82,7 +115,7 @@ def _compute(space, verbose):
 
     def store(sp, k, v):
         # sp.free is taken anew after every store: a view copies the operators it sees
-        v = v / sp.l2_norm(v, k)
+        v = _normalised(sp, lift(v), k)
         _commit(space, op.set_nullspace(space.operators, k, sp.dirichlet, v[None, :]))
         if verbose:
             name = "" if space.parity is None else ("odd " if space.parity == -1 else "even ")
@@ -91,16 +124,18 @@ def _compute(space, verbose):
 
     betti = space.betti_numbers
     if op.n_vectors(betti, 3, True):
-        store(space, 3, space.M[3].solve(_constant(space, 3)))
+        store(space, 3, space.M[3].solve(_constant(space, 3), accurate=True))
     if op.n_vectors(betti, 2, True):
         # the closed seed has no coexact part, so removing its exact part (the image of curl, one
         # curl-curl solve) leaves the harmonic form
-        seed2 = _closed_seed(space, (0.0, 0.0, 1.0), 2)
-        a = space.S[1].solve(space.G[1].T @ (space.M[2] @ seed2), tol=HARMONIC_TOL * space.tol)
+        seed2 = _constant_seed(space, 2)
+        a = space.S[1].solve(space.G[1].T @ (space.M[2] @ seed2), tol=HARMONIC_TOL * space.tol, accurate=True)
         store(space, 2, seed2 - space.G[1] @ a)
     if op.n_vectors(betti, 0, False):
         store(space.free, 0, _constant(space.free, 0))
     if op.n_vectors(betti, 1, False):
-        # curl-free since the seed is closed, weakly divergence-free by the projection
-        v1, _ = space.free.leray(_closed_seed(space.free, (0.0, 0.0, 1.0), 1), k=1)
-        store(space.free, 1, v1)
+        # curl-free since the seed is closed, weakly divergence-free by the Leray projection
+        free = space.free
+        seed1 = _constant_seed(free, 1)
+        q = free.L[0].solve(-(free.D[0].T @ seed1), accurate=True)
+        store(free, 1, seed1 + free.G[0] @ q)

@@ -22,6 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.derham_sequence import DeRhamSequence
+from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL,
                                    newton_direction)
 from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
@@ -157,14 +158,14 @@ class TimeStepper(eqx.Module):
         even = self.seq.even
         hs = even.nullspace(2)
         self.harmonic = hs
-        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=jnp.float64)
+        self.harmonic_norm_sq = jnp.asarray([h @ (even.M[2] @ h) for h in hs], dtype=float)
         if not isinstance(self.harmonic_norm_sq, jax.core.Tracer) and bool((self.harmonic_norm_sq <= 0).any()):
             raise ValueError("the harmonic 2-forms of the sequence are zero: run mrx.nullspace.compute_nullspaces "
                              "before building the TimeStepper")
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
         self.resistive = bool(self.resistivity != 0)
-        self.resistivity = jnp.asarray(self.resistivity, dtype=jnp.float64)
+        self.resistivity = jnp.asarray(self.resistivity, dtype=float)
         self.cfl_weights = logical_cfl_weights(self.seq)
 
     def with_reference(self, B_ref: jnp.ndarray) -> "TimeStepper":
@@ -184,7 +185,7 @@ class TimeStepper(eqx.Module):
         ``JxB_dual``, with ``a`` a vector potential of the force and ``c h`` its harmonic part."""
         seq = self.seq.even
         # only curl a enters, so a keeps a gradient that nothing controls
-        a = seq.S[1].solve(seq.G[1].T @ JxB_dual, guess=a_guess)
+        a = seq.S[1].solve(seq.G[1].T @ lift(JxB_dual), guess=a_guess)
         ch = self.harmonic.T @ ((self.harmonic @ JxB_dual) / self.harmonic_norm_sq)   # zero on the even view
         F = seq.G[1] @ a + ch
         return F, seq.M[2] @ F, a
@@ -265,7 +266,7 @@ def initial_state(B_dof: jnp.ndarray, ts: TimeStepper, step: int = 0) -> State:
         B_n=B_dof,
         warm=WarmStarts(J=J0, E=zeros1_odd, a=jnp.zeros(even.n(1)), a_F=a_F0, A=zeros1_odd,
                         resistive_a=zeros1_odd),
-        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=jnp.float64), step=jnp.int32(step)),
+        best=BestState(B=B_dof, resid=jnp.asarray(resid0, dtype=float), step=jnp.int32(step)),
     )
 
 
@@ -319,8 +320,9 @@ def sample(ts: TimeStepper, state: State, pw_guess: jnp.ndarray) -> tuple[State,
     ``beta_vol``. ``p_w`` is the weak pressure, to be passed back as ``pw_guess`` next time. The returned state
     has refreshed warm starts.
     """
-    state, p_w, scalars = _sample(ts, state, pw_guess)
-    return state, p_w, {k: float(v) for k, v in scalars.items()}
+    state, p_w, scalars, MB = _sample(ts, state, pw_guess)
+    # E in the arithmetic of the solves: in float32 its changes over a run are below the float32 round-off
+    return state, p_w, {"E": 0.5 * inner(lift(state.B_n), MB), **{k: float(v) for k, v in scalars.items()}}
 
 
 @eqx.filter_jit
@@ -333,19 +335,19 @@ def _sample(ts, state, pw_guess):
     p_w = weak_pressure(J, B, seq, p_guess=pw_guess)
     h, A = compute_helicity(B, seq, w.A)
     F_norm = jnp.sqrt(F @ MF)
-    scalars = dict(E=0.5 * odd.l2_norm_sq(B, 2), F=F_norm, resid=(F_norm / force_scale(seq, B)) ** 2, helicity=h,
+    scalars = dict(F=F_norm, resid=(F_norm / force_scale(seq, B)) ** 2, helicity=h,
                    JoverB=odd.l2_norm(J, 1) / odd.l2_norm(B, 2), JB=J @ (odd.P[2, 1] @ B),
                    beta_vol=beta_vol(B, p_w, seq))
     state = eqx.tree_at(lambda s: (s.warm.J, s.warm.a_F, s.warm.A), state, (J, a_F, A))
-    return state, p_w, scalars
+    return state, p_w, scalars, odd.M[2] @ lift(B)
 
 
 def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) -> None:
     """Write the state to one HDF5 file, with every array stored under its name (``B_n``, ``warm.J``, ...).
 
-    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, knots, the theta count of
-    every ring and the theta cells of the map) are stored as attributes, so :func:`checkpoint_attrs` can rebuild
-    the matching sequence.
+    The step number and the discretisation (resolution, degree, ``nfp``, symmetry, precision, knots, the theta
+    count of every ring and the theta cells of the map) are stored as attributes, so :func:`checkpoint_attrs` can
+    rebuild the matching sequence.
     """
     leaves = jax.tree_util.tree_flatten_with_path(state)[0]
     with h5py.File(path, "w") as fh:
@@ -354,6 +356,7 @@ def write_checkpoint(path: str, state: State, step: int, seq: DeRhamSequence) ->
         fh.attrs["degree"] = int(seq.p)
         fh.attrs["nfp"] = int(seq.nfp)
         fh.attrs["symmetry"] = str(seq.symmetry)
+        fh.attrs["precision"] = DTYPE.name
         fh.attrs["graded"] = seq.theta_counts is not None
         fh.attrs["theta_counts"] = _theta_counts(seq)
         fh.attrs["map_theta"] = int(seq.map_theta)
@@ -423,7 +426,7 @@ def read_field(path: str, seq: DeRhamSequence) -> tuple[jnp.ndarray, int]:
     (:func:`check_checkpoint`)."""
     check_checkpoint(path, seq)
     with h5py.File(path, "r") as fh:
-        return jnp.asarray(np.asarray(fh["B_n"]), dtype=jnp.float64), int(fh.attrs["step"])
+        return jnp.asarray(np.asarray(fh["B_n"]), dtype=float), int(fh.attrs["step"])
 
 
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
@@ -434,13 +437,13 @@ def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])
         data = {k: np.asarray(v) for k, v in fh.items()}
-    skeleton = initial_state(jnp.asarray(data["B_n"], dtype=jnp.float64), ts, step=step)
+    skeleton = initial_state(jnp.asarray(data["B_n"], dtype=float), ts, step=step)
     leaves, treedef = jax.tree_util.tree_flatten_with_path(skeleton)
     new = []
     for keypath, leaf in leaves:
         v = data.get(jax.tree_util.keystr(keypath).lstrip("."))
         new.append(leaf if v is None else
-                   jnp.asarray(v, dtype=jnp.float64 if np.issubdtype(v.dtype, np.floating) else v.dtype))
+                   jnp.asarray(v, dtype=float if np.issubdtype(v.dtype, np.floating) else v.dtype))
     return jax.tree_util.tree_unflatten(treedef, new), step
 
 

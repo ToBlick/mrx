@@ -44,7 +44,7 @@ The job activates the virtualenv, exports `PYTHONPATH=$MRX_ROOT`, prints
 
 `bash slurm/waitjob.sh <JOBID> <log>` blocks until the job leaves the
 queue and prints the head and tail of the log. `bash slurm/suite.sh`
-submits the test suite as one GPU job
+submits the test suite in its two precisions
 ([Testing strategy](concepts/testing_strategy.md)).
 
 ## Worktrees

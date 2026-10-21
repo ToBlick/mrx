@@ -5,9 +5,13 @@ inside ``jit`` and never form a matrix. :func:`preconditioned_cg` solves SPD sys
 :func:`minres` solves symmetric indefinite ones. :func:`minres` can also stop at a direction of
 nonpositive curvature and reorthogonalise its Lanczos vectors, which the Newton solve uses.
 :func:`solve_singular_cg` solves a semidefinite system with a known kernel. :func:`lanczos_bounds`
-estimates the spectral interval of a preconditioned operator. :func:`refine` is the outer loop of a
-solve: it recomputes the true residual after each Krylov solve and corrects the solution until that
-residual meets the tolerance.
+estimates the spectral interval of a preconditioned operator. :func:`refine` is the outer loop of a solve
+whose residual is not that of one Krylov solve (the Hodge split): it recomputes the true residual after each
+pass and corrects the solution until that residual meets the tolerance.
+
+The conjugate gradients carry their iterate and residual in the accurate precision of :mod:`mrx.precision`
+(float64, or double-single in float32), and everything else in :data:`~mrx.precision.LOW_DTYPE`, float32: so the
+two configurations run the same iterations. MINRES runs in float32 throughout.
 
 Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
@@ -18,7 +22,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from mrx.precision import MAX_PASSES
+import mrx.double_single as ds
+from mrx.precision import DTYPE, LOW_DTYPE, MAX_PASSES, lift, low, to_working
 
 
 def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
@@ -30,39 +35,60 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
     Without it the residual is measured in the norm of the preconditioner, ``sqrt(r^T M r)``, which
     is the same number when ``M`` is the mass preconditioner. If ``A`` or ``M`` is not SPD the
     result becomes NaN.
+
+    The iterate ``x``, the residual ``r`` and ``A p`` are in the accurate precision (:func:`~mrx.precision.lift`:
+    float64, or double-single in float32), the search direction ``p``, ``z = M r``, the coefficients and the norm in
+    :data:`~mrx.precision.LOW_DTYPE`. ``x += alpha p`` and ``r -= alpha A p`` take the same ``alpha`` and ``p``, so
+    ``r`` stays ``b - A x`` to the accurate precision whatever their rounding, which costs conjugacy, not attainable
+    accuracy (li383 graded (16,32,12): the iteration counts of float64 to one or two). The recurrence is the true
+    residual, and one pass reaches tolerances below the round-off of float32. ``A_matvec`` takes and returns the
+    accurate precision, ``M`` and ``norm`` see float32. ``x`` is returned in the accurate precision.
+
+    The solve runs on ``b`` scaled by a power of two to unit size, which is exact in either precision. Squared
+    residual norms in float32 otherwise leave its range: a right-hand side of size 1e-9 asked for 3e-9 relative
+    reaches ``r^T M r`` of 1e-35, where XLA flushes to zero and the coefficients become 0 / 0 (the lower solve of the
+    shifted Hodge split, 2026-10-21).
     """
-    if x0 is None:
-        x0 = jnp.zeros_like(b)
+    b = lift(b)
+    size_b = jnp.max(jnp.abs(low(b)))
+    # an exact power of two from the exponent bits: exp2 of a rounded log2 is not exact under jit, and a scale
+    # that does not cancel leaves an error of float32 in x
+    scale = jnp.ldexp(jnp.ones((), LOW_DTYPE), -jnp.frexp(jnp.where(size_b > 0, size_b, 1.0).astype(LOW_DTYPE))[1])
+    b = b * scale
+    x = lift(jnp.zeros(b.shape, dtype=DTYPE)) if x0 is None else lift(x0) * scale
+    r = b if x0 is None else b - A_matvec(x)
 
-    def size(r, rz):
-        return jnp.sqrt(rz) if norm is None else norm(r)
+    def precondition(v):
+        return low(M(v))
 
-    r0 = b - A_matvec(x0)
-    z0 = M(r0)
-    rz0 = jnp.dot(r0, z0)
-    bnorm = jnp.sqrt(jnp.dot(b, M(b))) if norm is None else norm(b)
+    def size(r_low, rz):
+        return jnp.sqrt(rz) if norm is None else norm(r_low)
+
+    b_low, r_low = low(b), low(r)
+    z = precondition(r_low)
+    rz = jnp.dot(r_low, z)
+    bnorm = jnp.sqrt(jnp.dot(b_low, precondition(b_low))) if norm is None else norm(b_low)
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
-    # state: (x, r, z, p, rz, k, converged)
-    init_state = (x0, r0, z0, z0, rz0, 0, size(r0, rz0) < tol * bnorm_safe)
-
     def cond_fn(state):
-        _, _, _, _, _, k, converged = state
+        *_, k, converged = state
         return jnp.logical_and(k < maxiter, ~converged)
 
     def body_fn(state):
-        x, r, z, p, rz, k, _ = state
-        Ap = A_matvec(p)
-        alpha = rz / jnp.dot(p, Ap)
-        x_new = x + alpha * p
-        r_new = r - alpha * Ap
-        z_new = M(r_new)
-        rz_new = jnp.dot(r_new, z_new)
-        p_new = z_new + (rz_new / rz) * p
-        return (x_new, r_new, z_new, p_new, rz_new, k + 1, size(r_new, rz_new) < tol * bnorm_safe)
+        x, r, p, rz, k, _ = state
+        Ap = A_matvec(lift(p))
+        alpha = rz / jnp.dot(p, low(Ap))
+        x = x + lift(p) * alpha
+        r = r - Ap * alpha
+        r_low = low(r)
+        z = precondition(r_low)
+        rz_new = jnp.dot(r_low, z)
+        return x, r, z + (rz_new / rz) * p, rz_new, k + 1, size(r_low, rz_new) < tol * bnorm_safe
 
-    x_final, _, _, _, _, k_final, converged_final = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    return x_final, jnp.where(converged_final, k_final, -k_final)
+    init = (x, r, z, rz, 0, size(r_low, rz) < tol * bnorm_safe)
+    x, _, _, _, k, converged = jax.lax.while_loop(cond_fn, body_fn, init)
+    x = x * (1.0 / scale)
+    return x, jnp.where(converged, k, -k)
 
 
 def lanczos_bounds(A_matvec, b, M, steps):
@@ -102,11 +128,22 @@ def deflation_projectors(vs, mass_matvec):
     inner product ``M``. ``project_primal(x) = x - (vs M x) vs`` acts on coefficient vectors and
     ``project_dual(f) = f - (vs f) (M vs)`` on right-hand sides and residuals. With ``m = 0``
     both are the identity. ``M`` is symmetric, so ``vs M x`` is the product of the stored ``M vs``
-    with ``x``, and neither projection applies the mass matrix.
+    with ``x``, and neither projection applies the mass matrix. Double-single ``vs`` give double-single
+    projections.
     """
-    vs = jnp.asarray(vs)
     if vs.shape[0] == 0:
         return (lambda x: x), (lambda f: f)
+    if isinstance(vs, ds.DS):
+        rows = [vs[i] for i in range(vs.shape[0])]
+        mass_rows = [mass_matvec(v) for v in rows]
+
+        def remove(x, along, against):
+            x = ds.lift(x)
+            for v, w in zip(along, against):
+                x = x - v * ds.dot(w, x)
+            return x
+        return (lambda x: remove(x, rows, mass_rows)), (lambda f: remove(f, mass_rows, rows))
+    vs = jnp.asarray(vs)
     mass_vs = jax.vmap(mass_matvec)(vs)
 
     def project_primal(x):
@@ -118,29 +155,48 @@ def deflation_projectors(vs, mass_matvec):
     return project_primal, project_dual
 
 
-def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=None):
+#: The weakest reduction of the residual that a pass of :func:`refine` asks for.
+PASS_CAP = 1e-2
+
+
+def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
     """Solve ``A x = b`` by repeated corrections and return ``(x, info)``.
 
     Each pass computes the residual ``r = b - A x`` with ``apply`` (``x -> A x``), solves
-    ``A d = r`` approximately with ``solve(r) -> (d, info)`` and adds ``d`` to ``x``. It stops
+    ``A d = r`` approximately with ``solve(r, rtol) -> (d, info)`` and adds ``d`` to ``x``. It stops
     when ``norm(r) <= tol norm(b)`` or after
     :data:`~mrx.precision.MAX_PASSES` passes. ``info`` counts the inner iterations of all passes.
 
+    ``rtol`` aims at half the target: it is ``tol norm(b) / (2 norm(r))``, between
+    ``tol`` and :data:`PASS_CAP`. So a pass does not ask for much more than the
+    stopping test needs, however good the starting guess: an iteration pushed far past that runs into its
+    round-off, where conjugate gradients on a singular system diverge. The cap keeps a pass from asking for
+    almost nothing: the composite solves deliver several times less than ``rtol`` in ``norm``, and a pass that
+    asks for a factor 10 then hardly moves.
+
+    ``x`` and ``apply(x)`` are in the accurate precision (a :class:`~mrx.double_single.DS` in float32), and so is
+    the residual: the cancellation of ``b`` against ``A x`` loses nothing, and ``solve`` and ``project`` get it as
+    it is. Rounded, it would be consistent with a singular ``A`` only to the round-off of float32, and a solve that
+    asks for less diverges. ``norm`` rounds it. ``b`` may be a float array or a :class:`~mrx.double_single.DS`.
+
     ``norm`` measures residuals. The callers pass the norm given by the mass preconditioner of the
-    residual's space. ``project_dual`` removes the kernel of a singular system from the residual.
-    A solve whose residual is not of the form ``b - A x`` passes ``residual(x)`` and ``x0``
+    residual's space. ``project`` is applied to every residual, to keep it in the range of ``A``. It acts on
+    the rounded residual, so a part of ``b`` outside that range has to be removed from ``b`` beforehand, to the
+    accuracy of ``b``. A solve whose residual is not of the form ``b - A x`` passes ``residual(x)`` and ``x0``
     instead of ``apply``, and ``b`` is then used only for its norm.
     """
-    if project_dual is None:
-        def project_dual(r): return r
+    if project is None:
+        def project(r): return r
     if residual is None:
-        x = jnp.zeros_like(b) if x0 is None else x0
+        x0 = jnp.zeros(b.shape, dtype=DTYPE) if x0 is None else x0
 
         def residual(x):
-            return project_dual(b - apply(x))
-    else:
-        x = x0
-    bnorm = norm(project_dual(b))
+            return b - apply(x)
+    x = lift(x0)
+
+    def current(x):
+        return project(residual(x))
+    bnorm = norm(project(to_working(b)))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
     def cond(carry):
@@ -149,19 +205,19 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project_dual=None, residual=N
 
     def body(carry):
         x, r, k, its = carry
-        # The inner solve gets the residual scaled to unit norm. s > 0 inside the loop.
+        # The inner solve gets the residual scaled to unit norm, so the range of float32 never limits the
+        # tolerance. s > 0 inside the loop.
         s = norm(r)
-        d, info = solve(r / s)
+        d, info = solve(r * (1.0 / s), jnp.clip(0.5 * tol * bnorm_safe / s, tol, PASS_CAP))
         x = x + s * d
-        return x, residual(x), k + 1, its + jnp.abs(info)
+        return x, current(x), k + 1, its + jnp.abs(info)
 
-    x, r, _, its = jax.lax.while_loop(cond, body, (x, residual(x), 0, 0))
+    x, r, _, its = jax.lax.while_loop(cond, body, (x, current(x), 0, 0))
     converged = norm(r) <= tol * bnorm_safe
     return x, jnp.where(converged, its, -its)
 
 
-def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None,
-                      x0=None, check_residual=False, norm=None):
+def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None, x0=None, norm=None):
     """Solve the symmetric semidefinite system ``A x = b`` by PCG and return ``(x, info)``.
 
     The rows of ``vs`` (shape ``(m, n)``, ``m`` may be 0) span the kernel of ``A`` and are
@@ -170,31 +226,22 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
 
     The residual is measured in ``norm`` (:func:`mrx.operators.dual_norm`), by the PCG as well.
     Without ``norm`` it is measured in the norm of the preconditioner, ``sqrt(r^T P r)``, which the
-    PCG has at no cost: pass no ``norm`` when it would be that norm anyway (a mass solve).
-    Without ``check_residual`` this is a plain PCG that stops at ``tol`` on the residual of its
-    recurrence. With it the PCG runs inside :func:`refine`: each pass solves to ``tol`` and the
-    true residual measured in ``norm`` decides convergence.
+    PCG has at no cost: pass no ``norm`` when it would be that norm anyway (a mass solve). The PCG's residual is
+    the true one (:func:`preconditioned_cg`). ``A_matvec`` and ``mass_matvec`` follow their argument: a
+    :class:`~mrx.double_single.DS` in, a :class:`~mrx.double_single.DS` out. ``x`` is returned in the accurate
+    precision.
     """
-    project_primal, project_dual = deflation_projectors(vs, mass_matvec)
-
-    def A(x):
-        return project_dual(A_matvec(project_primal(x)))
+    project_primal, project_dual = deflation_projectors(to_working(vs), mass_matvec)
 
     def P(x):
         return project_primal(precond_matvec(project_dual(x)))
 
-    def outer_norm(r):
-        return jnp.sqrt(r @ P(r)) if norm is None else norm(r)
-
-    if not check_residual:
-        x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
-        x, info = preconditioned_cg(A, project_dual(b), P, tol, maxiter, x0=x0, norm=norm)
-        return project_primal(x), info
-
-    x, info = refine(lambda x: A_matvec(project_primal(x)),
-                     lambda r: preconditioned_cg(A, r, P, tol, maxiter, norm=norm),
-                     b, x0=x0, tol=tol, project_dual=project_dual, norm=outer_norm)
-    return project_primal(x), info
+    # The kernel leaves b and the solution once each, to their own accuracy. p comes out of P in the projected
+    # space, so A p needs no projection, and r stays b - A x
+    exact_primal, exact_dual = deflation_projectors(vs, mass_matvec)
+    x, info = preconditioned_cg(A_matvec, exact_dual(lift(b)), P, tol, maxiter,
+                                x0=None if x0 is None else project_primal(to_working(x0)), norm=norm)
+    return exact_primal(x), info
 
 
 class _MinresState(NamedTuple):
@@ -241,7 +288,23 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
     Once the extreme Ritz values have converged, the basis drifts, those values are found again and
     the solve repeats work. In the Newton solve of li383 (48,64,24) this happens after about 20
     iterations, and the top Ritz value was found 22 times in 400 (2026-10-14).
+
+    It runs in float32 (:data:`~mrx.precision.LOW_DTYPE`) in both configurations, the stored basis included, and
+    returns ``x`` in the precision of ``b``: the Newton solve asks for one digit (``NEWTON_TOL = 0.1``). Its
+    residual recurrence follows the true residual only to about the condition number times the round-off of float32,
+    so it is not a solver for tight tolerances.
     """
+    # float32 throughout (LOW_DTYPE): the Newton solve stops at NEWTON_TOL = 0.1. A_matvec, M and norm see float32,
+    # and x is returned in the precision of b
+    dtype = b.dtype
+    A_low, M_low = A_matvec, M
+
+    def A_matvec(v):
+        return low(A_low(v))
+
+    def M(v):
+        return low(M_low(v))
+    b = low(b)
     x0 = jnp.zeros_like(b)
     # A negative r^T M r means M is not SPD. The result then becomes NaN.
     r0 = b
@@ -251,16 +314,17 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
     # the Lanczos vectors (rows of U) and their preconditioned versions (rows of V): u_i . v_j = delta_ij
     store = (maxiter if reorthogonalize else 0, b.shape[0])
+    zero, one = jnp.zeros((), LOW_DTYPE), jnp.ones((), LOW_DTYPE)
 
     # The state follows SOL MINRES. y is the preconditioned residual (v = y / beta), r1 and r2
     # are the previous and current Lanczos residuals, (cs, sn) is the last Givens rotation,
     # dbar and epsln are the QR state, phibar is the residual estimate, and w_prev and w_pp
     # are the search directions one and two steps back.
     init_state = _MinresState(
-        x=x0, y=y0, r1=jnp.zeros_like(b), r2=r0, beta=beta1, oldbeta=0.0,
-        cs=-1.0, sn=0.0, dbar=0.0, epsln=0.0, phibar=beta1,
+        x=x0, y=y0, r1=jnp.zeros_like(b), r2=r0, beta=beta1, oldbeta=zero,
+        cs=-one, sn=zero, dbar=zero, epsln=zero, phibar=beta1,
         w_prev=jnp.zeros_like(b), w_pp=jnp.zeros_like(b), res=r0, k=0, converged=False, npc=False,
-        U=jnp.zeros(store, dtype=b.dtype), V=jnp.zeros(store, dtype=b.dtype),
+        U=jnp.zeros(store, dtype=LOW_DTYPE), V=jnp.zeros(store, dtype=LOW_DTYPE),
     )
 
     def cond_fn(state):
@@ -321,10 +385,10 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
         )
 
     final_state = jax.lax.while_loop(cond_fn, body_fn, init_state)
-    x_final = final_state.x
+    x_final = final_state.x.astype(dtype)
     info = jnp.where(final_state.converged, final_state.k, -final_state.k)
     if npc_exit:
         # The NPC direction is the preconditioned residual of the frozen iterate.
-        d_npc = M(b - A_matvec(x_final))
+        d_npc = M(b - A_matvec(final_state.x)).astype(dtype)
         return jnp.where(final_state.npc, d_npc, x_final), info, final_state.npc
     return x_final, info

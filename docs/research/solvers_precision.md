@@ -1,8 +1,9 @@
 # Solvers and precision: measurements
 
 Counts and timings of the solve routes in use and of the routes they replaced, and the precision limits behind the
-tolerances. MRX is float64 only since PR #33 (2026-10-14), with SOLVE_TOL = 1e-8. Rows marked mixed (float64
-residual, float32 iterations) or plain float32 are the record of that removed path.
+tolerances. SOLVE_TOL = 1e-8. There are two precisions: float64, the default, and float32 with double-single
+residuals for a device without float64 (section 8). Rows marked mixed (float64 residual, float32 iterations) or
+plain float32 are the record of the path PR #33 removed (2026-10-14).
 
 Setting of the 2026-10 records: li383 p = 2, float64, one H200, odd view. M = (48,64,24), L = (64,80,32), graded
 from 2026-10-17 on.
@@ -158,7 +159,32 @@ Newton step on li383 M before and after these changes, steady over the later chu
 - Constant MINRES tolerances and the Nocedal-Wright forcing all land on F2 1.53-1.55e-10. None is cheaper than a
   fixed 200 its.
 
-## 8. Decided against / removed
+## 8. float32 on a device without float64 (2026-10-13)
+
+MRX_DTYPE=float32, JAX 64-bit mode off, solutions and residuals as double-single pairs. One H200, li383 (8,12,12)
+p = 2, tol 1e-8, uniform mesh, before PR #35. Not run on a TPU or on Metal.
+
+- Kernels against float64 on the same float32 data: sum-factorised mass apply 3-4e-15 for k = 0..3 (float32
+  6e-8), extraction and its transpose 1e-15, dot product 3e-14 (float32 4.5e-8).
+- Harmonic forms, Rayleigh quotient: 3e-15 (k = 2 dbc), 2e-14 (k = 1 free), 1e-14 (k = 3).
+- True residual of the solves in double-single: mass 2e-10..6e-8, stiffness on G^T w 5e-9..7e-9, L_0 3e-9, L_1
+  4e-9, L_2 2e-8, L_3 2e-8..3e-8. Rounded to float32 the solution has 2e-7..5e-7.
+- Relaxation against float64: 20 Newton steps 4.29 against 3.12 s/step, residual 5.618e-8 against 5.626e-8. 400
+  gradient steps 0.12 against 0.05 s/step, residual 5.786e-6 against 5.761e-6. div B 1.7e-6.
+- li383 M (48,64,24) and L (64,80,32): every solve reaches the float64 true residual (1e-9..6e-8), the 1- and
+  2-form Laplacians in 1.4-2x the iterations. 400 gradient steps 9.2e-6 / 1.5e-5 against 7.5e-6 / 1.8e-5 (M / L)
+  at the same cost per step. Newton at L diverges.
+- Stalled a pair refinement at 1e-7: a part of b outside the range of the operator projected in float32, polar
+  weights computed on the device, G^T w formed in float32, a seed interpolated in float32, a form normalised in
+  float32.
+- Pass rule of refine: asking for tol relative to the current residual over-solves a warm-started singular
+  stiffness solve into round-off (float64 Newton test: |F| 0.055 -> 0.42 in 10 steps). Asking for exactly the
+  missing reduction stalls the shifted split just above tol. Kept: half the target, between the precision's floor
+  and 1e-2.
+- Ozaki scheme (exact float32 matmuls of 8-bit slices) on a prototype apply: 2.6e-15, also under TF32, but 8x the
+  gather form and slow to compile. Not used.
+
+## 9. Decided against / removed
 
 - Velocity Leray, a second projection, li383 (16,32,32) p = 3 (2026-09-04): float64 2.47 against 0.95 s/step without
   it, same trajectory. Removed 2026-09-05.

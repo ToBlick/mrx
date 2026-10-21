@@ -27,12 +27,16 @@ builds them once when it is created.
 
 import functools
 import math
+from typing import Optional
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
+
+import mrx.double_single as ds
+from mrx.precision import PAIRS, to_working
 
 
 @functools.partial(jax.jit, static_argnames=("num_segments",))
@@ -49,24 +53,34 @@ class SparseMatrix(eqx.Module):
 
     ``A @ x`` applies it to a vector, or to each column of a matrix ``x``, and ``A.T`` is its
     transpose (no copy). Duplicate ``(row, col)`` entries are summed. It is an equinox module, so
-    it can be passed into jitted functions."""
+    it can be passed into jitted functions.
+
+    In float32 (:mod:`mrx.precision`) the entries are kept to double-single accuracy: ``lo`` holds their second
+    parts and ``by_rows``, ``by_cols`` the matrix and its transpose in the row-wise form of
+    :class:`mrx.double_single.Rows`. Applied to a :class:`~mrx.double_single.DS` the matrix returns one."""
 
     rows: jnp.ndarray
     cols: jnp.ndarray
     vals: jnp.ndarray
     forward_shape: tuple = eqx.field(static=True)
     transposed: bool = eqx.field(static=True)
+    lo: Optional[jnp.ndarray] = None
+    by_rows: Optional[ds.Rows] = None
+    by_cols: Optional[ds.Rows] = None
 
     @classmethod
     def from_coo(cls, rows, cols, vals, shape):
-        """The matrix of shape ``(n_row, n_col)`` with the given entries."""
-        return cls(
-            rows=jnp.asarray(np.asarray(rows, dtype=np.int32)),
-            cols=jnp.asarray(np.asarray(cols, dtype=np.int32)),
-            vals=jnp.asarray(np.asarray(vals), dtype=jnp.float64),
-            forward_shape=(int(shape[0]), int(shape[1])),
-            transposed=False,
-        )
+        """The matrix of shape ``(n_row, n_col)`` with the given entries (NumPy, float64 values)."""
+        shape = (int(shape[0]), int(shape[1]))
+        rows, cols = np.asarray(rows, dtype=np.int32), np.asarray(cols, dtype=np.int32)
+        vals = np.asarray(vals, dtype=np.float64)
+        if not PAIRS:
+            return cls(rows=jnp.asarray(rows), cols=jnp.asarray(cols), vals=jnp.asarray(vals),
+                       forward_shape=shape, transposed=False)
+        parts = ds.from_host(vals)
+        return cls(rows=jnp.asarray(rows), cols=jnp.asarray(cols), vals=parts.hi, forward_shape=shape,
+                   transposed=False, lo=parts.lo, by_rows=ds.Rows.from_coo(rows, cols, vals, shape[0]),
+                   by_cols=ds.Rows.from_coo(cols, rows, vals, shape[1]))
 
     @property
     def shape(self):
@@ -81,10 +95,13 @@ class SparseMatrix(eqx.Module):
     @property
     def T(self):
         return SparseMatrix(rows=self.rows, cols=self.cols, vals=self.vals,
-                                    forward_shape=self.forward_shape,
-                                    transposed=not self.transposed)
+                            forward_shape=self.forward_shape,
+                            transposed=not self.transposed, lo=self.lo, by_rows=self.by_rows,
+                            by_cols=self.by_cols)
 
     def __matmul__(self, x):
+        if isinstance(x, ds.DS):
+            return (self.by_cols if self.transposed else self.by_rows) @ x
         x = jnp.asarray(x)
         if self.transposed:     # gather from the rows, scatter into the columns
             return _apply_coo(self.vals, self.rows, self.cols, x,
@@ -96,7 +113,9 @@ class SparseMatrix(eqx.Module):
         """The entries ``(rows, cols, values)`` of the untransposed matrix as NumPy arrays. With ``rows``, only the entries of those rows, renumbered
         ``0 .. len(rows) - 1``."""
         r, c = np.asarray(self.rows), np.asarray(self.cols)
-        v = np.asarray(self.vals)
+        v = np.asarray(self.vals, dtype=np.float64)
+        if self.lo is not None:
+            v = v + np.asarray(self.lo, dtype=np.float64)
         if rows is None:
             return r, c, v
         pos = np.full(self.forward_shape[0], -1)
@@ -143,13 +162,20 @@ def conforming_restriction(e, c, core, blocks=()):
     """The extracted DoF vector ``v = (E E^T)^-1 E c`` whose raw coefficients ``E^T v`` are closest
     (in the least-squares sense) to the raw tensor-product coefficients ``c``. ``core`` are the
     polar core rows of ``e``. Away from them ``E E^T`` is the identity on a uniform space and one
-    small block per ring and zeta layer on a graded one, given as ``blocks`` (:func:`gram_blocks`)."""
+    small block per ring and zeta layer on a graded one, given as ``blocks`` (:func:`gram_blocks`).
+    A :class:`~mrx.double_single.DS` ``c`` is restricted in double-single."""
     a = e @ c
     for rows, inverse in blocks:
-        a = a.at[rows].set(a[rows] @ inverse)
+        if isinstance(a, ds.DS):
+            # (a[rows] @ inverse)[g, j] = sum_i a[rows][g, i] inverse[i, j]
+            a = ds.set_at(a, rows, ds.contract(a[rows][:, None, :], ds.DS(inverse.hi.T, inverse.lo.T)[None]))
+        else:
+            a = a.at[rows].set(a[rows] @ to_working(inverse))
     if len(core) == 0:
         return a
-    return a.at[core].set(jnp.asarray(core_gram_inverse(e, core)) @ a[core])
+    gram_inverse = core_gram_inverse(e, core)
+    gram_inverse = ds.from_host(gram_inverse) if isinstance(a, ds.DS) else jnp.asarray(gram_inverse)
+    return ds.set_at(a, core, ds.matvec(gram_inverse, a[core]))
 
 
 def gram_inverse(e, core, blocks=()):
@@ -160,7 +186,8 @@ def gram_inverse(e, core, blocks=()):
     covered = np.zeros(n, bool)
     rows, cols, vals = [], [], []
     for group, inverse in blocks:
-        group, inverse = np.asarray(group), np.asarray(inverse)
+        group = np.asarray(group)
+        inverse = ds.to_host(inverse) if isinstance(inverse, ds.DS) else np.asarray(inverse)
         m = group.shape[1]
         rows.append(np.repeat(group, m, axis=1).ravel())
         cols.append(np.tile(group, (1, m)).ravel())
@@ -303,7 +330,9 @@ def ring_layout(form, dirichlet, counts=None):
 def gram_blocks(form, dirichlet, counts):
     """The blocks of ``(E E^T)^-1`` away from the axis rows of a graded space, as ``(rows, inverse)``: ``rows``
     (shape ``(n, m)``) holds the rows of one ring and zeta layer, ``inverse`` is ``(R^T R)^-1`` of its knot
-    insertion ``R``. Rings with the full theta count are left out (``R = I``)."""
+    insertion ``R``. Rings with the full theta count are left out (``R = I``). In float32 ``inverse`` is a
+    :class:`~mrx.double_single.DS`, so that the double-single restriction and the host matrices built from it
+    keep its float64 value."""
     groups = {}
     p = form.Lambda[1].p
     for c, a, m, derivative, first, nz in ring_layout(form, dirichlet, counts):
@@ -315,7 +344,8 @@ def gram_blocks(form, dirichlet, counts):
     blocks = []
     for (m, n, derivative), rows in groups.items():
         R = prolongation(m, n, p, derivative)
-        blocks.append((jnp.asarray(np.concatenate(rows)), jnp.asarray(np.linalg.inv(R.T @ R))))
+        inverse = np.linalg.inv(R.T @ R)
+        blocks.append((jnp.asarray(np.concatenate(rows)), ds.from_host(inverse) if PAIRS else jnp.asarray(inverse)))
     return tuple(blocks)
 
 
@@ -402,15 +432,14 @@ def get_xi(nt, p):
     functions map onto each other under ``theta -> -theta``, which the stellarator symmetry of
     :mod:`mrx.symmetry` relies on.
     """
-    theta_js = ((jnp.arange(nt) - (p - 1) / 2.0) / nt) * 2 * jnp.pi
-    dR, dY = jnp.cos(theta_js), jnp.sin(theta_js)
+    # on the host in float64: the identities of the polar stencils hold to the round-off of these weights
+    theta_js = ((np.arange(nt) - (p - 1) / 2.0) / nt) * 2 * np.pi
+    dR, dY = np.cos(theta_js), np.sin(theta_js)
 
-    s3 = jnp.sqrt(3.0)
-    tau = jnp.max(jnp.array([jnp.max(-2.0 * dR),
-                             jnp.max(dR - s3 * dY),
-                             jnp.max(dR + s3 * dY)]))
-    xi1 = jnp.stack([1/3 + 2.0 * dR / (3.0 * tau),
+    s3 = np.sqrt(3.0)
+    tau = max(np.max(-2.0 * dR), np.max(dR - s3 * dY), np.max(dR + s3 * dY))
+    xi1 = np.stack([1/3 + 2.0 * dR / (3.0 * tau),
                     1/3 - dR / (3.0 * tau) + s3 * dY / (3.0 * tau),
                     1/3 - dR / (3.0 * tau) - s3 * dY / (3.0 * tau)])  # (3, n_theta)
-    xi0 = jnp.full((3, nt), 1.0 / 3.0)
-    return jnp.stack([xi0, xi1], axis=1)
+    xi0 = np.full((3, nt), 1.0 / 3.0)
+    return np.stack([xi0, xi1], axis=1)

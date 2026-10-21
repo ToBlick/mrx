@@ -112,3 +112,20 @@ Setup / compile / steady s/step over the second chunk of 20 steps:
   takes 0.408 against 0.533 ms but holds 303 MB.
 - pmap of four initial states on four chips: 3.99x.
 - Eager microbenchmarks overstate the scan form 1.0-1.6x on CPU, 1.3-6.8x on v5e and 5.9-66x on H200.
+
+## 8. Relaxation benchmark, li383 1.4m, graded n_theta r^(1/3), float64 and float32 (H200, 2026-10-20)
+
+`scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution <n> --geometry.graded
+[--geometry.precision float32] --budget.steps 80`, Newton, from the file's field (beta 4.2 %). Record:
+`outputs/benchmarks/relax_h200_li383_2026-10-20.md`.
+
+- (32,44,20), float64 / float32: 1.23 / 1.47 s/step over 80 steps, residual 2.4e-4 -> 2.2e-10 / 2.6e-10, energy
+  removed 1.7003e-6 / 1.6959e-6. Newton MINRES mean 82 / 87, unconverged on 15 / 60 of 80 steps. Float32 invariants
+  at its round-off: div B 2.6e-6, dE - dE_ls 4e-10, 11 energy increases near the floor. Setup 201 s / 465 s.
+- (72,120,72), float64 / float32: 9.23 / 9.23 s/step, setup 620 / 911 s, 23 / 31 min per job. Float64 reaches the
+  1e-10 floor at step 70 (7.1e-11), float32 ends at 1.87e-10 after 80. Energy removed 1.689e-6 / 1.690e-6. Newton
+  MINRES mean 145 / 147, at its cap of 300 on 54 of 70 / 69 of 80 steps. Float32 div B 1.5e-5.
+- The CFL cap binds on every step at both sizes (dt/dt* mean 0.096-0.098). On the low-res reference wout (no
+  pressure) it bound only on the first 1-5 steps.
+- Float32 needs the SlabMass band checks in machine epsilon: with the fixed 1e-12 the build raised on float32
+  round-off of 4.1e-9.

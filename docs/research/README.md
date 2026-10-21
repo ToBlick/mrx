@@ -7,6 +7,6 @@ Sphinx docs under `docs/source/`.
 - `preconditioners.md`: the Laplacian and mass atoms, the slab mass model, the S_2 multigrid, the boundary-penalty scale, the Newton preconditioner, and the preconditioners that lost.
 - `solvers_precision.md`: the Hodge split, L_3 and Leray, the shifted split, stopping rules and part solves, harmonic forms, precision limits.
 - `performance.md`: quadrature, Newton step cost, per-apply profiles, symmetry models, setup, memory, tracing, TPU.
-- `relaxation.md`: descent smoothing, the parallel-flow penalty, the Gauss-Newton direction against GCR and Newton-MR, and the relaxation methods that lost.
+- `relaxation.md`: descent smoothing, the parallel-flow penalty, the Gauss-Newton direction against GCR and Newton-MR, the relaxation methods that lost, and preconditioning the Gauss-Newton solve (Krylov recycling, per-mode radial blocks).
 - `geometry_vacuum.md`: GVEC and VMEC conventions, vacuum convergence, the map, initial conditions, symmetry reductions, graded spaces.
 - `poincare_islands.md`: tracer calibration, island width, Cary-Hanson residue.

@@ -43,13 +43,14 @@ import jax
 import jax.numpy as jnp
 
 from mrx.extraction_operators import ring_layout
+from mrx.precision import PRECOND_DTYPE, eps
 from mrx.metric_lumping import PROBE_BATCH, _kron_mass_model_1d, _parity_split
 from mrx.pytree import register_arrays
 
-#: Storage precision of the slab factors. The vectors and the solves
+#: Storage precision of the slab factors, :data:`mrx.precision.PRECOND_DTYPE`. The vectors and the solves
 #: stay in float64, the sweeps run in this precision. With float32 the condition number is unchanged (li383
 #: (48,64,24): 3.48 both), the apply reads half the data and the M_1 solve is 4-16 % faster than with float64.
-FACTOR_DTYPE = jnp.float32
+FACTOR_DTYPE = PRECOND_DTYPE
 
 #: Half-width of the theta band the factor is cut to: entries of a factor block whose two degrees of freedom are more
 #: than this many theta indices apart (periodic) are dropped, and the blocks are stored row by row with their kept
@@ -196,9 +197,10 @@ def _probe(apply, idx, sizes, n, info, w):
             D, Lo, Dd, Lod, d, f = one(D, Lo, Dd, Lod, js, ss)
             dropped, far = max(dropped, float(d)), max(far, float(f))
     scale = max(float(jnp.max(jnp.abs(D))), float(jnp.max(jnp.abs(Dd), initial=0.0)))
-    if far > 1e-12 * scale:
+    # outside the band and beyond the next block the mass is zero, so what the probe sees there is round-off
+    if far > eps(1e4) * scale:
         raise ValueError(f"the slab blocks are not block tridiagonal ({far / scale:.1e}): too few rings per block")
-    if dropped > 1e-12 * scale:
+    if dropped > eps(1e4) * scale:
         raise ValueError(f"the mass reaches beyond the theta band of the probe ({dropped / scale:.1e})")
     pad = np.arange(b)[None, :] >= sizes[:, None]                                    # (ns, b)
 

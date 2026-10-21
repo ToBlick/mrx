@@ -22,9 +22,14 @@ The work is split into a static part and a geometry part. :func:`mass_plan` and
 weights, and :func:`build_mass_diagonal` returns ``diag(M_k)``.
 """
 
+from typing import Optional
+
 import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
+
+import mrx.double_single as ds
+from mrx.precision import PAIRS
 
 
 class SumfactPlan(eqx.Module):
@@ -32,7 +37,8 @@ class SumfactPlan(eqx.Module):
     column form at the quadrature points, one ``(n_comp, N_a, Q_a)`` array per axis ``a`` with every component
     zero-padded to the largest coefficient count ``N_a``. The sequence builds one per mass matrix
     (:func:`mass_plan`) and one per projection (:func:`projection_plan`). The geometric weights are stored on
-    the geometry instead (:func:`attach_weights`)."""
+    the geometry instead (:func:`attach_weights`). In float32 the plan also holds the tables in the gather form
+    of the double-single apply (:class:`mrx.double_single.Tables`)."""
 
     tables_r: tuple
     tables_c: tuple
@@ -40,6 +46,16 @@ class SumfactPlan(eqx.Module):
     shapes_c: tuple = eqx.field(static=True)
     #: whether the weight is the quadrature weight alone, ``(Q_r, Q_theta, Q_zeta)``, times the identity
     scalar_weight: bool = eqx.field(static=True, default=False)
+    gather_r: Optional[tuple] = None
+    gather_c: Optional[tuple] = None
+
+
+def _plan(tables_r, tables_c, shapes_r, shapes_c, scalar_weight=False):
+    gather_r = gather_c = None
+    if PAIRS:
+        gather_r = tuple(ds.Tables.from_dense(t) for t in tables_r)
+        gather_c = gather_r if tables_c is tables_r else tuple(ds.Tables.from_dense(t) for t in tables_c)
+    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c, scalar_weight, gather_r, gather_c)
 
 
 def _padded_tables(seq, k):
@@ -59,7 +75,7 @@ def _padded_tables(seq, k):
 def mass_plan(seq, k):
     """The :class:`SumfactPlan` of ``M_k``."""
     tables, shapes = _padded_tables(seq, k)
-    return SumfactPlan(tables, tables, shapes, shapes)
+    return _plan(tables, tables, shapes, shapes)
 
 
 def projection_plan(seq, k_row, k_col):
@@ -69,7 +85,7 @@ def projection_plan(seq, k_row, k_col):
     """
     tables_r, shapes_r = _padded_tables(seq, k_row)
     tables_c, shapes_c = _padded_tables(seq, k_col)
-    return SumfactPlan(tables_r, tables_c, shapes_r, shapes_c, scalar_weight=True)
+    return _plan(tables_r, tables_c, shapes_r, shapes_c, scalar_weight=True)
 
 
 def _mass_weight(k, metric, metric_inv, jac):
@@ -107,7 +123,11 @@ def sumfact_apply(plan, weights, x):
 
     ``x`` holds the full tensor-product coefficients. Boundary and polar constraints are left to
     the caller. On a half-period sequence the result is twice the integral over the half period.
+    A :class:`~mrx.double_single.DS` ``x`` gives a double-single result from the same tables and weights.
     """
+    if isinstance(x, ds.DS):
+        return ds.sumfact(plan.gather_r, plan.gather_c, plan.shapes_r, plan.shapes_c, weights, x,
+                         plan.scalar_weight)
     R, T, Z = plan.tables_c
     n_max = tuple(t.shape[1] for t in plan.tables_c)
     parts, offset = [], 0

@@ -166,8 +166,7 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     tol = seq.tol if mass_tol is None else mass_tol
 
     def m1_inv(x):
-        # stopped on the residual of its recurrence, as every solve inside another iteration
-        return _mass_solve(odd, x, 1, tol=tol, check_residual=False)
+        return _mass_solve(odd, x, 1, tol=tol)
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
