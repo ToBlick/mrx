@@ -46,6 +46,20 @@ PAIRS = _NAME == "float32"
 #: :func:`mrx.solvers.refine`. Set it with the environment variable ``MRX_DS_KRYLOV`` (``0`` or ``1``).
 DS_KRYLOV = PAIRS and os.environ.get("MRX_DS_KRYLOV", "1") == "1"
 
+#: The precision every preconditioner is stored and applied in, in both configurations. A preconditioner only
+#: approximates an inverse, so its round-off costs nothing the solve can see, and its apply reads half the data
+#: of a float64 one. The vectors around it stay in :data:`DTYPE`: an apply rounds its input to this and returns
+#: its result in the input's precision.
+PRECOND_DTYPE = jnp.dtype("float32")
+
+
+def to_precond(tree):
+    """``tree`` with its floating-point arrays in :data:`PRECOND_DTYPE`, the stored form of a preconditioner."""
+    def cast(a):
+        return a.astype(PRECOND_DTYPE) if isinstance(a, jax.Array) and jnp.issubdtype(a.dtype, jnp.floating) else a
+    return jax.tree_util.tree_map(cast, tree)
+
+
 #: Machine epsilon of :data:`DTYPE`, as a Python float.
 EPS = float(np.finfo(DTYPE).eps)
 

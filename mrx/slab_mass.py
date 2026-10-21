@@ -43,14 +43,14 @@ import jax
 import jax.numpy as jnp
 
 from mrx.extraction_operators import ring_layout
-from mrx.precision import eps
+from mrx.precision import PRECOND_DTYPE, eps
 from mrx.metric_lumping import PROBE_BATCH, _kron_mass_model_1d, _parity_split
 from mrx.pytree import register_arrays
 
-#: Storage precision of the slab factors. The vectors and the solves
+#: Storage precision of the slab factors, :data:`mrx.precision.PRECOND_DTYPE`. The vectors and the solves
 #: stay in float64, the sweeps run in this precision. With float32 the condition number is unchanged (li383
 #: (48,64,24): 3.48 both), the apply reads half the data and the M_1 solve is 4-16 % faster than with float64.
-FACTOR_DTYPE = jnp.float32
+FACTOR_DTYPE = PRECOND_DTYPE
 
 #: Half-width of the theta band the factor is cut to: entries of a factor block whose two degrees of freedom are more
 #: than this many theta indices apart (periodic) are dropped, and the blocks are stored row by row with their kept

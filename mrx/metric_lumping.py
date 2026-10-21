@@ -44,7 +44,7 @@ from mrx.differential_forms import DERIV_AXES
 from mrx.extraction_operators import prolongation, ring_layout
 from mrx.incidence import diff_1d
 from mrx.mass import build_mass_diagonal
-from mrx.precision import eps, lift, sqrt_eps, to_working
+from mrx.precision import PRECOND_DTYPE, eps, lift, sqrt_eps, to_precond, to_working
 from mrx.pytree import register_arrays
 from mrx.symmetry import mirror_component, mirror_zeta_1d
 
@@ -760,7 +760,10 @@ def _batch(specs, core, core_inv, n_full, X=None, strips=None):
 def _apply_batched(p, x, core_inv, alpha, shift):
     """Apply the :class:`_Batched` ``p`` to ``x``. ``core_inv`` replaces ``p.core_inv`` when given. ``alpha``
     (per block and axis) weighs the Laplacian's Kronecker terms, ``None`` for all ones. ``shift`` is ``1/eps`` of
-    the shifted-stiffness preconditioner and ``None`` otherwise."""
+    the shifted-stiffness preconditioner and ``None`` otherwise. It runs in :data:`~mrx.precision.PRECOND_DTYPE`
+    and returns the precision of ``x``."""
+    dtype, x = x.dtype, x.astype(PRECOND_DTYPE)
+    core_inv, alpha, shift = (None if v is None else jnp.asarray(v, PRECOND_DTYPE) for v in (core_inv, alpha, shift))
     nb = p.pre.shape[0]
     xb = jnp.sum(p.in_w * x[p.in_idx], axis=-1).reshape((nb,) + p.N) * p.pre
     if p.strips is not None and shift is None:
@@ -770,7 +773,7 @@ def _apply_batched(p, x, core_inv, alpha, shift):
     y = y * p.post
     core = (p.core_inv if core_inv is None else core_inv) @ jnp.sum(p.core_w * x[p.core_idx], axis=-1)
     z = jnp.concatenate([y.reshape(-1), core])
-    return jnp.sum(p.out_w * z[p.out_idx], axis=-1)
+    return jnp.sum(p.out_w * z[p.out_idx], axis=-1).astype(dtype)
 
 
 def _block_solve(p, xb, alpha, shift):
@@ -810,11 +813,11 @@ class _Atom:
         if comps:
             payload = eqx.tree_at(lambda q: q.strips, payload, _build_strips(payload, specs, comps),
                                   is_leaf=lambda x: x is None)
-        self._payload = payload
+        self._payload = to_precond(payload)
 
     def reduced(self, X):
         """The batched payload of ``X^T P X`` for a reduced view with the expansion ``X``."""
-        return _batch(self._specs, self._core, self._payload.core_inv, self._n, X, self._payload.strips)
+        return to_precond(_batch(self._specs, self._core, self._payload.core_inv, self._n, X, self._payload.strips))
 
     def apply_reduced(self, payload, x):
         """``X^T P X x`` for the payload of :meth:`reduced`."""

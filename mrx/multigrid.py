@@ -43,6 +43,7 @@ from mrx.incidence import diff_1d
 from mrx.mass import sumfact_apply
 from mrx.metric_lumping import _parity_split, _probe_rows
 from mrx.operators import _stiffness
+from mrx.precision import PRECOND_DTYPE, to_precond
 from mrx.pytree import register_arrays
 from mrx.spline_bases import SplineBasis, basis_table, knot_vector
 from mrx.symmetry import mirror_component
@@ -206,7 +207,8 @@ class _Cycle(eqx.Module):
     coarsest: jnp.ndarray
 
     def __call__(self, r):
-        return self._visit(0, r)
+        # in PRECOND_DTYPE, returned in the precision of r
+        return self._visit(0, r.astype(PRECOND_DTYPE)).astype(r.dtype)
 
     def _visit(self, i, r):
         if i == len(self.levels):
@@ -248,7 +250,7 @@ def _cycle(spaces, diagonals, transfers):
     n = spaces[-1].n(2)
     w, V = jnp.linalg.eigh(_probe_rows(_Stiffness(spaces[-1]), n, np.arange(n), None))
     keep = w > PINV_CUT * w[-1]
-    return _Cycle(tuple(levels), (V * jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)) @ V.T)
+    return to_precond(_Cycle(tuple(levels), (V * jnp.where(keep, 1.0 / jnp.where(keep, w, 1.0), 0.0)) @ V.T))
 
 
 @register_arrays
