@@ -2,8 +2,8 @@
 
 A device without float64 computes the residuals of the solves with it (:mod:`mrx.precision`). Every operation
 here is float32. The building blocks are the error-free transformations :func:`two_sum` and :func:`two_prod`
-(Dekker's, since XLA has no fused multiply-add), which return a float32 result together with its exact rounding
-error.
+(on 12-bit parts, so that a fused multiply-add cannot change them), which return a float32 result together with
+its rounding error.
 
 :class:`DS` is the array type. It supports the arithmetic, indexing and reshaping that the operator kernels
 need, and the functions :func:`concatenate`, :func:`pad`, :func:`roll` and :func:`stack` take float arrays and
@@ -21,8 +21,8 @@ import jax.numpy as jnp
 import numpy as np
 
 _F32 = jnp.float32
-#: Veltkamp's constant ``2^12 + 1`` for the 24-bit mantissa of float32.
-_SPLITTER = 4097.0
+#: The bits of a float32 that :func:`_split` keeps: sign, exponent and the leading 11 of the 23 stored mantissa bits.
+_HIGH_BITS = np.uint32(0xFFFFF000)
 
 
 def two_sum(a, b):
@@ -39,20 +39,27 @@ def fast_two_sum(a, b):
 
 
 def _split(a):
-    c = _F32(_SPLITTER) * a
-    hi = c - (c - a)
+    """``(hi, lo)`` with ``a = hi + lo`` exactly and each of at most 12 significant bits: ``hi`` is ``a`` with its
+    trailing 12 mantissa bits cleared."""
+    hi = jax.lax.bitcast_convert_type(jax.lax.bitcast_convert_type(a, jnp.uint32) & _HIGH_BITS, _F32)
     return hi, a - hi
 
 
 def two_prod(a, b):
-    """``(p, e)`` with ``p = fl(a b)`` and ``a b = p + e`` exactly."""
-    # Keep p rounded: without the barrier, XLA:CPU on arm64 contracts a * b and ah * bh - p into one fused
-    # multiply-add, so the error term is no longer exact, and XLA:TPU (libtpu 0.0.48.1) fails to compile the
-    # solver at 12x20x12
-    p = jax.lax.optimization_barrier(a * b)
+    """``(p, e)`` with ``a b = p + e`` to double-single accuracy and ``|e|`` at most half a unit in the last place of
+    ``p``, from below the underflow of float32 on.
+
+    The four products of the 12-bit parts of :func:`_split` are exact, and they are added by :func:`two_sum`. So
+    no step depends on a product being rounded, and a compiler that contracts a product and a sum into a fused
+    multiply-add changes nothing. Dekker's form ``(ah bh - fl(a b)) + ...`` does: XLA:CPU on arm64 drops the
+    optimization barrier on ``fl(a b)``, recomputes the product where one operand is broadcast and contracts it,
+    and :func:`contract` and the sum-factorised applies then had the accuracy of float32 (2026-10-21)."""
     ah, al = _split(a)
     bh, bl = _split(b)
-    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
+    s, e1 = two_sum(ah * bh, ah * bl)
+    s, e2 = two_sum(s, al * bh)
+    s, e3 = two_sum(s, al * bl)
+    return fast_two_sum(s, (e1 + e2) + e3)
 
 
 def _parts(x):

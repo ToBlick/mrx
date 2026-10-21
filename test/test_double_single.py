@@ -2,8 +2,9 @@
 :mod:`mrx.double_single` reproduce a float64 reference computed on the host.
 
 Run them all on a new device. Everything else in the float32 configuration rests on the first; the others catch a
-compiler that breaks the transformations only inside a larger fused kernel, as XLA:CPU on arm64 does when
-``two_prod`` has no optimization barrier.
+compiler that breaks the transformations only inside a larger fused kernel. XLA:CPU on arm64 dropped the optimization
+barrier of Dekker's ``two_prod`` where an operand was broadcast, recomputed ``fl(a b)`` and contracted it into a fused
+multiply-add, which left the sum-factorised applies with the accuracy of float32 (2026-10-21).
 """
 import jax
 import jax.numpy as jnp
@@ -13,15 +14,21 @@ import mrx.double_single as ds
 
 
 def test_error_free_transformations_survive_the_compiler():
-    """``two_sum`` and ``two_prod`` return the exact rounding error of a float32 sum and product on every
-    pair, under ``jit``."""
+    """``two_sum`` returns the exact rounding error of a float32 sum, and ``two_prod`` a float32 product to 2^-46 of
+    it, on every pair, under ``jit``, also with an operand broadcast."""
     rng = np.random.default_rng(0)
     a, b = ((rng.standard_normal(100_000) * np.exp(rng.uniform(-8, 8, 100_000))).astype(np.float32)
             for _ in range(2))
     s, e = jax.jit(ds.two_sum)(jnp.asarray(a), jnp.asarray(b))
     assert np.array_equal(ds.to_host(ds.DS(s, e)), a.astype(np.float64) + b.astype(np.float64))
+    exact = a.astype(np.float64) * b.astype(np.float64)
     p, e = jax.jit(ds.two_prod)(jnp.asarray(a), jnp.asarray(b))
-    assert np.array_equal(ds.to_host(ds.DS(p, e)), a.astype(np.float64) * b.astype(np.float64))
+    assert np.all(np.abs(ds.to_host(ds.DS(p, e)) - exact) <= 2.0 ** -46 * np.abs(exact))
+    # a row against a block, the form of the products in contract
+    a, b = a[:64 * 1000].reshape(64, 1000), b[:1000].reshape(1, 1000)
+    exact = a.astype(np.float64) * b.astype(np.float64)
+    p, e = jax.jit(ds.two_prod)(jnp.asarray(a), jnp.asarray(b))
+    assert np.all(np.abs(ds.to_host(ds.DS(p, e)) - exact) <= 2.0 ** -46 * np.abs(exact))
 
 
 def test_kernels_against_float64_on_the_host():

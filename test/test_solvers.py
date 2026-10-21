@@ -146,9 +146,10 @@ def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
 @FLOAT64
 def test_reorthogonalised_minres_terminates():
     """With its Lanczos vectors reorthogonalised, MINRES on a system of size ``N`` reaches the solution within ``N``
-    iterations up to round-off, which the three-term recurrence alone does not on a spectrum over several decades.
-    Spectrum 1e-2 .. 1e2 with 10 negative eigenvalues, SPD preconditioner. True relative residual measured
-    2026-10-14: 1.6e-12 reorthogonalised, 0.24 with the three-term recurrence alone."""
+    iterations up to the round-off of its stored basis, which the three-term recurrence alone does not on a spectrum
+    over several decades. Spectrum 1e-2 .. 1e2 with 10 negative eigenvalues, SPD preconditioner. True relative
+    residual measured 2026-10-14: 1.6e-12 reorthogonalised with a float64 basis, 0.24 with the three-term recurrence
+    alone; 2026-10-21 with the float32 basis: 3.5e-5, about the condition number times the float32 round-off."""
     rng = np.random.default_rng(0)
     Q, _ = np.linalg.qr(rng.standard_normal((N, N)))
     w = np.logspace(-2, 2, N)
@@ -162,5 +163,5 @@ def test_reorthogonalised_minres_terminates():
                       norm=lambda r: jnp.sqrt(r @ (P @ r)), reorthogonalize=reorthogonalize)
         return float(jnp.linalg.norm(b - A @ x) / jnp.linalg.norm(b))
 
-    assert residual(True) < 1e-10
+    assert residual(True) < 1e-4
     assert residual(False) > 1e-2

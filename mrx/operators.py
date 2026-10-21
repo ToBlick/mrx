@@ -25,7 +25,7 @@ import jax.numpy as jnp
 
 import mrx.double_single as ds
 from mrx.mass import sumfact_apply
-from mrx.precision import PAIRS, lift, to_working
+from mrx.precision import DS_KRYLOV, PAIRS, lift, to_working
 from mrx.solvers import deflation_projectors, refine, solve_singular_cg
 from mrx.symmetry import symmetrize_like
 
@@ -257,6 +257,8 @@ def dual_norm(seq, k: int):
     P = _seq_atom(seq, "mass", k).apply
 
     def norm(r):
+        # a norm only measures, so a double-single r is rounded
+        r = to_working(r)
         return jnp.sqrt(r @ P(r))
     return norm
 
@@ -314,11 +316,13 @@ def _pair_loop(seq, k, eps, split, b, guess, vs, guess_lower=None):
     n_k, n_l = seq.n(k), seq.n(k - 1)
     nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
     _, project_dual_k = deflation_projectors(to_working(vs), lambda v: _mass(seq, v, k))
-    # the kernel leaves b once, to the accuracy of b (:func:`mrx.solvers.refine`)
-    b = (deflation_projectors(vs, lambda v: _mass(seq, v, k))[1] if PAIRS else project_dual_k)(lift(b))
+    exact_dual_k = deflation_projectors(vs, lambda v: _mass(seq, v, k))[1] if PAIRS else project_dual_k
+    # the kernel leaves b once, to the accuracy of b (:func:`mrx.solvers.refine`), and a double-single residual
+    # every time
+    b = exact_dual_k(lift(b))
 
     def project(r):
-        return jnp.concatenate([project_dual_k(r[:n_k]), r[n_k:]])
+        return ds.concatenate([(exact_dual_k if DS_KRYLOV else project_dual_k)(r[:n_k]), r[n_k:]])
 
     def residual(p):
         x, w = p[:n_k], p[n_k:]
@@ -330,13 +334,13 @@ def _pair_loop(seq, k, eps, split, b, guess, vs, guess_lower=None):
     def norm(r):
         # the residual of (eps M_k + L_k) x = b, which is upper - M_k G M_{k-1}^-1 lower once w is eliminated,
         # with the preconditioner of M_{k-1} for its inverse as in dual_norm
-        return nu(r[:n_k] - _mass(seq, _grad(seq, P_lower(r[n_k:]), k - 1), k))
+        return nu(r[:n_k] - _mass(seq, _grad(seq, P_lower(to_working(r[n_k:])), k - 1), k))
 
     def solve(r, rtol):
         r_u, r_l = r[:n_k], r[n_k:]
         y = _mass_solve(seq, r_l, k - 1)
         dx, dg, info = split(r_u - _mass(seq, _grad(seq, y, k - 1), k), rtol)
-        return jnp.concatenate([dx, dg + y]), info
+        return ds.concatenate([dx, dg + y]), info
 
     x0 = jnp.zeros(n_k) if guess is None else guess
     w0 = jnp.zeros(n_l) if guess_lower is None else guess_lower
@@ -413,7 +417,7 @@ def _lower_norm(seq, k: int):
     ``M_{k-1}``). A residual ``r`` of the second unknown of :func:`_pair_loop`, a (k-1)-form, counts with
     this norm in the residual of the k-form equation."""
     nu, P = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
-    return lambda r: nu(_mass(seq, _grad(seq, P(r), k - 1), k))
+    return lambda r: nu(_mass(seq, _grad(seq, P(to_working(r)), k - 1), k))
 
 
 def _lower_solve(seq, k: int, solve, apply, c, rtol, target, consistent=None):
@@ -510,7 +514,7 @@ def _hodge_split(seq, b, k, guess, delta=None, guess_lower=None):
         else:
             z, info = solve(c, k - 1, rtol / 10.0)
         if delta is None and k == 3:
-            x_perp, info_x = jnp.zeros_like(b), jnp.zeros((), info.dtype)
+            x_perp, info_x = ds.zeros_like(b), jnp.zeros((), info.dtype)
         else:
             c = b - _mass(seq, _grad(seq, z, k - 1), k)
             x_perp, info_x = solve(c, k, rtol / 3.0 * nu(b) / nu(c))
@@ -520,7 +524,7 @@ def _hodge_split(seq, b, k, guess, delta=None, guess_lower=None):
         # w = M_{k-1}^-1 G^T M_k x of the returned x, the second unknown of _pair_loop:
         # G^T M_k x = M_{k-1} (z - delta a)
         w = z if delta is None else z - delta * a
-        return x_perp + _grad(seq, a, k - 1), w, _merge_info(_merge_info(info, info_x), info_a)
+        return lift(x_perp) + _grad(seq, a, k - 1), w, _merge_info(_merge_info(info, info_x), info_a)
 
     if delta is None:
         return _pair_loop(seq, k, 0.0, split, b, guess, _harmonic(seq, k), guess_lower)

@@ -41,6 +41,11 @@ DTYPE = jnp.dtype(_NAME)
 #: Whether the solves accumulate their solution and form their residual in double-single (``float32``).
 PAIRS = _NAME == "float32"
 
+#: Whether a checked solve in float32 runs its conjugate gradients with the iterate and the residual in
+#: double-single, in one pass (:func:`mrx.solvers.preconditioned_cg_pairs`), instead of float32 passes of
+#: :func:`mrx.solvers.refine`. Set it with the environment variable ``MRX_DS_KRYLOV`` (``0`` or ``1``).
+DS_KRYLOV = PAIRS and os.environ.get("MRX_DS_KRYLOV", "1") == "1"
+
 #: Machine epsilon of :data:`DTYPE`, as a Python float.
 EPS = float(np.finfo(DTYPE).eps)
 

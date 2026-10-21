@@ -8,8 +8,10 @@ nonpositive curvature and reorthogonalise its Lanczos vectors, which the Newton 
 estimates the spectral interval of a preconditioned operator. :func:`refine` is the outer loop of a
 solve: it recomputes the true residual after each Krylov solve and corrects the solution until that
 residual meets the tolerance. In float32 it carries the solution as a double-single number and forms the
-residual in that arithmetic (:mod:`mrx.precision`), which is what lets a float32 Krylov solve reach a tolerance
-below its own round-off. The Krylov solvers and the preconditioners only ever see float arrays.
+residual in that arithmetic (:mod:`mrx.precision`). With :data:`~mrx.precision.DS_KRYLOV` (the default) the
+conjugate gradients carry their iterate and residual in double-single too (:func:`preconditioned_cg_pairs`) and
+reach the tolerance of float64 in the iterations of float64. The preconditioners and the norms only ever see float
+arrays.
 
 Every Krylov solver returns a signed iteration count ``info``. A value ``+k`` means converged after ``k``
 iterations, and ``-k`` means not converged after ``k`` iterations.
@@ -21,7 +23,7 @@ import jax
 import jax.numpy as jnp
 
 import mrx.double_single as ds
-from mrx.precision import DTYPE, MAX_PASSES, PAIRS, lift, pass_floor, to_working
+from mrx.precision import DS_KRYLOV, DTYPE, MAX_PASSES, PAIRS, lift, pass_floor, to_working
 
 
 def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
@@ -152,8 +154,10 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
     asks for a factor 10 then hardly moves.
 
     In float32 ``x`` is a :class:`~mrx.double_single.DS` and so is ``apply(x)``. The residual is formed in
-    double-single, where the cancellation of ``b`` against ``A x`` loses nothing, and then rounded: ``solve``,
-    ``norm`` and ``project`` see float arrays. ``b`` may be a float array or a :class:`~mrx.double_single.DS`.
+    double-single, where the cancellation of ``b`` against ``A x`` loses nothing. Without
+    :data:`~mrx.precision.DS_KRYLOV` it is then rounded, and ``solve``, ``norm`` and ``project`` see float arrays.
+    With it ``solve`` and ``project`` get it as it is, and ``norm`` has to round it. ``b`` may be a float array or a
+    :class:`~mrx.double_single.DS`.
 
     ``norm`` measures residuals. The callers pass the norm given by the mass preconditioner of the
     residual's space. ``project`` is applied to every residual, to keep it in the range of ``A``. It acts on
@@ -171,7 +175,10 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
     x = lift(x0)
 
     def rounded(x):
-        return project(to_working(residual(x)))
+        # with double-single Krylov solves the residual is handed on as it is: rounded, it is consistent with a
+        # singular A only to the round-off of float32, and a solve that asks for less diverges
+        r = residual(x)
+        return project(r if DS_KRYLOV else to_working(r))
     bnorm = norm(project(to_working(b)))
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
 
@@ -184,13 +191,56 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
         # The inner solve gets the residual scaled to unit norm, so the range of float32 never limits the
         # tolerance. s > 0 inside the loop.
         s = norm(r)
-        d, info = solve(r / s, jnp.clip(0.5 * tol * bnorm_safe / s, pass_floor(tol), PASS_CAP))
+        d, info = solve(r * (1.0 / s), jnp.clip(0.5 * tol * bnorm_safe / s, pass_floor(tol), PASS_CAP))
         x = x + s * d
         return x, rounded(x), k + 1, its + jnp.abs(info)
 
     x, r, _, its = jax.lax.while_loop(cond, body, (x, rounded(x), 0, 0))
     converged = norm(r) <= tol * bnorm_safe
     return x, jnp.where(converged, its, -its)
+
+
+def preconditioned_cg_pairs(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
+    """:func:`preconditioned_cg` with the iterate ``x`` and the residual ``r`` in double-single.
+
+    ``A_matvec`` takes a :class:`~mrx.double_single.DS` and returns one, ``b`` is a float array or a
+    :class:`~mrx.double_single.DS`, and ``M`` and ``norm`` see float arrays. Only ``x``, ``r`` and ``A p`` need
+    the second part: ``x += alpha p`` and ``r -= alpha A p`` take the same ``alpha`` and ``p``, so ``r`` stays
+    ``b - A x`` to double-single accuracy whatever the rounding of ``alpha``, ``p`` and ``z = M r``, which are
+    float32. Their rounding costs conjugacy, not attainable accuracy, and the solve reaches tolerances below the
+    round-off of float32 in one pass. Returns ``(x, info)`` with ``x`` a :class:`~mrx.double_single.DS`.
+    """
+    b = lift(b)
+    x0 = ds.zeros(b.shape) if x0 is None else lift(x0)
+    r0 = b - A_matvec(x0)
+
+    def size(r, rz):
+        return jnp.sqrt(rz) if norm is None else norm(r)
+
+    b_w, r0_w = to_working(b), to_working(r0)
+    z0 = M(r0_w)
+    rz0 = jnp.dot(r0_w, z0)
+    bnorm = jnp.sqrt(jnp.dot(b_w, M(b_w))) if norm is None else norm(b_w)
+    bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
+
+    def cond_fn(state):
+        *_, k, converged = state
+        return jnp.logical_and(k < maxiter, ~converged)
+
+    def body_fn(state):
+        x, r, p, rz, k, _ = state
+        Ap = A_matvec(lift(p))
+        alpha = rz / jnp.dot(p, to_working(Ap))
+        x_new = x + lift(p) * alpha
+        r_new = r - Ap * alpha
+        r_w = to_working(r_new)
+        z_new = M(r_w)
+        rz_new = jnp.dot(r_w, z_new)
+        return x_new, r_new, z_new + (rz_new / rz) * p, rz_new, k + 1, size(r_w, rz_new) < tol * bnorm_safe
+
+    init = (x0, r0, z0, rz0, 0, size(r0_w, rz0) < tol * bnorm_safe)
+    x, _, _, _, k, converged = jax.lax.while_loop(cond_fn, body_fn, init)
+    return x, jnp.where(converged, k, -k)
 
 
 def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None,
@@ -219,6 +269,14 @@ def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_mat
 
     def outer_norm(r):
         return jnp.sqrt(r @ P(r)) if norm is None else norm(r)
+
+    if DS_KRYLOV:
+        # The kernel leaves b and the solution once each, to their own accuracy. p comes out of P in the projected
+        # space, so A p needs no projection, and r stays b - A x: the recurrence is the true residual
+        exact_primal, exact_dual = deflation_projectors(vs, mass_matvec)
+        x, info = preconditioned_cg_pairs(A_matvec, exact_dual(lift(b)), P, tol, maxiter,
+                                          x0=None if x0 is None else project_primal(to_working(x0)), norm=norm)
+        return exact_primal(x), info
 
     if not check_residual:
         x0 = jnp.zeros_like(b) if x0 is None else project_primal(x0)
@@ -286,7 +344,9 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
     beta1 = jnp.sqrt(jnp.dot(r0, y0))
     bnorm = norm(b)
     bnorm_safe = jnp.where(bnorm > 0, bnorm, 1.0)
-    # the Lanczos vectors (rows of U) and their preconditioned versions (rows of V): u_i . v_j = delta_ij
+    # the Lanczos vectors (rows of U) and their preconditioned versions (rows of V): u_i . v_j = delta_ij. They are
+    # stored in float32: reorthogonalisation has to keep the basis orthogonal only to about the square root of the
+    # working precision (semi-orthogonality, Simon 1984), and the solve stops far above that (NEWTON_TOL = 0.1)
     store = (maxiter if reorthogonalize else 0, b.shape[0])
 
     # The state follows SOL MINRES. y is the preconditioned residual (v = y / beta), r1 and r2
@@ -297,7 +357,7 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
         x=x0, y=y0, r1=jnp.zeros_like(b), r2=r0, beta=beta1, oldbeta=0.0,
         cs=-1.0, sn=0.0, dbar=0.0, epsln=0.0, phibar=beta1,
         w_prev=jnp.zeros_like(b), w_pp=jnp.zeros_like(b), res=r0, k=0, converged=False, npc=False,
-        U=jnp.zeros(store, dtype=b.dtype), V=jnp.zeros(store, dtype=b.dtype),
+        U=jnp.zeros(store, dtype=jnp.float32), V=jnp.zeros(store, dtype=jnp.float32),
     )
 
     def cond_fn(state):
@@ -316,7 +376,7 @@ def minres(A_matvec, b, *, M, tol, maxiter, norm, npc_exit=False, reorthogonaliz
         y_new = y_new - jnp.where(k >= 1, beta / old_beta, 0.0) * r1
         y_new = y_new - (alpha / safe_beta) * r2
         if reorthogonalize:
-            U, V = U.at[k].set(r2 / safe_beta), V.at[k].set(v)
+            U, V = U.at[k].set((r2 / safe_beta).astype(jnp.float32)), V.at[k].set(v.astype(jnp.float32))
             for _ in range(2):
                 y_new = y_new - (V @ y_new) @ U
 
