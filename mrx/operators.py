@@ -25,7 +25,7 @@ import jax.numpy as jnp
 
 import mrx.double_single as ds
 from mrx.mass import sumfact_apply
-from mrx.precision import DS_KRYLOV, PAIRS, lift, to_working
+from mrx.precision import PAIRS, lift, low, to_working
 from mrx.solvers import deflation_projectors, refine, solve_singular_cg
 from mrx.symmetry import symmetrize_like
 
@@ -257,9 +257,9 @@ def dual_norm(seq, k: int):
     P = _seq_atom(seq, "mass", k).apply
 
     def norm(r):
-        # a norm only measures, so a double-single r is rounded
-        r = to_working(r)
-        return jnp.sqrt(r @ P(r))
+        # a norm only measures: in float32 (LOW_DTYPE) in both configurations
+        r = low(r)
+        return jnp.sqrt(r @ low(P(r)))
     return norm
 
 
@@ -276,14 +276,12 @@ def _out(x, accurate):
 
 
 @eqx.filter_jit
-def _mass_solve(seq, rhs, k: int, guess=None, tol=None, check_residual: bool = True, return_info: bool = False,
-                accurate: bool = False):
+def _mass_solve(seq, rhs, k: int, guess=None, tol=None, return_info: bool = False, accurate: bool = False):
     """``M_k^{-1} rhs`` by preconditioned conjugate gradients, preconditioned by :func:`_mass_model`.
 
     The solve stops in the norm of that preconditioner, which conjugate gradients have without a second apply:
     no ``norm`` is passed. For ``k = 1, 2`` with the slab model that is the slab's norm, for the atom it is the norm
-    of :func:`dual_norm`. ``tol`` replaces ``seq.tol``. Without ``check_residual`` the solve stops on the residual of
-    its recurrence, as a solve inside another iteration does."""
+    of :func:`dual_norm`. ``tol`` replaces ``seq.tol``."""
     x, info = solve_singular_cg(
         lambda x: _mass(seq, x, k),
         rhs,
@@ -292,7 +290,6 @@ def _mass_solve(seq, rhs, k: int, guess=None, tol=None, check_residual: bool = T
         x0=guess,
         tol=seq.tol if tol is None else tol,
         maxiter=seq.maxiter,
-        check_residual=check_residual,
     )
     x = _out(x, accurate)
     return (x, info) if return_info else x
@@ -317,12 +314,11 @@ def _pair_loop(seq, k, eps, split, b, guess, vs, guess_lower=None):
     nu, P_lower = dual_norm(seq, k), _seq_atom(seq, "mass", k - 1).apply
     _, project_dual_k = deflation_projectors(to_working(vs), lambda v: _mass(seq, v, k))
     exact_dual_k = deflation_projectors(vs, lambda v: _mass(seq, v, k))[1] if PAIRS else project_dual_k
-    # the kernel leaves b once, to the accuracy of b (:func:`mrx.solvers.refine`), and a double-single residual
-    # every time
+    # the kernel leaves b once, to the accuracy of b (:func:`mrx.solvers.refine`), and the residual every time
     b = exact_dual_k(lift(b))
 
     def project(r):
-        return ds.concatenate([(exact_dual_k if DS_KRYLOV else project_dual_k)(r[:n_k]), r[n_k:]])
+        return ds.concatenate([exact_dual_k(r[:n_k]), r[n_k:]])
 
     def residual(p):
         x, w = p[:n_k], p[n_k:]
@@ -351,7 +347,7 @@ def _pair_loop(seq, k, eps, split, b, guess, vs, guess_lower=None):
     return p[:n_k], p[n_k:], info
 
 
-def _stiffness_solve(seq, b, k: int, tol, guess=None, check_residual=False):
+def _stiffness_solve(seq, b, k: int, tol, guess=None):
     """``(x, info)`` with ``S_k x = b`` by conjugate gradients, harmonic forms removed, stopped on the residual in
     :func:`dual_norm` at ``tol``. The preconditioner is that of ``L_k``, or the stiffness preconditioner where one
     is built (the multigrid of :mod:`mrx.multigrid`).
@@ -361,10 +357,6 @@ def _stiffness_solve(seq, b, k: int, tol, guess=None, check_residual=False):
     range of ``G_k^T``. A right-hand side only approximately in that range makes the iteration stall at what is
     left and then diverge, so the callers inside the Hodge split and the exact part make it consistent to below
     their tolerance (:func:`_gauge`, :func:`_hodge_split`).
-
-    With ``check_residual`` the true residual is checked after the conjugate gradients
-    (:func:`mrx.solvers.refine`). Without it the solve stops on the residual of its recurrence, as it does
-    inside :func:`_hodge_split`.
     """
     atom = _seq_atom(seq, "laplacian", k)
     stiffness, key = seq.operators.stiffness, (int(k), seq.dirichlet)
@@ -375,12 +367,11 @@ def _stiffness_solve(seq, b, k: int, tol, guess=None, check_residual=False):
         x0=guess,
         tol=tol,
         maxiter=seq.maxiter,
-        check_residual=check_residual,
         norm=dual_norm(seq, k),
     )
 
 
-def _shifted_cg(seq, j: int, delta, b, tol, x0=None, check_residual=False):
+def _shifted_cg(seq, j: int, delta, b, tol, x0=None):
     """``(x, info)`` with ``(delta M_j + S_j) x = b`` by preconditioned conjugate gradients.
 
     The preconditioner is the shifted atom of ``M_j + eps S_j`` (``eps = 1 / delta``) plus, for ``j >= 1``,
@@ -407,7 +398,6 @@ def _shifted_cg(seq, j: int, delta, b, tol, x0=None, check_residual=False):
         x0=x0,
         tol=tol,
         maxiter=seq.maxiter,
-        check_residual=check_residual,
         norm=dual_norm(seq, j),
     )
 
@@ -537,7 +527,7 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, ac
     """``L_k^{-1} rhs``, the solution orthogonal (in ``M_k``) to the harmonic forms. k = 0 uses
     conjugate gradients, k = 1, 2, 3 the Hodge split (:func:`_hodge_split`)."""
     if k == 0:
-        u, info = _stiffness_solve(seq, rhs, 0, seq.tol, guess=guess, check_residual=True)
+        u, info = _stiffness_solve(seq, rhs, 0, seq.tol, guess=guess)
     else:
         u, _, info = _hodge_split(seq, rhs, k, guess)
     u = _out(u, accurate)
@@ -548,19 +538,16 @@ def _laplacian_solve(seq, rhs, k: int, guess=None, return_info: bool = False, ac
 PARTS = ("full", "coexact", "exact")
 
 
-def _consistent_solve(seq, c, j: int, tol=None, guess=None, check_residual=False):
+def _consistent_solve(seq, c, j: int, tol=None, guess=None):
     """``(y, info)`` with ``S_j y = c`` for a ``c`` orthogonal to the closed forms, ``y`` up to a closed form.
-    Degree 0 has no closed forms but the constants, and its solve is refined on the true residual. So is every
-    solve with ``check_residual``. A solve that is not inside another one passes it in float32, where conjugate
-    gradients alone do not reach the tolerance of the sequence."""
-    return _stiffness_solve(seq, c, j, seq.tol if tol is None else tol, guess,
-                            check_residual=check_residual or j == 0)
+    Degree 0 has no closed forms but the constants."""
+    return _stiffness_solve(seq, c, j, seq.tol if tol is None else tol, guess)
 
 
 @eqx.filter_jit
 def _stiffness_solve_jit(seq, b, k: int, guess=None, tol=None, return_info: bool = False, accurate: bool = False):
     """:meth:`Stiffness.solve`."""
-    x, info = _consistent_solve(seq, b, k, tol, guess, check_residual=PAIRS)
+    x, info = _consistent_solve(seq, b, k, tol, guess)
     x = _out(x, accurate)
     return (x, info) if return_info else x
 
@@ -568,16 +555,15 @@ def _stiffness_solve_jit(seq, b, k: int, guess=None, tol=None, return_info: bool
 def _coexact_solve(seq, c, j: int):
     """``(y, info)``: the co-exact ``y`` (``G_{j-1}^T M_j y = 0``) with ``S_j y = c`` for a ``c`` orthogonal to the
     closed forms, the stiffness solve followed by a gauge solve of degree ``j - 1``."""
-    y, info = _consistent_solve(seq, c, j, check_residual=PAIRS)
+    y, info = _consistent_solve(seq, c, j)
     if j == 0:
         return y, info
     # only G q enters, so q needs no gauge of its own
-    q, info_q = _consistent_solve(seq, -_grad(seq, _mass(seq, y, j), j - 1, transpose=True), j - 1,
-                                  check_residual=PAIRS)
+    q, info_q = _consistent_solve(seq, -_grad(seq, _mass(seq, y, j), j - 1, transpose=True), j - 1)
     return y + _grad(seq, q, j - 1), _merge_info(info, info_q)
 
 
-def _gauge(seq, y, j: int, tol, check_residual=False):
+def _gauge(seq, y, j: int, tol):
     """``(y + G q, info)``, the j-form ``y`` (j = 1, 2) made co-exact for a following stiffness solve on
     ``M_j (y + G q)`` (``G = G_{j-1}``, ``S_{j-1} q = -G^T M_j y``).
 
@@ -585,17 +571,14 @@ def _gauge(seq, y, j: int, tol, check_residual=False):
     that follows stalls at ``M_j G e``. In :func:`dual_norm` this is the ``S_{j-1}^{-1}`` norm of ``r``, which is
     at most a mesh-independent constant times ``dual_norm(seq, j - 1)(r)``. The right-hand side ``G^T M_j y``
     weights the high modes of ``y`` by up to ``h^-1`` in that norm, so ``q`` stops at ``tol`` relative to
-    ``dual_norm(seq, j)(M_j y)``, not relative to its own right-hand side. ``check_residual`` works as in
-    :func:`_consistent_solve`.
+    ``dual_norm(seq, j)(M_j y)``, not relative to its own right-hand side.
     """
     My = _mass(seq, y, j)
     c = -_grad(seq, My, j - 1, transpose=True)
-    # the norms only set the tolerance, so they take a double-single y rounded
-    nu_c = dual_norm(seq, j - 1)(to_working(c))
+    nu_c = dual_norm(seq, j - 1)(c)
     # y = 0, the z of a co-exact right-hand side in the Hodge split, has nothing to gauge (0 / 0 otherwise)
     q, info = _consistent_solve(seq, c, j - 1,
-                                tol=jnp.where(nu_c > 0, tol * dual_norm(seq, j)(to_working(My)) / nu_c, tol),
-                                check_residual=check_residual)
+                                tol=jnp.where(nu_c > 0, tol * dual_norm(seq, j)(My) / nu_c, tol))
     return y + _grad(seq, q, j - 1), info
 
 
@@ -624,11 +607,11 @@ def _part_solve(seq, b, k: int, part: str, return_info: bool = False, accurate: 
     else:
         j = k - 1
         # G^T b in the arithmetic of the solve, so that it lies in the range of G^T to its accuracy
-        g, info_g = _consistent_solve(seq, _grad(seq, lift(b), j, transpose=True), j, check_residual=PAIRS)
+        g, info_g = _consistent_solve(seq, _grad(seq, lift(b), j, transpose=True), j)
         if j > 0:
-            g, info_q = _gauge(seq, g, j, seq.tol / 30.0, check_residual=PAIRS)
+            g, info_q = _gauge(seq, g, j, seq.tol / 30.0)
             info_g = _merge_info(info_g, info_q)
-        a, info_a = _consistent_solve(seq, _mass(seq, g, j), j, check_residual=PAIRS)
+        a, info_a = _consistent_solve(seq, _mass(seq, g, j), j)
         x, info = _grad(seq, a, j), _merge_info(info_g, info_a)
     x = _out(x, accurate)
     return (x, info) if return_info else x
@@ -639,7 +622,7 @@ def _shifted_stiffness_solve(seq, rhs, k: int, eps, guess=None, return_info: boo
     """``(M_k + eps S_k)^{-1} rhs`` (:meth:`ShiftedStiffness.solve`): one solve of ``delta M_k + S_k`` on
     ``rhs / eps``, ``delta = 1 / eps``."""
     delta = 1.0 / eps
-    x, info = _shifted_cg(seq, k, delta, rhs * delta, seq.tol, x0=guess, check_residual=True)
+    x, info = _shifted_cg(seq, k, delta, rhs * delta, seq.tol, x0=guess)
     x = to_working(x)
     return (x, info) if return_info else x
 

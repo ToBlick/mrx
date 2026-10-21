@@ -4,17 +4,19 @@ It is read once, when :mod:`mrx` is imported, so set it before the import.
 
 - ``float64`` (the default): every array is float64 and JAX 64-bit mode is on.
 - ``float32``: for a device without float64. Every array is float32 and 64-bit mode is off, so no float64
-  array is created on the device. A float32 Krylov solve stalls above its tolerance, so every solve is an
-  iterative refinement (:func:`mrx.solvers.refine`): the solution is accumulated as a double-single number,
-  a pair of float32 (:mod:`mrx.double_single`), and the residual is formed in that arithmetic.
+  array is created on the device. What float64 computes in float64, float32 computes in double-single, a pair of
+  float32 (:mod:`mrx.double_single`) of about 48 bits.
 
-There is one rule for both. An operator applied to a float array returns a float array, and applied to a
-:class:`~mrx.double_single.DS` it returns a :class:`~mrx.double_single.DS`. :func:`lift` and
-:func:`to_working` move a vector between the two, and both are the identity in float64.
+The two run the same algorithm. A solve has an accurate part, in float64 or double-single: its iterate, its
+residual and every operator apply that forms them. Everything else steers or measures, and is float32 in both
+(:data:`LOW_DTYPE`): the preconditioners, the search directions and coefficients of the conjugate gradients, the
+norms, and MINRES. An operator applied to a float array returns a float array, and applied to a
+:class:`~mrx.double_single.DS` it returns a :class:`~mrx.double_single.DS`. :func:`lift` takes a vector to the
+accurate precision, :func:`to_working` to a float array of :data:`DTYPE` and :func:`low` to :data:`LOW_DTYPE`.
 
 The module also holds the default solve tolerance :data:`SOLVE_TOL`, the cap :data:`MAX_PASSES` on the passes
-of a solve, and :func:`eps` and :func:`sqrt_eps`, the round-off scales that tolerances in the library and the
-tests are multiples of.
+of the Hodge split, and :func:`eps` and :func:`sqrt_eps`, the round-off scales that tolerances in the library
+and the tests are multiples of.
 """
 
 import os
@@ -41,16 +43,13 @@ DTYPE = jnp.dtype(_NAME)
 #: Whether the solves accumulate their solution and form their residual in double-single (``float32``).
 PAIRS = _NAME == "float32"
 
-#: Whether a checked solve in float32 runs its conjugate gradients with the iterate and the residual in
-#: double-single, in one pass (:func:`mrx.solvers.preconditioned_cg_pairs`), instead of float32 passes of
-#: :func:`mrx.solvers.refine`. Set it with the environment variable ``MRX_DS_KRYLOV`` (``0`` or ``1``).
-DS_KRYLOV = PAIRS and os.environ.get("MRX_DS_KRYLOV", "1") == "1"
-
-#: The precision every preconditioner is stored and applied in, in both configurations. A preconditioner only
-#: approximates an inverse, so its round-off costs nothing the solve can see, and its apply reads half the data
-#: of a float64 one. The vectors around it stay in :data:`DTYPE`: an apply rounds its input to this and returns
-#: its result in the input's precision.
-PRECOND_DTYPE = jnp.dtype("float32")
+#: The precision of what steers or measures a solve, in both configurations: the preconditioners (stored and
+#: applied), the search directions and coefficients of the conjugate gradients, the norms and MINRES. Its round-off
+#: costs conjugacy, not attainable accuracy: the accurate part keeps the residual ``b - A x``. A preconditioner
+#: rounds its input to this and returns its result in the input's precision.
+LOW_DTYPE = jnp.dtype("float32")
+#: The storage precision of the preconditioners, :data:`LOW_DTYPE`.
+PRECOND_DTYPE = LOW_DTYPE
 
 
 def to_precond(tree):
@@ -70,21 +69,21 @@ SOLVE_TOL = 1e-8
 MAX_PASSES = 6
 
 
-def pass_floor(tol):
-    """The strongest reduction of the residual that one pass of a solve at ``tol`` asks of its Krylov solve.
-    In float32 it is ``sqrt(tol)``, which a float32 iteration reaches, so that a solve from zero takes two
-    passes. In float64 it is ``tol``, one pass."""
-    return tol ** 0.5 if PAIRS else tol
-
 
 def lift(x):
-    """``x`` as the solves carry it: a :class:`~mrx.double_single.DS` in float32, unchanged in float64."""
-    return ds.lift(x) if PAIRS else x
+    """``x`` in the accurate precision of the solves: a :class:`~mrx.double_single.DS` in float32, float64 in
+    float64."""
+    return ds.lift(x) if PAIRS else jnp.asarray(x, dtype=DTYPE)
 
 
 def to_working(x):
     """``x`` as a float array. A :class:`~mrx.double_single.DS` is rounded."""
     return x.round() if isinstance(x, ds.DS) else x
+
+
+def low(x):
+    """``x`` as a float array of :data:`LOW_DTYPE`, rounded."""
+    return to_working(x).astype(LOW_DTYPE)
 
 
 def inner(a, b) -> float:

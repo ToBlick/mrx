@@ -129,6 +129,10 @@ def _system(indefinite):
 @FLOAT64
 @pytest.mark.parametrize("solver", ["minres", "cg"])
 def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
+    """Each solver stops at the first iteration whose true residual meets the tolerance, to the precision of
+    float32: the norm and, for MINRES, the residual recurrence are float32 (:data:`mrx.precision.LOW_DTYPE`).
+    2026-10-21: with a margin of 1e-9 both stop one iteration late, with 1e-6 CG is exact and MINRES late once at
+    45 iterations, with 1e-4 both are exact."""
     A, P, norm, b = _system(indefinite=solver == "minres")
 
     def run(tol, maxiter):
@@ -138,7 +142,7 @@ def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
 
     true = [float(norm(b - A(run(0.0, it)[0])) / norm(b)) for it in range(1, 46)]
     for it in (1, 3, 7, 20, 45):
-        tol = true[it - 1] * (1 + 1e-9)
+        tol = true[it - 1] * (1 + 1e-4)
         first = next(k for k, r in enumerate(true, start=1) if r < tol)
         assert int(run(tol, 10 * N)[1]) == first
 
@@ -146,10 +150,11 @@ def test_the_solver_stops_on_the_given_norm_of_the_true_residual(solver):
 @FLOAT64
 def test_reorthogonalised_minres_terminates():
     """With its Lanczos vectors reorthogonalised, MINRES on a system of size ``N`` reaches the solution within ``N``
-    iterations up to the round-off of its stored basis, which the three-term recurrence alone does not on a spectrum
-    over several decades. Spectrum 1e-2 .. 1e2 with 10 negative eigenvalues, SPD preconditioner. True relative
-    residual measured 2026-10-14: 1.6e-12 reorthogonalised with a float64 basis, 0.24 with the three-term recurrence
-    alone; 2026-10-21 with the float32 basis: 3.5e-5, about the condition number times the float32 round-off."""
+    iterations up to the round-off of float32, in which it runs, which the three-term recurrence alone does not on a
+    spectrum over several decades. Spectrum 1e-2 .. 1e2 with 10 negative eigenvalues, SPD preconditioner. True
+    relative residual measured 2026-10-14 in float64: 1.6e-12 reorthogonalised, 0.24 with the three-term recurrence
+    alone; 2026-10-21 in float32: 7.1e-4 and 0.40, the first about the condition number times the float32
+    round-off."""
     rng = np.random.default_rng(0)
     Q, _ = np.linalg.qr(rng.standard_normal((N, N)))
     w = np.logspace(-2, 2, N)
@@ -163,5 +168,5 @@ def test_reorthogonalised_minres_terminates():
                       norm=lambda r: jnp.sqrt(r @ (P @ r)), reorthogonalize=reorthogonalize)
         return float(jnp.linalg.norm(b - A @ x) / jnp.linalg.norm(b))
 
-    assert residual(True) < 1e-4
+    assert residual(True) < 1e-2
     assert residual(False) > 1e-2

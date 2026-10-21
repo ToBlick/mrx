@@ -18,9 +18,11 @@ import mrx
 # derivatives through the solves are taken in float64
 pytestmark = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 
-#: The finite differences below divide the error of two solves by 2 eps, so they are solved to 1e-10: at the default
-#: 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13).
-FD_TOL = 1e-10
+#: The finite differences below divide the error of two solves by 2 eps, so they are solved to 1e-12: at the default
+#: 1e-8 the comparison sat at its bound of 1e-6 on QA (1.15e-6 and 0.9e-6 in two runs, 2026-10-13), and at 1e-10 on
+#: li383 it was 5.5e-7, then 1.4e-6 once the solves stopped on float32 norms, the derivative itself unchanged to 3e-11.
+#: At 1e-12 it is 6.6e-10 (2026-10-21).
+FD_TOL = 1e-12
 #: The central difference has an eps^2 error: on li383 (16, 32, 12) it is 3.14e-6 of the derivative at eps = 1e-3 and
 #: 7.16e-7 at 5e-4, below that the solves dominate (1.5e-6 at 2.5e-4). Richardson's combination of 1e-3 and 5e-4
 #: removes the eps^2 term and leaves 9.1e-8 (2026-10-20), against the bound of 1e-6.
