@@ -36,7 +36,7 @@ TWO_PI = 2.0 * jnp.pi
 R_MAX = 1.0 - 1e-6
 
 #: Fewest integration steps per field period. The planes can raise it (see :func:`steps_for`).
-MIN_STEPS_PER_PERIOD = 24
+MIN_STEPS_PER_PERIOD = 300
 
 #: ``|B^zeta|/|B|`` at or below which the toroidal-angle parameterisation is refused.
 BZETA_MIN_FRACTION = 0.05
