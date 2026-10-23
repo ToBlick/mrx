@@ -165,7 +165,8 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
     Each pass computes the residual ``r = b - A x`` with ``apply`` (``x -> A x``), solves
     ``A d = r`` approximately with ``solve(r, rtol) -> (d, info)`` and adds ``d`` to ``x``. It stops
     when ``norm(r) <= tol norm(b)`` or after
-    :data:`~mrx.precision.MAX_PASSES` passes. ``info`` counts the inner iterations of all passes.
+    :data:`~mrx.precision.MAX_PASSES` passes. ``info`` counts the inner iterations of all passes, negative when
+    the stopping test fails. A residual that is not finite fails it before the first pass: ``info`` is then -1.
 
     ``rtol`` aims at half the target: it is ``tol norm(b) / (2 norm(r))``, between
     ``tol`` and :data:`PASS_CAP`. So a pass does not ask for much more than the
@@ -214,7 +215,7 @@ def refine(apply, solve, b, *, tol, norm, x0=None, project=None, residual=None):
 
     x, r, _, its = jax.lax.while_loop(cond, body, (x, current(x), 0, 0))
     converged = norm(r) <= tol * bnorm_safe
-    return x, jnp.where(converged, its, -its)
+    return x, jnp.where(converged, its, -jnp.maximum(its, 1))
 
 
 def solve_singular_cg(A_matvec, b, vs, *, precond_matvec, tol, maxiter, mass_matvec=None, x0=None, norm=None):
