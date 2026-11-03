@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.operators import _mass_solve
+from mrx.operators import _mass_model, _mass_solve
 from mrx.solvers import minres
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
@@ -62,21 +62,31 @@ def _ddx(f, x, axis, periodic):
 
 
 def harmonic_atom_profiles(seq, field):
-    """Radial profiles of a 2-form ``field``, on the radial quadrature points, used to build the preconditioner.
+    """Radial profiles of an odd 2-form ``field`` on the radial quadrature points, used to build the preconditioner.
 
     Returns ``(prof_t, prof_z, strain)``. ``prof_t`` and ``prof_z`` are the averages over ``theta`` and ``zeta``
     of the field's logical ``theta`` and ``zeta`` components. ``strain`` has shape ``(nq_r, 3)`` and holds, for
     each logical direction ``c``, the angle average of ``sum_i (d_c field^i)^2``, i.e. how fast the field
     varies along that direction.
     """
-    shape = tuple(int(v) for v in seq.quad.shape)
-    f_jk = (seq.odd.evaluate_at_quadrature(field, 2) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+    f_jk = _components(seq, field, seq.odd)
     prof_t = f_jk[..., 1].mean(axis=(1, 2))
     prof_z = f_jk[..., 2].mean(axis=(1, 2))
+    return prof_t, prof_z, _strain(seq, f_jk)
+
+
+def _components(seq, field, view):
+    """The logical components of the 2-form ``field`` of the view ``view`` over ``det DPhi``, on the quadrature grid,
+    shape ``(nq_r, nq_t, nq_z, 3)``."""
+    shape = tuple(int(v) for v in seq.quad.shape)
+    return (view.evaluate_at_quadrature(field, 2) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+
+
+def _strain(seq, f_jk):
+    """The ``strain`` of :func:`harmonic_atom_profiles` from the components of :func:`_components`."""
     periodic = (False, True, not seq.half_period)
     grads = [_ddx(f_jk, x, ax, periodic[ax]) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
-    strain = jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
-    return prof_t, prof_z, strain
+    return jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
 
 
 def divergence_at_quadrature(view, S):
@@ -95,63 +105,117 @@ def parallel_penalty_profile(profiles, kappa):
     return kappa * (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / (prof_t ** 2 + prof_z ** 2)
 
 
-def harmonic_preconditioner(seq, profiles, penalty):
+def harmonic_preconditioner(seq, profiles, penalty, moments=None):
     """The preconditioner of the Newton system, a :class:`HarmonicAtom`: an SPD approximate inverse of
     ``curl^T H curl``.
 
-    It is the preconditioner of the 1-form Laplacian, scaled on both sides by ``lambda^{-1/2}``. For each Fourier
-    mode ``(m, n)`` in ``(theta, zeta)`` and each radius, ``lambda = (2 pi)^2 (h_t m + h_z n)^2 + s_c + w``
-    approximates the Hessian: the first term is the squared derivative along the field (``h_t, h_z`` from
-    ``profiles``, see :func:`harmonic_atom_profiles`), ``s_c`` the strain along the component's direction and
-    ``w`` the parallel-flow ``penalty``. Build it once per Newton step, since it depends on ``B``.
+    It is the preconditioner of the 1-form Laplacian, scaled on both sides by ``K^{-1/2}``, where ``K`` models the
+    Hessian per Fourier mode ``(m, n)`` in ``(theta, zeta)``. Without elastic fields ``K`` is the number
+    ``(2 pi)^2 (h_t m + h_z n)^2 + s_c + w`` at each radius: the first term is the squared derivative along
+    the field (``h_t, h_z`` from ``profiles``, see :func:`harmonic_atom_profiles`), ``s_c`` the strain along the
+    component's direction and ``w`` the parallel-flow ``penalty``. ``moments`` holds the second moments
+    ``(q_rr, q_tt, q_tz, q_zz, s)`` of further frozen-in fields, summed over the fields
+    (:func:`mrx.relaxation.elastic.preconditioner_moments`). They add ``(2 pi)^2 (q_tt m^2 + 2 q_tz m n + q_zz n^2) +
+    s_c`` to ``K``, and the radial moment ``q_rr``, unless it is ``None``, adds the radial operator ``-d_r q_rr d_r``.
+    This is the strain energy ``sum_k ||(S_k . grad) u||^2`` of the elastic fields, and for a frame
+    that crosses the flux surfaces its radial part dominates on flows whose radial profile changes from cell to
+    cell. With ``q_rr`` ``K`` is a symmetric tridiagonal matrix in ``r`` per mode (a three-point difference on the
+    Greville points), and ``K^{-1/2}`` is replaced by the inverse of its Cholesky factor ``K = R^T R``, ``R^{-T}``
+    on the way in and ``R^{-1}`` on the way out, which keeps the preconditioner symmetric. Without ``q_rr`` the
+    factor is ``K^{1/2}``. Build it once per Newton step, since it depends on ``B``.
     """
-    prof_t, prof_z, strain = profiles
     r_q = seq.quad.x_x
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
-    scale = []
+    p_t, p_z, strain = profiles
+    q_rr, q_tt, q_tz, q_zz, strain_m = (None,) * 5 if moments is None else moments
+    factors = []
     # the radial position of a DoF is the Greville point of its radial basis: the derivative splines for the
     # r component, the splines for the other two
     lam_r = seq.basis_0.Lambda[0]
     radial = (seq.basis_0.dLambda[0].s, lam_r, lam_r)
     for c, (s1, s2, s3) in enumerate(shapes):
         r = radial[c].greville_points()
-        a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
-        floor = jnp.interp(r, r_q, strain[:, c] + penalty)[:, None, None]
         m = np.fft.fftfreq(s2, d=1.0 / s2)
         nn = np.fft.fftfreq(s3, d=1.0 / s3)
-        lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
-        scale.append(1.0 / jnp.sqrt(lam + floor))
-    return HarmonicAtom(scale=tuple(scale), shapes=tuple(shapes))
+        a, b = jnp.interp(r, r_q, p_t), jnp.interp(r, r_q, p_z)
+        K = (jnp.interp(r, r_q, penalty)[:, None, None] + jnp.interp(r, r_q, strain[:, c])[:, None, None]
+             + (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2)
+        if moments is not None:
+            tt, tz, zz = (jnp.interp(r, r_q, q)[:, None, None] for q in (q_tt, q_tz, q_zz))
+            K = (K + jnp.interp(r, r_q, strain_m[:, c])[:, None, None]
+                 + (2 * np.pi) ** 2 * (tt * m[None, :, None] ** 2 + 2 * tz * m[None, :, None] * nn[None, None, :]
+                                       + zz * nn[None, None, :] ** 2))
+        if q_rr is None:
+            factors.append((jnp.sqrt(K), None))
+            continue
+        # -d_r q d_r on the Greville points: conductances q / dr on the edges, cell widths w on the nodes, ends
+        # without flux. W^-1/2 S W^-1/2 is the symmetric form of the difference operator W^-1 S on point values.
+        dr = r[1:] - r[:-1]
+        cond = jnp.interp(0.5 * (r[1:] + r[:-1]), r_q, q_rr) / dr
+        w = jnp.concatenate([dr[:1], r[2:] - r[:-2], dr[-1:]]) / 2
+        zero = jnp.zeros(1)
+        diag = K + ((jnp.concatenate([cond, zero]) + jnp.concatenate([zero, cond])) / w)[:, None, None]
+        off = jnp.broadcast_to((-cond / jnp.sqrt(w[1:] * w[:-1]))[:, None, None], (s1 - 1, s2, s3))
+        factors.append(_cholesky_tridiagonal(diag, off))
+    return HarmonicAtom(factors=tuple(factors), shapes=tuple(shapes))
+
+
+def _cholesky_tridiagonal(diag, off):
+    """The lower bidiagonal Cholesky factor ``(ld, ls)`` of the symmetric tridiagonal matrices along the first axis
+    with diagonal ``diag`` and off-diagonal ``off``: ``ld`` its diagonal, ``ls`` its subdiagonal."""
+    def step(ls_prev, x):
+        d, o = x
+        ld = jnp.sqrt(d - ls_prev ** 2)
+        return o / ld, (ld, o / ld)
+    _, (ld, ls) = jax.lax.scan(step, jnp.zeros_like(diag[0]), (diag, jnp.concatenate([off, jnp.zeros_like(off[:1])])))
+    return ld, ls[:-1]
+
+
+def _bidiagonal_solve(ld, ls, b, transpose):
+    """``L^{-1} b``, or ``L^{-T} b`` with ``transpose``, for the lower bidiagonal ``L = (ld, ls)`` of
+    :func:`_cholesky_tridiagonal`, along the first axis."""
+    pad = jnp.zeros_like(ls[:1])
+    ls = jnp.concatenate([ls, pad]) if transpose else jnp.concatenate([pad, ls])
+
+    def step(x_prev, y):
+        di, si, bi = y
+        x = (bi - si * x_prev) / di
+        return x, x
+    _, x = jax.lax.scan(step, jnp.zeros_like(b[0]), (ld, ls, b), reverse=transpose)
+    return x
 
 
 class HarmonicAtom(eqx.Module):
     """The Newton preconditioner of :func:`harmonic_preconditioner`, applied to a dual 1-form ``x`` as
     ``atom(seq, x)``.
 
-    It is a pytree that holds only the per-mode scales, so a new field does not trigger a recompile. The
+    It is a pytree that holds only the per-mode factors, so a new field does not trigger a recompile. The
     sequence is passed at each call.
     """
 
-    scale: tuple
+    factors: tuple
     shapes: tuple = eqx.field(static=True)
 
-    def _C(self, x):
+    def _C(self, x, transpose):
+        """The factor of ``K^{-1}`` per component and mode: ``R^{-T} x`` on the way in, ``R^{-1} x`` with
+        ``transpose``."""
         out, off = [], 0
-        for sc, s in zip(self.scale, self.shapes):
+        for (ld, ls), s in zip(self.factors, self.shapes):
             n_c = s[0] * s[1] * s[2]
-            X = x[off:off + n_c].reshape(s)
-            out.append(jnp.fft.ifft2(jnp.fft.fft2(X, axes=(1, 2)) * sc, axes=(1, 2)).real.ravel())
+            X = jnp.fft.fft2(x[off:off + n_c].reshape(s), axes=(1, 2))
+            Y = X / ld if ls is None else _bidiagonal_solve(ld, ls, X, transpose)
+            out.append(jnp.fft.ifft2(Y, axes=(1, 2)).real.ravel())
             off += n_c
         return jnp.concatenate(out)
 
     def __call__(self, seq, x):
         E = seq.E(1)
-        y = E @ self._C(E.T @ x)
+        y = E @ self._C(E.T @ x, False)
         y = seq.L[1].precondition(y)
-        return E @ self._C(E.T @ y)
+        return E @ self._C(E.T @ y, True)
 
 
-def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
+def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=(), lumped=False):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
     ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
@@ -159,25 +223,30 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
     What remains is the Gauss-Newton part ``(u, H v) = (Q_u, Q_v)_M``, which is positive semidefinite.
     Flows along the field, ``u = f B``, do not change ``B`` and form a null space of ``H``. ``penalty`` (the
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
-    ``(v, M_par u) = int w(r) (v . B)(u . B) / |B|^2 dx``, which leaves flows across the field unchanged.
-    ``penalty=None`` gives the bare Hessian.
+    ``(v, M_par u) = int w(r) (v . B)(u . B) / |B|^2 dx``, which leaves flows across the field unchanged. A scalar
+    ``penalty`` ``mu`` adds ``mu int (v . B)(u . B) dx`` instead. ``penalty=None`` gives the bare Hessian.
 
     ``frozen`` holds further fields frozen into the flow, triples ``(view, S, closed)`` of a parity view, a 2-form on
     it and whether ``div S = 0``, such as the elastic fields of :func:`mrx.relaxation.elastic.frozen`. Each field adds
     the terms of ``B`` with ``S`` in place of ``B`` on the spaces of its view, at two more mass solves per application.
     With ``J`` given, their currents are computed here. The penalty is that of ``B`` alone. The transport of a field
     that is not closed also drags the density ``div S``, which costs one more 2-form mass solve per field and
-    application, and one more for the terms in the current.
+    application, and one more for the terms in the current. ``lumped`` makes the terms of these fields cheaper, for the
+    Gauss-Newton operator only: it leaves out the drag of the density and replaces their 1-form mass solves by one fixed
+    application of the mass preconditioner. The operator stays symmetric and positive semidefinite. It changes the
+    Newton direction only. The end state then moves through the path, by about 1e-6 in ``B`` against the exact terms
+    (li383, lam 0.003, 2026-11-02).
     """
     # B, J and the intermediate forms live in the odd parity view, u and H u in the even one
     odd, even = seq.odd, seq.even
     B_jk = odd.evaluate_at_quadrature(B, 2)
     if penalty is not None:
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
-        weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
+        weight = (penalty * Bsq_over_J2 if jnp.ndim(penalty) == 0
+                  else jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2])))
 
     # (view, field, divergence) of every frozen-in field, B first, the divergence None for the closed ones
-    fields = [(odd, B, None)] + [(view, S, None if closed else divergence_at_quadrature(view, S))
+    fields = [(odd, B, None)] + [(view, S, None if closed or lumped else divergence_at_quadrature(view, S))
                                  for view, S, closed in frozen]
     currents = ([None] * len(fields) if J is None
                 else [J] + [view.M[1].solve(view.D[1].T @ X) for view, X, _ in fields[1:]])
@@ -187,13 +256,14 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
 
     tol = seq.tol if mass_tol is None else mass_tol
 
-    def field_term(u_jk, view, f_jk, J_jk, rho):
+    def field_term(u_jk, view, f_jk, J_jk, rho, lumped=False):
         """The terms of the frozen-in field ``f`` on the parity view ``view``, with current ``J`` (``None``: the
-        Gauss-Newton term only) and divergence ``rho`` (``None``: a closed field)."""
+        Gauss-Newton term only) and divergence ``rho`` (``None``: a closed field). ``lumped`` replaces the 1-form mass
+        solves by one application of the mass preconditioner."""
         curl = view.G[1]
 
         def m1_inv(x):
-            return _mass_solve(view, x, 1, tol=tol)
+            return _mass_model(view, 1).apply(x) if lumped else _mass_solve(view, x, 1, tol=tol)
 
         def m2_inv(x):
             return _mass_solve(view, x, 2, tol=tol)
@@ -222,7 +292,8 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
-        Hu = sum((field_term(u_jk, *f) for f in fields[1:]), field_term(u_jk, *fields[0]))
+        Hu = sum((field_term(u_jk, *f, lumped=lumped) for f in fields[1:]),
+                 field_term(u_jk, *fields[0]))
         if penalty is None:
             return Hu
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
@@ -232,7 +303,7 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
 
 
 def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
-                     mass_tol=NEWTON_MASS_SOLVE_TOL, frozen=()):
+                     mass_tol=NEWTON_MASS_SOLVE_TOL, elastic=None):
     """The Gauss-Newton direction at ``B``. Returns ``(u, a, info)`` with ``u = curl a``.
 
     ``load`` is the Lorentz force ``J x B`` as a dual 2-form. It need not be projected: the right-hand side
@@ -241,17 +312,22 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     the Gauss-Newton part of the Hessian (:func:`second_variation` without ``J``) with its mass solves to
     ``mass_tol``. The solve (:func:`newton_mr`) stops when its residual, in the norm of the preconditioner, is
     below ``tol`` times the right-hand side or after ``maxiter`` MINRES iterations. ``info`` is the number of MINRES
-    iterations, positive when ``tol`` was met and negative when not. ``frozen`` holds further frozen-in fields as
-    in :func:`second_variation`, such as the elastic fields of :func:`mrx.relaxation.elastic.frozen`. ``load`` must
-    then include their force ``sum_k (curl S_k x S_k + S_k div S_k)``.
+    iterations, positive when ``tol`` was met and negative when not. ``elastic`` holds the terms of the elastic fields,
+    a :class:`mrx.relaxation.elastic.NewtonTerms`: their frozen-in fields in the operator, their moments in the
+    preconditioner and the penalty ``mu (u . B)^2`` in place of that of ``kappa``. ``load`` must then include their
+    force ``sum_k (curl S_k x S_k + S_k div S_k)``.
     """
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
     # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
     profiles = harmonic_atom_profiles(seq, B)
-    penalty = parallel_penalty_profile(profiles, kappa)
-    curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol, frozen)
-    atom = harmonic_preconditioner(seq, profiles, penalty)
+    if elastic is None:
+        penalty = parallel_penalty_profile(profiles, kappa)
+        curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol)
+        atom = harmonic_preconditioner(seq, profiles, penalty)
+    else:
+        curl, curl_t, A = _newton_system(seq, B, elastic.mu, mass_tol, elastic.frozen, elastic.lumped)
+        atom = harmonic_preconditioner(seq, profiles, elastic.mu_profile, elastic.moments)
 
     def P(x):
         return atom(even, x)
@@ -262,10 +338,10 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-def _newton_system(seq, B, penalty, mass_tol, frozen=()):
+def _newton_system(seq, B, penalty, mass_tol, frozen=(), lumped=False):
     """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Gauss-Newton system on the even view of the
     full sequence ``seq``, with the frozen-in fields ``frozen`` of :func:`second_variation`."""
-    Hs = second_variation(seq, B, None, penalty, mass_tol, frozen)
+    Hs = second_variation(seq, B, None, penalty, mass_tol, frozen, lumped)
     even = seq.even
 
     def curl(a):

@@ -18,6 +18,7 @@ from typing import Annotated, Literal, Optional
 
 import tyro
 
+from mrx.relaxation.elastic import NEWTON_MU_CONSTANT
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 
 
@@ -125,13 +126,17 @@ class Descent:
 class Newton:
     """Gauss-Newton solve (with --descent.method newton, see mrx.relaxation.newton)."""
     penalty: float = NEWTON_PENALTY
-    """The weight of the penalty on flows along the field, in units of the field's strain along the field."""
+    """The weight of the penalty on flows along the field, in units of the field's strain along the field. Without elastic fields only."""
     tol: float = NEWTON_TOL
     """The relative tolerance of each Newton solve, in the norm of its preconditioner."""
     maxiter: int = NEWTON_MAXITER
     """The maximum number of MINRES iterations of each Newton solve."""
     mass_solve_tol: float = NEWTON_MASS_SOLVE_TOL
     """The relative tolerance of the two 1-form mass solves inside every apply of the Gauss-Newton operator. Looser than 1e-5 the relaxation stalls."""
+    mu_constant: float = NEWTON_MU_CONSTANT
+    """With elastic fields, the constant c of the penalty mu (u . B)^2 on flows along the field, mu = c / L^2 with L the length of the axis per field period over 2 pi."""
+    elastic_model: Literal["lumped", "exact"] = "lumped"
+    """The terms of the elastic fields in the Newton operator. lumped leaves out the drag of the density and replaces their 1-form mass solves by one application of the mass preconditioner. exact keeps both. On li383 (64,80,32) at --elastic.lam 0.003 and mu 0.068 (2026-10-30, before the penalty rule) only exact reached resid_el 1e-14. The choice is not in the equations of the equilibrium but moves the end state through the path, by about 1e-6 in B."""
 
 
 @dataclass(frozen=True)
@@ -232,6 +237,7 @@ class RelaxConfig:
         n = self.newton
         return TimeStepper(seq=seq, newton=self.descent.newton, newton_penalty=n.penalty, newton_tol=n.tol,
                            newton_maxiter=n.maxiter, newton_mass_solve_tol=n.mass_solve_tol,
+                           newton_mu_constant=n.mu_constant, newton_elastic_model=n.elastic_model,
                            resistivity=self.drive.resistivity * radial_cell_sq(seq))
 
     def relax_kwargs(self):

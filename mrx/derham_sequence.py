@@ -86,7 +86,7 @@ class DeRhamSequence():
     Args:
         ns: ``(n_r, n_theta, n_zeta)``, the number of splines per axis.
         p: the spline degree.
-        nfp: the number of field periods spanned by ``zeta`` in ``[0, 1]``.
+        nfp: the number of field periods of the device. ``zeta`` in ``[0, 1]`` spans one of them.
         symmetry: the symmetry of the map, one of :data:`mrx.geometry.SYMMETRIES`. ``"none"`` needs
             ``nfp = 1``. With ``"stellarator"`` and uniform angular knots the sequence integrates over
             half the zeta period only (:attr:`half_period`), which needs an even number of zeta cells.

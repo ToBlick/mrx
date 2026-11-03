@@ -110,8 +110,9 @@ def main(cfg):
               f"{dr.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     params["start_step"] = it0
-    newton = 'Gauss-Newton penalty=%g tol=%.1e maxiter=%d mass-solve-tol=%.0e' % (
-        n.penalty, n.tol, n.maxiter, n.mass_solve_tol)
+    penalty = f"mu={float(ts.newton_mu):.4g} {n.elastic_model}" if state.S else f"penalty={n.penalty:g}"
+    newton = 'Gauss-Newton %s tol=%.1e maxiter=%d mass-solve-tol=%.0e' % (
+        penalty, n.tol, n.maxiter, n.mass_solve_tol)
     print(f"\n=== {newton if d.newton else 'gradient descent'}"
           f"  smoothing@{ts.velocity_smoothing_scale:.3e}  steps<={b.steps} chunk={b.chunk} "
           f"floor-tol={b.floor_tol:.1e}" + (f" floor-tol-el={b.floor_tol_el:.1e}" if cfg.elastic else "")

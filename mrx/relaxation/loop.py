@@ -33,6 +33,7 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation import elastic
+from mrx.relaxation.elastic import NEWTON_MU_CONSTANT, field_period_length
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL, newton_direction
 from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
                                    weak_pressure)
@@ -159,7 +160,10 @@ class TimeStepper(eqx.Module):
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
     With ``newton=True`` the velocity ``u`` is the Gauss-Newton direction of
     :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol``,
-    ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator.
+    ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator. With
+    elastic fields the parallel-flow penalty is ``mu = newton_mu_constant / L^2`` with ``L`` from
+    :func:`~mrx.relaxation.elastic.field_period_length` in place of ``newton_penalty``, and ``newton_elastic_model`` is
+    ``"lumped"`` or ``"exact"`` for their terms in the operator.
     Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
     2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
     The elastic fields of the state (:mod:`mrx.relaxation.elastic`) enter the force, the Newton system and the
@@ -175,9 +179,12 @@ class TimeStepper(eqx.Module):
     newton_tol: float = NEWTON_TOL
     newton_maxiter: int = NEWTON_MAXITER
     newton_mass_solve_tol: float = eqx.field(static=True, default=NEWTON_MASS_SOLVE_TOL)
+    newton_mu_constant: float = NEWTON_MU_CONSTANT
+    newton_elastic_model: str = "lumped"
     resistivity: float = 0.0
     resistive_reference: Optional[jnp.ndarray] = None
     velocity_smoothing_scale: float = None
+    newton_mu: jnp.ndarray = None
     cfl_weights: jnp.ndarray = None
     harmonic: jnp.ndarray = None
     harmonic_norm_sq: jnp.ndarray = None
@@ -194,6 +201,7 @@ class TimeStepper(eqx.Module):
                              "before building the TimeStepper")
         # device scalars, not Python floats: a new geometry's h_r must not recompile the chunk
         self.velocity_smoothing_scale = SMOOTHING_C * radial_cell_sq(self.seq)
+        self.newton_mu = self.newton_mu_constant / field_period_length(self.seq.map) ** 2
         self.resistive = bool(self.resistivity != 0)
         self.resistivity = jnp.asarray(self.resistivity, dtype=float)
         self.cfl_weights = logical_cfl_weights(self.seq)
@@ -252,8 +260,10 @@ class TimeStepper(eqx.Module):
         if self.newton:
             # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
+            terms = (elastic.newton_terms(seq, S, B, self.newton_mu, self.newton_elastic_model == "lumped") if S
+                     else None)
             u, a, newton_it = newton_direction(seq, B, load, w.a, self.newton_penalty, self.newton_tol,
-                                               self.newton_maxiter, self.newton_mass_solve_tol, elastic.frozen(seq, S))
+                                               self.newton_maxiter, self.newton_mass_solve_tol, terms)
         else:
             u, a, newton_it = self._smooth(F, a_F), a_F, jnp.int32(0)    # u the smoothed force
         Mu = even.M[2] @ u

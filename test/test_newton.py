@@ -24,18 +24,26 @@ takes the force of every field and the second variation must reproduce the sum. 
 ``A_u S = G_1 M_1^{-1} load(u x S) - M_2^{-1} load(u div S)`` on the 2-forms without the wall condition. Newton and
 gradient steps with them lower the total energy, start from the elastic energy ``lam^2 ||B||^2`` and checkpoint the
 fields. The label fields are checked for their norm and their divergence.
+
+The Gauss-Newton operator with lumped or exact elastic terms is a sum of squares, so it is symmetric and positive
+semidefinite, and the lumped solve keeps the full force as the right-hand side. The length ``L`` of the parallel-flow
+penalty of the elastic fields is checked on a torus, where it is known exactly.
 """
 import os
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from mrx.operators import _mass_model
 from mrx.precision import eps
 from mrx.relaxation.loop import (TimeStepper, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
-from mrx.relaxation.elastic import LABELS, frozen, label_fields, perpendicular_fields
-from mrx.relaxation.newton import divergence_at_quadrature, second_variation
+from mrx.relaxation.elastic import (LABELS, field_period_length, frozen, label_fields, newton_terms,
+                                    perpendicular_fields)
+from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, _newton_system, divergence_at_quadrature,
+                                   newton_direction, second_variation)
 from mrx.relaxation.physics import compute_divergence_norm, compute_force
 
 STEPS, CHUNK = 10, 5
@@ -253,3 +261,69 @@ def test_elastic_relaxation_descends(seq, b0, tmp_path, newton):
     for name in S:
         assert np.array_equal(np.asarray(state.S[name]), np.asarray(res.state.S[name]))
 
+
+@pytest.mark.parametrize("lumped", [True, False], ids=["lumped", "exact"])
+def test_gauss_newton_operator_is_a_sum_of_squares(seq, b0, lumped):
+    """Without the current ``(u, H v) = (A_u B, A_v B)_M + sum_k (Q_u S_k, Q_v S_k)_M``. Exact, ``Q_u S = A_u S`` is the
+    full transport with the drag of the density. Lumped, ``Q_u S = G_1 P load(u x S)`` with ``P`` the mass
+    preconditioner and no drag. So ``H`` is symmetric and positive semidefinite."""
+    S = perpendicular_fields(seq, LAM, b0)
+    H = second_variation(seq, b0, frozen=frozen(seq, S), lumped=lumped)
+
+    def squares(u):
+        """The pairs ``(view, Q)`` of every field along ``u``."""
+        u_jk = seq.even.evaluate_at_quadrature(u, 2)
+
+        def Q(view, f, closed):
+            if not lumped:
+                return _transport(seq, u, view, closed)(f)
+            return view.G[1] @ _mass_model(view, 1).apply(
+                view.cross_product_load_values(u_jk, view.evaluate_at_quadrature(f, 2), 1, 2, 2))
+        return [(seq.odd, _flow(seq, u)(b0))] + [(view, Q(view, f, closed)) for view, f, closed in frozen(seq, S)]
+
+    k1, k2 = jax.random.split(jax.random.PRNGKey(2))
+    u, v = _divergence_free(seq, k1), _divergence_free(seq, k2)
+    Qu, Qv = squares(u), squares(v)
+    uu = sum(float(view.l2_norm_sq(Q, 2)) for view, Q in Qu)
+    vv = sum(float(view.l2_norm_sq(Q, 2)) for view, Q in Qv)
+    uv = sum(float(Q_u @ (view.M[2] @ Q_v)) for (view, Q_u), (_, Q_v) in zip(Qu, Qv))
+    uHu, uHv, vHu = float(u @ H(u)), float(u @ H(v)), float(v @ H(u))
+    band = 1e3 * max(seq.tol, eps())
+    print(f"\n  squares {uu:.6e} vs (u, H u) {uHu:.6e},  polarised {uv:+.6e} vs (u, H v) {uHv:+.6e}, (v, H u) {vHu:+.6e}")
+    assert abs(uu - uHu) < band * uu
+    assert abs(uv - uHv) < band * np.sqrt(uu * vv)
+    assert abs(uHv - vHu) < band * np.sqrt(uu * vv)
+
+
+def test_lumped_newton_solve_keeps_the_load(seq, b0):
+    """The lumped terms change the matrix of the Newton solve and not its right-hand side, the full force:
+    ``(u, load) = (a, A a) > 0`` up to the tolerance of the solve, so ``u`` descends the energy.
+
+    The sign of ``info`` is not tested. It compares the true residual with ``tol`` exactly, and MINRES runs in float32, so
+    its recurrence stops following that residual at tight tolerances. At ``tol`` 1e-3 the true residual is 1.04e-3 lumped,
+    1.04e-3 exact and 2.4e-3 without elastic fields (2026-11-01). The solve must stop on its tolerance, not on the cap."""
+    S = perpendicular_fields(seq, LAM, b0)
+    ts, load = _full_load(seq, b0, S)
+    tol = 1e-2
+    u, a, info = newton_direction(seq, b0, load, jnp.zeros(seq.even.n(1)), tol=tol,
+                                  elastic=newton_terms(seq, S, b0, ts.newton_mu, True))
+    _, _, A = _newton_system(seq, b0, ts.newton_mu, NEWTON_MASS_SOLVE_TOL, frozen(seq, S), True)
+    u_load, aAa = float(u @ load), float(a @ A(a))
+    print(f"\n  MINRES {int(info)},  (u, load) {u_load:.6e} vs (a, A a) {aAa:.6e}")
+    assert abs(int(info)) < NEWTON_MAXITER
+    assert u_load > 0.0
+    assert abs(u_load - aAa) < tol * u_load
+
+
+def test_field_period_length():
+    """On a torus of major radius ``R_0`` with ``N`` field periods one period of the axis has the length
+    ``2 pi R_0 / N``, so ``L = R_0 / N``."""
+    R_0, N = 1.7, 3
+
+    def torus(x):
+        phi = 2 * jnp.pi * x[2] / N
+        R = R_0 + 0.3 * x[0] * jnp.cos(2 * jnp.pi * x[1])
+        return jnp.stack([R * jnp.cos(phi), R * jnp.sin(phi), 0.3 * x[0] * jnp.sin(2 * jnp.pi * x[1])])
+    L = float(field_period_length(torus))
+    print(f"\n  L {L:.12f} vs R_0 / N {R_0 / N:.12f}")
+    assert abs(L - R_0 / N) < 1e3 * eps() * R_0 / N

@@ -25,8 +25,8 @@ estimate of arXiv:2604.08878 (with ``lambda`` from 0.01 to 0.1 in its scans).
 The fields come in kinds (:class:`Kind`), which differ in parity, in the wall condition and in whether they are
 closed. The state of the relaxation holds them in one dict, the fields of each kind as an array of shape
 ``(K, n_2)`` under the name of the kind. Each step of :mod:`mrx.relaxation.loop` calls :func:`lorentz` for their
-currents and force and :func:`transport` for their increments, and the Newton step takes them as frozen-in
-fields from :func:`frozen`. The kinds present and their number of fields are compiled in, the fields are not.
+currents and force and :func:`transport` for their increments, and the Newton step takes their terms from
+:func:`newton_terms`. The kinds present and their number of fields are compiled in, the fields are not.
 
 The reference to use is :func:`perpendicular_fields`. The others remain for comparison. :data:`REFERENCES` names
 them as ``--elastic.reference`` does.
@@ -52,9 +52,14 @@ them as ``--elastic.reference`` does.
   mesh.
 
 The elastic fields act in the Newton solve (:mod:`mrx.relaxation.newton`) as a regulariser through the force and the
-operator.
+operator. With them the penalty on flows along the field is ``mu (u . B)^2`` with ``mu = c / L^2``, ``L`` the length of
+the axis of one field period over ``2 pi`` (:func:`field_period_length`). Their terms in the operator are lumped unless
+asked otherwise. Neither choice enters the equations of the equilibrium. Both change the end state through the path
+only, by about 1e-6 in ``B`` on li383 at ``lam = 0.003``, about 300 times less than the distance to the end state at
+``lam = 0``.
 """
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -62,7 +67,17 @@ import jax.numpy as jnp
 import mrx
 from mrx.derham_sequence import DeRhamSequence
 from mrx.geometry import map_jacobian_at
-from mrx.relaxation.newton import divergence_at_quadrature
+from mrx.relaxation.newton import _components, _strain, divergence_at_quadrature, harmonic_atom_profiles
+
+#: With elastic fields the parallel-flow penalty is ``mu = NEWTON_MU_CONSTANT / L^2``, with ``L`` from
+#: :func:`field_period_length`. It is not in the equations of the equilibrium but changes the end state through the
+#: path, by about 1e-6 in B between mu 0.16 and 0.32 (li383, lam 0.003, 2026-11-02), about 300 times less than the
+#: distance to lam 0. li383, W7-X high mirror and HSX, lam 0.001 and 0.003 (2026-11-01): 0.04 leaves the fewest MINRES
+#: iterations to resid_el 1e-13 to 1e-14 over the three devices, to about the factor 2 of the sweep, and it holds on
+#: li383 (32,44,20), (48,64,24), (64,80,32). Twice or half it misses resid_el 1e-14 in 300 steps on the two finer
+#: meshes.
+NEWTON_MU_CONSTANT = 0.04
+
 
 @dataclass(frozen=True)
 class Kind:
@@ -298,3 +313,73 @@ def transport(seq: DeRhamSequence, S: dict, u_jk: jnp.ndarray, rho: dict, guess_
             P[name] = jnp.stack(P_kind)
     return dS, E, P
 
+
+def field_period_length(Phi):
+    """The length ``L`` that sets the parallel-flow penalty with elastic fields: the length of the axis of the map
+    ``Phi`` over one field period, divided by ``2 pi``. It needs no flux surfaces and no coordinates and it does not
+    vanish.
+
+    The axis is ``r = 0`` and ``zeta`` in ``[0, 1]`` is one field period (:data:`mrx.geometry.SYMMETRIES`), so ``L`` is
+    the mean of ``|d Phi / d zeta|`` over ``zeta`` divided by ``2 pi``. A speed that repeats in ``zeta`` makes the mean of
+    equidistant points converge fast."""
+    zeta = jnp.arange(128) / 128
+    x = jnp.stack([jnp.zeros_like(zeta), jnp.zeros_like(zeta), zeta], axis=1)
+    return jnp.linalg.norm(map_jacobian_at(Phi, x)[:, :, 2], axis=1).mean() / (2 * jnp.pi)
+
+
+def _surface_mean_Bsq(seq, B):
+    """The angle average of ``|B|^2`` on the radial quadrature points."""
+    f_jk = _components(seq, B, seq.odd)
+    metric = seq.metric_jkl.reshape(tuple(int(v) for v in seq.quad.shape) + (3, 3))
+    return jnp.einsum('...i,...ij,...j->...', f_jk, metric, f_jk).mean(axis=(1, 2))
+
+
+def preconditioner_moments(seq: DeRhamSequence, S: dict):
+    """The second moments ``(q_rr, q_tt, q_tz, q_zz, strain)`` of the elastic fields ``S``, summed over the fields,
+    for the Newton preconditioner (:func:`mrx.relaxation.newton.harmonic_preconditioner`), or ``None`` if no field
+    enters it. ``q_rr`` is ``None`` if no field enters its radial term.
+
+    The label fields enter with the squares of their averages, as ``B`` does
+    (:func:`~mrx.relaxation.newton.harmonic_atom_profiles`). Their components hardly change around a surface, and they
+    lie in the surfaces, so they add nothing to ``q_rr``: they do not charge radial shear. The fields of the isotropic
+    and the perpendicular reference enter with the angle averages of the products of their logical components and
+    with their ``strain``. Their frame turns with the angles, so their components have averages near zero but not
+    these moments. The moments of the three isotropic fields add up to ``a^2`` times the inverse metric, so their term
+    is ``a^2 |k|^2`` of a mode, with the radial part ``a^2 g^rr k_r^2``. The normal field is left out.
+    """
+    terms, q_rr = [], []
+    for name, S_kind in S.items():
+        kind = KINDS[name]
+        for S_k in S_kind:
+            if kind is LABELS:
+                p_t, p_z, s = harmonic_atom_profiles(seq, S_k)
+                terms.append((p_t ** 2, p_t * p_z, p_z ** 2, s))
+            elif kind is not NORMAL:
+                f_jk = _components(seq, S_k, kind.view(seq))
+                f_r, f_t, f_z = f_jk[..., 0], f_jk[..., 1], f_jk[..., 2]
+                q_rr.append((f_r ** 2).mean(axis=(1, 2)))
+                terms.append(((f_t ** 2).mean(axis=(1, 2)), (f_t * f_z).mean(axis=(1, 2)), (f_z ** 2).mean(axis=(1, 2)),
+                              _strain(seq, f_jk)))
+    if not terms:
+        return None
+    return (sum(q_rr) if q_rr else None,) + tuple(sum(q) for q in zip(*terms))
+
+
+class NewtonTerms(NamedTuple):
+    """The terms of the elastic fields in :func:`mrx.relaxation.newton.newton_direction`, from :func:`newton_terms`.
+
+    ``frozen`` holds the fields as in :func:`frozen` and ``moments`` their moments of :func:`preconditioner_moments`.
+    ``mu`` is the parallel-flow penalty ``mu (u . B)^2``, which replaces the one of ``kappa``, and ``mu_profile`` its
+    radial weight ``mu <|B|^2>`` in the preconditioner. ``lumped`` is that of
+    :func:`~mrx.relaxation.newton.second_variation`."""
+    frozen: list
+    moments: tuple | None
+    mu: jnp.ndarray
+    mu_profile: jnp.ndarray
+    lumped: bool
+
+
+def newton_terms(seq: DeRhamSequence, S: dict, B: jnp.ndarray, mu: jnp.ndarray, lumped: bool) -> NewtonTerms:
+    """The :class:`NewtonTerms` of the elastic fields ``S`` at the field ``B`` with the penalty ``mu``, in the
+    stepper ``NEWTON_MU_CONSTANT / field_period_length(seq.map) ** 2``."""
+    return NewtonTerms(frozen(seq, S), preconditioner_moments(seq, S), mu, mu * _surface_mean_Bsq(seq, B), lumped)
