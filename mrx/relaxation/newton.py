@@ -6,7 +6,11 @@ in ``u``. Its gradient is ``-load(J x B)`` and its symmetric Hessian is
 
     (u, H v) = (Q_u, Q_v)_M + [(B, curl(u x Q_v))_M + (B, curl(v x Q_u))_M] / 2.
 
-At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
+At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure. Further 2-forms ``S`` frozen into
+the flow, the elastic fields of :mod:`mrx.relaxation.elastic`, add ``||S||^2 / 2`` to the energy, so each adds the same
+terms with ``S`` in place of ``B``, on the spaces of its own view. A field with ``div S != 0`` moves by the full
+transport ``A_u S = curl(u x S) - P(u div S)``, with ``P`` the projection onto the 2-forms of its view, and its terms
+are ``(u, H v) = (A_u S, A_v S)_M + [(S, A_u A_v S)_M + (S, A_v A_u S)_M] / 2`` with that ``A_u``.
 
 * :func:`second_variation` returns the map ``u -> H u``, optionally with a penalty on flows along the field, or
   its Gauss-Newton part without the two terms in the current ``J``.
@@ -75,6 +79,12 @@ def harmonic_atom_profiles(seq, field):
     return prof_t, prof_z, strain
 
 
+def divergence_at_quadrature(view, S):
+    """The values of ``div S`` of the 2-form ``S`` of the parity view ``view`` at the quadrature points, shape
+    ``(n_q, 1)``. The divergence is the exact 3-form ``G_2 S``."""
+    return view.evaluate_at_quadrature(view.G[2] @ S, 3) / view.jacobian_j[:, None]
+
+
 def parallel_penalty_profile(profiles, kappa):
     """The radial weight ``w(r)`` of the parallel-flow penalty: ``kappa`` times the field's strain along the field.
 
@@ -141,7 +151,7 @@ class HarmonicAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
-def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
+def second_variation(seq, B, J=None, penalty=None, mass_tol=None, frozen=()):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
     ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
@@ -151,6 +161,13 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
     ``(v, M_par u) = int w(r) (v . B)(u . B) / |B|^2 dx``, which leaves flows across the field unchanged.
     ``penalty=None`` gives the bare Hessian.
+
+    ``frozen`` holds further fields frozen into the flow, triples ``(view, S, closed)`` of a parity view, a 2-form on
+    it and whether ``div S = 0``, such as the elastic fields of :func:`mrx.relaxation.elastic.frozen`. Each field adds
+    the terms of ``B`` with ``S`` in place of ``B`` on the spaces of its view, at two more mass solves per application.
+    With ``J`` given, their currents are computed here. The penalty is that of ``B`` alone. The transport of a field
+    that is not closed also drags the density ``div S``, which costs one more 2-form mass solve per field and
+    application, and one more for the terms in the current.
     """
     # B, J and the intermediate forms live in the odd parity view, u and H u in the even one
     odd, even = seq.odd, seq.even
@@ -159,30 +176,53 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
         Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
         weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
 
-    curl = odd.G[1]
-    if J is not None:
-        J_jk = odd.evaluate_at_quadrature(J, 1)
+    # (view, field, divergence) of every frozen-in field, B first, the divergence None for the closed ones
+    fields = [(odd, B, None)] + [(view, S, None if closed else divergence_at_quadrature(view, S))
+                                 for view, S, closed in frozen]
+    currents = ([None] * len(fields) if J is None
+                else [J] + [view.M[1].solve(view.D[1].T @ X) for view, X, _ in fields[1:]])
+    # (view, values, values of the current, divergence)
+    fields = [(view, view.evaluate_at_quadrature(X, 2), None if J_X is None else view.evaluate_at_quadrature(J_X, 1),
+               rho) for (view, X, rho), J_X in zip(fields, currents)]
 
     tol = seq.tol if mass_tol is None else mass_tol
 
-    def m1_inv(x):
-        return _mass_solve(odd, x, 1, tol=tol)
+    def field_term(u_jk, view, f_jk, J_jk, rho):
+        """The terms of the frozen-in field ``f`` on the parity view ``view``, with current ``J`` (``None``: the
+        Gauss-Newton term only) and divergence ``rho`` (``None``: a closed field)."""
+        curl = view.G[1]
+
+        def m1_inv(x):
+            return _mass_solve(view, x, 1, tol=tol)
+
+        def m2_inv(x):
+            return _mass_solve(view, x, 2, tol=tol)
+        E = m1_inv(view.cross_product_load_values(u_jk, f_jk, 1, 2, 2))
+        Q = curl @ E
+        if rho is not None:
+            Q = Q - m2_inv(view.vector_load_values(u_jk * rho, 2, 2))
+        if J_jk is None:
+            Y = m1_inv(view.D[1].T @ Q)
+            Hu = even.cross_product_load_values(f_jk, view.evaluate_at_quadrature(Y, 1), 2, 2, 1)
+            return Hu if rho is None else Hu - even.vector_load_values(view.evaluate_at_quadrature(Q, 2) * rho, 2, 2)
+        Q_jk = view.evaluate_at_quadrature(Q, 2)
+        JxU = view.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
+        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
+        Y = m1_inv(view.D[1].T @ Q + 0.5 * (curl.T @ JxU))
+        Y_jk = view.evaluate_at_quadrature(Y, 1)
+        Hu = (even.cross_product_load_values(f_jk, Y_jk, 2, 2, 1)
+              + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        if rho is None:
+            return Hu
+        # the terms of the density: -(rho Q) of (A_v f, A_u f), -(f div Q) / 2 of (f, A_v A_u f) and the drag part
+        # of (f, A_u A_v f) / 2, which pairs P(v rho) with Z = M_2^-1 (G_2^T load(u . f) - load(J x u))
+        Z = m2_inv(view.G[2].T @ view.dot_product_load_values(u_jk, f_jk, 3, 2, 2) - JxU)
+        return (Hu - even.vector_load_values((Q_jk - 0.5 * view.evaluate_at_quadrature(Z, 2)) * rho, 2, 2)
+                - 0.5 * even.vector_load_values(f_jk * divergence_at_quadrature(view, Q), 2, 2))
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
-        E = m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
-        Q = curl @ E
-        if J is None:
-            Y = m1_inv(odd.D[1].T @ Q)
-            Hu = even.cross_product_load_values(B_jk, odd.evaluate_at_quadrature(Y, 1), 2, 2, 1)
-        else:
-            Q_jk = odd.evaluate_at_quadrature(Q, 2)
-            JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
-            # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
-            Y = m1_inv(odd.D[1].T @ Q + 0.5 * (curl.T @ JxU))
-            Y_jk = odd.evaluate_at_quadrature(Y, 1)
-            Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
-                  + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        Hu = sum((field_term(u_jk, *f) for f in fields[1:]), field_term(u_jk, *fields[0]))
         if penalty is None:
             return Hu
         s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
@@ -192,7 +232,7 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
 
 
 def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
-                     mass_tol=NEWTON_MASS_SOLVE_TOL):
+                     mass_tol=NEWTON_MASS_SOLVE_TOL, frozen=()):
     """The Gauss-Newton direction at ``B``. Returns ``(u, a, info)`` with ``u = curl a``.
 
     ``load`` is the Lorentz force ``J x B`` as a dual 2-form. It need not be projected: the right-hand side
@@ -201,14 +241,16 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     the Gauss-Newton part of the Hessian (:func:`second_variation` without ``J``) with its mass solves to
     ``mass_tol``. The solve (:func:`newton_mr`) stops when its residual, in the norm of the preconditioner, is
     below ``tol`` times the right-hand side or after ``maxiter`` MINRES iterations. ``info`` is the number of MINRES
-    iterations, positive when ``tol`` was met and negative when not.
+    iterations, positive when ``tol`` was met and negative when not. ``frozen`` holds further frozen-in fields as
+    in :func:`second_variation`, such as the elastic fields of :func:`mrx.relaxation.elastic.frozen`. ``load`` must
+    then include their force ``sum_k (curl S_k x S_k + S_k div S_k)``.
     """
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
     # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
     profiles = harmonic_atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
-    curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol)
+    curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol, frozen)
     atom = harmonic_preconditioner(seq, profiles, penalty)
 
     def P(x):
@@ -220,10 +262,10 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-def _newton_system(seq, B, penalty, mass_tol):
+def _newton_system(seq, B, penalty, mass_tol, frozen=()):
     """The maps ``curl``, ``curl^T`` and ``a -> curl^T H curl a`` of the Gauss-Newton system on the even view of the
-    full sequence ``seq``."""
-    Hs = second_variation(seq, B, None, penalty, mass_tol)
+    full sequence ``seq``, with the frozen-in fields ``frozen`` of :func:`second_variation`."""
+    Hs = second_variation(seq, B, None, penalty, mass_tol, frozen)
     even = seq.even
 
     def curl(a):

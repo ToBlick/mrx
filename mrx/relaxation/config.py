@@ -143,6 +143,8 @@ class Budget:
     """The number of steps per chunk. Diagnostics, checkpoints and the stopping test run once per chunk, and --budget.steps must be a multiple of it. Unset, it is 10 for Newton and 200 for gradient descent."""
     floor_tol: float = 1e-10
     """Stop when the mean squared normalised force residual over the last chunk is below this."""
+    floor_tol_el: float = 1e-15
+    """With elastic fields, stop also when the mean of the same residual of the full force, with the elastic force, over the last chunk is below this."""
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,26 @@ class Drive:
 
 
 @dataclass(frozen=True)
+class Elastic:
+    """Elastic regularisation: elastic fields that move with B and add their energy (see mrx.relaxation.elastic)."""
+    lam: float = 0.0
+    """The fluctuation level lambda of the --elastic.reference fields. 0 turns them off. A restart keeps the elastic fields of its checkpoint and adds new ones of a kind only if it has none of that kind."""
+    reference: Literal["labels", "isotropic", "perpendicular"] = "perpendicular"
+    """The elastic fields of lambda. labels: the label 2-forms d psi ^ d theta and d psi ^ d zeta of the start field, each scaled to lambda ||B||. isotropic: the frame a e_R, a e_phi, a e_Z with Sigma = a^2 I, each scaled to lambda ||B||. perpendicular: the frame projected across the start field, lambda |B| (e_k - (e_k . b) b) with Sigma = lambda^2 (|B|^2 I - B B^T). The start field is the field after the seed."""
+    lam_perp: float = 0.0
+    """The fluctuation level across the flux surfaces, with the label reference: the normal field s (1 - s) d theta ^ d zeta of the start field (s = r^2), scaled to lam_perp ||B||. 0 turns it off."""
+
+    def __post_init__(self):
+        if self.lam < 0 or self.lam_perp < 0:
+            raise ValueError("--elastic.lam and --elastic.lam-perp must be non-negative")
+        if self.lam_perp and self.reference != "labels":
+            raise ValueError("--elastic.lam-perp belongs to the label reference")
+
+    def __bool__(self):
+        return bool(self.lam or self.lam_perp)
+
+
+@dataclass(frozen=True)
 class Output:
     """Output directory and restart."""
     out: Optional[str] = None
@@ -192,6 +214,7 @@ class RelaxConfig:
     newton: Newton = field(default=Newton(), metadata=dict(record_prefix="newton_"))
     budget: Budget = Budget()
     drive: Drive = field(default=Drive(), metadata=dict(record_prefix="drive_"))
+    elastic: Elastic = field(default=Elastic(), metadata=dict(record_prefix="elastic_"))
     output: Output = Output()
 
     def __post_init__(self):
@@ -212,10 +235,10 @@ class RelaxConfig:
                            resistivity=self.drive.resistivity * radial_cell_sq(seq))
 
     def relax_kwargs(self):
-        """Return the keyword arguments ``steps``, ``chunk`` and ``floor_tol`` for
+        """Return the keyword arguments ``steps``, ``chunk``, ``floor_tol`` and ``floor_tol_el`` for
         :func:`~mrx.relaxation.loop.relax`."""
         b = self.budget
-        return dict(steps=b.steps, chunk=b.chunk, floor_tol=b.floor_tol)
+        return dict(steps=b.steps, chunk=b.chunk, floor_tol=b.floor_tol, floor_tol_el=b.floor_tol_el)
 
     @property
     def params(self) -> dict:

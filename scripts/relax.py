@@ -11,6 +11,11 @@ cell size) that pulls the current towards that of the ``--drive.reference`` fiel
 by one heat step of ``--drive.reference-smoothing`` h_r^2 and can be given an island chain with ``--drive.chain``
 and ``--drive.eps``.
 
+With ``--elastic.lam L`` the field carries elastic fields of the level ``L``, which move with it and add their
+energy (:mod:`mrx.relaxation.elastic`). ``--elastic.reference`` picks them: the two label 2-forms of the start flux
+coordinates, the isotropic frame or the frame across the start field (the default). ``--elastic.lam-perp`` adds the
+normal field across the flux surfaces to the label fields.
+
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 
 ``--help`` lists every flag with its default. The flags are the fields of the dataclasses in
@@ -33,6 +38,7 @@ import time
 
 def main(cfg):
     import mrx
+    from mrx.relaxation.elastic import REFERENCES, normal_field
     from mrx.relaxation.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.relaxation.loop import initial_state, radial_cell_sq, read_checkpoint, read_field, relax, write_checkpoint
@@ -75,7 +81,19 @@ def main(cfg):
         B_seeded, rows = energy_seed(seq, state.B_n, iotas=cfg.seed.iotas, amplitudes=cfg.seed.amplitudes,
                                      scale=cfg.seed.scale)
         results["seed"] = rows
-        state = initial_state(B_seeded, ts, step=it0)
+        state = initial_state(B_seeded, ts, step=it0, S=state.S)
+
+    # --- the elastic fields of the start field, the field after the seed ---
+    e = cfg.elastic
+    for name, S in state.S.items():
+        print(f"[elastic] {S.shape[0]} fields {name} from the checkpoint", flush=True)
+    new = ((REFERENCES[e.reference](seq, e.lam, state.B_n) if e.lam else {})
+           | (normal_field(seq, e.lam_perp, state.B_n) if e.lam_perp else {}))
+    new = {name: S for name, S in new.items() if name not in state.S}
+    if new:
+        state = initial_state(state.B_n, ts, step=it0, S=state.S | new)
+        print(f"[elastic] reference {e.reference}, lambda {e.lam:g}, lambda_perp {e.lam_perp:g}: "
+              + ", ".join(f"{S.shape[0]} fields {name}" for name, S in new.items()), flush=True)
     write_checkpoint(os.path.join(ckpt_dir, f"state_{it0:06d}.h5"), state, it0, seq)
 
     # --- the drive: resistive steps towards the reference current ---------
@@ -96,7 +114,7 @@ def main(cfg):
         n.penalty, n.tol, n.maxiter, n.mass_solve_tol)
     print(f"\n=== {newton if d.newton else 'gradient descent'}"
           f"  smoothing@{ts.velocity_smoothing_scale:.3e}  steps<={b.steps} chunk={b.chunk} "
-          f"floor-tol={b.floor_tol:.1e}"
+          f"floor-tol={b.floor_tol:.1e}" + (f" floor-tol-el={b.floor_tol_el:.1e}" if cfg.elastic else "")
           + (f"  drive: resistivity={dr.resistivity:g} h_r^2" if dr else "") + " ===", flush=True)
 
     def save(res):
@@ -117,7 +135,8 @@ def main(cfg):
 
     res = relax(state, ts, it0=it0, on_chunk=save, **cfg.relax_kwargs())
     write_checkpoint(os.path.join(ckpt_dir, "best.h5"),
-                     initial_state(res.state.best.B, ts, step=int(res.state.best.step)), int(res.state.best.step), seq)
+                     initial_state(res.state.best.B, ts, step=int(res.state.best.step), S=res.state.best.S),
+                     int(res.state.best.step), seq)
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.best.step)}, "
           f"residual {float(res.state.best.resid):.3e})", flush=True)
 
