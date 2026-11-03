@@ -25,8 +25,8 @@ route, the k = 3 Hodge split, which also gives the strong pressure `p`. The rela
 
 ## 2. The step
 
-`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_solve_tol, resistivity,
-resistive_reference)`
+`TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_solve_tol,
+newton_mu_constant, newton_elastic_model, resistivity, resistive_reference)`
 is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` does
 one forward-Euler step `B_{n+1} = B_n + dt curl(u x B)` and returns `B_{n+1}`, the warm starts of the next
 step and the step's scalars:
@@ -71,11 +71,22 @@ with that part for `u = curl a`, divergence-free by construction. The
 right-hand side needs no projection, because `curl^T` annihilates the gradient
 and the harmonic part of the force exactly (`G_2 G_1 = 0`). It is solved by
 MINRES preconditioned by the harmonic atom (the Laplacian atom scaled by the
-lumped parallel derivative of `B`), warm-started from the previous potential,
-until the residual in the norm of the preconditioner falls below `newton_tol`
-(0.1) of the right-hand side or after `newton_maxiter` (300) iterations. `H`
-vanishes on field-aligned flows `u = f B`, and a penalty of `newton_penalty`
-times the strain along the field lifts that null space.
+lumped parallel derivative of `B`), until the residual in the norm of the
+preconditioner falls below `newton_tol` (0.1) of the right-hand side or after
+`newton_maxiter` (300) iterations. The warm start is the previous potential
+times the factor that best fits the new right-hand side. Near an equilibrium
+the force drops by a decade or more per step, so the unscaled potential would
+be far too long. `H` vanishes on field-aligned flows `u = f B`, and a penalty
+of `newton_penalty` times the strain along the field lifts that null space.
+
+With elastic fields (`mrx.relaxation.elastic`) the Hessian gains the same terms
+for every field `S_k`, and the penalty is `mu (u . B)^2` with
+`mu = newton_mu_constant / L^2`, `L` the length of the axis of one field period
+over `2 pi`. `newton_elastic_model` is `"lumped"` or `"exact"` for the terms of
+the fields in the operator. The preconditioner adds the strain energy of the
+fields per Fourier mode. For fields that cross the flux surfaces this includes
+a radial part, so its scaling per mode becomes a tridiagonal matrix in `r`,
+applied through its Cholesky factor.
 
 MINRES keeps its Lanczos vectors and makes each new one orthogonal to all
 earlier ones. Without that the basis loses orthogonality within about 20
@@ -134,19 +145,22 @@ sampler at every chunk and by `scripts/poincare_trace.py` at the crossings.
 
 ## 4. The loop
 
-`State` holds the field `B_n` and two subtrees: `warm` (the warm starts)
-and `best` (the field of lowest residual, its residual and step). What a
+`State` holds the field `B_n`, the dict `S` of elastic fields by kind (empty
+without them) and two subtrees: `warm` (the warm starts) and `best` (the field
+of lowest residual with its elastic fields, its residual and step). What a
 step measures (the force and velocity norms, `dt`, `dt_star`, the CFL
 number, the iteration counts) goes into the trace, not the state.
 `initial_state(B, ts)` evaluates the force once, so the first step's solves
 start warm.
 
-`relax(state, ts, steps, chunk, it0, floor_tol, on_chunk)` runs the steps
+`relax(state, ts, steps, chunk, it0, floor_tol, floor_tol_el, on_chunk)` runs the steps
 in compiled chunks (one `lax.scan` of `chunk` steps, returning the per-step
 trace), samples the diagnostics once per chunk (`sample`: energy, force
 residual, helicity, `||J||/||B||`, `int J . B`, `beta_vol`, all at the
 current field), calls `on_chunk`, and stops when the chunk mean of
-`resid` falls below `floor_tol` or after `steps`. It returns a
+`resid` falls below `floor_tol` or after `steps`. With elastic fields it also
+stops when the chunk mean of `resid_el`, the residual of the full force, falls
+below `floor_tol_el`. It returns a
 `RelaxResult` (the state, the trace, the samples, the stopping reason).
 `write_checkpoint` / `read_checkpoint` store and restore a state as one
 HDF5 file with the discretisation as attributes (`checkpoint_attrs`).

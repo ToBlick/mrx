@@ -207,3 +207,146 @@ per n), applied by rfft2 and batched matmuls.
   final residual 1.6e-8 against 1.2e-8. Uniform meshes only. Its remaining top end is the first ring outside the axis
   at high m, the anisotropy the graded spaces address, and no model moves the low tail.
 
+
+## 9. The Newton solve with the isotropic and perpendicular elastic references (li383 graded, p = 2, 2026-10-30)
+
+Penalty 0 in the operator, the seeded start. Study code and JSON in mrx_data/runs/mrx/elastic_pc (branch elastic-pc).
+
+- The isotropic Gauss-Newton term is about `a^2 ||grad u||^2`: on S its Rayleigh quotient against
+  `a^2 ||curl_w u||^2` (Dirichlet weak curl) is 0.86-0.91 on smooth potentials, 0.53 on rough ones, 0.64-0.76 on
+  low-m radially rough ones, where it dominates the magnetic term 10x at lam 0.01 and 1000x at 0.1. The harmonic atom
+  had only the angular part `a^2 (g^tt k_t^2 + ...)`.
+- First Newton solve, MINRES at tol 0.1 (frozen system, mixed precision), harmonic atom before / with the radial
+  Cholesky factor:
+
+| reference, lam | S (32,44,20) | M (48,64,24) |
+|---|---|---|
+| isotropic 0.1 | 61 / 44 | 91 / 55 |
+| perpendicular 0.1 | 62 / 45 | 93 / 56 |
+| isotropic 0.01 | 60 / 58 | 86 / 82 |
+| isotropic 0.001 | | 119 / 110 |
+| labels 0.01 | | 92 / 92 |
+| none, penalty 3 | 68 | 107 |
+
+- Lost or level at S, isotropic 0.1: the radial term as a number per radius (`lambda += q_rr pi^2 / h_r`) 54, the exact
+  inverse square root of the tridiagonal symbol by a 12-pole sinc rule 44 (60 at M), the penalty 3 in the
+  preconditioner only no change (+-1), the symbol times 100 on the axis rows 1-5 fewer, the Laplacian on the
+  velocity (`L_1^-1 curl^T M_2 Q M_2 curl L_1^-1`, Q the per-mode inverse) 56 at tol 0.1 but a worse direction (model
+  value -7.5e-7 against -9.6e-7) and 174 against 95 at tol 0.01.
+- The top Ritz value of P A in every case, also without elastic fields, is the zeta component at the axis, m = 0,
+  zeta Nyquist: 1e4 at S, 3.5e4 at M. The bottom are (0,0) and (1,0) modes at r 0.7-0.8.
+- After the first step the solves took 103-300 iterations, many unconverged, also without elastic fields (penalty 3:
+  68, -136, -119, 98). The warm start, the previous step's potential, is one or two decades too long once the force
+  drops per Newton step, so MINRES (float32) must reduce its residual by `tol |b| / |r0|`. Scaling it by its optimal
+  factor in the P norm costs one P apply.
+- relax.py float64, 20 steps, MINRES summed until resid_el < 1e-12 (steps), unconverged of 20, s per step in steps
+  11-20:
+
+| S isotropic | 0.1 | 0.01 |
+|---|---|---|
+| before | 1988 (11), 15, 8.9 | 2004 (9), 19, 8.9 |
+| scaled warm start | 1316 (9), 9, 4.3 | 1376 (7), 11, 2.0 |
+| zero start | 1365 (9), 11, 7.3 | |
+| radial Cholesky | 1437 (9), 13, 5.9 | |
+| both | 913 (8), 3, 3.4 | 1349 (7), 12, 4.0 (sinc rule) |
+| sinc rule + scaled | 849 (8), 9, 3.1 | |
+
+  The zero start never skips a solve at the floor. Both together halve the iterations at 0.1. At 0.01 the radial
+  term does not matter. Not measured: relax.py at M (GPU budget).
+
+## 10. The elastic Newton solve: taper, operator and penalty (2026-10-30 .. 11-01)
+
+li383 graded, seeded, p = 2, float64, 300 steps, reference `perpendicular`. S (32,44,20), M (48,64,24), L (64,80,32).
+W7-X high mirror and HSX beta 0.75 % (32,64,36). R = `resid`, R_lam = `resid_el`. Times are relaxation seconds with the
+compile subtracted, good to one chunk. Study code and JSON in mrx_data/runs/mrx/elastic_taper.
+
+Taper of the frame fields to zero on the wall, mu 0.205, seconds to R_lam 1e-14, S / M. Lost at lam <= 0.03. It wins only on
+R at lam 0.1 (8.3e-6 against 1.3e-5). Its zero-strain force is a real one, R 0.041 on S. Without it the force is
+discrete, 0.162, 0.106, 0.079 on S, M, L.
+
+| lam | no taper | taper |
+|---|---|---|
+| 0.003 | 266 / 507 | 386 / 1312 |
+| 0.01 | 128 / 254 | 188 / 455 |
+
+Mesh convergence without taper, S / M / L. MRX J/B 0.6490, 0.6512 on S, M. lam 0.0003: J/B 0.6458, R flat near 2e-9.
+
+| lam | R | J/B |
+|---|---|---|
+| 0.001 | 5.3e-9 / 5.2e-9 / 5.1e-9 | 0.6386 / 0.6385 / 0.6386 |
+| 0.003 | 2.9e-8 / 3.0e-8 / 3.0e-8 | 0.6389 / 0.6391 / 0.6393 |
+| 0.01 | 3.2e-7 / 3.4e-7 / 3.3e-7 | 0.6431 / 0.6438 / 0.6441 |
+
+The elastic terms of the operator, lam 0.001, seconds to R < 1e-8 (W7-X 1e-9). The exact terms cost the iteration, not the
+count: MINRES lam > 0 against lam 0 is S 1062 / 2356, M 981 / 987, W7-X 958 / 786, ms per iteration 37 / 7, 65 / 7,
+52 / 6. Lumped has the same MINRES count as exact to the target, ms per iteration 30 against 94 on L, 22 against 63 on W7-X.
+Same R and J/B. MRX on L is an older chunk-50 run.
+
+| mesh | exact | lumped | MRX |
+|---|---|---|---|
+| S | 39 | 14 | 17 |
+| M | 64 | 22 | 7 |
+| L | 138 | 42 | 29 |
+| W7-X, mu 0.016 | 62 | 22 | 5 |
+
+- Lumped to R_lam 1e-10: S 41 s, M 83 s. To 1e-14 on W7-X: 137 s (lam 0.001), 110 s (lam 0.003).
+- Lumped has its limit at lam 0.003 on L: no gain to R_lam 1e-10 (197 against 192 s), stops at 2.1e-13, exact 977 s to
+  1e-14. Lam 0.001 on L total MINRES 43199 against 34600. Hence `exact` stays as an option.
+- no_density alone (exact mass solves, no drag of the density): S lam 0.003 R_lam 1e-14 in 192 s. Against exact at the
+  same mu dB 1.5e-8, dJ 1e-5.
+- No elastic terms in the operator at all: failed, R_lam stalls at 3e-9 to 1.5e-7.
+- lumped_all, B's mass solves lumped too: failed, R stalls at 1.7e-5 (S), 2.6e-5 (M), 9e-8 (W7-X) at lam 0 and at 1.6e-5,
+  9.1e-6 (S, M) at lam 0.001. B's mass solves must stay exact.
+
+The penalty mu (u . B)^2 against kappa chi_par.
+
+- Constant mu 0.205 reproduces kappa 3 on S: R 2.8e-9 / 3.0e-9, J/B 0.6486 / 0.6490, MINRES 7827 / 7589, 15-18 s at any mu
+  at lam 0. W7-X lam 0: kappa 3 R 7.1e-11 floor 40 steps 5 s, mu 0.05 5.6e-11 30 steps 6 s, mu 0.016 2.1e-11 20 steps 10 s.
+  chi_par as a mu at kappa 1: li383 0.0645 to 0.0684, W7-X 0.012 to 0.032. It vanishes in some geometries and coordinates,
+  so a device length replaces it at lam > 0. lam 0 keeps it.
+- Adaptive mu, top * min(1, sqrt(R_lam / ref)): failed without a floor, stalls at R_lam 1e-12 where fixed mu reaches 6e-16.
+  With a floor no gain over the fixed mu at that floor. S lam 0.003, seconds to R_lam 1e-10 / 1e-14: (top 0.205, ref 1e-5,
+  floor 0.3) 71 / 255, fixed 0.068 67 / 227. With the taper, to 1e-14: 295 against 292.
+- Fill, the symbol mu^2 / (mu + k_par^2) per mode, mu 0.068, lumped, against constant. No clear time gain early, no deeper
+  convergence, R and J/B identical. At lam 0 worse: J/B 0.6896, 0.6803 against 0.6678, 0.6726, on M R 7.8e-9 against
+  9.3e-10, MINRES 66057 against 25989.
+
+| fill / constant | total MINRES | s to R < 1e-8 | s to R_lam < 1e-10 | end R_lam |
+|---|---|---|---|---|
+| S lam 0.001 | 28083 / 37259 | 10 / 14 | 37 / 41 | 1.0e-13 / 4.3e-14 |
+| S lam 0.003 | 4952 / 9747 | | 37 / 37 | 1.3e-12 / 5.1e-14 |
+| M lam 0.001 | 25700 / 38464 | 26 / 22 | 87 / 83 | 5.2e-14 / 1.8e-13 |
+| M lam 0.003 | 7489 / 9062 | | 74 / 80 | 1.4e-12 / 1.8e-12 |
+
+- W7-X lam 0.003, exact, seconds to R_lam 1e-10 / 1e-14: mu 0.003 81 / 267, 0.01 70 / 197, 0.03 48 / 200, 0.1 52 / 312,
+  kappa 1 52 / 215.
+- Boost, the symbol w (1 + b w / (K + w)): no relaxation ran, stopped.
+- End state across penalties: S lam 0.003 dB 0.5-1.8e-6, dJ 0.25-0.9e-3, S lam 0.001 2.4-3.8e-6, 1.0-1.6e-3, M lam 0.001
+  0.6-2.7e-6, 0.4-1.5e-3, about 300 times below dB to lam 0.
+
+The length of the rule, lumped, li383 S mu 0.025 to 0.4, W7-X mu 0.003 to 0.05, HSX mu 0.04 to 0.64, each by factors of 2,
+lam 0.001 and 0.003, 31 runs. Score: MINRES to R_lam 1e-10 .. 1e-14 per device and lam, not reached = 2x worst, mean / worst
+excess over the row best for one c. The differences are small against the factor 2 of the grid. Deepest best mu at lam
+0.001: li383 0.1-0.2, W7-X 0.025, HSX 0.32.
+
+| length | c | mean / worst |
+|---|---|---|
+| Rax / N, chosen | 0.041 | 1.18 / 2.02 |
+| V^(1/3) | 0.21 | 1.23 / 1.88 |
+| curvature | 0.24 | 1.23 / 1.89 |
+| Rmajor | | 1.25 / 2.09 |
+| chi_par | 1.31 | 1.28 / 1.88 |
+| a | | 1.28 / 2.76 |
+| Rax | | 1.29 / 2.47 |
+| none, mu 0.2 | | 1.34 / 2.77 |
+
+- c in mu = c (N / Rax)^2, mean excess: 0.02 1.44, 0.03 1.26, 0.04 1.18, 0.06 1.32, 0.08 1.48. Best 0.03-0.05 leaving out
+  any device or either lam, but the bests per device are grid points. To R_lam 1e-10 alone the best is about 0.006, the low
+  edge of the sweep.
+- Mesh check, li383 lam 0.001, mu 0.16, MINRES to R_lam 1e-14: M 19435, L 20317, S 15481 (mu 0.1), 16969 (mu 0.2). Seconds:
+  S 205-234, M 406, L 696. mu 0.32 and on S 0.4 stop at R_lam 2e-12 to 9e-12 in 300 steps, mu 0.068 and 0.08 miss 1e-14
+  on M. W7-X, HSX and lam 0.003 are not mesh checked.
+
+Label fields, same code, lam 0.003, lumped: R < 1e-8 S 8 s, M 14 s, R 2.3e-9, 2.0e-9, 14 ms per iteration against 22 for
+perpendicular, end R_lam 3.8e-13, 5.4e-13 (perpendicular lam 0.001 4.3e-14, 1.8e-13). Ahead on force, not chosen: their sheet
+tension is different physics, the frame across B a pure regulariser.

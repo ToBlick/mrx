@@ -30,6 +30,7 @@ documented in their source and in the concept pages.
    relaxation.physics
    relaxation.loop
    relaxation.newton
+   relaxation.elastic
    relaxation.initial_conditions
    relaxation.seeding
    relaxation.config
