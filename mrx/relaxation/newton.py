@@ -358,18 +358,26 @@ def _newton_system(seq, B, penalty, mass_tol, frozen=(), lumped=False):
 def newton_mr(A, P, b, x0, tol, maxiter, norm):
     """Solve the symmetric ``A x = b`` by Newton-MR (Liu & Roosta 2022). Returns ``(x, info)``.
 
-    If the warm start ``x0`` already meets ``norm(b - A x0) <= tol norm(b)`` it is returned unchanged.
-    Otherwise one preconditioned MINRES solve computes the correction to ``x0``. It stops when its own residual
-    estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. MINRES
+    The warm start ``x0`` (the previous step's solution) is first scaled by the factor ``alpha`` that minimises
+    ``||b - alpha A x0||`` in the norm of ``P``. Near an equilibrium the force drops by one or two decades per
+    Newton step, so ``x0`` itself is far too long, and correcting it would ask MINRES for a reduction of its
+    residual by that factor times ``tol``. If the scaled warm start already meets ``norm(b - A x) <= tol norm(b)``
+    it is returned. Otherwise one preconditioned MINRES solve computes the correction to it. It stops when its
+    own residual estimate (in the preconditioner's norm) meets the tolerance, or after ``maxiter`` iterations. MINRES
     stops early at a direction of nonpositive curvature. Such a direction is a descent
     direction only for the right-hand side it was found with, so the solve is then repeated for ``b`` itself
     from zero. MINRES keeps its Lanczos vectors and reorthogonalises each new one (``reorthogonalize`` of
     :func:`mrx.solvers.minres`), which stores ``2 maxiter`` vectors. ``info`` is the number of MINRES iterations,
     positive when the tolerance was met and negative when not.
     """
-    x = x0
     bnorm = norm(b)
-    r0 = b - A(x)
+    Ax0 = A(x0)
+    PAx0 = P(Ax0)
+    den = Ax0 @ PAx0
+    # only the zero warm start of the first step has A x0 = 0
+    alpha = jax.lax.cond(den > 0, lambda: (b @ PAx0) / den, lambda: jnp.zeros_like(den))
+    x = alpha * x0
+    r0 = b - alpha * Ax0
 
     def solve(_):
         rnorm = norm(r0)
