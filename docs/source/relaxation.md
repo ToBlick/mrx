@@ -116,9 +116,9 @@ python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc \
 python scripts/poincare_plot.py outputs/run            # -> outputs/run/poincare/
 ```
 
-`poincare_trace.py` (a GPU job) traces every checkpoint it is given with
-`mrx.diagnostics.poincare.poincare`, evaluates the weak pressure at every crossing and
-writes one `trace.npz`. `poincare_plot.py` (plain matplotlib) renders it,
+`poincare_trace.py` (a GPU job) traces every checkpoint it is given in one
+batch, evaluates the weak pressure at every crossing and writes one
+`trace.npz`. `poincare_plot.py` (plain matplotlib) renders it,
 every field and plane on one iota and one pressure scale. It is the only
 thing to rerun when the figure changes. A movie is the same two calls on
 every checkpoint of a run, with `--window`, `--iota-lim` and `--p-lim`
@@ -129,4 +129,20 @@ In code, `poincare(seq, B, lines=160, periods=400, planes=5)` seeds the
 lines from the axis to the edge, measures iota per line, flags the chaotic
 ones and cuts the trajectories at the planes (five over half a period for a
 stellarator-symmetric map). The returned `drift` (step h against h/2)
-justifies the step count.
+justifies the step count. `poincare_many` traces several fields at once.
+A step costs about the same for one line as for ten thousand on a GPU, so
+eight fields take about as long as one.
+
+The sections are the map's planes `zeta = const` by default. They cost
+nothing extra, and on a G-frame state their coordinates are `(X1, X2)` in
+the plane of the frame. `sections="phi"` (`--sections phi`) cuts at the
+planes of the physical toroidal angle instead, in cylindrical `(R, Z)`. On
+VMEC and DESC maps the two are the same planes. On a G-frame map every
+crossing is then found by Newton's method on a partial step, and each line
+must cross each plane once per period.
+
+A line that leaves the domain is cut there: its later crossings are NaN.
+`reseed` traces further rounds of lines on the radii of the lost ones, and
+`padding=(n, periods, r_min)` adds `n` short lines over the edge, traced
+both ways, so that a region whose lines leave within a few periods is still
+covered.
