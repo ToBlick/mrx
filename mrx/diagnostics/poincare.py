@@ -65,21 +65,23 @@ DRIFT_PERIODS, DRIFT_LINES = 64, 8
 # The field
 # ---------------------------------------------------------------------------
 
-def logical_field(seq):
-    r"""The function ``(x, dof) ->`` :math:`\hat B(x)`, the logical contravariant components of the Dirichlet
-    2-form with coefficients ``dof`` at the logical point ``x``. This is the field-line direction in logical
-    space. It does not depend on the geometry, and the same sequence always returns the same function object,
-    so the compiled tracer is reused.
+def logical_field(seq, dof):
+    r"""The function ``(x, dof) ->`` :math:`\hat B(x)`, the logical contravariant components of the 2-form with
+    coefficients ``dof`` at the logical point ``x``. This is the field-line direction in logical space. ``dof`` is
+    a Dirichlet 2-form or, with a flux through the wall, a free one (``seq.odd.free``), told apart by its length.
+    The function does not depend on the geometry, and the same sequence and space always return the same function
+    object, so the compiled tracer is reused.
 
     Each call extracts the spline coefficients from ``dof`` (a sparse product over the whole field). The tracer
     instead takes them once per field, ``field.coefficients(dof)``, and evaluates ``field.at(x, coefficients)``,
-    the local spline sum alone."""
-    return _logical_field(seq.odd)      # cached per view. set_geometry keeps the views
+    the local spline sum alone, which is the same for both spaces."""
+    odd = seq.odd
+    return _logical_field(odd, jnp.shape(dof)[0] == odd.free.n(2))     # cached per view and space
 
 
 @lru_cache(maxsize=None)
-def _logical_field(odd):
-    basis, extraction = odd.basis_2, odd.E(2)
+def _logical_field(odd, free):
+    basis, extraction = odd.basis_2, (odd.free if free else odd).E(2)
 
     def field(x, dof):
         return DiscreteFunction(dof, basis, extraction)(x)
@@ -585,7 +587,8 @@ def _batch_sections(seq, sections, crossings, escape, steps_per_period, directio
 
 def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field", reseed=0, padding=None,
              sections="zeta", min_steps=MIN_STEPS_PER_PERIOD):
-    """The Poincare sections of the field given by the Dirichlet 2-form ``dof`` on ``seq``.
+    """The Poincare sections of the field given by the 2-form ``dof`` on ``seq``, a Dirichlet 2-form or, with a flux
+    through the wall, a free one (:func:`logical_field`). The lines of a free one can leave through the wall.
 
     ``lines`` field lines (:func:`_seeds_many`) are traced for ``periods`` field periods with at least ``min_steps``
     steps per period and cut at the ``planes`` (a count or the planes themselves, see :func:`planes_for`).
@@ -640,13 +643,14 @@ def poincare_many(seq, dofs, *, lines=160, periods=400, planes=5, seed=0, names=
                 for res in poincare_many(seq, dofs[a:a + group], lines=lines, periods=periods, planes=planes,
                                          seed=seed, names=names[a:a + group], reseed=reseed, padding=padding,
                                          sections=sections, min_steps=min_steps)]
-    field, nfp = logical_field(seq), seq.nfp
+    fields = [logical_field(seq, d) for d in dofs]
+    field, nfp = fields[0], seq.nfp       # the trace evaluates field.at, the same for both spaces
     planes = planes_for(seq, planes)
     S = steps_for(planes, min_steps)
     offsets = _record_offsets(planes, S)
     planar = _on_step_ends(seq, sections)
-    bz = [require_zeta_parameterisation(field, d, n) for d, n in zip(dofs, names)]
-    coefs = jax.tree.map(lambda *a: jnp.stack(a), *[field.coefficients(d) for d in dofs])
+    bz = [require_zeta_parameterisation(fd, d, n) for fd, d, n in zip(fields, dofs, names)]
+    coefs = jax.tree.map(lambda *a: jnp.stack(a), *[fd.coefficients(d) for fd, d in zip(fields, dofs)])
     n_fields = len(dofs)
     seeds, track = _seeds_many(field, coefs, lines, S, seed)
 

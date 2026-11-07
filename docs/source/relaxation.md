@@ -141,7 +141,9 @@ VMEC and DESC maps the two are the same planes. On a G-frame map every
 crossing is then found by Newton's method on a partial step, and each line
 must cross each plane once per period.
 
-A line that leaves the domain is cut there: its later crossings are NaN.
+`poincare` also takes a free 2-form (`seq.odd.free`), a field with a flux
+through the wall such as that of a free-boundary run. Its lines can leave
+the domain. A line that leaves is cut there: its later crossings are NaN.
 `reseed` traces further rounds of lines on the radii of the lost ones, and
 `padding=(n, periods, r_min)` adds `n` short lines over the edge, traced
 both ways, so that a region whose lines leave within a few periods is still

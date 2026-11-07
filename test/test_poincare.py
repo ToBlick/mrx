@@ -4,7 +4,8 @@
 ``theta`` and ``zeta`` components depend on ``r`` alone, so ``B^r = 0`` exactly: its field lines stay on their
 logical surfaces and wind with the rotational transform of the file. The traced iota of every regular line
 matches ``|iota(r)|`` of the file at the line's radius within a measured band, the discretisation error of the
-field, and halving the step moves the lines by less than a measured drift. A closed-form field, whose lines are
+field, and halving the step moves the lines by less than a measured drift, also with ``b0`` written as a free
+2-form (no flux through the wall). A closed-form field, whose lines are
 known exactly, pins the crossings forwards and backwards and the cut at the boundary. The sections ``phi = const``
 are the sections ``zeta = const`` on a cylindrical map. CI runs the suite in float64 and float32, and the
 tolerances scale with the precision (:func:`_tol`).
@@ -29,10 +30,13 @@ def _tol(f64, f32):
 
 
 def test_traced_iota_is_the_file_iota(seq, b0):
-    """The traced iota of the regular lines is the file's iota at their radius, and the step is resolved. The
-    padding lines, traced forwards and backwards for more periods than the main lines, stay on their seed's logical
-    surface both ways."""
-    res = poincare(seq, b0, lines=8, periods=60, planes=1, padding=(4, 64, 0.8))
+    """The traced iota of the regular lines is the file's iota at their radius, and the step is resolved. The field
+    is ``b0`` as a free 2-form, the space of fields with a flux through the wall, here zero. The padding lines,
+    traced forwards and backwards for more periods than the main lines, stay on their seed's logical surface both
+    ways."""
+    free = seq.odd.free
+    B = jnp.zeros(free.n(2)).at[seq.odd._dirichlet_dofs[2]].set(b0)      # restrict(B) = b0, the wall DoFs zero
+    res = poincare(seq, B, lines=8, periods=60, planes=1, padding=(4, 64, 0.8))
     shown = np.asarray(res["shown"])
     r = np.asarray(res["seed_r"])[shown]
     want = np.abs(np.asarray(seq.equilibrium["profiles"]["iota"](r)))
@@ -98,7 +102,7 @@ def test_phi_sections_are_zeta_sections_on_a_cylindrical_map(seq, b0):
     planes, periods = (0.0, 0.25), 6
     S = steps_for(planes)
     offsets = _record_offsets(planes, S)
-    field = logical_field(seq)
+    field = logical_field(seq, b0)
     coef = field.coefficients(jnp.asarray(b0))
     seeds = jnp.array([[0.3, 0.1], [0.6, 0.7], [0.9, 0.3]] * 2)
     direction = jnp.array([1.0] * 3 + [-1.0] * 3)
