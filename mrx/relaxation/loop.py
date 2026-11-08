@@ -579,9 +579,14 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
           f"  relative {(h[-1] - h[0]) / abs(h[0]):+.3e}")
     print(f"    beta_vol {q['beta_vol'][0]:.4e} -> {q['beta_vol'][-1]:.4e}")
     dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
-    print(f"    CFL cap (C={CFL}) bound on {int((dts < dt_star).sum())}/{n} steps,  "
+    taken = dts * np.array(tr["cfl"])
+    capped = dts < dt_star
+    cfl_bound = capped & np.isclose(taken, CFL, rtol=1e-5)
+    # a capped step not at the CFL limit is at the Newton length 1, the only other cap
+    newton_bound = f"Newton length bound on {int((capped & ~cfl_bound).sum())}/{n},  " if ts.newton else ""
+    print(f"    CFL cap (C={CFL}) bound on {int(cfl_bound.sum())}/{n} steps,  {newton_bound}"
           f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f},  "
-          f"CFL number taken max {(dts * np.array(tr['cfl'])).max():.3f}")
+          f"CFL number taken max {taken.max():.3f}")
     if ts.newton:
         nit = np.abs(np.array(tr["newton_it"]))
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
