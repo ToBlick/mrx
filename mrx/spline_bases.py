@@ -19,7 +19,14 @@ def _nonzero_bsplines(T, p, x):
     """Return the values at ``x`` of the ``p + 1`` B-splines that can be nonzero there, and the
     index of the first of them."""
     # At the right end of a clamped knot vector the value and its derivatives are the left limits.
-    s = jnp.clip(jnp.searchsorted(T, x, side='right') - 1, p, T.shape[0] - p - 2)
+    # Preserve CPU performance and float32 trace rounding while avoiding nested CUDA loops.
+    search = functools.partial(jnp.searchsorted, side='right')
+    if T.dtype == jnp.float64:
+        span = jax.lax.platform_dependent(
+            T, x, cuda=functools.partial(search, method='scan_unrolled'), default=search)
+    else:
+        span = search(T, x)
+    s = jnp.clip(span - 1, p, T.shape[0] - p - 2)
     N = [jnp.ones_like(x)]
     if p == 0:
         return jnp.stack(N), s
