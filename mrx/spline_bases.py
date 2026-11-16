@@ -19,13 +19,11 @@ def _nonzero_bsplines(T, p, x):
     """Return the values at ``x`` of the ``p + 1`` B-splines that can be nonzero there, and the
     index of the first of them."""
     # At the right end of a clamped knot vector the value and its derivatives are the left limits.
-    # Preserve CPU performance and float32 trace rounding while avoiding nested CUDA loops.
+    # The span by an unrolled binary search on CUDA, by the default search elsewhere. The default method is a while
+    # loop, which inside a compiled loop (the field-line tracer's steps) costs a host round trip per iteration on the
+    # GPU. On the CPU the default search is the faster one. The index is the same.
     search = functools.partial(jnp.searchsorted, side='right')
-    if T.dtype == jnp.float64:
-        span = jax.lax.platform_dependent(
-            T, x, cuda=functools.partial(search, method='scan_unrolled'), default=search)
-    else:
-        span = search(T, x)
+    span = jax.lax.platform_dependent(T, x, cuda=functools.partial(search, method='scan_unrolled'), default=search)
     s = jnp.clip(span - 1, p, T.shape[0] - p - 2)
     N = [jnp.ones_like(x)]
     if p == 0:
