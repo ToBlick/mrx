@@ -148,3 +148,26 @@ the domain. A line that leaves is cut there: its later crossings are NaN.
 `padding=(n, periods, r_min)` adds `n` short lines over the edge, traced
 both ways, so that a region whose lines leave within a few periods is still
 covered.
+
+## Flux surfaces
+
+`mrx.diagnostics.torus.torus(seq, B, (r, theta))` returns the flux surface
+through the logical point `(r, theta)` of the plane `zeta = 0` without
+tracing a line. The result holds the surface on a grid of its
+straight-field-line angle and `zeta`, its rotational transform with its
+sign, and a `residual` that says how well the field is tangent to it.
+`toroidal_flux` gives the flux inside the surface.
+
+```python
+from mrx.diagnostics.torus import toroidal_flux, torus
+
+t = torus(seq, B, (0.5, 0.0))          # grid (33, 33) by default
+t.iota, t.residual, t.iterations       # iterations < 0: not converged
+toroidal_flux(seq, B, t)
+```
+
+The solve needs a flux surface through the point. In an island chain or a
+chaotic layer it does not converge, or it converges to a torus with a large
+`residual`. Read the `residual` and the sign of `iterations` before using a
+result. Close to a low-order rational surface the solve is ill-conditioned
+and takes more steps.
