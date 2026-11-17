@@ -460,9 +460,15 @@ def steps_for(planes, min_steps=MIN_STEPS_PER_PERIOD):
 
 def _on_step_ends(seq, sections):
     """Whether the crossings of the ``sections`` (``"zeta"`` or ``"phi"``) are states at the ends of steps: always
-    for ``"zeta"``, and for ``"phi"`` on a map whose sections ``zeta = const`` are the planes ``phi = const``."""
-    from mrx.equilibria import CylindricalMap  # noqa: PLC0415  (mrx.equilibria imports the diagnostics' users)
-    return {"zeta": True, "phi": isinstance(seq.map, CylindricalMap)}[sections]
+    for ``"zeta"``, and for ``"phi"`` on a map whose sections ``zeta = const`` are the planes ``phi = const``. That
+    is a map in the cylindrical frame with ``X3 = 0``, the map of every file but a GVEC state with its own frame."""
+    from mrx.equilibria import _frame_arrays, cylindrical_frame  # noqa: PLC0415  (imports the diagnostics' users)
+    Phi = seq.map
+    frame = _frame_arrays(cylindrical_frame(), Phi.nfp)
+    planes_of_phi = (all(np.array_equal(np.asarray(a), np.asarray(b))
+                         for a, b in zip((Phi.frame_cos, Phi.frame_sin, Phi.frame_n), frame))
+                     and not np.asarray(Phi.raw_X3).any())
+    return {"zeta": True, "phi": planes_of_phi}[sections]
 
 
 #: Newton steps that put a crossing on its plane ``phi = const``, each a partial step of the tracer from the start
@@ -595,9 +601,9 @@ def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"
     ``sections`` chooses the planes. With ``"zeta"`` they are the map's sections ``zeta = const``, the crossings are
     states at the ends of steps and their coordinates are ``Phi.section``'s (cylindrical ``(R, Z)``, or ``(X1,
     X2)`` in the plane of a G-frame). With ``"phi"`` they are the planes ``phi = const`` of the physical toroidal
-    angle and the coordinates are cylindrical ``(R, Z)``. On a VMEC or DESC map the two are the same planes. On
-    other maps a ``"phi"`` crossing is found by Newton's method on a partial step of the tracer, and every line
-    must cross every plane once per period.
+    angle and the coordinates are cylindrical ``(R, Z)``. On a map in the cylindrical frame with ``X3 = 0`` (a VMEC
+    or DESC map) the two are the same planes (:func:`_on_step_ends`). On other maps a ``"phi"`` crossing is found by
+    Newton's method on a partial step of the tracer, and every line must cross every plane once per period.
 
     A line that reaches the domain boundary is not ``keep``. Its crossings up to the boundary are kept and the
     later ones are NaN. With ``reseed`` > 0, up to that many further rounds of ``lines`` lines are traced on the

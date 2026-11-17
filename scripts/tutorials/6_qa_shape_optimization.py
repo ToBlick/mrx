@@ -7,7 +7,7 @@ The problem is
 
     min <Q_QA^2>_{r >= h_r}   s.t.   <iotabar>_s = iotabar*,   P <= 1e-8,
 
-at the volume and aspect ratio (6) of the device, which are held exactly by rescaling the map after every
+at the volume and aspect ratio of the device, which are held exactly by rescaling the map after every
 optimization step. 
 
 - ``Q_QA`` is the quasi-axisymmetry residual of the field, averaged outside the first radial knot
@@ -18,8 +18,10 @@ span ``h_r``, where the polar map is close to singular.
    
 An augmented Lagrangian over L-BFGS-B imposes both constraints.
 
-The start is the device plus a smooth random normal displacement of its boundary (``--perturb-mm`` RMS).
-The run stops when the criterion is back at the device's own value with both constraints met.
+The start is the device plus a smooth random normal displacement of its boundary (``--perturb-mm`` RMS), brought
+back to the device's volume and aspect ratio like every other shape. Restoring the two moves the boundary as well,
+so the start's distance to the device is not ``--perturb-mm``. It depends on the draw and on the planes the aspect
+ratio is measured in, and is printed. The run stops when the criterion is back at the device's own value with both constraints met.
 Quasi-axisymmetry comes back, but the end boundary still differs from the device by a few percent of the
 minor radius, since these three scalars alone do not determine the shape.
 
@@ -51,7 +53,8 @@ class Options:
     geometry: Geometry = Geometry(path="data/wout_LandremanPaul2021_QA_lowres.nc", resolution=(12, 16, 16),
                                   spline_degree=3)
     perturb_mm: float = 10.0
-    """The RMS of the random displacement of the start's boundary, in mm."""
+    """The RMS of the random normal displacement of the device's boundary, in mm, before the volume and the aspect
+    ratio are restored."""
     seed: int = 0
     """The random draw of the displacement."""
     maxiter: int = 1000
@@ -80,51 +83,54 @@ import numpy as np
 import scipy.optimize
 from mrx.diagnostics.plotting import plot_twin_axis
 from mrx.diagnostics.plotstyle import finish_figure
-from mrx.optimization.shape_ad import (BoundaryShape, cylindrical_geometry, flux_seed, mean_iota,
+from mrx.equilibria import frame_derivatives
+from mrx.optimization.shape_ad import (BoundaryShape, flux_seed, frame_geometry, mean_iota,
                                        normal_field_fraction, quasisymmetry_residual, section_moments,
                                        vacuum_two_form)
 from mrx.spline_bases import basis_derivative_table, basis_table
 
-ASPECT = 6.0         # the aspect ratio held exactly
 BETA_SCALE = 0.01    # metres of coefficient change per unit of the variables
 C_UNIT = 1e-3        # the unit of the iota constraint, c = (<iotabar>_s - iotabar*) / C_UNIT
 P_MAX = 1e-8         # the bound on P
 IOTA_TOL, P_TOL = 1e-5, 1.01e-8   # met when |<iotabar>_s - iotabar*| <= IOTA_TOL and P <= P_TOL
 
 # %%
-# 3) Build the sequence on the device's VMEC map and take the map's spline coefficients (``seq.map``):
-# the raw R and Z coefficients, (n_r, n_theta, n_zeta) each.
+# 3) Build the sequence on the device's VMEC file (``seq.map``, a frame map in the file's cylindrical frame: the
+# coordinates X1 = R and X2 = Z in the planes phi = const have (n_r, n_theta, n_zeta) spline coefficients each).
+# X3, out of the planes, is zero and stays zero here.
 t0 = time.perf_counter()
 print("[seq] building the de Rham sequence: the map, the operators and the preconditioners", flush=True)
 seq = g.build()
 nfp = seq.nfp
-lp = BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, nfp)
-_, _, S_lp = section_moments(seq, lp.raw_R, lp.raw_Z, nfp)
+lp = seq.map
+V_lp, _, S_lp = section_moments(seq, lp)
 a_lp = float(np.sqrt(S_lp / np.pi))
+# The aspect ratio in the cross-sections of the map, the planes phi = const: 6 for this device.
+aspect_lp = float(nfp * V_lp / (2.0 * np.sqrt(np.pi) * S_lp ** 1.5))
 T = np.asarray(seq.basis_0.Lambda[0].T)
 r_min = float(np.min(T[T > 0.0]))   # h_r, the end of the first radial knot span
 
 # %%
 # 4) Set up the problem. The variables x are the change of every coefficient, beta = BETA_SCALE x. The
 # change of the boundary ring is extended harmonically into the interior, and every inner ring changes on
-# its own too. map_coefficients rescales the map to the device's volume and to ASPECT. The field is
-# h = seed - curl A on the changed map, and from it come the criterion, the mean iota and P.
-shape = BoundaryShape.from_coefficients(seq, lp.raw_R, lp.raw_Z, nfp, aspect=ASPECT)
+# its own too. map_at rescales the map to the device's volume and aspect ratio, so that x = 0 is the device. The
+# field is h = seed - curl A on the changed map, and from it come the criterion, the mean iota and P.
+shape = BoundaryShape.from_map(seq, lp, aspect=aspect_lp)
 seed = flux_seed(seq)
-n_var = 2 * lp.raw_R.size
+n_var = 2 * lp.raw_X1.size
 
 
 def mapped(x, seq, shape):
-    """The raw coefficients (R, Z) of the map at the variables x."""
-    return shape.map_coefficients(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.raw_R.shape)))
+    """The map at the variables x."""
+    return shape.map_at(seq, BETA_SCALE * jnp.reshape(x, (2,) + tuple(shape.start.raw_X1.shape)))
 
 
 def terms(x, seq, shape, seed):
     """<Q_QA^2>_{r >= h_r}, <iotabar>_s (signed), P and min det DPhi at x."""
-    R, Z = mapped(x, seq, shape)
-    sq = seq.with_geometry(cylindrical_geometry(seq, R, Z, nfp))
+    Phi = mapped(x, seq, shape)
+    sq = seq.with_geometry(frame_geometry(seq, Phi))
     h, _ = vacuum_two_form(sq, seed)
-    F_qs, _ = quasisymmetry_residual(sq, h, R, Z, nfp, r_min)
+    F_qs, _ = quasisymmetry_residual(sq, h, Phi, r_min)
     return dict(F_qs=F_qs, iota=mean_iota(sq, h), P=normal_field_fraction(sq, h), jmin=jnp.min(sq.jacobian_j))
 
 
@@ -147,8 +153,7 @@ value_and_grad = eqx.filter_jit(jax.value_and_grad(lagrangian, has_aux=True))
 @eqx.filter_jit
 def min_det_dphi(x, seq, shape):
     """min det DPhi of the map at x on the quadrature points. The map folds when det DPhi <= 0."""
-    R, Z = mapped(x, seq, shape)
-    return jnp.min(cylindrical_geometry(seq, R, Z, nfp).jacobian_j)
+    return jnp.min(frame_geometry(seq, mapped(x, seq, shape)).jacobian_j)
 
 
 # %%
@@ -167,29 +172,38 @@ print(f"[setup] QA {g.resolution} p={g.spline_degree}, {n_var} variables, {time.
 # 6) Perturb the device's boundary: a random smooth displacement along the normal, as a change of the
 # boundary ring collocated at the Greville points. boundary_points evaluates the boundary surface and its
 # angular derivatives at any logical angles.
-def boundary_points(raw_R, raw_Z, theta, zeta):
-    """(F, F_theta, F_zeta) of the boundary surface r = 1 of the raw coefficients at the logical angles."""
+def boundary_points(Phi, theta, zeta):
+    """(F, F_theta, F_zeta) of the boundary surface r = 1 of the map Phi at the logical angles: X1, X2, X3 from the
+    boundary ring of coefficients, placed in the frame, P = a + X1 N + X2 B + X3 T, and turned to the field period,
+    F = R_z(phi) P."""
     lt, lz = seq.basis_0.Lambda[1], seq.basis_0.Lambda[2]
     t, z = jnp.asarray(np.mod(theta, 1.0)), jnp.asarray(np.mod(zeta, 1.0))
     Bt, Bz = basis_table(lt, t), basis_table(lz, z)
     Dt, Dz = basis_derivative_table(lt, t), basis_derivative_table(lz, z)
 
     def ev(C, A, B):
-        return np.asarray(jnp.einsum("jp,jk,kp->p", A, jnp.asarray(C)[-1], B))
-    R, Z = ev(raw_R, Bt, Bz), ev(raw_Z, Bt, Bz)
-    Rt, Zt, Rz, Zz = ev(raw_R, Dt, Bz), ev(raw_Z, Dt, Bz), ev(raw_R, Bt, Dz), ev(raw_Z, Bt, Dz)
-    phi = 2.0 * np.pi / nfp
-    c, s = np.cos(phi * zeta), np.sin(phi * zeta)
-    F = np.stack([R * c, R * s, Z], -1)
-    Ft = np.stack([Rt * c, Rt * s, Zt], -1)
-    Fz = np.stack([Rz * c - phi * R * s, Rz * s + phi * R * c, Zz], -1)
-    return F, Ft, Fz
+        return jnp.einsum("jp,jk,kp->p", A, C[-1], B)[:, None]
+    raws = (Phi.raw_X1, Phi.raw_X2, Phi.raw_X3)
+    (a, N, B), (da, dN, dB), _ = (tuple(f[:, i] for i in range(3)) for f in jax.vmap(
+        lambda zi: frame_derivatives(Phi.frame_cos, Phi.frame_sin, Phi.frame_n, zi))(z))
+    E, dE = (N, B, jnp.cross(N, B)), (dN, dB, jnp.cross(dN, B) + jnp.cross(N, dB))
+    c = 2.0 * np.pi / nfp
+    P = a + sum(ev(C, Bt, Bz) * e for C, e in zip(raws, E))
+    Pt = sum(ev(C, Dt, Bz) * e for C, e in zip(raws, E))
+    Pz = (da + sum(ev(C, Bt, Bz) * de + ev(C, Bt, Dz) * e for C, e, de in zip(raws, E, dE))
+          + c * jnp.stack([-P[:, 1], P[:, 0], jnp.zeros_like(P[:, 0])], -1))
+    # the turn by the angle itself, not its remainder: the search in distance() may leave the field period
+    co, si = jnp.cos(c * jnp.asarray(zeta)), jnp.sin(c * jnp.asarray(zeta))
+
+    def turn(v):
+        return np.asarray(jnp.stack([co * v[:, 0] - si * v[:, 1], si * v[:, 0] + co * v[:, 1], v[:, 2]], -1))
+    return turn(P), turn(Pt), turn(Pz)
 
 
 def perturbation(amplitude, draw, m_max=4, n_max=4):
     """delta = sum a_mn cos 2 pi (m theta - n zeta), a_mn ~ N(0, 1) / (1 + m^2 + n^2), scaled to the
-    area-weighted RMS amplitude (m) and carried by (dR, dZ) along the (R, Z) part of the normal. Returns
-    the change of the boundary ring."""
+    area-weighted RMS amplitude (m) and carried by (dX1, dX2) along the part of the normal in the plane of the
+    cross-section. Returns the change of the boundary ring."""
     gt, gz = (np.asarray(seq.greville[a].point_rule[0][:, 0]) for a in (1, 2))
     th, ze = (v.reshape(-1) for v in np.meshgrid(gt, gz, indexing="ij"))
     rng = np.random.default_rng(draw)
@@ -197,11 +211,11 @@ def perturbation(amplitude, draw, m_max=4, n_max=4):
     for m in range(m_max + 1):
         for n in range(-n_max, n_max + 1):
             delta += rng.standard_normal() / (1.0 + m ** 2 + n ** 2) * np.cos(2.0 * np.pi * (m * th - n * ze))
-    _, Ft, Fz = boundary_points(lp.raw_R, lp.raw_Z, th, ze)
+    _, Ft, Fz = boundary_points(lp, th, ze)
     normal = np.cross(Ft, Fz)
     area = np.linalg.norm(normal, axis=-1)
-    phi = 2.0 * np.pi * ze / nfp
-    n_R, n_Z = normal[:, 0] * np.cos(phi) + normal[:, 1] * np.sin(phi), normal[:, 2]
+    _, e1, e2 = (np.asarray(v) for v in jax.vmap(lp.plane)(jnp.asarray(ze)))
+    n_R, n_Z = np.sum(normal * e1, -1), np.sum(normal * e2, -1)
     delta *= amplitude / np.sqrt(np.sum(area * delta ** 2) / np.sum(area))
     t = delta * area / (n_R ** 2 + n_Z ** 2)
     ct, cz = np.asarray(seq.greville[1].coll), np.asarray(seq.greville[2].coll)
@@ -211,34 +225,36 @@ def perturbation(amplitude, draw, m_max=4, n_max=4):
     return np.stack([collocate(t * n_R), collocate(t * n_Z)])
 
 
-def distance(raw_R, raw_Z, grid=(128, 64), iterations=8):
-    """d_RMS of the boundary of the raw coefficients to the device's. For every point x of it on a uniform
+def distance(Phi, grid=(128, 64), iterations=8):
+    """d_RMS of the boundary of the map Phi to the device's. For every point x of it on a uniform
     grid of logical angles, the normal offset (x - x_dev(u*)) . n_dev(u*) at the closest point u* of the
     device's boundary (Gauss-Newton from the same logical angles), and its RMS weighted by the area."""
     th, ze = (v.reshape(-1) for v in np.meshgrid(np.arange(grid[0]) / grid[0], np.arange(grid[1]) / grid[1],
                                                 indexing="ij"))
-    X, Xt, Xz = boundary_points(raw_R, raw_Z, th, ze)
+    X, Xt, Xz = boundary_points(Phi, th, ze)
     area = np.linalg.norm(np.cross(Xt, Xz), axis=-1)
     u = np.stack([th, ze], -1)
     for _ in range(iterations):
-        F, Ft, Fz = boundary_points(lp.raw_R, lp.raw_Z, u[:, 0], u[:, 1])
+        F, Ft, Fz = boundary_points(lp, u[:, 0], u[:, 1])
         Jac = np.stack([Ft, Fz], -1)
         u = u + np.linalg.solve(np.einsum("pki,pkj->pij", Jac, Jac),
                                 np.einsum("pki,pk->pi", Jac, X - F)[..., None])[..., 0]
-    F, Ft, Fz = boundary_points(lp.raw_R, lp.raw_Z, u[:, 0], u[:, 1])
+    F, Ft, Fz = boundary_points(lp, u[:, 0], u[:, 1])
     nrm = np.cross(Ft, Fz)
     d = np.sum((X - F) * nrm / np.linalg.norm(nrm, axis=-1, keepdims=True), -1)
     return float(np.sqrt(np.sum(area * d ** 2) / np.sum(area)))
 
 
-full = np.zeros((2,) + tuple(lp.raw_R.shape))
+full = np.zeros((2,) + tuple(lp.raw_X1.shape))
 full[:, -1] = perturbation(1e-3 * cli.perturb_mm, cli.seed)
 x = full.reshape(-1) / BETA_SCALE
-R0, Z0 = mapped(jnp.asarray(x), seq, shape)
+Phi0 = mapped(jnp.asarray(x), seq, shape)
 start = forward(jnp.asarray(x), seq, shape, seed)
 if float(start["jmin"]) <= 0.0:
     sys.exit(f"the start map folds (min det DPhi {float(start['jmin']):.2e}): take another --seed")
-print(f"[start] {cli.perturb_mm:g} mm RMS (draw {cli.seed}): d_RMS / a = {distance(R0, Z0) / a_lp:.3e}, "
+d_start = distance(Phi0)
+print(f"[start] displacement {cli.perturb_mm:g} mm RMS (draw {cli.seed}), at the device's volume and aspect ratio "
+      f"d_RMS = {1e3 * d_start:.2f} mm, d_RMS / a = {d_start / a_lp:.3e}, "
       f"<Q_QA^2> = {float(start['F_qs']):.3e} ({float(start['F_qs']) / F_lp:.3g} x the device's), <iotabar>_s = {orient * float(start['iota']):.5f}, "
       f"P = {float(start['P']):.1e}, min det DPhi = {float(start['jmin']):.2e}")
 
@@ -308,13 +324,14 @@ while True:
     print(f"[outer {outer}] iteration {len(history) - 1}: c {c:+.2e}, g {g_P:+.2e}, violation {V:.2e}, "
           f"nu_i {al['nu_i']:+.3e}, nu_P {al['nu_P']:.3e}, mu {al['mu']:g}")
 wall = time.perf_counter() - t0
-R1, Z1 = mapped(jnp.asarray(x), seq, shape)
+Phi1 = mapped(jnp.asarray(x), seq, shape)
 print(f"[end] {len(history) - 1} iterations, {wall:.0f} s: <Q_QA^2> {history[0]['F'] * F_lp:.3e} -> {r['F'] * F_lp:.3e} "
       f"({r['F']:.3f} x the device's {F_lp:.3e}), "
       f"<iotabar>_s {r['iota']:.6f} (iotabar* {target:.6f}), P {r['P']:.2e}, d_RMS / a "
-      f"{distance(R0, Z0) / a_lp:.3e} -> {distance(R1, Z1) / a_lp:.3e}")
-np.savez(os.path.join(cli.out, "shapes.npz"), raw_R_lp=np.asarray(lp.raw_R), raw_Z_lp=np.asarray(lp.raw_Z),
-         raw_R_start=np.asarray(R0), raw_Z_start=np.asarray(Z0), raw_R_end=np.asarray(R1), raw_Z_end=np.asarray(Z1))
+      f"{d_start / a_lp:.3e} -> {distance(Phi1) / a_lp:.3e}")
+np.savez(os.path.join(cli.out, "shapes.npz"), **{f"raw_X{i}_{name}": np.asarray(getattr(m, f"raw_X{i}"))
+                                                 for name, m in (("lp", lp), ("start", Phi0), ("end", Phi1))
+                                                 for i in (1, 2)})
 
 # %%
 # 8) Plot the criterion (the device's value dotted) and the mean iota (iotabar*, dotted) against the
@@ -330,19 +347,21 @@ ax_i.axhline(target, color=ax_i.get_lines()[0].get_color(), ls=":", lw=1)
 finish_figure(fig, os.path.join(cli.out, "trace.png"), bbox_inches="tight")
 
 # %%
-# 9) Draw the boundary of the device, the start and the end in three toroidal planes of a field period.
+# 9) Draw the boundary of the device, the start and the end in three cross sections of a field period, in the
+# coordinates (X1, X2) = (R, Z) of the frame's plane.
 planes = (0.0, 0.25, 0.5)
 theta = np.linspace(0.0, 1.0, 257)
 fig, axes = plt.subplots(1, len(planes), figsize=(4 * len(planes), 4), constrained_layout=True)
 for ax, zeta in zip(axes, planes):
-    for (R, Z), label, style in (((lp.raw_R, lp.raw_Z), "device", dict(color="k", lw=1.5)),
-                                 ((R0, Z0), "start", dict(color="C1", ls="--", lw=1)),
-                                 ((R1, Z1), "end", dict(color="C0", lw=1))):
-        F, _, _ = boundary_points(R, Z, theta, np.full_like(theta, zeta))
-        ax.plot(np.hypot(F[:, 0], F[:, 1]), F[:, 2], label=label, **style)
+    for m, label, style in ((lp, "device", dict(color="k", lw=1.5)),
+                            (Phi0, "start", dict(color="C1", ls="--", lw=1)),
+                            (Phi1, "end", dict(color="C0", lw=1))):
+        F, _, _ = boundary_points(m, theta, np.full_like(theta, zeta))
+        o, e1, e2 = (np.asarray(v) for v in lp.plane(zeta))
+        ax.plot((F - o) @ e1, (F - o) @ e2, label=label, **style)
     ax.set_aspect("equal")
     ax.set_title(rf"$\zeta = {zeta:g}$")
-    ax.set_xlabel(r"$R$ [m]")
-axes[0].set_ylabel(r"$Z$ [m]")
+    ax.set_xlabel(f"{lp.section_labels[0]} [m]")
+axes[0].set_ylabel(f"{lp.section_labels[1]} [m]")
 axes[1].legend(frameon=False, loc="upper right")
 finish_figure(fig, os.path.join(cli.out, "sections.png"))

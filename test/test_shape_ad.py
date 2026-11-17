@@ -3,9 +3,10 @@
 On the li383 sequence of the suite the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic:
 closed to round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean
 rotational transform with respect to every map coefficient matches Richardson-extrapolated central differences. The
-parametrisation holds the volume and the aspect ratio exactly, and the hand-derived ``|B|``, ``B . grad|B|`` and
-``(B x grad r) . grad|B|`` of the quasi-symmetry residual agree with automatic differentiation of the pushed-forward
-field.
+parametrisation holds the volume and the aspect ratio exactly. On a frame map with a frame that changes along zeta,
+the hand-derived metric and ``det DPhi`` equal those of the map's Jacobian, and the hand-derived ``|B|``,
+``B . grad|B|`` and ``(B x grad r) . grad|B|`` of the quasi-symmetry residual agree with automatic differentiation of
+the pushed-forward field.
 """
 import equinox as eqx
 import jax
@@ -32,6 +33,7 @@ FD_EPS = 1e-3
 def test_vacuum_field_and_its_shape_derivative(seq):
     import mrx.optimization.shape_ad as sa
     from mrx.differential_forms import DiscreteFunction, Pushforward
+    from mrx.geometry import SequenceGeometry
     from mrx.operators import dual_norm
     from mrx.precision import eps as round_off
 
@@ -47,14 +49,14 @@ def test_vacuum_field_and_its_shape_derivative(seq):
     assert closed <= round_off(1e4)
     assert coclosed <= 1e2 * seq.tol
 
-    shape = sa.BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, seq.nfp)
+    shape = sa.BoundaryShape.from_map(seq, seq.map)
+    var_shape = (2,) + seq.map.raw_X1.shape
 
     def mean_iota(x):
-        R, Z = shape.map_coefficients(seq, 1e-2 * x.reshape((2,) + shape.raw_R.shape))
-        sq = seq.with_geometry(sa.cylindrical_geometry(seq, R, Z, seq.nfp))
+        sq = seq.with_geometry(sa.frame_geometry(seq, shape.map_at(seq, 1e-2 * x.reshape(var_shape))))
         return sa.mean_iota(sq, sa.vacuum_two_form(sq, seed, tol=FD_TOL)[0])
 
-    x = jnp.zeros(2 * shape.raw_R.size)
+    x = jnp.zeros(2 * seq.map.raw_X1.size)
     d = jnp.asarray(np.random.default_rng(0).standard_normal(x.size))
     f = eqx.filter_jit(mean_iota)
     def central(eps):
@@ -64,17 +66,30 @@ def test_vacuum_field_and_its_shape_derivative(seq):
 
     # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off
     aspect = 6.0
-    held = sa.BoundaryShape.from_coefficients(seq, seq.map.raw_R, seq.map.raw_Z, seq.nfp, aspect=aspect)
-    beta = 1e-2 * jnp.asarray(np.random.default_rng(2).standard_normal((2,) + held.raw_R.shape))
-    R, Z = held.map_coefficients(seq, beta)
-    V, _, S = sa.section_moments(seq, R, Z, seq.nfp)
+    held = sa.BoundaryShape.from_map(seq, seq.map, aspect=aspect)
+    Phi = held.map_at(seq, 1e-2 * jnp.asarray(np.random.default_rng(2).standard_normal(var_shape)))
+    V, _, S = sa.section_moments(seq, Phi)
     assert abs(float(V - held.volume)) <= round_off(1e3) * float(V)
     assert abs(float(seq.nfp * V / (2.0 * np.sqrt(np.pi) * S ** 1.5)) - aspect) <= round_off(1e3) * aspect
 
+    # the frame moved by one more mode, with the parity of the stellarator symmetry: the axis and N with an even x
+    # and odd y, z component, B the opposite, here 0.03 m on the axis and 0.1 on N, B (no longer orthonormal, which
+    # the formulas do not assume)
+    k = jnp.concatenate([Phi.frame_n, jnp.ones(1)])
+    cos = jnp.concatenate([Phi.frame_cos, jnp.zeros((3, 3, 1)).at[0, 0, 0].set(0.03)], -1)
+    sin = jnp.concatenate([Phi.frame_sin, jnp.zeros((3, 3, 1)).at[0, 1, 0].set(0.03).at[0, 2, 0].set(0.03)
+                           .at[1, 2, 0].set(0.1).at[2, 0, 0].set(-0.1)], -1)
+    Phi = eqx.tree_at(lambda m: (m.frame_cos, m.frame_sin, m.frame_n), Phi, (cos, sin, k))
+    # and the points moved out of the frame's planes, X3 = X2 / 20, odd as the toroidal angle
+    Phi = Phi.with_coordinates(Phi.raw_X1, Phi.raw_X2, 0.05 * Phi.raw_X2)
+    hand, ad = sa.frame_geometry(seq, Phi), SequenceGeometry.from_map(Phi, seq.quad.x)
+    assert float(jnp.max(jnp.abs(hand.metric_jkl - ad.metric_jkl)) / jnp.max(jnp.abs(ad.metric_jkl))) <= round_off(1e3)
+    assert float(jnp.max(jnp.abs(hand.jacobian_j - ad.jacobian_j)) / jnp.max(jnp.abs(ad.jacobian_j))) <= round_off(1e3)
+
     # the terms of the quasi-symmetry residual at quadrature points away from the axis, against jax.grad of |B|
-    sq = seq.with_geometry(sa.cylindrical_geometry(seq, R, Z, seq.nfp))
+    sq = seq.with_geometry(hand)
     h, _ = sa.vacuum_two_form(sq, seed)
-    B_mag, parallel, cross, _, _ = sa._residual_terms(sq, h, R, Z, seq.nfp, sa._tables(sq))
+    B_mag, parallel, cross, _, _ = sa._residual_terms(sq, h, Phi, sa._tables(sq))
     field = Pushforward(DiscreteFunction(h, sq.odd.basis_2, sq.odd.E(2)), sq.map, 2)
     away = np.flatnonzero(np.asarray(seq.quad.x[:, 0]) > 0.3)
     for q in np.random.default_rng(3).choice(away, 6, replace=False):
