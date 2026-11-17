@@ -7,8 +7,8 @@ MRX de Rham sequence. :class:`StateField` evaluates one field of the state, for 
 function of the logical point.
 
 The state holds the number of field periods ``nfp``, the reader ``kind`` (``"gvec"``, ``"vmec"`` or
-``"desc"``), the file ``path``, the radial profiles and three fields, ``X1 = R``, ``X2 = Z`` and
-``LA = lambda`` (lambda in radians). Each field is a Fourier series
+``"desc"``), the file ``path``, the radial profiles and three fields, ``X1 = R``, ``X2 = Z`` (in the planes
+``phi = const``) and ``LA = lambda`` (lambda in radians). Each field is a Fourier series
 ``sum_mn c_mn(r) cos(m theta - n zeta) + s_mn(r) sin(m theta - n zeta)`` with the angles in radians,
 ``zeta`` the toroidal angle over the full torus and ``n`` a multiple of ``nfp``. The dict of a field holds
 the mode numbers ``m`` and ``n`` and the radial functions ``c_mn``, ``s_mn`` as B-splines: the coefficient
@@ -17,8 +17,13 @@ arrays ``cos`` and ``sin`` of shape ``(n_modes, n_base)``, the degree ``deg`` an
 ``phi`` (the toroidal flux divided by ``2 pi``), ``iota`` (per full turn) and ``pressure`` as scipy
 ``BSpline``\\ s in ``r``. A GVEC state in GVEC's G-frame (``hmap = 21``) has ``X1``, ``X2`` the coordinates
 in the plane of an axis-following frame instead of ``R``, ``Z``, and the frame itself in ``frame``
-(:func:`mrx.equilibria.gvec.read_frame`). Its map is a :class:`FrameMap`. A stellarator-symmetric state (:func:`is_stellarator_symmetric`) has ``R`` as a
-cosine series and ``Z``, lambda as sine series.
+(:func:`mrx.equilibria.gvec.read_frame`). A stellarator-symmetric state (:func:`is_stellarator_symmetric`) has
+``X1`` as a cosine series and ``X2``, lambda as sine series.
+
+Every map is a :class:`FrameMap`, in the frame the file supplies: GVEC's G-frame for a state that has one, the
+cylindrical frame (:func:`cylindrical_frame`) for every other file (VMEC, DESC, a cylindrical GVEC state), whose
+planes are the planes ``phi = const``. No file is cut into another frame. The third coordinate ``X3`` of the map, out
+of the frame's plane, is zero for every file. It is there for a moving mesh and for a shape optimisation.
 
 The logical coordinates ``(r, theta, zeta)`` of a state are right-handed: the map
 ``(R cos phi, R sin phi, Z)`` has a positive Jacobian. A file whose angles are left-handed, as in a VMEC
@@ -138,19 +143,31 @@ def _rotate_z(angle, v):
     return jnp.array([c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]])
 
 
+def cylindrical_frame():
+    """The cylindrical frame as a state's ``frame``: the axis ``a = 0``, ``N`` the first and ``B`` the third axis
+    of the frame that turns with the field periods, constant in ``zeta``. Its planes are the planes
+    ``phi = const``, ``N = e_R``, ``B = e_z``, so ``X1 = R`` and ``X2 = Z``."""
+    cos = np.zeros((3, 3, 1))
+    cos[1, 0, 0] = cos[2, 2, 0] = 1.0
+    return {"n": np.zeros(1), "cos": cos, "sin": np.zeros((3, 3, 1))}
+
+
+def state_frame(st):
+    """The frame of the state ``st``: its ``frame``, or the cylindrical frame if it has none."""
+    return st["frame"] if "frame" in st else cylindrical_frame()
+
+
 def state_position(st):
     """The state's own map from the logical point ``(r, theta, zeta)`` (angles in turns, ``zeta`` one field
-    period) to Cartesian ``(x, y, z)``, as a JAX function. Cylindrical, ``(R cos phi, R sin phi, Z)`` with
-    ``phi = 2 pi zeta / nfp``, or with a ``frame`` the G-frame ``a + X1 N + X2 B``. The spline map of
-    :func:`build_map` approximates it."""
+    period) to Cartesian ``(x, y, z)``, ``R_z(phi) (a + X1 N + X2 B)`` with ``phi = 2 pi zeta / nfp`` and the
+    state's frame (:func:`state_frame`), as a JAX function. The spline map of :func:`build_map` approximates
+    it."""
     nfp = st["nfp"]
     X1, X2 = StateField(st["X1"], nfp), StateField(st["X2"], nfp)
-    if "frame" not in st:
-        return lambda x: _rotate_z(TWO_PI / nfp * x[2], jnp.array([X1(x), 0.0, X2(x)]))
-    cos, sin, n_per = _frame_arrays(st["frame"], nfp)
+    cos, sin, n_per = _frame_arrays(state_frame(st), nfp)
 
     def position(x):
-        a, N, B = _frame_at(cos, sin, n_per, x[2])
+        a, N, B = frame_derivatives(cos, sin, n_per, x[2])[0]
         return _rotate_z(TWO_PI / nfp * x[2], a + X1(x) * N + X2(x) * B)
 
     return position
@@ -162,40 +179,12 @@ def _frame_arrays(frame, nfp):
             jnp.asarray(frame["n"], dtype=float) / nfp)
 
 
-def _frame_at(cos, sin, n_per, zeta):
-    """The axis ``a`` and the vectors ``N``, ``B`` of a frame at the logical ``zeta``, in the frame that turns
-    with the field periods."""
-    arg = -TWO_PI * n_per * zeta
-    return cos @ jnp.cos(arg) + sin @ jnp.sin(arg)
-
-
-def _times(block, cos, sin, n):
-    """The product of the ``block`` with the function ``sum_k cos_k cos(-n_k zeta) + sin_k sin(-n_k zeta)``
-    of the toroidal angle, as a block on the same radial basis."""
-    # c cos A + s sin A = Re[(c - i s) e^{iA}], and the product of the real parts of C e^{iA} and F e^{iB}
-    # is the real part of (C F e^{i(A + B)} + C conj(F) e^{i(A - B)}) / 2
-    C, F = block["cos"] - 1j * block["sin"], cos - 1j * sin
-    terms = [(block["n"][:, None] + n[None, :], C[:, None, :] * F[None, :, None]),
-             (block["n"][:, None] - n[None, :], C[:, None, :] * np.conj(F)[None, :, None])]
-    m = np.broadcast_to(block["m"][:, None], terms[0][0].shape).ravel()
-    coef = 0.5 * np.concatenate([c.reshape(-1, C.shape[1]) for _, c in terms])
-    # most products share their (m, n) with another: summed into one mode each (3990 terms to 295 on N2-12)
-    modes, index = np.unique(np.stack([np.concatenate([m, m]), np.concatenate([k.ravel() for k, _ in terms])], 1),
-                             axis=0, return_inverse=True)
-    merged = np.zeros((len(modes), coef.shape[1]), dtype=coef.dtype)
-    np.add.at(merged, index.ravel(), coef)
-    return dict(block, m=modes[:, 0], n=modes[:, 1], cos=merged.real, sin=-merged.imag)
-
-
-def frame_blocks(st):
-    """The Cartesian components of a G-frame state in the frame that turns with the field periods,
-    ``a + X1 N + X2 B``, each as a list of blocks whose sum it is."""
-    frame, X1 = st["frame"], st["X1"]
-    ones = np.ones((len(frame["n"]), X1["cos"].shape[1]))      # the B-splines sum to one
-    return [[dict(X1, m=np.zeros(len(frame["n"]), dtype=int), n=frame["n"],
-                  cos=frame["cos"][0, i][:, None] * ones, sin=frame["sin"][0, i][:, None] * ones),
-             _times(X1, frame["cos"][1, i], frame["sin"][1, i], frame["n"]),
-             _times(st["X2"], frame["cos"][2, i], frame["sin"][2, i], frame["n"])] for i in range(3)]
+def frame_derivatives(cos, sin, n_per, zeta):
+    """The frame ``(a, N, B)`` at the logical ``zeta`` and its first and second ``zeta`` derivatives, three
+    ``(3, 3)`` arrays (rows ``a``, ``N``, ``B``), in the frame that turns with the field periods."""
+    k = TWO_PI * n_per
+    c, s = jnp.cos(-k * zeta), jnp.sin(-k * zeta)
+    return cos @ c + sin @ s, cos @ (k * s) - sin @ (k * c), -(cos @ (k ** 2 * c) + sin @ (k ** 2 * s))
 
 
 def _angular_coefficients(basis, freqs):
@@ -221,82 +210,78 @@ def _radial_coefficients(block, C, basis_r):
     return np.linalg.solve(Br.T @ (w[:, None] * Br), Br.T @ (w[:, None] * (Bs @ C.T)))
 
 
-class CylindricalMap(eqx.Module):
-    """The map ``Phi = (R cos phi, R sin phi, Z)``, ``phi = 2 pi zeta / nfp``, of the scalar splines ``R`` and
-    ``Z`` with the tensor-product coefficients ``raw_R``, ``raw_Z`` ``(n_r, n_theta, n_zeta)`` in ``basis``.
-
-    It is a pytree: under ``jax.jit`` the coefficients are traced inputs, so a new map of the same mesh reuses
-    every compiled function of the sequence it is installed on."""
-
-    raw_R: jnp.ndarray
-    raw_Z: jnp.ndarray
-    basis: object = eqx.field(static=True)
-    nfp: int = eqx.field(static=True)
-
-    #: The names of the coordinates of :meth:`section`.
-    section_labels = ("R", "Z")
-
-    def __call__(self, x):
-        ang = TWO_PI / self.nfp * x[2]
-        R = self.basis.contract(self.raw_R, x)
-        return jnp.array([R * jnp.cos(ang), R * jnp.sin(ang), self.basis.contract(self.raw_Z, x)])
-
-    def section(self, x):
-        """The coordinates ``(R, Z)`` of the point ``x`` in its cross-section ``zeta = const``, a plane."""
-        return jnp.array([self.basis.contract(self.raw_R, x), self.basis.contract(self.raw_Z, x)])
-
-
 class FrameMap(eqx.Module):
-    """The map ``Phi = R_z(phi) P``, ``phi = 2 pi zeta / nfp``, of the vector spline ``P`` with the
-    tensor-product coefficients ``raw_P`` ``(3, n_r, n_theta, n_zeta)`` in ``basis``. ``P`` is the position
-    in the frame that turns with the field periods, so it is periodic in one field period whatever the shape
-    of the magnetic axis. A :class:`CylindricalMap` is the case ``P = (R, 0, Z)``. A pytree, as
-    :class:`CylindricalMap`.
+    """The map ``Phi = R_z(phi) (a + X1 N + X2 B + X3 T)``, ``phi = 2 pi zeta / nfp``, of the scalar splines ``X1``,
+    ``X2`` and ``X3`` with the tensor-product coefficients ``raw_X1``, ``raw_X2``, ``raw_X3`` ``(n_r, n_theta,
+    n_zeta)`` in ``basis``.
 
-    The map also carries the state's frame (``frame_cos``, ``frame_sin`` ``(3, 3, n_modes)`` and the mode
-    numbers per field period ``frame_n``, see :func:`mrx.equilibria.gvec.read_frame`). :meth:`section` uses
-    it to place a point in the plane of the frame."""
+    The frame is the axis ``a`` and two orthonormal vectors ``N``, ``B`` that span the plane of the cross-section
+    at each ``zeta``, in the frame that turns with the field periods, and ``T = N x B`` the normal of that plane. It is
+    kept as its own Fourier series in ``zeta``, not projected onto splines: ``frame_cos``, ``frame_sin``
+    ``(3, 3, n_modes)`` (rows ``a``, ``N``, ``B``) and the mode numbers per field period ``frame_n``, see
+    :func:`mrx.equilibria.gvec.read_frame`. GVEC's G-frame is one such frame. The cylindrical frame
+    (:func:`cylindrical_frame`) has ``a = 0``, ``N = e_R``, ``B = e_z``, and then ``X1 = R``, ``X2 = Z``.
 
-    raw_P: jnp.ndarray
+    Every map read from a file has ``X3 = 0``: its surface ``zeta = const`` is exactly the plane of the frame and
+    ``(X1, X2)`` are coordinates in it. ``X3`` lets a point leave its plane, so that a moving mesh or a shape
+    optimisation can move every point in any direction.
+
+    It is a pytree: under ``jax.jit`` the coefficients of ``X1``, ``X2``, ``X3`` and of the frame are traced inputs,
+    so a new map of the same mesh and the same number of frame modes reuses every compiled function of the
+    sequence it is installed on, and every one of them can be differentiated."""
+
+    raw_X1: jnp.ndarray
+    raw_X2: jnp.ndarray
+    raw_X3: jnp.ndarray
     frame_cos: jnp.ndarray
     frame_sin: jnp.ndarray
     frame_n: jnp.ndarray
     basis: object = eqx.field(static=True)
     nfp: int = eqx.field(static=True)
-
-    #: The names of the coordinates of :meth:`section`, GVEC's.
-    section_labels = ("$X^1$", "$X^2$")
+    #: The names of the coordinates of :meth:`section`.
+    section_labels: tuple = eqx.field(static=True, default=("$X^1$", "$X^2$"))
 
     def __call__(self, x):
-        return _rotate_z(TWO_PI / self.nfp * x[2], self.basis.contract(self.raw_P, x))
+        a, N, B = frame_derivatives(self.frame_cos, self.frame_sin, self.frame_n, x[2])[0]
+        X1, X2, X3 = (self.basis.contract(c, x) for c in (self.raw_X1, self.raw_X2, self.raw_X3))
+        return _rotate_z(TWO_PI / self.nfp * x[2], a + X1 * N + X2 * B + X3 * jnp.cross(N, B))
 
     def section(self, x):
-        """The coordinates ``(X1, X2)`` of the point ``x`` in the plane of the frame at its ``zeta``, through the
-        axis ``a`` and spanned by ``N`` and ``B``. They solve ``P - a = X1 N + X2 B`` by least squares, since the
-        spline map's surface ``zeta = const`` is the plane only up to the map's error."""
-        a, N, B = _frame_at(self.frame_cos, self.frame_sin, self.frame_n, x[2])
-        d = self.basis.contract(self.raw_P, x) - a
-        NB = jnp.stack([N, B], axis=1)                                   # (3, 2)
-        return jnp.linalg.solve(NB.T @ NB, NB.T @ d)
+        """The coordinates ``(X1, X2)`` of the point ``x`` along ``N`` and ``B``, its coordinates in the plane of its
+        cross-section ``zeta = const`` where ``X3 = 0``."""
+        return jnp.array([self.basis.contract(self.raw_X1, x), self.basis.contract(self.raw_X2, x)])
+
+    def plane(self, zeta):
+        """``(o, e1, e2)``: the plane of the frame at the logical ``zeta`` in Cartesian coordinates, by its origin, the
+        axis ``a``, and the directions ``N`` and ``B`` of the coordinates ``(X1, X2)`` of :meth:`section`."""
+        ang = TWO_PI / self.nfp * zeta
+        return tuple(_rotate_z(ang, v) for v in frame_derivatives(self.frame_cos, self.frame_sin, self.frame_n, zeta)[0])
+
+    def with_coordinates(self, raw_X1, raw_X2, raw_X3):
+        """The map with the same frame and the coefficients ``raw_X1``, ``raw_X2``, ``raw_X3``."""
+        return eqx.tree_at(lambda m: (m.raw_X1, m.raw_X2, m.raw_X3), self, (raw_X1, raw_X2, raw_X3))
+
+    def scaled(self, factor):
+        """The map ``factor Phi``: ``X1``, ``X2``, ``X3`` and the axis ``a`` times ``factor``, ``N`` and ``B`` kept."""
+        return eqx.tree_at(lambda m: (m.raw_X1, m.raw_X2, m.raw_X3, m.frame_cos, m.frame_sin), self,
+                           (factor * self.raw_X1, factor * self.raw_X2, factor * self.raw_X3,
+                            self.frame_cos.at[0].multiply(factor), self.frame_sin.at[0].multiply(factor)))
 
 
 def build_map(st, seq, nfp=None, stellarator_symmetric=False):
     """Return ``(Phi, info)``, the spline map of the state ``st`` in the 0-form space of ``seq``, a
-    :class:`CylindricalMap`, or a :class:`FrameMap` for a G-frame state.
+    :class:`FrameMap` with the state's frame (:func:`state_frame`).
 
-    The map is ``Phi = (R cos phi, R sin phi, Z)`` with ``phi = 2 pi zeta / nfp``, so logical ``zeta``
-    covers one field period. ``nfp`` is the file's unless given. ``R`` and ``Z`` are the L2 projections of
-    the file's Fourier series onto the 0-form spline space, which is smooth (C1) at the axis. With
-    ``stellarator_symmetric`` they are further projected onto ``R`` even and ``Z`` odd under
-    ``(theta, zeta) -> (-theta, -zeta)``. This needs uniform angular knots and a stellarator-symmetric
-    state. A G-frame state gives ``Phi = R_z(phi) P`` with the three components of ``P = a + X1 N + X2 B``
-    (:func:`frame_blocks`) projected in the same way, ``x`` as ``R`` and ``y``, ``z`` as ``Z``.
+    The map is ``Phi = R_z(phi) (a + X1 N + X2 B)`` with ``phi = 2 pi zeta / nfp`` (``X3 = 0``), so logical ``zeta``
+    covers one field period. ``nfp`` is the file's unless given. ``X1`` and ``X2`` are the L2 projections of the file's
+    Fourier series onto the 0-form spline space, which is smooth (C1) at the axis. The frame keeps its own
+    series. With ``stellarator_symmetric`` ``X1`` and ``X2`` are further projected onto ``X1`` even and ``X2`` odd
+    under ``(theta, zeta) -> (-theta, -zeta)``. This needs uniform angular knots and a stellarator-symmetric state,
+    whose frame has that parity already.
 
-    ``info`` holds ``nfp``, the range ``det_range`` of ``det DPhi`` at the sample points, the
-    ``symmetry_defect`` (:func:`mrx.symmetry.stellarator_symmetry_defect`) and the tensor-product spline
-    coefficients that ``Phi`` evaluates, ``raw_R``, ``raw_Z`` of shape ``(n_r, n_theta, n_zeta)`` or ``raw_P``
-    of shape ``(3, n_r, n_theta, n_zeta)``. Raises if ``det DPhi`` is not positive, which
-    :func:`read_equilibrium` guarantees for a map that does not fold.
+    ``info`` holds ``nfp``, the range ``det_range`` of ``det DPhi`` at the sample points and the
+    ``symmetry_defect`` (:func:`mrx.symmetry.stellarator_symmetry_defect`). Raises if ``det DPhi`` is not
+    positive, which :func:`read_equilibrium` guarantees for a map that does not fold.
     """
     if stellarator_symmetric and not is_stellarator_symmetric(st):
         raise ValueError("the state is not stellarator-symmetric: the projection would drop its asymmetric part")
@@ -318,19 +303,13 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
         dofs = free.conforming(jnp.asarray(C.reshape(-1)), 0)
         return (E.T @ dofs).reshape(seq.basis_0.shape[0])
 
-    if "frame" in st:
-        # x even, y and z odd under the reflection, as R and Z
-        raw_P = [sum(raw(block) for block in component) for component in frame_blocks(st)]
-        if stellarator_symmetric:
-            raw_P = [stellarator_symmetric_scalar(c, seq.basis_0, even=i == 0) for i, c in enumerate(raw_P)]
-        Phi = FrameMap(jnp.stack(raw_P), *_frame_arrays(st["frame"], nfp), seq.basis_0.bases[0], nfp)
-        coefficients = {"raw_P": Phi.raw_P}
-    else:
-        raw_R, raw_Z = raw(st["X1"]), raw(st["X2"])
-        if stellarator_symmetric:
-            raw_R = stellarator_symmetric_scalar(raw_R, seq.basis_0, even=True)
-            raw_Z = stellarator_symmetric_scalar(raw_Z, seq.basis_0, even=False)
-        Phi, coefficients = CylindricalMap(raw_R, raw_Z, seq.basis_0.bases[0], nfp), {"raw_R": raw_R, "raw_Z": raw_Z}
+    raw_X1, raw_X2 = raw(st["X1"]), raw(st["X2"])
+    if stellarator_symmetric:
+        raw_X1 = stellarator_symmetric_scalar(raw_X1, seq.basis_0, even=True)
+        raw_X2 = stellarator_symmetric_scalar(raw_X2, seq.basis_0, even=False)
+    labels = ("$X^1$", "$X^2$") if "frame" in st else ("R", "Z")
+    Phi = FrameMap(raw_X1, raw_X2, jnp.zeros_like(raw_X1), *_frame_arrays(state_frame(st), nfp), seq.basis_0.bases[0],
+                   nfp, labels)
     # sample points away from the axis, where det DPhi = 0
     rng = np.random.default_rng(0)
     pts = jnp.asarray(np.column_stack([rng.uniform(0.15, 1.0, 64), rng.uniform(0.0, 1.0, 64),
@@ -340,4 +319,4 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
         raise RuntimeError(f"{st['path']}: det DPhi of the spline map in [{d.min():.3e}, {d.max():.3e}] is not "
                            "positive (a map that folds, or a resolution too coarse for the file)")
     return Phi, {"nfp": nfp, "det_range": (float(d.min()), float(d.max())),
-                 "symmetry_defect": float(stellarator_symmetry_defect(Phi, pts)), **coefficients}
+                 "symmetry_defect": float(stellarator_symmetry_defect(Phi, pts))}

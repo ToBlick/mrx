@@ -109,26 +109,42 @@ profile classes are refused.
 
 ## 3. The map
 
-`build_map(st, seq, nfp, stellarator_symmetric)` returns `(Phi, info)`, the
-map `Phi = (R cos phi, R sin phi, Z)`, `phi = 2 pi zeta / nfp`, on
-`seq.basis_0`. The coefficients of `R` and `Z` are the L2 projection of the
-series onto the polar 0-form space, mode by mode. The radial splines are
-projected exactly by Gauss quadrature on the union of the two knot sets,
-the angular modes by the projection of `exp(2 pi i (m theta - n zeta))` onto
-the periodic splines. With `stellarator_symmetric` they are projected onto
-`R` even and `Z` odd. `info` holds `nfp`, the sampled `det_range` (checked
-to be positive), the `symmetry_defect` and the raw coefficients `raw_R`,
-`raw_Z`.
+`build_map(st, seq, nfp, stellarator_symmetric)` returns `(Phi, info)`, a
+`FrameMap`
 
-A G-frame state gives a `FrameMap`, `Phi = R_z(phi) P` with
-`P = a + X1 N + X2 B` the position in the frame that turns with the field
-periods. `P` is periodic in one field period whatever the axis does, and
-a `CylindricalMap` is the case `P = (R, 0, Z)`. Each Cartesian component of
-`P` is a sum of the state's modes times the frame's modes
-(`frame_blocks`), projected as above. With `stellarator_symmetric`, `P_x`
-is projected like `R` and `P_y`, `P_z` like `Z`. `info` holds `raw_P`.
-`state_position(st)` is the state's own map, cylindrical or G-frame, as a
-JAX function, the reference the spline map approximates.
+```
+Phi = R_z(phi) (a + X1 N + X2 B + X3 T),    phi = 2 pi zeta / nfp,
+```
+
+on `seq.basis_0`. The frame is the axis `a` and the orthonormal `N`, `B`
+that span the cross-section at each `zeta`, in the frame that turns with
+the field periods, and `T = N x B` the normal of that plane. The frame keeps
+its own Fourier series in `zeta` and is not projected.
+
+The frame is the one the file supplies. A GVEC state in the G-frame brings
+GVEC's frame. Every other file, VMEC, DESC or a cylindrical GVEC state, is
+read in the planes `phi = const` and has the cylindrical frame
+(`cylindrical_frame()`): `a = 0`, `N = e_R`, `B = e_z`, so that `X1 = R`
+and `X2 = Z`, and the cross-sections `zeta = const` are the planes
+`phi = const` of the file. No file is cut into another frame.
+
+A map built from a file has `X3 = 0`, so its surface `zeta = const` is
+exactly the plane of the frame and `(X1, X2)` are coordinates in it. `X3`
+lets a point leave its plane. It is there for a moving mesh and for a shape
+optimisation.
+
+The coefficients of `X1` and `X2` are the L2 projection of the series onto
+the polar 0-form space, mode by mode. The radial splines are projected
+exactly by Gauss quadrature on the union of the two knot sets, the angular
+modes by the projection of `exp(2 pi i (m theta - n zeta))` onto the
+periodic splines. With `stellarator_symmetric` they are projected onto
+`X1` even and `X2` odd. `info` holds `nfp`, the sampled `det_range`
+(checked to be positive) and the `symmetry_defect`. Every coefficient of
+the map, of `X1`, `X2`, `X3` and of the frame, is a leaf of the pytree, so a
+shape optimisation can move all of them
+(`mrx.optimization.shape_ad.frame_geometry`). `state_position(st)` is the
+state's own map as a JAX function, the reference the spline map
+approximates.
 
 ## 4. Conventions that must be stated
 

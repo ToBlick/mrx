@@ -71,7 +71,9 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     The sequence has its map installed and its preconditioners built (``seq.operators``). The
     harmonic forms are not computed here. Call :func:`mrx.nullspace.compute_nullspaces` next if you need
     them. The parsed file is kept as ``seq.equilibrium`` (the output of
-    :func:`mrx.equilibria.read_equilibrium`).
+    :func:`mrx.equilibria.read_equilibrium`). The map is a :class:`mrx.equilibria.FrameMap` in the frame the file
+    supplies: GVEC's G-frame for a GVEC state that has one, else the cylindrical frame, whose cross-sections are the
+    planes ``phi = const``.
 
     Args:
         ns: ``(n_r, n_theta, n_zeta)``, the number of splines per axis, also used for the map. An axis
@@ -150,5 +152,5 @@ def _prolong_map(Phi, seq, m):
 
     def lift(raw):
         return jnp.einsum("jJ,...aJl->...ajl", R, raw)
-    raw = {name: lift(getattr(Phi, name)) for name in (("raw_R", "raw_Z") if hasattr(Phi, "raw_R") else ("raw_P",))}
-    return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], **raw)
+    return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], raw_X1=lift(Phi.raw_X1), raw_X2=lift(Phi.raw_X2),
+                               raw_X3=lift(Phi.raw_X3))

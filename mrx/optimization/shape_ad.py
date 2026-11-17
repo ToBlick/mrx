@@ -2,9 +2,11 @@
 
 This module makes the vacuum magnetic field of a stellarator a differentiable function of the shape of its
 domain, so that ``jax.grad`` of an objective such as a quasi-symmetry residual gives the derivative with
-respect to the shape. The shape is the map Phi from logical to physical coordinates, written in cylindrical
-form ``Phi = (R cos phi, R sin phi, Z)``, ``phi = 2 pi zeta / nfp``, with ``R`` and ``Z`` scalar
-splines. Their coefficients are the variables.
+respect to the shape. The shape is the map Phi from logical to physical coordinates, a
+:class:`~mrx.equilibria.FrameMap` ``Phi = R_z(phi) (a + X1 N + X2 B + X3 T)``, ``phi = 2 pi zeta / nfp``, with
+``X1``, ``X2``, ``X3`` scalar splines and the frame ``(a, N, B)`` a Fourier series in ``zeta``. Every coefficient of
+the map, of ``X1``, ``X2``, ``X3`` and of the frame, is a variable. The shapes of :class:`BoundaryShape` keep ``X3``
+of their start, zero for a map read from a file. In the cylindrical frame ``X1``, ``X2`` are ``R``, ``Z``.
 
 The vacuum field is the harmonic 2-form ``h = s - G_1 a`` of the complex with Dirichlet boundary conditions.
 Here ``s`` is a fixed seed that carries the toroidal flux, ``G_1`` the discrete curl, ``M_2`` the 2-form mass
@@ -12,7 +14,7 @@ matrix, and ``a`` solves ``S_1 a = G_1^T M_2 s`` with ``S_1 = G_1^T M_2 G_1``. A
 and one adjoint solve of this system.
 
 A typical use: build a :class:`BoundaryShape` about a starting map, turn its variables into map coefficients
-(:meth:`BoundaryShape.map_coefficients`) and a geometry (:func:`cylindrical_geometry`), install it with
+(:meth:`BoundaryShape.map_at`) and a geometry (:func:`frame_geometry`), install it with
 :meth:`~mrx.derham_sequence.DeRhamSequence.with_geometry`, compute the field with :func:`flux_seed` and :func:`vacuum_two_form`, and evaluate an
 objective: :func:`mean_iota`, :func:`normal_field_fraction` or :func:`quasisymmetry_residual`. The objectives treat the logical surfaces as flux surfaces, and
 :func:`normal_field_fraction` measures how far that is from true. The preconditioners of the solves are
@@ -26,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DifferentialForm, inv33
-from mrx.equilibria import CylindricalMap
+from mrx.equilibria import frame_derivatives
 from mrx.geometry import SequenceGeometry
 from mrx.incidence import diff_1d
 from mrx.symmetry import stellarator_symmetric_scalar
@@ -50,89 +52,139 @@ def _tp_evaluate(C_raw, M1, M2, M3):
     return jnp.einsum("iIJc,cK->iIJK", T2, M3)
 
 
-def _cylindrical_metric(R, dR, dZ, nfp):
-    """``(G, cross)``: the metric of the cylindrical map Phi and ``cross = R_theta Z_r - R_r Z_theta``, so that
-    ``det DPhi = (2 pi / nfp) R cross``."""
-    G = dR[:, :, None] * dR[:, None, :] + dZ[:, :, None] * dZ[:, None, :]
-    G = G.at[:, 2, 2].add((2.0 * np.pi / nfp * R) ** 2)
-    return G, dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1]
+def _coordinate_derivatives(seq, Phi, second=False):
+    """``(X, d1, d2)``: ``(X1, X2, X3)`` of the map ``Phi`` at the quadrature points, ``(n_q, 3)``, their first
+    logical derivatives ``d1[q, c, i]``, ``(n_q, 3, 3)``, and with ``second`` their second ones ``d2[q, c, i, j]``,
+    ``(n_q, 3, 3, 3)`` (else ``None``)."""
+    prim, _, dprim, _, ddprim, _ = _tables(seq)
+    tabs = (prim, dprim, ddprim)
+    C = jnp.stack([Phi.raw_X1, Phi.raw_X2, Phi.raw_X3])
+
+    def ev(orders):
+        return _tp_evaluate(C, *(tabs[o][a] for a, o in enumerate(orders))).reshape(3, -1).T
+    unit = np.eye(3, dtype=int)
+    d1 = jnp.stack([ev(unit[i]) for i in range(3)], -1)
+    d2 = (jnp.stack([jnp.stack([ev(unit[i] + unit[j]) for j in range(3)], -1) for i in range(3)], -2)
+          if second else None)
+    return ev((0, 0, 0)), d1, d2
 
 
-def cylindrical_geometry(seq, raw_R, raw_Z, nfp):
-    """The :class:`~mrx.geometry.SequenceGeometry` of the map ``Phi = (R cos phi, R sin phi, Z)``,
-    ``phi = 2 pi zeta / nfp``, differentiable in the coefficients.
-
-    ``R`` and ``Z`` are scalar splines in ``seq.basis_0`` with coefficient arrays ``raw_R`` and ``raw_Z`` of
-    shape ``(n_r, n_theta, n_zeta)``, the same form as the map of :func:`mrx.equilibria.build_map`. The result
-    holds the map (:class:`mrx.equilibria.CylindricalMap`), the metric and ``det DPhi`` at the quadrature
-    points."""
-    R, dR, dZ = _cylindrical_fields(seq, raw_R, raw_Z)
-    G, cross = _cylindrical_metric(R, dR, dZ, nfp)
-    J = (2.0 * np.pi / nfp) * R * cross
-    return SequenceGeometry(CylindricalMap(raw_R, raw_Z, seq.basis_0.bases[0], nfp), G, jax.vmap(inv33)(G), J)
+def _turn(v):
+    """``e_z x v`` for the rows of ``v``, ``(n_q, 3)``."""
+    return jnp.stack([-v[:, 1], v[:, 0], jnp.zeros_like(v[:, 0])], -1)
 
 
-def _cylindrical_fields(seq, raw_R, raw_Z):
-    """``R`` and the logical gradients of ``R`` and ``Z`` at the quadrature points, shapes ``(n_q,)`` and
-    ``(n_q, 3)``."""
-    (Br, Bt, Bz), _, (Dr, Dt, Dz), *_ = _tables(seq)
-    C = jnp.stack([raw_R, raw_Z])
-    R = _tp_evaluate(C[:1], Br, Bt, Bz)[0].reshape(-1)
-    d = jnp.stack([_tp_evaluate(C, Dr, Bt, Bz), _tp_evaluate(C, Br, Dt, Bz),
-                   _tp_evaluate(C, Br, Bt, Dz)], axis=-1)            # (2, nqr, nqt, nqz, 3)
-    return R, d[0].reshape(-1, 3), d[1].reshape(-1, 3)
+def _frame_vectors(seq, Phi):
+    """``(a, E)``, each with its first and second ``zeta`` derivatives: the axis ``(n_q, 3)`` and the directions of
+    ``X1``, ``X2``, ``X3`` at the quadrature points, ``E[q, c]`` = ``N``, ``B``, ``T = N x B``, ``(n_q, 3, 3)``."""
+    F = jax.vmap(lambda z: frame_derivatives(Phi.frame_cos, Phi.frame_sin, Phi.frame_n, z))(seq.quad.x_z)
+    (a, N, B), (da, dN, dB), (dda, ddN, ddB) = (
+        tuple(jnp.broadcast_to(f, seq.quad.shape + (3, 3)).reshape(-1, 3, 3)[:, r] for r in range(3)) for f in F)
+    T = jnp.cross(N, B)
+    dT = jnp.cross(dN, B) + jnp.cross(N, dB)
+    ddT = jnp.cross(ddN, B) + 2.0 * jnp.cross(dN, dB) + jnp.cross(N, ddB)
+    return (a, da, dda), tuple(jnp.stack(v, 1) for v in ((N, B, T), (dN, dB, dT), (ddN, ddB, ddT)))
 
 
-def section_moments(seq, raw_R, raw_Z, nfp):
-    """``(V, V_axis, S)`` for the map of :func:`cylindrical_geometry`, over one field period.
+def map_jacobian(seq, Phi, second=False):
+    """``(D, dD, E)`` of the frame map ``Phi`` at the quadrature points, in the frame that turns with the field
+    periods. ``D = R_z(-phi) DPhi``, ``(n_q, 3, 3)`` with ``D[q, :, i]`` the derivative in the logical direction
+    ``i``, has the metric and the determinant of ``DPhi``. With ``second``, ``dD[q, k]`` are its logical derivatives
+    (else ``None``). ``E[q, c]`` are the directions ``N``, ``B``, ``T = N x B`` of ``X1``, ``X2``, ``X3``, ``(n_q, 3,
+    3)``: a change ``w`` of the coordinates moves a point by ``sum_c w_c E_c``. With ``P = a + X1 N + X2 B + X3 T``,
+    ``D[:, i] = d_i X1 N + d_i X2 B + d_i X3 T`` plus, along ``zeta``, ``a' + X1 N' + X2 B' + X3 T' + (2 pi / nfp)
+    e_z x P``, the change of the frame and its turn with the field period."""
+    X, d1, d2 = _coordinate_derivatives(seq, Phi, second)
+    (a, da, dda), (E, dE, ddE) = _frame_vectors(seq, Phi)
+    c = 2.0 * np.pi / Phi.nfp
+    P = a + jnp.einsum("qc,qcj->qj", X, E)
+    dP = da + jnp.einsum("qc,qcj->qj", X, dE)                       # the change of P along zeta at fixed X
+    D = jnp.einsum("qcj,qci->qji", E, d1)
+    D = D.at[:, :, 2].add(dP + c * _turn(P))
+    if not second:
+        return D, None, E
+    # d_k D[:, i] = sum_c d_k d_i X_c E_c, plus for k = zeta sum_c d_i X_c E_c', plus in the column i = zeta the
+    # derivative of dP + c e_z x P at fixed d X
+    dD = jnp.einsum("qcj,qcik->qkji", E, d2)                          # (n_q, k, 3, i)
+    dD = dD.at[:, 2].add(jnp.einsum("qcj,qci->qji", dE, d1))
+    for k in range(3):
+        dPk = jnp.einsum("qcj,qc->qj", E, d1[:, :, k])
+        col = jnp.einsum("qcj,qc->qj", dE, d1[:, :, k])
+        if k == 2:
+            dPk = dPk + dP
+            col = col + dda + jnp.einsum("qc,qcj->qj", X, ddE)
+        dD = dD.at[:, k, :, 2].add(col + c * _turn(dPk))
+    return D, dD, E
 
-    ``V`` is the volume, ``S`` the mean cross-section area, and ``V_axis`` is the volume integral of ``R_axis /
-    R``, where ``R_axis`` is the ``R`` of the coordinate axis (the innermost ring of coefficients). They are
-    defined so that scaling every cross-section by ``mu`` about the axis takes ``S`` to ``mu^2 S`` and ``V`` to
-    ``mu^2 V_axis + mu^3 (V - V_axis)`` exactly."""
-    R, dR, dZ = _cylindrical_fields(seq, raw_R, raw_Z)
-    a = 2.0 * np.pi / nfp
-    J_over_R = a * (dR[:, 1] * dZ[:, 0] - dR[:, 0] * dZ[:, 1])
-    axis = jnp.broadcast_to(raw_R[0, 0] @ seq.basis_jk[2], seq.quad.shape).reshape(-1)
+
+def frame_geometry(seq, Phi):
+    """The :class:`~mrx.geometry.SequenceGeometry` of the frame map ``Phi`` (:class:`mrx.equilibria.FrameMap`) on
+    the quadrature points of ``seq``, differentiable in every coefficient of the map: those of ``X1``, ``X2``,
+    ``X3`` (``(n_r, n_theta, n_zeta)`` in ``seq.basis_0``, the form of :func:`mrx.equilibria.build_map`) and those of
+    the frame. It is :meth:`~mrx.geometry.SequenceGeometry.from_map` of ``Phi``, evaluated on the spline tables
+    instead of by a Jacobian per point."""
+    D, _, _ = map_jacobian(seq, Phi)
+    G = jnp.einsum("qki,qkj->qij", D, D)
+    return SequenceGeometry(Phi, G, jax.vmap(inv33)(G), jnp.linalg.det(D))
+
+
+def section_moments(seq, Phi):
+    """``(V, V_axis, S)`` for the map ``Phi``, over one field period.
+
+    ``V`` is the volume and ``S`` the mean area of the map's cross-sections ``zeta = const``: the planes ``phi =
+    const`` in the cylindrical frame, the planes normal to the axis in a G-frame, where the same torus has a smaller
+    ``S``. Scaling every cross-section by ``mu`` about the
+    coordinate axis (``X1``, ``X2``, ``X3`` of the innermost ring of coefficients) scales the logical ``r`` and
+    ``theta`` columns of ``DPhi`` by ``mu`` and makes the ``zeta`` column affine in ``mu``. ``V_axis`` is the
+    volume with that column taken at the coordinate axis, so that the scaling takes ``S`` to ``mu^2 S`` and
+    ``V`` to ``mu^2 V_axis + mu^3 (V - V_axis)`` exactly."""
+    D, _, _ = map_jacobian(seq, Phi)
+    axis = Phi.with_coordinates(*(jnp.broadcast_to(raw[:1, :1], raw.shape) for raw in (Phi.raw_X1, Phi.raw_X2,
+                                                                                     Phi.raw_X3)))
+    D_axis, _, _ = map_jacobian(seq, axis)
+    J = jnp.linalg.det(D)
+    J_axis = jnp.linalg.det(D.at[:, :, 2].set(D_axis[:, :, 2]))
+    # the area element of the cross-section, |d_r P x d_theta P|, both in the plane of the frame
+    area = jnp.linalg.norm(jnp.cross(D[:, :, 0], D[:, :, 1]), axis=-1)
     w = seq.quad.w
-    return jnp.sum(w * R * J_over_R), jnp.sum(w * axis * J_over_R), jnp.sum(w * J_over_R) / a
+    return jnp.sum(w * J), jnp.sum(w * J_axis), jnp.sum(w * area)
 
 
 class BoundaryShape(eqx.Module):
-    """A parametrisation of the map's ``R`` and ``Z`` coefficients by the optimisation variables ``beta``.
+    """A parametrisation of the coefficients of ``X1`` and ``X2`` of a frame map by the optimisation variables
+    ``beta``, the frame and ``X3`` held.
 
-    Build it with :meth:`from_coefficients` about a starting map. Every shape it produces is stellarator
-    symmetric (``R`` even and ``Z`` odd under ``(theta, zeta) -> (-theta, -zeta)``) and has the volume of the
-    starting map, and also its aspect ratio if ``aspect`` is given (:meth:`map_coefficients`).
+    Build it with :meth:`from_map` about a starting map. Every shape it produces is stellarator symmetric
+    (``X1`` even and ``X2`` odd under ``(theta, zeta) -> (-theta, -zeta)``) and has the volume of the starting
+    map, and also its aspect ratio if ``aspect`` is given (:meth:`map_at`).
 
-    ``beta`` has shape ``(2, n_r, n_theta, n_zeta)``. Its outermost ring is the change of the ``R`` and ``Z``
+    ``beta`` has shape ``(2, n_r, n_theta, n_zeta)``. Its outermost ring is the change of the ``X1`` and ``X2``
     coefficients on the boundary, carried into the interior with the weight ``r_i^|m|`` on ring ``i`` and
     poloidal mode ``m`` (``r_i`` the radius of the ring), except that ring 1 only takes ``|m| <= 1``. The
     ``m = 0`` part then moves the axis as well. The inner rings add their own independent change
     (:meth:`interior_modes`).
     """
 
-    raw_R: jnp.ndarray
-    raw_Z: jnp.ndarray
+    start: object
     extension: jnp.ndarray
     volume: jnp.ndarray
-    nfp: int = eqx.field(static=True)
     basis_0: DifferentialForm = eqx.field(static=True)
     interior: jnp.ndarray
     aspect: Optional[float] = eqx.field(static=True, default=None)
 
     @classmethod
-    def from_coefficients(cls, seq, raw_R, raw_Z, nfp, volume=None, aspect=None):
-        """The parametrisation about the map with coefficients ``raw_R``, ``raw_Z`` (``nfp`` as in
-        :func:`cylindrical_geometry`). ``volume`` is the volume of one field period to hold, by default that of
-        the starting map. ``aspect`` is the aspect ratio to hold, by default none. With these defaults
-        ``beta = 0`` gives back the starting map."""
+    def from_map(cls, seq, Phi, volume=None, aspect=None):
+        """The parametrisation about the frame map ``Phi`` (:class:`mrx.equilibria.FrameMap`). ``volume`` is the
+        volume of one field period to hold, by default that of the starting map. ``aspect`` is the aspect ratio
+        to hold, by default none: ``nfp V / (2 sqrt(pi) S^(3/2))`` of :func:`section_moments`, measured in the
+        cross-sections of the map, so the same torus has another value in another frame. With these defaults, or with
+        the starting map's own aspect ratio, ``beta = 0`` gives back the starting map."""
         if volume is None:
-            volume = section_moments(seq, raw_R, raw_Z, nfp)[0]
+            volume = section_moments(seq, Phi)[0]
         weights = cls.extension_weights(seq.basis_0)
-        interior = jnp.asarray(cls.interior_modes(seq.basis_0), dtype=raw_R.dtype)
-        return cls(raw_R, raw_Z, jnp.asarray(weights, dtype=raw_R.dtype), jnp.asarray(volume), int(nfp),
-                   seq.basis_0, interior, None if aspect is None else float(aspect))
+        interior = jnp.asarray(cls.interior_modes(seq.basis_0), dtype=Phi.raw_X1.dtype)
+        return cls(Phi, jnp.asarray(weights, dtype=Phi.raw_X1.dtype), jnp.asarray(volume), seq.basis_0, interior,
+                   None if aspect is None else float(aspect))
 
     @staticmethod
     def extension_weights(basis_0):
@@ -157,34 +209,33 @@ class BoundaryShape(eqx.Module):
         return modes
 
     def perturbation(self, beta):
-        """``(b_R, b_Z)``: the stellarator-symmetric part of ``beta``, ``R`` even and ``Z`` odd under
+        """``(b_1, b_2)``: the stellarator-symmetric part of ``beta``, ``X1`` even and ``X2`` odd under
         ``(theta, zeta) -> (-theta, -zeta)``."""
         return (stellarator_symmetric_scalar(beta[0], self.basis_0, even=True),
                 stellarator_symmetric_scalar(beta[1], self.basis_0, even=False))
 
     def change(self, beta):
-        """The change ``(2, n_r, n_theta, n_zeta)`` of the ``R`` and ``Z`` coefficients at ``beta``, before the
+        """The change ``(2, n_r, n_theta, n_zeta)`` of the ``X1`` and ``X2`` coefficients at ``beta``, before the
         volume and aspect-ratio scalings: the boundary ring carried inwards plus the inner rings' own change."""
         spectrum = jnp.fft.fft(jnp.stack(self.perturbation(beta)), axis=2)              # (2, n_r, n_t, n_z)
         boundary = self.extension[None, :, :, None] * spectrum[:, -1:]
         own = (self.interior[None, :, :, None] * spectrum).at[:, 1, 0].set(spectrum[:, 0, 0])
         return jnp.fft.ifft(boundary + own, axis=2).real
 
-    def map_coefficients(self, seq, beta):
-        """``(R, Z)``: the coefficients of the map at ``beta``. With ``aspect``, every cross-section is first
-        scaled by ``mu`` about the coordinate axis so that the aspect ratio is ``aspect``. Then the whole map is
+    def map_at(self, seq, beta):
+        """The frame map at ``beta``. With ``aspect``, every cross-section is first scaled by ``mu`` about the
+        coordinate axis so that the aspect ratio is ``aspect``. Then the whole map, the frame's axis with it, is
         scaled by ``scale = (volume / V)^(1/3)`` so that the volume is ``volume``. Both factors are exact."""
         rings = self.change(beta)
-        R, Z = self.raw_R + rings[0], self.raw_Z + rings[1]
-        V, V_axis, S = section_moments(seq, R, Z, self.nfp)
+        X = (self.start.raw_X1 + rings[0], self.start.raw_X2 + rings[1], self.start.raw_X3)
+        V, V_axis, S = section_moments(seq, self.start.with_coordinates(*X))
         if self.aspect is not None:
             # the aspect ratio nfp V / (2 sqrt(pi) S^(3/2)) does not change under the scaling by `scale`
-            mu = V_axis / (2.0 * np.sqrt(np.pi) * S ** 1.5 * self.aspect / self.nfp - V + V_axis)
-            R = R[:1, :1] + mu * (R - R[:1, :1])
-            Z = Z[:1, :1] + mu * (Z - Z[:1, :1])
+            mu = V_axis / (2.0 * np.sqrt(np.pi) * S ** 1.5 * self.aspect / self.start.nfp - V + V_axis)
+            X = tuple(c[:1, :1] + mu * (c - c[:1, :1]) for c in X)
             V = mu ** 2 * V_axis + mu ** 3 * (V - V_axis)
         scale = (self.volume / V) ** (1.0 / 3.0)
-        return scale * R, scale * Z
+        return self.start.with_coordinates(*X).scaled(scale)
 
 
 def flux_seed(seq):
@@ -281,34 +332,14 @@ def _two_form_derivatives(seq, h, tables):
     return b, jnp.stack([evaluate_at_xq(raw, info(a), shapes, grid, 3) for a in range(3)])
 
 
-def _cylindrical_derivatives(raw_R, raw_Z, tables):
-    """``(v, d1, d2)``: ``(R, Z)`` at the quadrature points, ``(2, n_q)``, their first logical derivatives
-    ``d1[q, c, i]``, ``(n_q, 2, 3)``, and their second ones ``d2[q, c, i, j]``, ``(n_q, 2, 3, 3)``."""
-    prim, _, dprim, _, ddprim, _ = tables
-    tabs = (prim, dprim, ddprim)
-    C = jnp.stack([raw_R, raw_Z])
-
-    def ev(orders):
-        return _tp_evaluate(C, *(tabs[o][a] for a, o in enumerate(orders))).reshape(2, -1)
-    unit = np.eye(3, dtype=int)
-    d1 = jnp.stack([ev(unit[i]) for i in range(3)], -1)
-    d2 = jnp.stack([jnp.stack([ev(unit[i] + unit[j]) for j in range(3)], -1) for i in range(3)], -2)
-    return ev((0, 0, 0)), jnp.moveaxis(d1, 1, 0), jnp.moveaxis(d2, 1, 0)
-
-
-def _residual_terms(seq, h, raw_R, raw_Z, nfp, tables):
+def _residual_terms(seq, h, Phi, tables):
     """``(B, parallel, cross, B_cov, J)`` at the quadrature points: ``|B|``, ``B . grad|B|``,
     ``(B x grad r) . grad|B|``, the covariant components of ``B`` and ``det DPhi``."""
-    a = 2.0 * np.pi / nfp
-    (R, _), d1, d2 = _cylindrical_derivatives(raw_R, raw_Z, tables)
-    dR, dZ, ddR, ddZ = d1[:, 0], d1[:, 1], d2[:, 0], d2[:, 1]
-    G, cross_rz = _cylindrical_metric(R, dR, dZ, nfp)
-    dG = (jnp.einsum("qik,qj->qkij", ddR, dR) + jnp.einsum("qi,qjk->qkij", dR, ddR)
-          + jnp.einsum("qik,qj->qkij", ddZ, dZ) + jnp.einsum("qi,qjk->qkij", dZ, ddZ))
-    dG = dG.at[:, :, 2, 2].add(2.0 * a ** 2 * R[:, None] * dR)
-    J = a * R * cross_rz
-    dJ = a * (dR * cross_rz[:, None] + R[:, None] * (
-        ddR[:, 1] * dZ[:, 0:1] + dR[:, 1:2] * ddZ[:, 0] - ddR[:, 0] * dZ[:, 1:2] - dR[:, 0:1] * ddZ[:, 1]))
+    D, dD, _ = map_jacobian(seq, Phi, second=True)
+    G = jnp.einsum("qki,qkj->qij", D, D)
+    dG = jnp.einsum("qkmi,qmj->qkij", dD, D) + jnp.einsum("qmi,qkmj->qkij", D, dD)
+    J = jnp.linalg.det(D)
+    dJ = J[:, None] * jnp.einsum("qij,qkji->qk", jax.vmap(jnp.linalg.inv)(D), dD)
 
     b, db = _two_form_derivatives(seq, h, tables)
     Gb = jnp.einsum("qij,qj->qi", G, b)
@@ -321,10 +352,9 @@ def _residual_terms(seq, h, raw_R, raw_Z, nfp, tables):
     return (B, jnp.sum(b * dB, -1) / J, (dB[:, 1] * B_cov[:, 2] - dB[:, 2] * B_cov[:, 1]) / J, B_cov, J)
 
 
-def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, r_min):
+def quasisymmetry_residual(seq, h, Phi, r_min):
     """``(F, F_parallel)``: the volume average over ``r >= r_min`` of the squared two-term quasi-axisymmetry
-    residual of the vacuum field ``h`` on the map with coefficients ``raw_R``, ``raw_Z``
-    (:func:`cylindrical_geometry`),
+    residual of the vacuum field ``h`` on the frame map ``Phi`` (:func:`frame_geometry`),
 
         f = (G B . grad|B| - iota (B x grad Psi) . grad|B| / (2 pi)) / |B|^3.
 
@@ -332,7 +362,8 @@ def quasisymmetry_residual(seq, h, raw_R, raw_Z, nfp, r_min):
     ratio (averages over the logical surfaces), and ``G`` the mean of the covariant ``B_zeta`` over the quadrature points times
     ``nfp / 2 pi``. The residual is exact where the logical surfaces are flux surfaces. ``F_parallel`` is the
     same average of the first term alone."""
-    B, parallel, cross, B_cov, J = _residual_terms(seq, h, raw_R, raw_Z, nfp, _tables(seq))
+    nfp = Phi.nfp
+    B, parallel, cross, B_cov, J = _residual_terms(seq, h, Phi, _tables(seq))
     A, C = _radial_moments(seq, h)
     D = basis_table(seq.basis_0.dLambda[0], seq.quad.x_x)
     radial = seq.quad.shape[1] * seq.quad.shape[2]
