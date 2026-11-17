@@ -18,6 +18,7 @@ choice left.
 """
 from __future__ import annotations
 
+import warnings
 from math import gcd
 
 import jax
@@ -77,7 +78,9 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
     there, the signed resonant normal field ``dBr = |dB^r| / |B^zeta|`` at ``r`` and the resulting island width
     estimate ``w = sqrt(8 |dBr| nfp / (pi m diota))``. ``iotas`` restricts the seeds to the chains nearest those
     rotational transforms. ``amplitudes`` (one per entry of ``iotas``) rescales each chain's energy-optimal seed
-    so that its ``dBr`` takes the given value. The function runs eagerly and cannot be traced by ``jax.jit``.
+    so that its ``dBr`` takes the given value. If no chain with ``m <= n_theta / 2`` lies in the field's iota range,
+    the field is returned unseeded with a warning and ``rows`` is empty. The function runs eagerly and cannot be
+    traced by ``jax.jit``.
     """
     nfp = int(seq.nfp)
     ns = seq.ns
@@ -104,6 +107,10 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
             funcs = [i for i in range(2, rb.n - 1) if support[i][1] > r0 - 1.0 / m and support[i][0] < r0 + 1.0 / m]
             if funcs:
                 chains.append((m, n, r0, abs(float(iota_s.derivative()(r0))), funcs))
+    if not chains:
+        warnings.warn(f"no island chain with m <= {ns[1] // 2} lies in the field's iota range "
+                      f"[{float(iota_rr.min()):.4f}, {float(iota_rr.max()):.4f}] (nfp = {nfp}): nothing is seeded")
+        return B, []
     if iotas is not None:
         # the chain nearest each requested transform. A chain may be picked only once
         picked = []
