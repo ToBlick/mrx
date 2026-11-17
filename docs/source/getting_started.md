@@ -45,7 +45,9 @@ example a VMEC wout or a GVEC state, as `test/synthetic_gvec.py` and
 `data/wout_li383_low_res_reference.nc`, `data/wout_li383_1.4m.nc`,
 `data/wout_LandremanPaul2021_QA_lowres.nc`, the same QA device as a DESC output
 `data/desc_LandremanPaul2021_QA.h5`, and the li383 DESC file
-`data/desc_li383_low_res_reference.h5`.
+`data/desc_li383_low_res_reference.h5`. Other input files go into
+`$MRX_DATA/data`, outside the repository: a file that is not at the path
+given is looked up there by its name ([Running on a cluster](cluster.md)).
 
 ## Next steps
 

@@ -32,7 +32,8 @@ half-period quadrature and the parity views end to end.
 
 The suite is XLA-compile-bound: a test costs the distinct solves it
 compiles, not the mesh. Compiled programs are cached on disk
-(`MRX_XLA_CACHE`, default `outputs/xla_cache`).
+(`MRX_XLA_CACHE`, default `$MRX_DATA/cache/xla`, or `outputs/xla_cache` in
+the checkout without `MRX_DATA`).
 
 ## What a test asserts
 

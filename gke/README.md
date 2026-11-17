@@ -70,7 +70,7 @@ make deploy
 | `make sharded` | Run the benchmark with your last build (`SHARDED_ARGS`) |
 | `make status` | Show everyone's jobs and pods, and the nodes, across all live clusters |
 | `make logs` | Show recent logs from your latest job (`FOLLOW=1 make logs` to stream) |
-| `make pull` | Sync `gs://<bucket>/outputs/` to `./outputs/` |
+| `make pull` | Sync `gs://<bucket>/outputs/` to the runs root, `$MRX_DATA/runs/mrx` or `./outputs/` without `MRX_DATA` |
 | `make stop` | Delete your jobs across all live clusters (idle TPU nodes scale to zero about a minute later) |
 | `make destroy` | Admin: tear down the GKE clusters ($0 compute) while **keeping** the GCS bucket and outputs |
 | `make destroy-all` | Admin: delete **everything** (GKE clusters, GCS bucket, Artifact Registry) |
@@ -84,7 +84,7 @@ make deploy
 1. Builds your image from your checkout with Cloud Build (`mrx-tpu:<MRX_USER>`), so your local edits to `mrx/` are what runs.
 2. Submits a Kubernetes Job (`run.sh` fills in `job-tpu.yaml`) to every TPU pool that can run it (see "Where to start"); the first to get a node runs it, and the others are deleted.
 3. Waits for a TPU node: one takes about 3 minutes to start, longer when a zone has no capacity. The job mounts the bucket for the shared XLA compile cache and the outputs.
-4. Streams the logs, waits for the end, copies the outputs to `./outputs/<job>/`, and exits 0 on success or 1 on failure. The node scales back to zero about a minute later.
+4. Streams the logs, waits for the end, copies the outputs to `<job>/` in the runs root (`$MRX_DATA/runs/mrx`, or `./outputs/` without `MRX_DATA`), and exits 0 on success or 1 on failure. The node scales back to zero about a minute later.
 
 Other cases:
 
@@ -114,7 +114,7 @@ RUNS="--descent.method newton; --descent.method gradient --budget.steps 400" mak
 ### Notes
 
 * **Preemptions:** TPU nodes are Spot. A preempted `relax.py` run resumes from its newest checkpoint that opens, for the steps left of its `--budget.steps`; its record so far is kept as `relax.until-<step>.json`, since `relax.py` rewrites `relax.json` from the restart (unless the preemption cut that file short). A resumed run follows the uninterrupted one closely, not bit for bit. A run with `--seed` starts over instead, because `relax.py` would seed the restart state a second time. A `make deploy-sharded` run starts over.
-* **Waiting for a node:** `make deploy` streams the logs if the node starts within 10 minutes; otherwise it waits for the job without logs (`make logs` shows them). A job that stays `Pending` in `make status` waits for Spot capacity at no cost. With `FOLLOW=0` and several pools, a watcher on your machine deletes the other jobs once one gets a node (log: `outputs/<job>-race.log`); if the machine sleeps first, `make stop` deletes the jobs left over.
+* **Waiting for a node:** `make deploy` streams the logs if the node starts within 10 minutes; otherwise it waits for the job without logs (`make logs` shows them). A job that stays `Pending` in `make status` waits for Spot capacity at no cost. With `FOLLOW=0` and several pools, a watcher on your machine deletes the other jobs once one gets a node (log: `<job>-race.log` in the runs root); if the machine sleeps first, `make stop` deletes the jobs left over.
 * **Deadline:** a job stops after 8 hours, restarts included; set `TIMEOUT_MIN` (minutes) for longer runs.
 * **Output directories:** a job writes to `outputs/<JOB_NAME>/`, or `outputs/<JOB_NAME>-<family>-<region>/` when it waited in several pools. Reusing a `JOB_NAME` (or `OUTSUB`) resumes the runs already in that directory and skips those that finished, as after a preemption; a job still running under that name is deleted first.
 * **Timing:** the first run in a project is the slowest (image build, node start, compilation). Later runs reuse the compile cache in the bucket.
