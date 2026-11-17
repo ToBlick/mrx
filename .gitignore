@@ -2,7 +2,10 @@
 .DS_Store
 .vscode
 .idea
-.claude
+
+# Claude Code: CLAUDE.md and .claude/skills/ are shared, the rest is per machine
+.claude/*
+!.claude/skills/
 
 # Python
 __pycache__/
