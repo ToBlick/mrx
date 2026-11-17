@@ -40,10 +40,12 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 
+import mrx.double_single as ds
 from mrx.differential_forms import det33
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
+from mrx.precision import PAIRS, to_working
 from mrx.quadrature import composite_quad
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 from mrx.spline_bases import SplineBasis
@@ -300,8 +302,11 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        dofs = free.conforming(jnp.asarray(C.reshape(-1)), 0)
-        return (E.T @ dofs).reshape(seq.basis_0.shape[0])
+        # in the accurate precision, whose sparse applies gather by rows, and rounded once, so that every build has
+        # the same map bit for bit. A float32 scatter adds in an order the device chooses, and near the axis the
+        # metric turns a few units in the last place of R into 1e-3 of the inverse metric.
+        C = ds.from_host(C.reshape(-1)) if PAIRS else jnp.asarray(C.reshape(-1))
+        return to_working(E.T @ free.conforming(C, 0)).reshape(seq.basis_0.shape[0])
 
     raw_X1, raw_X2 = raw(st["X1"]), raw(st["X2"])
     if stellarator_symmetric:

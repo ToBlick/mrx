@@ -47,6 +47,28 @@ round-off. The geometry and the basis tables are float32 data.
 - The fields of a relaxation are float32. `div B` stays at `1e-6` and the
   energy change of one step is at the rounding of the stored field.
 
+## The map and checkpoints
+
+The spline coefficients of the map are the projection of the file's
+series, computed in the accurate precision and rounded once. Every build of
+a sequence therefore has the same map bit for bit, on the CPU and on a GPU.
+A float32 projection would add its terms in the order of a scatter, which a
+GPU chooses anew each time. Near the axis the map is `R0` plus a part of the
+size of the ring's radius, so the metric turns a few units in the last place
+of `R` into `1e-3` of the inverse metric. A float32 restart of li383
+(48,64,24) at a residual of `1.2e-10` then started at `1.3e-7`
+(2026-11-17).
+
+The float32 geometry evaluated from the same map still differs between a
+CPU and a GPU by up to `1e-3` of the inverse metric near the axis, for the
+same reason. A float32 run continues where it stopped when it is restarted
+on the kind of device it ran on.
+
+A checkpoint records the precision it was written in, and a run of either
+precision reads a checkpoint of either. The knots are compared to the
+spacing of float32. A float64 state read in float32 is rounded once, and
+its residual is that of the float32 geometry, not of the float64 run.
+
 ## One stopping criterion
 
 `mrx.solvers.refine` is the outer loop of a solve in both precisions: the
