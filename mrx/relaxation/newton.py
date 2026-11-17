@@ -13,7 +13,7 @@ At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
 * :func:`newton_direction` computes one Gauss-Newton step. It writes ``u = curl a``, so that ``u`` is exactly
   divergence-free, and solves ``curl^T H curl a = curl^T M_2 F`` with the Gauss-Newton part of ``H`` for the
   potential ``a`` by Newton-MR, a MINRES solve that keeps and reorthogonalises its Lanczos vectors. The
-  preconditioner is :func:`harmonic_preconditioner`. The two mass solves of every Hessian apply run to a
+  preconditioner is :func:`spline_preconditioner`. The two mass solves of every Hessian apply run to a
   tolerance inside the operator, which MINRES tolerates once they are accurate enough.
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
@@ -57,7 +57,7 @@ def _ddx(f, x, axis, periodic):
     return jnp.moveaxis(df / dx.reshape((-1,) + (1,) * (f.ndim - 1)), 0, axis)
 
 
-def harmonic_atom_profiles(seq, field):
+def atom_profiles(seq, field):
     """Radial profiles of a 2-form ``field``, on the radial quadrature points, used to build the preconditioner.
 
     Returns ``(prof_t, prof_z, strain)``. ``prof_t`` and ``prof_z`` are the averages over ``theta`` and ``zeta``
@@ -78,48 +78,93 @@ def harmonic_atom_profiles(seq, field):
 def parallel_penalty_profile(profiles, kappa):
     """The radial weight ``w(r)`` of the parallel-flow penalty: ``kappa`` times the field's strain along the field.
 
-    With ``(h_t, h_z, s)`` the output of :func:`harmonic_atom_profiles`, the strain along the field is
+    With ``(h_t, h_z, s)`` the output of :func:`atom_profiles`, the strain along the field is
     ``(h_t^2 s_t + h_z^2 s_z) / (h_t^2 + h_z^2)``.
     """
     prof_t, prof_z, strain = profiles
     return kappa * (prof_t ** 2 * strain[:, 1] + prof_z ** 2 * strain[:, 2]) / (prof_t ** 2 + prof_z ** 2)
 
 
-def harmonic_preconditioner(seq, profiles, penalty):
-    """The preconditioner of the Newton system, a :class:`HarmonicAtom`: an SPD approximate inverse of
-    ``curl^T H curl``.
+def _cardinal(q, x):
+    """The cardinal B-spline of degree ``q``, with the knots ``0, 1, ..., q + 1``, at ``x``."""
+    if q == 0:
+        return ((x >= 0) & (x < 1)).astype(float)
+    return (x * _cardinal(q - 1, x) + (q + 1 - x) * _cardinal(q - 1, x - 1)) / q
 
-    It is the preconditioner of the 1-form Laplacian, scaled on both sides by ``lambda^{-1/2}``. For each Fourier
-    mode ``(m, n)`` in ``(theta, zeta)`` and each radius, ``lambda = (2 pi)^2 (h_t m + h_z n)^2 + s_c + w``
-    approximates the Hessian: the first term is the squared derivative along the field (``h_t, h_z`` from
-    ``profiles``, see :func:`harmonic_atom_profiles`), ``s_c`` the strain along the component's direction and
-    ``w`` the parallel-flow ``penalty``. Build it once per Newton step, since it depends on ``B``.
+
+def _angular_symbols(n, q):
+    """The Fourier symbols ``(mass, derivative, stiffness)`` of the 1-D spline matrices ``int N_i N_k``,
+    ``int N_i' N_k`` and ``int N_i' N_k'`` of the periodic splines of degree ``q`` on ``n`` equal cells of
+    ``[0, 1)``, per mode ``m`` in the order of ``np.fft.fftfreq``. On uniform knots the matrices are circulant, so the
+    discrete Fourier transform diagonalises them exactly: each matrix maps the coefficients ``exp(2 pi i m j / n)``
+    to its symbol times them. They are NumPy arrays that depend on ``n`` and ``q`` alone."""
+    g, w = np.polynomial.legendre.leggauss(q + 1)
+    x = (np.arange(q + 1)[:, None] + 0.5 * (g[None, :] + 1.0)).ravel()      # Gauss points of the cells of one spline
+    wq = np.tile(0.5 * w, q + 1)
+    j = np.arange(-q, q + 1)                                                # the splines that overlap it
+    shifted = x[None, :] - j[:, None]
+
+    def derivative(y):
+        return _cardinal(q - 1, y) - _cardinal(q - 1, y - 1) if q else np.zeros_like(y)
+    N, dN = _cardinal(q, x), derivative(x)
+    phase = np.exp(2j * np.pi * np.fft.fftfreq(n)[:, None] * j[None, :])
+    return (phase @ (_cardinal(q, shifted) @ (wq * N)) / n, phase @ (_cardinal(q, shifted) @ (wq * dN)),
+            phase @ (derivative(shifted) @ (wq * dN)) * n)
+
+
+def spline_preconditioner(seq, profiles, penalty):
+    """The preconditioner of the Newton system built from spline operators, a :class:`SplineAtom`: an SPD approximate
+    inverse of ``curl^T H curl``.
+
+    It is the preconditioner of the 1-form Laplacian, scaled on both sides by ``lambda^{-1/2}``, where ``lambda`` is
+    a model of the Hessian discretised on the splines: on each component of the raw 1-forms the form
+    ``int (h_t d_theta u + h_z d_zeta u)^2 + (s_c + w) u^2``, the squared derivative along the field (``h_t``, ``h_z``
+    from ``profiles``, see :func:`atom_profiles`), ``s_c`` the strain along the component's direction and
+    ``w`` the parallel-flow ``penalty``, assembled on the component's tensor-product splines, relative to its mass
+    matrix. The angular matrices are circulant, so the Fourier modes ``(m, n)`` of the coefficients diagonalise them,
+    and per mode the model is a pencil of two radial spline matrices, ``K u = lambda M u``. ``M`` is the radial mass
+    matrix and ``K`` the radial mass matrix weighted by the model's symbol at ``(m, n)``, a function of ``r``. The
+    scaling takes the pencil's diagonal: ``lambda = K_ii / M_ii`` for the radial spline ``i``, its Rayleigh quotient
+    on that spline. So the atom holds one number per degree of freedom of the raw 1-forms.
+
+    The angular symbols assume uniform periodic knots in ``theta`` and ``zeta``. On other angular knots the matrices
+    are not circulant and the atom is the one of the uniform knots with the same number of cells.
+
+    Build it once per Newton step.
     """
     prof_t, prof_z, strain = profiles
-    r_q = seq.quad.x_x
+    w_r = jnp.asarray(seq.quad.w_x)
     shapes = [tuple(int(v) for v in s) for s in seq.basis_1.shape]
+    lam, dlam = seq.basis_0.Lambda, seq.basis_0.dLambda
+    radial = (seq.d_basis_jk[0], seq.basis_jk[0], seq.basis_jk[0])
     scale = []
-    # the radial position of a DoF is the Greville point of its radial basis: the derivative splines for the
-    # r component, the splines for the other two
-    lam_r = seq.basis_0.Lambda[0]
-    radial = (seq.basis_0.dLambda[0].s, lam_r, lam_r)
-    for c, (s1, s2, s3) in enumerate(shapes):
-        r = radial[c].greville_points()
-        a, b = jnp.interp(r, r_q, prof_t), jnp.interp(r, r_q, prof_z)
-        floor = jnp.interp(r, r_q, strain[:, c] + penalty)[:, None, None]
-        m = np.fft.fftfreq(s2, d=1.0 / s2)
-        nn = np.fft.fftfreq(s3, d=1.0 / s3)
-        lam = (2 * np.pi) ** 2 * (a[:, None, None] * m[None, :, None] + b[:, None, None] * nn[None, None, :]) ** 2
-        scale.append(1.0 / jnp.sqrt(lam + floor))
-    return HarmonicAtom(scale=tuple(scale), shapes=tuple(shapes))
+    for c in range(3):
+        theta, zeta = (dlam if c == 1 else lam)[1], (dlam if c == 2 else lam)[2]
+        mu_t, d_t, s_t = _angular_symbols(int(theta.n), int(theta.p))
+        mu_z, d_z, s_z = _angular_symbols(int(zeta.n), int(zeta.p))
+        a1 = (s_t.real / mu_t.real)[None, :, None]
+        a2 = (s_z.real / mu_z.real)[None, None, :]
+        a3 = (2 * (d_t[:, None] * np.conj(d_z[None, :])).real / (mu_t.real[:, None] * mu_z.real[None, :]))[None]
+        # each row averages a radial weight over one radial spline: K_ii / M_ii of the weighted mass matrix K
+        average = radial[c] ** 2 * w_r
+        average = average / average.sum(axis=1, keepdims=True)
+
+        def diagonal(weight):
+            return (average @ weight)[:, None, None]
+        # a1 a2 >= (a3 / 2)^2 on each mode and (average h_t h_z)^2 <= (average h_t^2) (average h_z^2), both by the
+        # Cauchy-Schwarz inequality, so the model is at least the averaged strain and penalty
+        model = (a1 * diagonal(prof_t ** 2) + a2 * diagonal(prof_z ** 2) + a3 * diagonal(prof_t * prof_z)
+                 + diagonal(strain[:, c] + penalty))
+        scale.append(1.0 / jnp.sqrt(model))
+    return SplineAtom(scale=tuple(scale), shapes=tuple(shapes))
 
 
-class HarmonicAtom(eqx.Module):
-    """The Newton preconditioner of :func:`harmonic_preconditioner`, applied to a dual 1-form ``x`` as
+class SplineAtom(eqx.Module):
+    """The Newton preconditioner of :func:`spline_preconditioner`, applied to a dual 1-form ``x`` as
     ``atom(seq, x)``.
 
-    It is a pytree that holds only the per-mode scales, so a new field does not trigger a recompile. The
-    sequence is passed at each call.
+    It is a pytree that holds only the scales per radial spline and Fourier mode, so a new field does not trigger a
+    recompile. The sequence is passed at each call.
     """
 
     scale: tuple
@@ -206,10 +251,10 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     even = seq.even                           # a and u = curl a live in the even parity view
     # Both parity views are taken from a full sequence. From a view the other one is reached through its static
     # base, and its geometry would be compiled in as a constant that a later set_geometry_from_map does not reach.
-    profiles = harmonic_atom_profiles(seq, B)
+    profiles = atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
     curl, curl_t, A = _newton_system(seq, B, penalty, mass_tol)
-    atom = harmonic_preconditioner(seq, profiles, penalty)
+    atom = spline_preconditioner(seq, profiles, penalty)
 
     def P(x):
         return atom(even, x)
