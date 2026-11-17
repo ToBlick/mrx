@@ -1,6 +1,6 @@
 ---
 name: general
-description: Working knowledge for the MRX code base (matrix-free FEEC/B-spline 3D MHD equilibrium solver in JAX, no nested-surface assumption). Use this skill for ANY task in the mrx repository or its worktrees - reading or changing mrx/ (derham_sequence, geometry, operators, mass, metric_lumping, slab_mass, multigrid, solvers, precision, double_single, nullspace, symmetry, paths, equilibria readers, relaxation loop/physics/newton/seeding, diagnostics poincare, optimization shape_ad), running scripts/relax.py, the tutorials, poincare_trace/poincare_plot, slurm jobs or the test suite, writing docs, docstrings or commits, and interpreting relax.json, checkpoints, iteration counts, residual floors, island widths or Poincare sections - even if the user does not say "MRX". Consult it before editing code, launching a GPU job or adding a test. Use it together with the user-level skill `working-with-tobias`.
+description: Working knowledge for the MRX code base (matrix-free FEEC/B-spline 3D MHD equilibrium solver in JAX, no nested-surface assumption). Use this skill for ANY task in the mrx repository or its worktrees - reading or changing mrx/ (derham_sequence, geometry, operators, mass, metric_lumping, slab_mass, multigrid, solvers, precision, double_single, nullspace, symmetry, paths, equilibria readers, relaxation loop/physics/newton/seeding, diagnostics poincare, optimization shape_ad), running scripts/relax.py, the tutorials, poincare_trace/poincare_plot, slurm jobs or the test suite, writing docs, docstrings or tests, and interpreting relax.json, checkpoints, iteration counts, residual floors, island widths or Poincare sections - even if the user does not say "MRX". Consult it before editing code, launching a GPU job or adding a test.
 ---
 
 # MRX: working in the code base
@@ -11,10 +11,10 @@ de Rham complex `V0 -grad-> V1 -curl-> V2 -div-> V3` with tensor-product B-splin
 cube `(r, theta, zeta)`, mapped by a polar spline map `Phi`. Everything is matrix-free, JAX/equinox,
 and differentiable. Preprint arXiv:2510.26986.
 
-This skill is orientation plus the MRX-specific rules. The rules that hold in every project (git, compute
-budget, code, tests, docs, drafts) are in the user-level skill `working-with-tobias`. It is not the source of
+This skill is orientation plus the project's rules, for any contributor, human or agent. The rules
+(solver strategy, code, tests, docs, outputs) are in `references/rules.md`. The skill is not the source of
 truth. The source of truth is the Sphinx tree **`docs/source/`** (guides, `concepts/`, `api/`) and,
-for the measurements behind design decisions, `docs/research/` (terse, for agents). Read the
+for the measurements behind design decisions, `docs/research/` (terse, dated). Read the
 relevant page before changing code it describes. If the skill and the docs or code disagree, the
 code and docs win: say so.
 
@@ -24,7 +24,7 @@ code and docs win: say so.
 |---|---|
 | `references/code-map.md` | changing or reading library code: spaces, operators, build order, data model, parity views, solvers, precision, jit rules |
 | `references/running.md` | running anything: slurm, sizing, worktrees, the test suite, relax.py flags and output, Poincare, healthy-run checks, data files |
-| `references/rules.md` | before writing code, docs, tests or commits here: the MRX instances of the general rules |
+| `references/rules.md` | before writing code, tests or docs: solver strategy, code hygiene, tests, docs, outputs |
 | `references/pitfalls.md` | a result looks off, or before interpreting numbers (sharp bits and measured lessons) |
 | `references/history.md` | before proposing a method or option: what was settled, what was removed and why |
 
@@ -34,11 +34,11 @@ names differ per cluster.
 
 ## The ten things most often gotten wrong
 
-1. **No runs on the login node.** Anything that imports `mrx` and builds a sequence, solves or
-   traces is a GPU job through `slurm/run.sh`. Only matplotlib re-renders from archives (e.g.
+1. **No runs on a login node.** On a cluster, anything that imports `mrx` and builds a sequence,
+   solves or traces is a GPU job through `slurm/run.sh`. Only matplotlib re-renders from archives (e.g.
    `scripts/poincare_plot.py`) and pure-numpy checks run inline.
-2. **Size GPU jobs** `CPUS=4 MEM_GB=16` (48 GB at 32^3 and up), `TIMEOUT_MIN` at least twice the
-   estimate. Budget rules are in `working-with-tobias`.
+2. **Size GPU jobs** `CPUS=4 MEM_GB=16` on small meshes, the `run.sh` default memory on larger ones,
+   `TIMEOUT_MIN` at least twice the estimate (`references/running.md`).
 3. **Worktree jobs must import the worktree.** `python scripts/x.py` resolves `mrx` to the main
    checkout's editable install unless `PYTHONPATH=$WT`. `slurm/run.sh` sets it from `MRX_ROOT`.
    Check the log's first line `mrx from: <path>` before reading a result.
@@ -61,14 +61,15 @@ names differ per cluster.
    per-apply and by energy.
 10. **Production stays clean.** No aliases or back-compat shims, no defensive `abs()`/clamps/
     fallbacks over guaranteed quantities, no inner Krylov under MINRES/CG, no hidden metric factors
-    (`references/rules.md`), no expensive or parametrised test without asking. Study and paper code
-    goes to branch `paper`, not `scripts/`.
+    (`references/rules.md`), no expensive or parametrised test without the maintainers' agreement.
+    Study and paper code goes to branch `paper`, not `scripts/`.
 
 ## Git and GitHub in one paragraph
 
-`main` is the public release and write-protected: never push, force-push or tag it. Work on a
-local branch (or a worktree under `.claude/worktrees/`). CI runs only here. Commit, push and draft
-rules are in `working-with-tobias`. Drafts go to files under the data root, never into the checkout.
+`main` is the public release and protected on GitHub: changes reach it only through pull requests. Work on a
+branch (or a worktree under `.claude/worktrees/`). CI (`.github/workflows/ci.yml`) runs on every pull request
+to `main`: ruff, the test suite in both precisions on a CPU, a `--help` start of every script, and the Sphinx
+build with warnings as errors.
 
 ## Where things live
 
@@ -79,20 +80,19 @@ rules are in `working-with-tobias`. Drafts go to files under the data root, neve
   Cloud TPU jobs: `gke/`, `terraform/`, `Makefile`.
 - Data: the tracked files in `data/`, every other input in `$MRX_DATA/data`. `mrx.paths.data_file` finds a
   file there by name when it is not at the given path, so a worktree needs no symlink.
-- Runs: `$MRX_DATA/runs/mrx/<line>/` (`mrx.paths.runs_root()`), the default of `run.sh`, `relax.py` and the
-  tutorials. A checkout's `outputs/` is only the fallback without `MRX_DATA`. Write from any worktree
-  straight there and quote those paths.
-- Papers and their drafts live outside the repository, paper tooling on branch `paper`.
+- Runs: the runs root `$MRX_DATA/runs/mrx` (`mrx.paths.runs_root()`) is the default of `run.sh`, `relax.py`
+  and the tutorials. Each line of work (a study, a branch) gets its own `<line>/` below it. A checkout's
+  `outputs/` is only the fallback without `MRX_DATA`. Write from any worktree straight there.
+- Papers are not in the repository. Paper tooling is on branch `paper`.
 
 ## How to approach a task
 
 Anchor the change to the nearest controlling code and doc page, make the smallest grounded change,
-validate with the cheapest focused check (one test file, one short GPU job), then report what was
-validated, the measured numbers, and the remaining numerical risk. Update the docs page in the same
-change when behaviour changes.
+validate with the cheapest focused check (one test file, one short GPU job). Update the docs page in
+the same change when behaviour changes.
 
 ## Keeping this skill current
 
-This skill lives in this repo, `.claude/skills/general`. When a session learns
-a lasting rule or a default changes, edit the skill on the working branch and commit. Rules that hold in every
-project go into `working-with-tobias` instead. Per-machine working notes belong in the auto-memory.
+This skill lives in this repo, `.claude/skills/general`. When a contribution changes a default or settles
+a lasting rule of MRX, edit the skill in the same branch. Notes about one machine, one cluster or one
+person's way of working do not belong here.

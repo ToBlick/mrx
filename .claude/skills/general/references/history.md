@@ -2,7 +2,8 @@
 
 What was decided and why, so it is not proposed again. Details and numbers are in `docs/research/`
 (`preconditioners.md`, `solvers_precision.md`, `relaxation.md`, `performance.md`, `geometry_vacuum.md`,
-`poincare_islands.md`), each with a "decided against / removed" section. Reopen a decision only when asked.
+`poincare_islands.md`), each with a "decided against / removed" section. Reopen a decision only with new measurements, and with
+the maintainers.
 
 ## Solvers and preconditioners
 
@@ -58,5 +59,5 @@ What was decided and why, so it is not proposed again. Details and numbers are i
 
 ## Project landscape
 
-- `main` = the public release, write-protected. Work goes on branches.
+- `main` = the public release, protected on GitHub. Work goes on branches and reaches `main` by pull request.
 - Branch `paper`: paper tooling and paper-only options.

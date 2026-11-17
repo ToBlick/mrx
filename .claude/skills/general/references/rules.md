@@ -1,12 +1,8 @@
-# MRX-specific rules
+# MRX rules
 
-The matrix-free and solver rules below bind every contribution. The general working rules (git, compute
-budget, code hygiene, tests, performance, docs, drafts) are in the user-level skill `working-with-tobias`,
-the rest of this file holds their MRX instances.
+These rules bind every contribution to MRX, human or agent. Where a rule says to ask, ask the maintainers.
 
 ## Matrix-free and solver strategy
-
-Every contribution respects these.
 
 - **Matrix-free.** No assembled or dense shortcuts in production unless the task needs it. Dense
   references only on tiny sequences in tests. Preconditioner memory grows like the DoFs (the slab model
@@ -28,33 +24,55 @@ Every contribution respects these.
 
 ## Code
 
-- No defensive code over solver invariants: the MINRES `sqrt(abs(.))` hid an indefinite preconditioner for
-  months.
+- **No zombie code.** Removing a function, kind, flag or mode removes it fully in one change: accept-lists and
+  their dispatch, defaults naming it, environment variables, calling scripts. No aliases, no back-compat shims,
+  no "deprecated but accepted". Prefer a fresh name over recycling a retired one. If a number can never be
+  regenerated after a deletion, measure it and put it in `docs/research/` first.
+- **No defensive code.** No `abs()` inside `sqrt()`, no fallback on a denominator, no clamps over quantities the
+  algorithm guarantees. Let it NaN and state the invariant in a comment. A masked invariant turns a bug into
+  slow convergence that gets blamed on physics: the MINRES `sqrt(abs(.))` hid an indefinite preconditioner
+  for months.
 - **No map sign, no `frame='ref'` loads.** Maps are always positive-Jacobian, angles right-handed.
 - **jit/host rules** in `code-map.md`. Use JAX linear algebra for anything on device.
 - **Precision:** new solve code works in both precisions. Its accurate part (iterate, residual, the applies
   that form them) goes through `lift` and the `DS` operator applies, everything else stays `LOW_DTYPE`.
-- **Shipped surface:** library, tests, `scripts/relax.py`, `poincare_trace.py`, `poincare_plot.py`,
+- **Shipped surface is minimal:** library, tests, `scripts/relax.py`, `poincare_trace.py`, `poincare_plot.py`,
   `plot_mesh.py`, tutorials. Study, sweep and figure code lives next to its outputs under `$MRX_DATA/runs/mrx/`
-  or on branch `paper`. Code used only by paper scripts counts as dead on the dev branch.
+  or on branch `paper`, and is not polished or documented as if shipped. Code used only by paper scripts
+  counts as dead on `main`.
 - Validation that needs a GPU: package it as a job through `slurm/run.sh`, cheapest focused check first.
 
-## Tests
+## Tests (`docs/source/concepts/testing_strategy.md`)
 
-- Use the li383 fixtures of `test/conftest.py`. Exact identities at a multiple of `mrx.eps()`, solver
-  quantities at a multiple of `seq.tol`, measured bands stated next to the value. Run in both precisions.
+- A test states a mathematical or functional claim at a tolerance class: exact identities at a multiple of
+  `mrx.eps()`, solver quantities at a multiple of `seq.tol`, measured bands with the measured value stated next
+  to them. No "is finite" tests, no tests of bad arguments or array shapes.
+- Use the li383 fixtures of `test/conftest.py`. A new test gets the production configuration plus at most one
+  contrasting case. It must pass in both precisions.
+- The suite is lean and compile-bound: a test costs the distinct solves it compiles. No expensive or
+  parametrised test without the maintainers' agreement.
 
-## Docs
+## Docs and the measurement record
 
-- The tree is `docs/source/` (Sphinx). New concept pages go into `docs/source/concepts/`. `docs/research/` is
-  the measurement record, nothing that duplicates the docs.
+- One documentation tree, `docs/source/` (Sphinx). No parallel docs folder. New concept pages go into
+  `docs/source/concepts/`. Update the page in the same change when behaviour changes.
+- `docs/research/` is the measurement record, nothing that duplicates the docs. An entry is terse and dated:
+  setting, number, meaning. Timings come with their iteration counts and their conditions (case, mesh,
+  degree, precision, device). Failed attempts are recorded too, in each file's "decided against / removed"
+  section. No plans, handoffs or code walkthroughs.
+- Compare methods by total time, not by iteration count.
+
+## Outputs
+
+- Runs, figures, records and scratch files go under `$MRX_DATA/runs/mrx/<line>/`, never into the checkout or a
+  worktree. Figures use the house style (`mrx/diagnostics/plotstyle.py`, `mrx/diagnostics/mrx.mplstyle`).
+
+## Cluster use
+
+- On a cluster, nothing that imports `mrx` and builds a sequence, solves, traces or runs pytest runs on a login
+  node, not even with `JAX_PLATFORMS=cpu`. Submit a job through `slurm/run.sh`. Only matplotlib re-renders and
+  pure-numpy checks run inline (`running.md`).
 
 ## Git
 
-- `main` is write-protected (since v0.1.0, 2026-09-30).
-- Commit-message and PR drafts go to files under the data root, never into the checkout.
-
-## Figures, tables and the paper
-
-House style (`mrx/diagnostics/plotstyle.py`, `mrx.mplstyle`), look at the PNG before delivering, write it under `$MRX_DATA/runs/mrx/<line>/`, no paper text
-ahead of verified results.
+- `main` is protected on GitHub. Changes reach it through pull requests from a branch.

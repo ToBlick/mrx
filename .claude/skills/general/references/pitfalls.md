@@ -40,7 +40,7 @@ The first half is `docs/source/sharp_bits.md` in short. The second half is lesso
 - **Poincare.** Needs one-signed `B^zeta`. Axis-nearest iota is unreliable (axis off r = 0). `drift`
   is meaningful only on regular lines (on chaotic lines it measures the Lyapunov exponent).
 
-- Host dispatch: calling a filter_jit function of the sequence costs ~10 ms per call whatever it computes.
+- Host dispatch (`docs/research/performance.md` 3): calling a filter_jit function of the sequence costs ~10 ms per call whatever it computes.
   Loops of such calls on the host (probes, diagnostics) are slow for that reason, batch them inside one call.
 - At (12,16,16)-(16,32,32) GPU matvecs are kernel-count bound (~2 us per kernel), at 32^3 the mass apply is
   memory bound. Count kernels before optimising flops.
@@ -63,4 +63,4 @@ The first half is `docs/source/sharp_bits.md` in short. The second half is lesso
   run, otherwise tables show the floor-tol instead of the bottom. Judge h-refinement by the floor.
 - **Two pressures.** Strong `p` (Neumann Leray, multiplier of the descent, blind to the wall force) vs
   weak `p_w` (Dirichlet, zero on the wall). Profiles and `beta_vol` use `p_w`.
-- **Open questions** live in `docs/research/`. Check there before "discovering" a known effect.
+- **Known effects** are recorded in `docs/research/`. Check there before "discovering" one.

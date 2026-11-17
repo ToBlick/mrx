@@ -1,11 +1,11 @@
 # Running MRX
 
 Condensed from `docs/source/cluster.md`, `relaxation.md`, `tutorials.md`,
-`concepts/testing_strategy.md`, plus cluster lessons.
+`concepts/testing_strategy.md`, plus lessons from runs.
 
 ## Where things run
 
-- **Login node:** only matplotlib/numpy (re-render a `trace.npz` with `scripts/poincare_plot.py`,
+- **Login node of a cluster:** only matplotlib/numpy (re-render a `trace.npz` with `scripts/poincare_plot.py`,
   figure scripts reading `relax.json`) and pure-numpy checks that import no `mrx` solver.
 - **Everything else:** a GPU job through `slurm/run.sh`.
 
@@ -22,24 +22,23 @@ bash slurm/waitjob.sh <JOBID> <log>        # blocks, prints head and tail
 `DEPENDENCY`, `MRX_ROOT`, `MRX_VENV`. Log: `$MRX_DATA/runs/mrx/$OUTSUB/<date>/<time>/$JOB_NAME.log`.
 Account, partition and `MRX_DATA` from `~/.config/mrx/site.env` (or `$MRX_SITE_ENV`).
 
-**Sizing.** Jobs use about one core: `CPUS=4 MEM_GB=16` up to ~(16,32,32), `MEM_GB=48` at 32^3 and up
-(the Newton scan compile OOMs at 16). `TIMEOUT_MIN` at least 2x the estimate (per-step cost varies 2x
-between files), partition maximum for multi-hour runs. A kill loses the run, a long limit costs nothing.
+**Sizing.** Jobs use about one core: `CPUS=4 MEM_GB=16` up to ~(16,32,32), the default `MEM_GB` on larger
+meshes. `TIMEOUT_MIN` at least 2x the estimate (per-step cost varies 2x between files), partition maximum for
+multi-hour runs. A kill loses the run, a long limit costs nothing.
 
-**Budget** rules are in `working-with-tobias`. Cancel floored runs with > 1 h left, never continue a
-floored run.
+A floored run is not continued (`history.md`). Cancel it rather than let it run out its time.
 
 ## Worktrees
 
-- `EnterWorktree` branches from the default branch: check `git log -1` and reset to the intended base.
+- A new worktree may start from the default branch rather than the one you meant (Claude Code's
+  `EnterWorktree` does): check `git log -1` and reset to the intended base.
 - A new worktree needs no setup: site settings are in `~/.config/mrx/site.env`, and input files not in
   `data/` are found in `$MRX_DATA/data` by name (`mrx.paths.data_file`).
 - `run.sh` sets `PYTHONPATH=$MRX_ROOT` (the worktree containing it). Any other launch needs
   `PYTHONPATH=$WT` by hand: `python scripts/x.py` otherwise imports the **main checkout's** mrx through
   the editable install, and the run looks like a test of the branch while testing main. `python -m pytest`
   from the worktree directory is safe. Read `mrx from: <path>` in the log first.
-- Write every plot or archive for review under `$MRX_DATA/runs/mrx/<line>/` (shared by all
-  worktrees) and quote that path.
+- Write every plot or archive under `$MRX_DATA/runs/mrx/<line>/`, shared by all worktrees.
 
 ## Tests (`concepts/testing_strategy.md`)
 
@@ -53,8 +52,8 @@ in `test/conftest.py`: li383 at (16,32,12) per period, p = 2, graded, in two rep
 `period`). The suite is compile-bound. XLA cache at `$MRX_DATA/cache/xla` (`MRX_XLA_CACHE` overrides,
 without `MRX_DATA` `outputs/xla_cache`).
 
-`bash slurm/suite.sh [float64|float32]` (both by default): a change to solvers, precision or atoms is
-verified in both. Report the pass count per precision. Bare `pytest` is float64.
+`bash slurm/suite.sh [float64|float32]` (both by default): a change to solvers, precision or atoms must
+pass in both. Bare `pytest` is float64, `MRX_DTYPE=float32 pytest` is float32. CI runs both on a CPU.
 
 ## relax.py (`docs/source/relaxation.md`)
 
@@ -90,7 +89,8 @@ constant up to grid-scale reconnection, positive solver counts. `resid = ||F||^2
 - A seeded island needs at least ~3 radial cells across its width (`docs/research/relaxation.md` 5).
 - Check the file's own initial force residual first, before blaming the relaxation.
 - No p = 5 relaxation, sweeps stop at p = 4.
-- W7-X: the FMM002 wout (untracked) at p = 2, higher resolution rather than higher degree.
+- W7-X: the FMM002 wout (not distributed with the repository) at p = 2, higher resolution rather than
+  higher degree.
 
 ## Tutorials (`docs/source/tutorials.md`)
 
@@ -103,8 +103,8 @@ laptop (< 1 h total): a few Newton steps, never a finer mesh to make a method lo
 
 Tracked: `wout_li383_low_res_reference.nc`, `wout_li383_1.4m.nc`, `wout_LandremanPaul2021_QA_lowres.nc`,
 `desc_li383_low_res_reference.h5`, `desc_LandremanPaul2021_QA.h5`, `gvec_gframe/` (a G-frame GVEC state for
-the reader tests). Larger inputs (W7-X FMM002 wout, GVEC states, high-resolution QA) are not tracked and
-live in `$MRX_DATA/data`.
+the reader tests). Larger inputs that appear in `docs/research/` (W7-X FMM002 wout, GVEC states,
+high-resolution QA) are not distributed with the repository. Put any input you have in `$MRX_DATA/data`.
 
 ## Poincare sections
 
@@ -117,17 +117,14 @@ python scripts/poincare_plot.py <run>          # matplotlib, login node OK -> <r
   `poincare_many` for several fields in one batch (eight cost about as much as one). Steps per period >= 24.
 - `trace.npz` lives next to the checkpoints it came from. Trace all states of one run in ONE call so they
   share one iota and one pressure scale. Never retrace for a cosmetic change: rerun only the plotter.
-- Always five planes over half a field period unless one plane is asked for. Sections are the map's
-  `zeta = const` planes by default, `--sections phi` cuts at the physical toroidal angle.
+- Five planes over the distinct part of the period (half a field period with stellarator symmetry) by
+  default, `--planes` to choose others. Sections are the map's `zeta = const` planes by default,
+  `--sections phi` cuts at the physical toroidal angle.
 - `locked_width(res, iota)` reads a quick island width, resolved only to the spacing of the lines. Trace
-  more `--lines` before reading small widths. There is no residue diagnostic on this branch.
+  more `--lines` before reading small widths. The library has no residue diagnostic.
 
-## Profiling (XProf)
+## Profiling (`docs/research/performance.md` 3)
 
-- Viewer venv: a separate one with `pip install xprof`, not `.venv`. Capture inside
-  the job with `jax.profiler.trace(dir)`, warm up first. View: `xprof --logdir <dir> --port 6006` + ssh tunnel,
-  or offline: `xprof.convert.raw_to_tool_data.xspace_to_tool_data([xplane], "kernel_stats^" | "trace_viewer^", {})`.
-- Big traces overflow the CUPTI buffer (dropped events): trace 1-2 steps. A Python tracer on a 20 s host
-  phase OOM-killed a 16 GB job. `advanced_configuration={"gpu_max_activity_api_events": ...}` hung the trace.
-- Measure device time per apply with a compiled `fori_loop` of 10 vs 30 applies: one dispatch of a filter_jit
-  function of the sequence costs ~10 ms of host time.
+- Capture inside the job with `jax.profiler.trace(dir)` after a warm-up, view it with XProf.
+- One dispatch of a filter_jit function of the sequence costs about 10 ms of host time. Measure device time
+  per apply with a compiled `fori_loop` of 10 against 30 applies, not with one call.
