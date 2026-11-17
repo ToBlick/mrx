@@ -182,6 +182,22 @@ the shifted atom / J in the 1-D masses / M in the 1-D masses:
 - The old floor kappa = 3 of the harmonic atom (12.1-15.4) sat 25-1000x above the lumped strain (0.01-0.5). It was a
   regulariser and was replaced by the penalty in units of the strain (relaxation.md 3).
 - The harmonic atom mis-models the field-aligned near-null modes u = f B by about 1e3.
+- Spline atom (the same model on the splines: the spline symbols of the angular derivatives, per Fourier mode the
+  diagonal of the radial pencil) in place of the harmonic atom (the Fourier symbol at the Greville points), relax.py,
+  30 Newton steps, graded, float64, both atoms in one job on one H200, 2026-11-17, steps 11-30: li383 M (48,64,24)
+  1.03 -> 0.79 s/step, W7-X FMM002 M (32,64,36) 0.95 -> 0.72 s/step, MINRES 90 -> 70 and 88 -> 67 iterations. The
+  descent compiles in the same time (84 -> 82 s, 71 -> 73 s), so all 30 steps take 93.9 -> 82.7 s and 74.3 -> 66.3 s.
+  Energy removed after 30 steps equal to 1e-4, residual 1.7e-9 -> 2.0e-9 and 5.1e-10 -> 5.1e-10.
+- 200 Newton steps, same settings, floor-tol 1e-16, 2026-11-17, harmonic -> spline: li383 M energy removed
+  +1.7e-4 relative, 123 -> 108 steps to a residual of 1e-10, 20374 -> 15511 MINRES iterations, 1.13 -> 0.85 s/step.
+  W7-X M -8e-6, 82 -> 79 steps, 15546 -> 12051 iterations, 0.83 -> 0.65 s/step. HSX (32,64,36) +6e-6, 34 -> 40
+  steps, 15028 -> 13302 iterations, 0.98 -> 0.89 s/step. The two atoms ran in different jobs here.
+- It stores one number per coefficient of the raw 1-forms, as the harmonic atom: 1.8 MB on li383 M and W7-X M.
+  Build 9 ms per Newton step, application 0.3 ms, both the harmonic atom's.
+- The full radial pencil per Fourier mode (a dense n_r x n_r inverse square root from its eigendecomposition, O(n^4)
+  memory) gains nothing over its diagonal: MINRES within 1 %, 2-4 % slower per step, 10-12 s more compilation
+  (2026-11-16). Nor does the dense factor cut to a band of 1, 2 or 4, the row-sum lumping or the model at the
+  Greville points (all within 1 % of the diagonal's count).
 
 ## 10. Decided against / removed
 

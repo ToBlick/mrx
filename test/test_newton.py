@@ -13,6 +13,11 @@ product loads. By polarisation the bilinear form is checked too, ``(u, H v) = (q
 with ``q(w)`` the ``E''(0)`` of the flow along ``w``. Without the terms in ``J`` the second variation is its
 Gauss-Newton part, the first term ``||A_u B||^2_M`` of ``E''(0)``.
 
+MINRES needs a symmetric positive definite preconditioner. The spline atom is ``P = C P_1 C`` with ``P_1`` the
+preconditioner of the 1-form Laplacian and ``C`` real and diagonal on the Fourier modes of the raw 1-forms, so
+``(x, P x) > 0`` and ``(x, P y) = (y, P x)`` for dual 1-forms ``x``, ``y``. The preconditioners are stored and applied
+in float32 (:data:`mrx.precision.PRECOND_DTYPE`), so the symmetry holds to the round-off of float32.
+
 A short run with the production stepper takes positive steps, lowers the energy at every step, lowers the force,
 keeps ``div B`` at round-off and the helicity up to grid-scale effects, records the best state, and writes a
 checkpoint that reads back. A few steps of the gradient descent take positive steps and lower the energy too.
@@ -22,10 +27,11 @@ import os
 import jax
 import numpy as np
 
-from mrx.precision import eps
+from mrx.precision import PRECOND_DTYPE, eps
 from mrx.relaxation.loop import (TimeStepper, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
-from mrx.relaxation.newton import second_variation
+from mrx.relaxation.newton import (NEWTON_PENALTY, atom_profiles, parallel_penalty_profile, second_variation,
+                                   spline_preconditioner)
 from mrx.relaxation.physics import compute_force
 
 STEPS, CHUNK = 10, 5
@@ -91,6 +97,24 @@ def test_gauss_newton_part_is_the_first_term(seq, b0):
     uHu = float(u @ H(u))
     print(f"\n  ||A_u B||^2 {first:.6e} vs (u, H u) without J {uHu:.6e}")
     assert abs(first - uHu) < 1e3 * max(seq.tol, eps()) * first
+
+
+def test_spline_atom_is_symmetric_positive_definite(seq, b0):
+    """``(x, P x) > 0`` and ``(x, P y) = (y, P x)`` for the Newton preconditioner ``P`` at the equilibrium's field and
+    random dual 1-forms ``x``, ``y``. The defect ``|(x, P y) - (y, P x)|`` over ``sqrt((x, P x) (y, P y))`` is the
+    round-off of the float32 application: 2.4e-9 with ``MRX_DTYPE=float64`` and 3.6e-8 with float32 (2026-11-17),
+    against the bound of 100 float32 epsilons, 1.2e-5. The Laplacian atom's own arrays applied in float64 are
+    symmetric to 1e-17."""
+    even = seq.even
+    profiles = atom_profiles(seq, b0)
+    atom = spline_preconditioner(seq, profiles, parallel_penalty_profile(profiles, NEWTON_PENALTY))
+    k1, k2 = jax.random.split(jax.random.PRNGKey(3))
+    x, y = jax.random.normal(k1, (even.n(1),)), jax.random.normal(k2, (even.n(1),))
+    Px, Py = atom(even, x), atom(even, y)
+    xPx, yPy, xPy, yPx = float(x @ Px), float(y @ Py), float(x @ Py), float(y @ Px)
+    print(f"\n  (x, P x) {xPx:.6e}, (y, P y) {yPy:.6e}, (x, P y) - (y, P x) {xPy - yPx:+.3e}")
+    assert xPx > 0.0 and yPy > 0.0
+    assert abs(xPy - yPx) < 1e2 * float(np.finfo(PRECOND_DTYPE).eps) * np.sqrt(xPx * yPy)
 
 
 def test_newton_relaxation_descends(seq, b0, tmp_path):

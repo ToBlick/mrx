@@ -70,12 +70,22 @@ semidefinite. `newton_direction` solves `curl^T H curl a = curl^T load(J x B)`
 with that part for `u = curl a`, divergence-free by construction. The
 right-hand side needs no projection, because `curl^T` annihilates the gradient
 and the harmonic part of the force exactly (`G_2 G_1 = 0`). It is solved by
-MINRES preconditioned by the harmonic atom (the Laplacian atom scaled by the
-lumped parallel derivative of `B`), warm-started from the previous potential,
-until the residual in the norm of the preconditioner falls below `newton_tol`
-(0.1) of the right-hand side or after `newton_maxiter` (300) iterations. `H`
-vanishes on field-aligned flows `u = f B`, and a penalty of `newton_penalty`
-times the strain along the field lifts that null space.
+MINRES preconditioned by the spline atom, warm-started from the previous
+potential, until the residual in the norm of the preconditioner falls below
+`newton_tol` (0.1) of the right-hand side or after `newton_maxiter` (300)
+iterations. `H` vanishes on field-aligned flows `u = f B`, and a penalty of
+`newton_penalty` times the strain along the field lifts that null space.
+
+The spline atom is the Laplacian atom scaled on both sides by `lambda^{-1/2}`,
+with `lambda` a model of `H`: on each logical component `u` of the 1-forms the
+form `int (h_t d_theta u + h_z d_zeta u)^2 + (s + w) u^2`, with `h_t`, `h_z` the
+angle averages of the field's logical components, `s` the field's strain along
+the component's direction and `w` the penalty, discretised on the component's
+splines. Its angular matrices are circulant on uniform knots, so per Fourier
+mode the model is a pencil of two radial mass matrices, one with the model's
+weight. The atom takes the pencil's diagonal, one number per radial spline and
+Fourier mode. It stores as many numbers as a 1-form has coefficients and costs
+two FFTs on each side of the Laplacian atom.
 
 MINRES keeps its Lanczos vectors and makes each new one orthogonal to all
 earlier ones. Without that the basis loses orthogonality within about 20
