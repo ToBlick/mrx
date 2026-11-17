@@ -157,7 +157,7 @@ def test_the_map_is_the_same_in_every_build(seq):
     li383 1.4m at a residual of 1e-10 started at 1e-7 (2026-11-17)."""
     maps = [build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0] for _ in range(2)]
     assert all(np.array_equal(np.asarray(getattr(maps[0], name)), np.asarray(getattr(maps[1], name)))
-               for name in ("raw_R", "raw_Z"))
+               for name in ("raw_X1", "raw_X2"))
 
 
 def test_gradient_descent_descends(seq, b0):
