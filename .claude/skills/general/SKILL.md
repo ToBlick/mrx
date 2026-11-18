@@ -48,8 +48,9 @@ names differ per cluster.
 5. **Signed iteration counts.** `+k` converged, `-k` did not. Counts sum over refinement passes, so
    they can exceed maxiter. A negative count is the first thing to look for.
 6. **`compute_nullspaces(seq)` is a separate call** after `build_sequence`. Without it the harmonic
-   forms are zero and every deflation removes nothing. Rerun preconditioners and nullspaces after
-   every `set_geometry_from_map`.
+   forms are zero and every deflation removes nothing. Rerun it after every `set_geometry_from_map`.
+   The preconditioners are rebuilt too, unless the call keeps the old ones (`keep_preconditioners=True`),
+   which stay valid and are good after a small change of the map.
 7. **Fields live on their parity view.** On the default stellarator-symmetric (half-period)
    sequence, `B, A, J, E` are odd (`seq.odd`), velocity, force, pressures even (`seq.even`). Norms
    and solves on the wrong view give wrong numbers silently.

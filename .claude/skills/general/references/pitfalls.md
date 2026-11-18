@@ -25,7 +25,7 @@ The first half is `docs/source/sharp_bits.md` in short. The second half is lesso
   A profile in `s` read as `r = sqrt(s)` distorts the radial structure but leaves iota alone.
 - **Frames.** `seq.load(f, k)` takes physical components. `seq.interpolate(f, k)` takes logical components.
 - **Compilation.** First call compiles. Static Python numbers in eqx modules recompile on change. A
-  pytree map (`CylindricalMap`, `FrameMap`) reuses compiled solves after `set_geometry_from_map` (0.14 s vs
+  pytree map (`FrameMap`) reuses compiled solves after `set_geometry_from_map` (0.14 s vs
   18 s compile). A map given as a plain Python function does not.
 - **Force residual is not monotone**, and every run reaches a discretisation floor set by unresolved
   current sheets on rational surfaces. Steps along the floor only reconnect at grid scale. With the

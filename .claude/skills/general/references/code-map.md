@@ -49,9 +49,13 @@ compute_nullspaces(seq)                                                         
 B0, info = initial_field(seq)                                                      # mrx.relaxation.initial_conditions
 ```
 
-Nothing is built on first use and nothing on the operator bundle survives a geometry change: after
-`seq.set_geometry_from_map(Phi)` rerun `build_preconditioners()` and `compute_nullspaces(seq)`. A map that
-folds (`det DPhi <= 0`) is refused.
+Nothing is built on first use. By default a geometry change discards the operator bundle: after
+`seq.set_geometry_from_map(Phi)` rerun `build_preconditioners()` and `compute_nullspaces(seq)`. With
+`keep_preconditioners=True` the preconditioners of the old geometry stay. They are still valid
+preconditioners of the new operators, and good ones after a small change of the map. The harmonic forms are
+set to zero either way, because a form of the old geometry is not in the kernel of the new Laplacian: run
+`compute_nullspaces(seq)` again before a solve that removes them. A map that folds (`det DPhi <= 0`) is
+refused.
 
 ## Data model
 
