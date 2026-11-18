@@ -32,38 +32,14 @@ Paths are relative to the checkout or to the data root `$MRX_DATA`, one director
 (for example `<root>/mrx_data` beside `<root>/mrx`), set in `~/.config/mrx/site.env`. Module and partition
 names differ per cluster.
 
-## The ten things most often gotten wrong
+## Before you start
 
-1. **No runs on a login node.** On a cluster, anything that imports `mrx` and builds a sequence,
-   solves or traces is a GPU job through `slurm/run.sh`. Only matplotlib re-renders from archives (e.g.
-   `scripts/poincare_plot.py`) and pure-numpy checks run inline.
-2. **Size GPU jobs** `CPUS=4 MEM_GB=16` on small meshes, the `run.sh` default memory on larger ones,
-   `TIMEOUT_MIN` at least twice the estimate (`references/running.md`).
-3. **Worktree jobs must import the worktree.** `python scripts/x.py` resolves `mrx` to the main
-   checkout's editable install unless `PYTHONPATH=$WT`. `slurm/run.sh` sets it from `MRX_ROOT`.
-   Check the log's first line `mrx from: <path>` before reading a result.
-4. **Precision is fixed at import.** `MRX_DTYPE` is `float64` (default) or `float32`, read at the first
-   `import mrx`. float32 is for devices without float64: every solve then keeps its solution and residual
-   in double-single. AD, shape optimisation and finite differences need float64.
-5. **Signed iteration counts.** `+k` converged, `-k` did not. Counts sum over refinement passes, so
-   they can exceed maxiter. A negative count is the first thing to look for.
-6. **`compute_nullspaces(seq)` is a separate call** after `build_sequence`. Without it the harmonic
-   forms are zero and every deflation removes nothing. Rerun it after every `set_geometry_from_map`.
-   The preconditioners are rebuilt too, unless the call keeps the old ones (`keep_preconditioners=True`),
-   which stay valid and are good after a small change of the map.
-7. **Fields live on their parity view.** On the default stellarator-symmetric (half-period)
-   sequence, `B, A, J, E` are odd (`seq.odd`), velocity, force, pressures even (`seq.even`). Norms
-   and solves on the wrong view give wrong numbers silently.
-8. **Angles are right-handed.** VMEC files are read with `theta -> -theta`, so their iota reads
-   negative (`theta_reversed`). Never reintroduce a map sign. MRX `zeta` spans one field period:
-   transform per MRX turn is `iota/nfp`. Seeds count `n` in field periods.
-9. **Judge relaxation by energy and floor, not by `||F||` or end state.** The force residual is not
-   monotone. Trajectories diverge from round-off (a decade per ~10 steps). Validate kernel changes
-   per-apply and by energy.
-10. **Production stays clean.** No aliases or back-compat shims, no defensive `abs()`/clamps/
-    fallbacks over guaranteed quantities, no inner Krylov under MINRES/CG, no hidden metric factors
-    (`references/guidelines.md`), no expensive or parametrised test without the maintainers' agreement.
-    Study and paper code goes to branch `paper`, not `scripts/`.
+Three things cost the most time when missed. Each is explained on the page named.
+
+- On a cluster nothing that imports `mrx` runs on a login node: submit a job (`references/running.md`).
+- A job started from a worktree must import that worktree: check the log's first line `mrx from: <path>`
+  (`references/running.md`).
+- A result that looks off is most often a known trap: look it up in `references/pitfalls.md` before changing code.
 
 ## Git and GitHub in one paragraph
 
