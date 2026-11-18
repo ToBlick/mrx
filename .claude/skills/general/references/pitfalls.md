@@ -1,66 +1,43 @@
-# Pitfalls and measured lessons
+# Pitfalls
 
-The first half is `docs/source/sharp_bits.md` in short. The second half is lessons from runs.
+Most traps are explained in the docs. This page names each one and points to its page under `docs/source/` or to
+`docs/research/`. Read the page before acting on the trap. What follows the pointers is only what helps when working
+in the code and does not belong in user docs.
 
-## Sharp bits
+## In the docs
 
-- **Precision at import.** `MRX_DTYPE` is read once at the first `import mrx`. `relax.py
-  --geometry.precision` sets it before importing. Every checkpoint records the precision.
-- **float32 means double-single.** In float32 a solve is refined until its double-single residual meets the
-  tolerance. A stall at 1e-7 means something accurate was formed in float32 (a projection, `G^T w`, a seed
-  interpolation, a normalisation): lift it. More iterations never fix a precision floor.
-- **Signed counts.** Negative = not converged. Laplacian and pressure counts sum up to six passes, so
-  they can exceed `solve-maxiter`.
-- **Harmonic forms.** `[nullspace]` prints `v^T L v / v^T M v`: round-off (<= 1e-9) is good, ~1e-3
-  means the solve behind it failed and everything built on it is off.
-- **Parity views.** A field's norm on `seq` instead of `seq.odd`/`seq.even` is a different (wrong)
-  number with no error.
-- **Axis.** `det DPhi = 0` at r = 0: evaluate near, not on. Averages skip the first radial span.
-- **Wall.** r = 1 evaluates fine. `jnp.clip(r, 0, 1)` halves the autodiff derivative at r = 1: pass r as is.
-- **Angles.** VMEC iota reads negative after the `theta -> -theta` flip.
-- **Checkpoints** record their discretisation (resolution, degree, nfp, symmetry, graded, `map_theta`,
-  precision) and are refused on another one. Rebuild the sequence from `checkpoint_attrs`.
-- **`1/nfp`.** MRX zeta spans one period. A missed `1/nfp` makes iota nfp times too large and passes
-  every structural check. A wrong `nfp` wraps one period through the wrong angle with a healthy Jacobian.
-  A profile in `s` read as `r = sqrt(s)` distorts the radial structure but leaves iota alone.
-- **Frames.** `seq.load(f, k)` takes physical components. `seq.interpolate(f, k)` takes logical components.
-- **Compilation.** First call compiles. Static Python numbers in eqx modules recompile on change. A
-  pytree map (`FrameMap`) reuses compiled solves after `set_geometry_from_map` (0.14 s vs
-  18 s compile). A map given as a plain Python function does not.
-- **Force residual is not monotone**, and every run reaches a discretisation floor set by unresolved
-  current sheets on rational surfaces. Steps along the floor only reconnect at grid scale. With the
-  resistive drive the energy is not monotone either.
-- **Not reproducible to the last digit.** Round-off separates trajectories by about a decade per ten
-  steps on li383. Compare energy and floor. Validate kernel changes per apply (tests at ~1e3 eps) and by
-  energy and step time.
-- **Ideal relaxation keeps topology.** It moves islands but neither opens nor closes them, and conserves
-  helicity up to grid-scale drift (Tutorial 3: dH/H0 = -2.4e-4 over 20 Newton steps). Islands need a
-  seed, losing them needs the resistive drive. A drive whose start already has the reference current
-  does nothing: smooth the reference (`--drive.reference-smoothing`) when start = reference.
-- **Poincare.** Needs one-signed `B^zeta`. Axis-nearest iota is unreliable (axis off r = 0). `drift`
-  is meaningful only on regular lines (on chaotic lines it measures the Lyapunov exponent).
+| trap | where |
+|---|---|
+| a negative iteration count, counts above maxiter | `sharp_bits.md` "A negative iteration count" |
+| harmonic forms zero until `compute_nullspaces`, the `[nullspace]` Rayleigh line | `sharp_bits.md` "The harmonic forms are computed separately" |
+| a norm on the wrong parity view | `sharp_bits.md` "Fields live on the view of their parity" |
+| evaluating on the axis | `sharp_bits.md` "The map is singular on the axis" |
+| `jnp.clip(r, 0, 1)` halves the derivative at the wall | `sharp_bits.md` "The wall r = 1 is safe" |
+| VMEC iota reads negative | `sharp_bits.md` "The angles are right-handed" |
+| recompiles from static Python numbers, non-pytree maps, `--geometry.max-batch` | `sharp_bits.md` "Compilation" |
+| `\|\|F\|\|` rises, the discretisation floor | `sharp_bits.md` "The force residual need not decrease" |
+| trajectories differ from round-off | `sharp_bits.md` "Runs are not reproducible to the last digit" |
+| islands need a seed, losing them needs the drive, a drive with start = reference does nothing | `sharp_bits.md` "The ideal relaxation keeps the topology" |
+| one-signed `B^zeta`, axis iota, `drift`, `locked_width` resolution | `sharp_bits.md` "Poincare sections" |
+| precision fixed at import, float32 = double-single | `concepts/precision.md`, `faq.md` "Which precision" |
+| a float32 solve that stalls near 1e-7: something accurate was formed in float32, lift it | `concepts/precision.md` "Double-single", `docs/research/solvers_precision.md` 8 |
+| a missed `1/nfp`, a wrong `nfp`, `s` read as `r`, `load` vs `interpolate` components | `concepts/equilibrium_input.md` 4 |
+| a new file: check `div B`, the discarded wall part, iota, the initial force residual | `concepts/equilibrium_input.md` 5 |
+| strong `p` vs weak `p_w` | `concepts/relaxation.md` "Two pressures" |
+| the field-aligned null space of the Newton Hessian, the penalty | `concepts/relaxation.md` "Newton", `docs/research/relaxation.md` 3 |
+| MINRES needs its Lanczos vectors reorthogonalised, mass solves in the Hessian at 1e-6 | `concepts/relaxation.md` "Newton" |
+| a seed narrower than about 3 radial cells is reconnected away | `docs/research/relaxation.md` 5 |
+| the residue overestimates an island width 1.35-1.6x | `docs/research/poincare_islands.md` 3 |
+| about 10 ms host dispatch per jitted call, small meshes kernel-count bound | `docs/research/performance.md` 3 |
 
-- Host dispatch (`docs/research/performance.md` 3): calling a filter_jit function of the sequence costs ~10 ms per call whatever it computes.
-  Loops of such calls on the host (probes, diagnostics) are slow for that reason, batch them inside one call.
-- At (12,16,16)-(16,32,32) GPU matvecs are kernel-count bound (~2 us per kernel), at 32^3 the mass apply is
-  memory bound. Count kernels before optimising flops.
+## Working in the code
 
-## Lessons from runs
-
-- **Newton null space.** The Hessian vanishes on field-aligned flows `u = f B`, a continuum on rational
-  surfaces. Without the parallel penalty Newton divides force round-off by it and destroys surfaces past
-  the floor. Penalty `3 x strain` fixes it on li383 and W7-X. Any Newton preconditioner work must treat
-  this null space explicitly. Krylov extremes are not modes (use LOBPCG for the low end).
-- **MINRES, not CG, for Newton**, with its Lanczos vectors reorthogonalised (1.6-2.6x fewer iterations).
-  The mass solves inside the Hessian need 1e-6: at 1e-4 the relaxation stalls.
-- **Islands and seeds.** Seeds narrower than ~3 radial cells are removed by numerical reconnection.
-  High-m seeds are damped by the mesh. Seed `n` counts field periods (chain at `|iota| = nfp n / m`).
-  Never quote a seeded width without an amplitude sweep. The residue is not a width (it overestimates
-  1.35-1.6x), use it for existence and phase only.
-- **Initial conditions matter more than the solver.** Check the file's own initial force residual before
-  blaming the relaxation.
-- **Floors.** Set `--budget.floor-tol` well below the expected floor and let `--budget.steps` end the
-  run, otherwise tables show the floor-tol instead of the bottom. Judge h-refinement by the floor.
-- **Two pressures.** Strong `p` (Neumann Leray, multiplier of the descent, blind to the wall force) vs
-  weak `p_w` (Dirichlet, zero on the wall). Profiles and `beta_vol` use `p_w`.
-- **Known effects** are recorded in `docs/research/`. Check there before "discovering" one.
+- **Checkpoints are tied to their discretisation.** `read_field` raises on a checkpoint written on another mesh,
+  degree, `nfp`, symmetry, knots, ring theta counts or `map_theta`. `read_checkpoint` checks the same.
+  Rebuild the sequence from `checkpoint_attrs(path)` first.
+- **Krylov extremes are not modes.** Ritz values from a MINRES or CG run do not give the low end of a spectrum. Use
+  LOBPCG for that.
+- **Quote no seeded island width without an amplitude sweep.** A seeded width depends on the seed amplitude.
+- **Set `--budget.floor-tol` well below the expected floor** and let `--budget.steps` end the run. Otherwise a
+  table shows the floor-tol instead of the bottom. Judge h-refinement by the floor.
+- **Known effects are recorded** in `docs/research/`. Check there before "discovering" one.

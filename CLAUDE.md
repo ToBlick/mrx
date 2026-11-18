@@ -5,8 +5,8 @@ design decisions in `docs/research/`.
 
 ## Skills
 
-The MRX working knowledge is the skill `general` in `.claude/skills/` (code map, running, rules,
-pitfalls, settled decisions, the project's rules in `references/rules.md`). Load it before any task
+The MRX working knowledge is the skill `general` in `.claude/skills/` (code map, design, running,
+pitfalls, the project's rules in `references/rules.md`). Load it before any task
 here. A contributor's personal preferences belong in their own user-level skills, not in this repo.
 
 ## Layout

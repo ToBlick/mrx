@@ -30,9 +30,8 @@ These rules bind every contribution to MRX, human or agent. Where a rule says to
   regenerated after a deletion, measure it and put it in `docs/research/` first.
 - **No defensive code.** No `abs()` inside `sqrt()`, no fallback on a denominator, no clamps over quantities the
   algorithm guarantees. Let it NaN and state the invariant in a comment. A masked invariant turns a bug into
-  slow convergence that gets blamed on physics: the MINRES `sqrt(abs(.))` hid an indefinite preconditioner
-  for months.
-- **No map sign, no `frame='ref'` loads.** Maps are always positive-Jacobian, angles right-handed.
+  slow convergence that gets blamed on physics.
+- **No map sign.** Maps have a positive Jacobian and the angles are right-handed.
 - **jit/host rules** in `code-map.md`. Use JAX linear algebra for anything on device.
 - **Precision:** new solve code works in both precisions. Its accurate part (iterate, residual, the applies
   that form them) goes through `lift` and the `DS` operator applies, everything else stays `LOW_DTYPE`.
@@ -58,8 +57,8 @@ These rules bind every contribution to MRX, human or agent. Where a rule says to
   `docs/source/concepts/`. Update the page in the same change when behaviour changes.
 - `docs/research/` is the measurement record, nothing that duplicates the docs. An entry is terse and dated:
   setting, number, meaning. Timings come with their iteration counts and their conditions (case, mesh,
-  degree, precision, device). Failed attempts are recorded too, in each file's "decided against / removed"
-  section. No plans, handoffs or code walkthroughs.
+  degree, precision, device). Failed attempts are recorded too, in the "decided against / removed"
+  section of the file (`preconditioners.md`, `relaxation.md` and `solvers_precision.md` have one). No plans, handoffs or code walkthroughs.
 - Compare methods by total time, not by iteration count.
 
 ## Outputs

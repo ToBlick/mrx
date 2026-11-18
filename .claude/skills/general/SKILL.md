@@ -25,8 +25,8 @@ code and docs win: say so.
 | `references/code-map.md` | changing or reading library code: spaces, operators, build order, data model, parity views, solvers, precision, jit rules |
 | `references/running.md` | running anything: slurm, sizing, worktrees, the test suite, relax.py flags and output, Poincare, healthy-run checks, data files |
 | `references/rules.md` | before writing code, tests or docs: solver strategy, code hygiene, tests, docs, outputs |
-| `references/pitfalls.md` | a result looks off, or before interpreting numbers (sharp bits and measured lessons) |
-| `references/history.md` | before proposing a method or option: what was settled, what was removed and why |
+| `references/pitfalls.md` | a result looks off, or before interpreting numbers: each trap with its doc page, plus working habits |
+| `references/design.md` | to learn how a part works, or before proposing a method or option: the design as implemented, each choice with its reason and its doc page |
 
 Paths are relative to the checkout or to the data root `$MRX_DATA`, one directory outside the repository
 (for example `<root>/mrx_data` beside `<root>/mrx`), set in `~/.config/mrx/site.env`. Module and partition
