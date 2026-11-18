@@ -61,9 +61,8 @@ quoting them. What `relax.json` and the checkpoints hold, and what a healthy ide
 
 ## Resolution and degree
 
-- No fixed ratio such as `(n, 2n, 2n)` or cubes. Use the graded meshes of the research record (li383
-  (32,44,20), (48,64,24), (64,80,32), W7-X (32,64,36)). Unit tests (16,32,12), tutorials (12,16,16).
-- W7-X: the FMM002 wout (not distributed with the repository) at p = 2.
+Use the graded meshes of the research record (li383 (32,44,20), (48,64,24), (64,80,32), W7-X (32,64,36)). 
+Unit tests (16,32,12), tutorials (12,16,16).
 
 ## Tutorials
 
@@ -74,8 +73,7 @@ better. Run them in order, Tutorials 4 and 5 start from the previous run (`docs/
 
 Tracked: `wout_li383_low_res_reference.nc`, `wout_li383_1.4m.nc`, `wout_LandremanPaul2021_QA_lowres.nc`,
 `desc_li383_low_res_reference.h5`, `desc_LandremanPaul2021_QA.h5`, `gvec_gframe/` (a G-frame GVEC state for
-the reader tests). Larger inputs that appear in `docs/research/` (W7-X FMM002 wout, GVEC states,
-high-resolution QA) are not distributed with the repository. Put any input you have in `$MRX_DATA/data`.
+the reader tests). Put any other input you have in `$MRX_DATA/data`.
 
 ## Poincare sections
 

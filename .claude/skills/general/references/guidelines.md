@@ -57,7 +57,8 @@ General guidelines for code development -- these are up for discussion, reach ou
 - `docs/research/` is the measurement record, nothing that duplicates the docs. An entry is terse and dated:
   setting, number, meaning. Timings come with their iteration counts and their conditions (case, mesh,
   degree, precision, device). Failed attempts are recorded too, in the "decided against / removed"
-  section of `preconditioners.md`, `relaxation.md` and `solvers_precision.md`. No plans, handoffs or code walkthroughs. This is really a vault for coding agents to read.
+  section of `preconditioners.md`, `relaxation.md` and `solvers_precision.md`. No plans, handoffs or code 
+  walkthroughs. This is really a vault for coding agents to read.
 - Compare methods by total time, not by iteration count.
 
 ## Outputs
