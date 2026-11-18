@@ -68,5 +68,5 @@ def b0(seq):
     :func:`mrx.relaxation.initial_conditions.potential_two_form`."""
     from mrx.relaxation.initial_conditions import potential_two_form
 
-    B, _, _ = potential_two_form(seq)
+    B, _ = potential_two_form(seq)
     return B

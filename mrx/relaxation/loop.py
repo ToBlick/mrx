@@ -134,6 +134,9 @@ class TimeStepper(eqx.Module):
     ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator.
     Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
     2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
+    The step ``dt u`` does not depend on the scale of ``B``. The Newton direction is a displacement and its ``dt``
+    a number. The smoothed force scales as ``|B|^2``, so the ``dt`` of gradient descent scales as ``|B|^-2``
+    (m^2 / T^2 for a field in tesla), and so does its CFL cap.
 
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
     :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
@@ -319,6 +322,11 @@ def sample(ts: TimeStepper, state: State, pw_guess: jnp.ndarray) -> tuple[State,
     the trace of :func:`relax`), the ``helicity``, ``JoverB`` (``||J|| / ||B||``), ``JB`` (``int J . B``) and
     ``beta_vol``. ``p_w`` is the weak pressure, to be passed back as ``pw_guess`` next time. The returned state
     has refreshed warm starts.
+
+    The field is in the units of the equilibrium file and the norms integrate over one field period. For a field in
+    tesla on a map in metres ``E`` is in T^2 m^3 (``mu_0`` times the energy in joules), ``F`` in T^2 m^1/2 and the
+    helicity in T^2 m^4. ``resid``, ``beta_vol`` and the ratios printed by :func:`relax` do not depend on the
+    field's scale.
     """
     state, p_w, scalars, MB = _sample(ts, state, pw_guess)
     # E in the arithmetic of the solves: in float32 its changes over a run are below the float32 round-off
@@ -473,7 +481,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
           verbose: bool = True) -> RelaxResult:
     """Run up to ``steps`` relaxation steps in compiled chunks of ``chunk`` steps and return a :class:`RelaxResult`.
 
-    Diagnostics are computed and printed after every chunk. The run stops early when the mean force residual
+    Diagnostics are computed and printed after every chunk, the energy and helicity as changes relative to the
+    start of the run. The run stops early when the mean force residual
     of a chunk falls below ``floor_tol``. ``on_chunk`` (for example a checkpoint writer) is called after every
     chunk. ``it0`` is the step number of ``state``, nonzero for a restart. ``steps`` must be a multiple of
     ``chunk``.
@@ -499,8 +508,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     E0, h0 = scalars["E"], scalars["helicity"]
     record(it0, 0.0, scalars)
     if verbose:
-        print(f"[start] it {it0}  E={E0:.8e}  |F|={scalars['F']:.4e}  "
-              f"resid={scalars['resid']:.4e}  H={h0:+.6e}  J/B={scalars['JoverB']:.4f}  "
+        print(f"[start] it {it0}  E={E0:.8e} T^2m^3  |F|={scalars['F']:.4e} T^2m^1/2  "
+              f"resid={scalars['resid']:.4e}  H={h0:+.6e} T^2m^4  J/B={scalars['JoverB']:.4f}  "
               f"beta_vol={scalars['beta_vol']:.3e}", flush=True)
     t_out += time.perf_counter() - tq
 
@@ -524,9 +533,9 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         state, pw, scalars = sample(ts, state, pw)
         record(it, wall, scalars)
         if verbose:
-            print(f"  it {it:>5d}  E_0-E={E0 - scalars['E']:.4e}  |F|={ch['F'][-1]:.4e}  "
+            print(f"  it {it:>5d}  (E_0-E)/E_0={(E0 - scalars['E']) / E0:.4e}  |F|={ch['F'][-1]:.4e}  "
                   f"resid={resid_now:.3e} (chunk mean)  H={scalars['helicity']:+.6e}  "
-                  f"dH={scalars['helicity'] - h0:+.3e}  dt={ch['dt'].mean():+.3e}  "
+                  f"dH/|H_0|={(scalars['helicity'] - h0) / abs(h0):+.3e}  dt={ch['dt'].mean():+.3e}  "
                   f"cos min={np.nanmin(cos):+.4f}  divB={ch['div'].max():.2e}  beta_vol={scalars['beta_vol']:.3e}  "
                   f"[{wall:.0f}s steps +{t_out:.0f}s other]"
                   + (f"\n           newton: MINRES it mean {np.abs(ch['newton_it']).mean():.0f} max "
@@ -566,7 +575,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     ident = np.abs(dE - dE_ls) / E0
     resid = np.array(tr["resid"])
     print(f"\n--- {n} steps in {res.wall:.1f}s ({res.wall / max(n, 1):.2f} s/step), stopped on: {res.stop}")
-    print(f"    E_0 {E0:.8e}, E_0 - E {removed:.4e}  ({removed / E0:.4%} of the initial energy removed)")
+    print(f"    E_0 {E0:.8e} T^2 m^3, E_0 - E {removed:.4e}  ({removed / E0:.4%} of the initial energy removed)")
     print(f"    residual {resid[0]:.4e} -> {resid[-1]:.4e}  (mean over the last chunk of "
           f"{res.chunk} steps {resid[-res.chunk:].mean():.4e}, min {resid.min():.4e})")
     print(f"    best state: step {int(res.state.best.step)}, residual {float(res.state.best.resid):.4e}")

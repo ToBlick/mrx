@@ -29,8 +29,9 @@ because there are no flux surfaces for `Psi` to label. The initial field
 sets how much pressure the equilibrium carries, and where the relaxed field 
 has islands or chaotic regions the pressure flattens across them. 
 
-Beta is `beta = int p dV / int |B|^2/2 dV` in code units, reported as 
-`beta_vol`. [Relaxation](concepts/relaxation.md) explains the two pressures.
+Beta is `beta = int p dV / int |B|^2/2 dV`, reported as `beta_vol`. The 
+field is in tesla and the pressure in T^2 (`mu_0 p` with `p` in Pa), so 
+beta is the usual one. [Relaxation](concepts/relaxation.md) explains the two pressures.
 
 ## How expensive is MRX to run? Do I need a GPU?
 

@@ -1,8 +1,8 @@
 """The initial magnetic field of a relaxation run.
 
 :func:`initial_field` is the entry point. It returns the DoFs of a 2-form ``B`` with zero normal component on
-the wall, normalised to ``||B||_M = 1``, built from the equilibrium file the sequence was read from
-(``seq.equilibrium``, see :mod:`mrx.equilibria`). In logical coordinates it is a field with nested flux surfaces,
+the wall in the file's units (tesla for a field on a map in metres), built from the equilibrium file the sequence
+was read from (``seq.equilibrium``, see :mod:`mrx.equilibria`). In logical coordinates it is a field with nested flux surfaces,
 
     det(DPhi) (B^r, B^theta, B^zeta) = Psi'(r) (0, iota(r) - d lambda / d zeta, 1 + d lambda / d theta),
 
@@ -45,10 +45,9 @@ def _clebsch_potential(st, nfp):
 
 
 def potential_two_form(seq):
-    """The field of the equilibrium file as the discrete curl of its vector potential. Returns
-    ``(B, norm, wall)``.
+    """The field of the equilibrium file as the discrete curl of its vector potential. Returns ``(B, wall)``.
 
-    ``B`` is normalised to ``||B||_M = 1`` and ``norm`` is its norm before normalisation. ``wall`` is the
+    ``B`` is in the file's units. Its flux through a section ``zeta = const`` is the file's toroidal flux. ``wall`` is the
     relative size of the normal component on the wall that is dropped when ``B`` is restricted to fields
     with ``B . n = 0``. It serves as a check and should be close to zero, because the tangential part of ``A'``
     on the wall depends on ``r`` alone."""
@@ -60,17 +59,17 @@ def potential_two_form(seq):
     B = seq.restrict(B_full, 2)
     n_full, norm = float(free.l2_norm(B_full, 2)), float(seq.l2_norm(B, 2))
     wall = abs(n_full ** 2 - norm ** 2) ** 0.5 / norm
-    return B / norm, norm, wall
+    return B, wall
 
 
 def initial_field(seq):
     """The initial field of the sequence's geometry file. Returns ``(B, info)``.
 
-    ``info`` holds numbers worth recording: ``kind``, ``B_norm_raw``, the divergence ``div``, ``nfp``,
+    ``info`` holds numbers worth recording: ``kind``, the divergence ``div``, ``nfp``,
     ``iota_axis`` and ``iota_edge`` (per full turn) and ``wall_discarded``."""
     eq = seq.equilibrium
-    B, norm, wall = potential_two_form(seq)
+    B, wall = potential_two_form(seq)
     iota = eq["profiles"]["iota"]
     return B, dict(kind=eq["kind"], nfp=int(seq.nfp), iota_axis=float(iota(0.0)), iota_edge=float(iota(1.0)),
-                   B_norm_raw=float(norm), wall_discarded=float(wall),
+                   wall_discarded=float(wall),
                    div=float(compute_divergence_norm(B, seq)))

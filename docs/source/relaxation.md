@@ -85,6 +85,16 @@ leaves its trace and its last state. A healthy ideal run has `dE < 0` at
 every step, `dE` equal to `dE_ls` to round-off, `helicity` constant up to
 grid-scale reconnection and `div` at round-off.
 
+The field is in the units of the equilibrium file, tesla for every reader,
+and the norms integrate over one field period. So `E` is in T^2 m^3,
+`F` in T^2 m^1/2, `helicity` in T^2 m^4 and the pressure in T^2. The
+gradient-descent `dt` scales as `|B|^-2`. `resid`, `beta_vol`, `cos`,
+`dt/dt*`, the CFL number and the printed `(E_0-E)/E_0` and `dH/|H_0|` are
+ratios. A checkpoint written before the field was kept in the file's units
+holds it normalised to `||B||_M = 1`. A restart from it continues the same
+run in those units, but it must not be paired with a field in tesla, for
+example as `--drive.reference` of a run from the file.
+
 To evaluate a checkpoint's field:
 
 ```python
