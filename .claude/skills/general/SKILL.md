@@ -12,7 +12,7 @@ cube `(r, theta, zeta)`, mapped by a polar spline map `Phi`. Everything is matri
 and differentiable. Preprint arXiv:2510.26986.
 
 This skill is orientation plus the project's rules, for any contributor, human or agent. The rules
-(solver strategy, code, tests, docs, outputs) are in `references/rules.md`. The skill is not the source of
+(solver strategy, code, tests, docs, outputs) are in `references/guidelines.md`. The skill is not the source of
 truth. The source of truth is the Sphinx tree **`docs/source/`** (guides, `concepts/`, `api/`) and,
 for the measurements behind design decisions, `docs/research/` (terse, dated). Read the
 relevant page before changing code it describes. If the skill and the docs or code disagree, the
@@ -24,7 +24,7 @@ code and docs win: say so.
 |---|---|
 | `references/code-map.md` | changing or reading library code: spaces, operators, build order, data model, parity views, solvers, precision, jit rules |
 | `references/running.md` | running anything: slurm, sizing, worktrees, the test suite, relax.py flags and output, Poincare, healthy-run checks, data files |
-| `references/rules.md` | before writing code, tests or docs: solver strategy, code hygiene, tests, docs, outputs |
+| `references/guidelines.md` | before writing code, tests or docs: solver strategy, code hygiene, tests, docs, outputs |
 | `references/pitfalls.md` | a result looks off, or before interpreting numbers: each trap with its doc page, plus working habits |
 | `references/design.md` | to learn how a part works, or before proposing a method or option: the design as implemented, each choice with its reason and its doc page |
 
@@ -62,7 +62,7 @@ names differ per cluster.
    per-apply and by energy.
 10. **Production stays clean.** No aliases or back-compat shims, no defensive `abs()`/clamps/
     fallbacks over guaranteed quantities, no inner Krylov under MINRES/CG, no hidden metric factors
-    (`references/rules.md`), no expensive or parametrised test without the maintainers' agreement.
+    (`references/guidelines.md`), no expensive or parametrised test without the maintainers' agreement.
     Study and paper code goes to branch `paper`, not `scripts/`.
 
 ## Git and GitHub in one paragraph

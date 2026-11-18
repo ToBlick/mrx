@@ -37,7 +37,7 @@ k = 0, 1, 2. `seq.core_rows(k)` are the polar rows. `graded=True` and `map_theta
 ## Build order (`build_sequence` in `mrx/geometry.py`)
 
 ```python
-seq = build_sequence(path, (nr, nt, nz), p, symmetry="stellarator", graded=True)  # topology, map, preconditioners
+seq = build_sequence(path, (nr, nt, nz), p, symmetry="stellarator", graded=True)   # topology, map, preconditioners
 compute_nullspaces(seq)                                                            # harmonic forms, SEPARATE call
 B0, info = initial_field(seq)                                                      # mrx.relaxation.initial_conditions
 ```
