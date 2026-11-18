@@ -28,7 +28,7 @@ General guidelines for code development -- these are up for discussion, reach ou
 - **No defensive code.** No `abs()` inside `sqrt()`, no fallback on a denominator, no clamps over quantities the
   algorithm guarantees. Let it NaN and state the invariant in a comment. A masked invariant turns a bug into
   slow convergence that gets blamed on physics: MINRES `sqrt(abs(.))` hid an indefinite preconditioner in the past.
-- **No map sign, no `frame='ref'` loads.** Maps are always positive-Jacobian, angles right-handed.
+- **No map sign.** Maps are always positive-Jacobian, angles right-handed.
 - **jit/host rules** in `code-map.md`. Use JAX linear algebra for anything on device.
 - **Precision:** new solve code works in both precisions. Its accurate part (iterate, residual, the applies
   that form them) goes through `lift` and the `DS` operator applies, everything else stays `LOW_DTYPE`.
@@ -56,8 +56,8 @@ General guidelines for code development -- these are up for discussion, reach ou
 - One documentation tree, `docs/source/` (Sphinx).
 - `docs/research/` is the measurement record, nothing that duplicates the docs. An entry is terse and dated:
   setting, number, meaning. Timings come with their iteration counts and their conditions (case, mesh,
-  degree, precision, device). Failed attempts are recorded too, in each file's "decided against / removed"
-  section. No plans, handoffs or code walkthroughs. This is really a vault for coding agents to read.
+  degree, precision, device). Failed attempts are recorded too, in the "decided against / removed"
+  section of `preconditioners.md`, `relaxation.md` and `solvers_precision.md`. No plans, handoffs or code walkthroughs. This is really a vault for coding agents to read.
 - Compare methods by total time, not by iteration count.
 
 ## Outputs
