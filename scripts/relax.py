@@ -51,7 +51,7 @@ def main(cfg):
                                        target_beta)
     from mrx.relaxation.seeding import energy_seed
     from mrx.relaxation.twist import load_iota_target, retarget_iota
-    from scipy.interpolate import CubicSpline
+    from mrx.flux_label import ANISOTROPY
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
@@ -85,15 +85,19 @@ def main(cfg):
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                           for k, v in ic.items() if k != "kind"), flush=True)
         state, it0 = initial_state(B0, ts), 0
-    iota_seed = None                         # the transform the seed resonates with: the file's, or the twisted one
+    T_label = None                     # the flux label's temperature, solved once for the twist and the seed
+    if cfg.iota or cfg.seed:
+        t1 = time.perf_counter()
+        _, T_label, info = label(seq, state.B_n, ANISOTROPY)
+        print(f"[label] flux label of the start field: CG {int(info)}, {time.perf_counter() - t1:.1f}s", flush=True)
     if cfg.iota:
-        B_twisted, results["iota"] = retarget_iota(seq, state.B_n, **load_iota_target(cfg.iota.target),
+        # the twist keeps the label's level sets, so T_label is also the label of the twisted field
+        B_twisted, results["iota"] = retarget_iota(seq, state.B_n, **load_iota_target(cfg.iota.target), T=T_label,
                                                    bins=cfg.iota.bins, corrections=cfg.iota.corrections)
-        iota_seed = CubicSpline(results["iota"]["r_layer"], results["iota"]["iota_layer"])
         state = initial_state(B_twisted, ts, step=it0)
     if cfg.seed:
         B_seeded, rows = energy_seed(seq, state.B_n, iotas=cfg.seed.iotas, amplitudes=cfg.seed.amplitudes,
-                                     scale=cfg.seed.scale, iota=iota_seed)
+                                     scale=cfg.seed.scale, T=T_label)
         results["seed"] = rows
         state = initial_state(B_seeded, ts, step=it0)
     write_checkpoint(os.path.join(ckpt_dir, f"state_{it0:06d}.h5"), state, it0, seq)
@@ -122,7 +126,6 @@ def main(cfg):
         results["pressure"] = dict(target=pr.target, plateaus=plateaus, rebuilds=[])
         print(f"[pressure] target {pr.target}" + (f", constant on s in {plateaus}" if plateaus else "")
               + (f", scaled to beta {pr.beta:g}" if pr.beta is not None else ""), flush=True)
-        T_label = None                        # the label's temperature, the guess of the next label solve
 
         def measure(state, it):
             """``(s_q, p_q)``: the label of the field of ``state`` and the target on it, at the quadrature points. The

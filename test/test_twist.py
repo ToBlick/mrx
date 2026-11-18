@@ -7,8 +7,9 @@ the transform of the logical layers, measured apart from the label's bins the tw
 Where the twist's profile is flat it vanishes, as across an island, where the label is flat. The test takes 20 s on
 one H200 next to the suite's fixtures (their setup 170 s), 11 s on four CPU cores.
 
-A user's run with ``--iota.target`` ends at the target transform. On the fixture a target a few percent off the
-file's transform is met by the twist and held by the Newton steps that follow it.
+A user's run with ``--iota.target`` and ``--pressure.target`` from one VMEC input namelist ends at both targets. On
+the fixture a transform and a pressure a few percent off the file's are met, and a seed on the twisted field sits at
+the resonances of its new transform.
 """
 import jax.numpy as jnp
 import numpy as np
@@ -17,16 +18,19 @@ import pytest
 from mrx.flux_label import ANISOTROPY
 from mrx.precision import DTYPE, eps
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
-from mrx.relaxation.shells import label
-from mrx.relaxation.twist import iota_fit, layer_iota, retarget_iota, twist_field
+from mrx.relaxation.physics import current, weak_pressure
+from mrx.relaxation.seeding import energy_seed
+from mrx.relaxation.shells import build_shells, label, load_target, pressure_error
+from mrx.relaxation.twist import iota_fit, layer_iota, load_iota_target, retarget_iota, twist_field
 
-#: The Newton steps after the twist in the user-facing test, as in test_newton.py.
-STEPS, CHUNK = 10, 5
+#: The Newton steps after the twist in the user-facing test, in chunks of relax.py's default length with the label and
+#: the shells rebuilt before each.
+STEPS, CHUNK = 20, 10
 #: The interior of the label where the user-facing test compares transforms.
 S_TEST = np.linspace(0.05, 0.95, 19)
-#: The transform's largest miss after the twist and after the steps: 1.38e-3 and 4.28e-3 in float64 (2026-11-17).
-MISS_TWIST, MISS_HELD = 3e-3, 1e-2
-
+#: The transform's largest miss after the twist and after the steps, and the pressure's error after the steps:
+#: 1.38e-3, 4.01e-3 and 7.59e-3 in float64, 4.14e-3 and 7.58e-3 after the steps in float32 (2026-11-18).
+MISS_TWIST, MISS_END, PRESSURE_ERROR = 3e-3, 8e-3, 1.5e-2
 
 def test_retarget_iota(seq, b0):
     iota_file = seq.equilibrium["profiles"]["iota"]           # a function of r = sqrt(s)
@@ -60,33 +64,73 @@ def test_retarget_iota(seq, b0):
     assert np.abs(dB_q[band]).max() < 2e-3 * np.abs(dB_q).max()
 
 
-def test_iota_target_reproduced_and_held(seq, b0):
-    """The run of ``scripts/relax.py --iota.target``: the file's transform lowered to 0.95 times itself by
-    :func:`mrx.relaxation.twist.retarget_iota`, then ten Newton steps. The transform of the field on its own flux label
-    (:func:`mrx.relaxation.twist.iota_fit`, at 0.05 <= s <= 0.95) meets the target after the twist and is still held
-    after the steps.
+def test_iota_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
+    """The run of ``scripts/relax.py --iota.target input.x --pressure.target input.x --seed`` with ONE VMEC input
+    namelist: the transform 0.95 times the file's and the pressure the file's reshaped by ``1 + 0.05 (1 - 2 s)``.
 
-    The largest miss is 1.38e-3 after the twist and 4.28e-3 after the steps in float64 (1.38e-3 and 4.27e-3 in
-    float32), against a change of 3.29e-2, so a run that ignored the target would miss it by eight times the measured
-    error. The bounds are 3e-3, 1e-2 and a third of the change (measured 0.13 of it). 106 s on four CPU cores after
-    the fixture (2026-11-17). Skipped in float32, where it meets the same numbers but takes 280 s.
+    The label is solved once for the twist and the seed. The twist meets the transform (largest miss on the label
+    1.38e-3 against a change of 3.29e-2). The seed on the twisted field puts each of its 7 chains within 1.9e-3 of the
+    target's resonant radius, against at least 6.1e-2 from the file's. Twenty Newton steps in two chunks, with the
+    label and the shells rebuilt before each, take positive steps and lower ``W`` at every step. At the end the
+    transform misses by 4.01e-3 (0.12 of the change) and the pressure by 7.59e-3, against 2.93e-2 from the file's
+    pressure (0.26), in float64. float32 gives 4.14e-3 and 7.58e-3. So a run that ignored either target fails. The
+    bounds are MISS_TWIST, MISS_END, PRESSURE_ERROR, 1e-2 for the seeds, a third of the transform's change, half the pressure's error
+    against the file's profile, and half the smallest distance to the file's resonances. The pressure target moves
+    the transform no more than the plain relaxation does here (4.28e-3 after ten plain Newton steps). 227 s on four
+    CPU cores after the fixture (2026-11-18). Skipped in float32, where a Newton step costs three times as much on
+    the CPU.
     """
     if DTYPE != np.float64:
         pytest.skip("a float32 Newton step costs three times a float64 one on the CPU, the float64 run covers the claim")
-    iota_file = seq.equilibrium["profiles"]["iota"]           # a function of r = sqrt(s)
+    iota_file, p_file = seq.equilibrium["profiles"]["iota"], seq.equilibrium["profiles"]["pressure"]
+    s = np.linspace(0.0, 1.0, 101)
+    row = lambda x: " ".join(f"{v:.17g}" for v in x)  # noqa: E731
+    path = tmp_path / "input.target"
+    path.write_text(f"&INDATA\n  NFP = {seq.nfp}, NCURR = 0, PIOTA_TYPE = 'cubic_spline'\n"
+                    f"  AI_AUX_S = {row(s)}\n  AI_AUX_F = {row(0.95 * np.abs(iota_file(np.sqrt(s))))}\n"
+                    f"  PMASS_TYPE = 'cubic_spline'\n  AM_AUX_S = {row(s)}\n"
+                    f"  AM_AUX_F = {row(p_file(np.sqrt(s)) * (1.0 + 0.05 * (1.0 - 2.0 * s)))}\n/\n")
+    iota_t = load_iota_target(str(path))["iota"]
+    p_t, p_f = load_target(seq, str(path)).profile, load_target(seq, "file").profile
+    want = np.abs(np.asarray(iota_t(S_TEST)))
+    change_iota = np.abs(np.abs(iota_file(np.sqrt(S_TEST))) - want).max()
 
-    def target(s):
-        return 0.95 * np.abs(iota_file(np.sqrt(s)))
-    B1, _ = retarget_iota(seq, b0, iota=target, verbose=False)
+    def iota_miss(B, T):
+        s_q, T, _ = label(seq, B, ANISOTROPY, T)
+        return np.abs(np.abs(iota_fit(seq, B, np.asarray(s_q), 6)(S_TEST)) - want).max(), s_q, T
+
+    _, T, _ = label(seq, b0, ANISOTROPY)
+    B1, _ = retarget_iota(seq, b0, iota=iota_t, T=T, verbose=False)
+    miss_twist = iota_miss(B1, T)[0]
+
+    # the seed on the twisted field, as relax.py --seed with the same label: each chain at the target's resonant radius
+    rows = energy_seed(seq, B1, T=T, verbose=False)[1]
+    r_fine = np.linspace(0.02, 0.99, 20001)
+    off_new, off_file = [], []
+    for r in rows:
+        res = seq.nfp * r["n"] / r["m"]
+        off_new.append(abs(r["r"] - r_fine[np.argmin(np.abs(np.abs(np.asarray(iota_t(r_fine ** 2))) - res))]))
+        off_file.append(abs(r["r"] - r_fine[np.argmin(np.abs(np.abs(iota_file(r_fine)) - res))]))
+
     ts = TimeStepper(seq=seq, newton=True)
-    res = relax(initial_state(B1, ts), ts, steps=STEPS, chunk=CHUNK, verbose=False)
-
-    def iota_of(B):
-        s_q = np.asarray(label(seq, B, ANISOTROPY)[0])
-        return np.abs(iota_fit(seq, B, s_q, 6)(S_TEST))
-    want = target(S_TEST)
-    change = np.abs(np.abs(iota_file(np.sqrt(S_TEST))) - want).max()
-    miss_start, miss_end = np.abs(iota_of(B1) - want).max(), np.abs(iota_of(res.state.B_n) - want).max()
-    print(f"\n  change {change:.3e}, miss after the twist {miss_start:.3e}, after {STEPS} steps {miss_end:.3e}")
-    assert miss_start < MISS_TWIST
-    assert miss_end < MISS_HELD and miss_end < change / 3
+    state, dW, dt_star, E0 = initial_state(B1, ts), [], [], None
+    for _ in range(STEPS // CHUNK):
+        s_q, T, _ = label(seq, state.B_n, ANISOTROPY, T)
+        ts = ts.with_shells(build_shells(seq, state.B_n, s_q, p_t(s_q), ts.newton_penalty, ts.newton_mass_solve_tol))
+        res = relax(state, ts, steps=CHUNK, chunk=CHUNK, verbose=False)
+        state, E0 = res.state, res.E0 if E0 is None else E0
+        dW += list(np.asarray(res.trace["dW"], dtype=float))
+        dt_star += list(np.asarray(res.trace["dt_star"], dtype=float))
+    miss_end, s_q, T = iota_miss(state.B_n, T)
+    p_w = weak_pressure(current(state.B_n, seq), state.B_n, seq)
+    err, _ = pressure_error(seq, p_w, s_q, p_t(s_q), int(seq.ns[0]))
+    err_file, _ = pressure_error(seq, p_w, s_q, p_f(s_q), int(seq.ns[0]))
+    print(f"\n  iota miss {miss_twist:.3e} after the twist, {miss_end:.3e} at the end, change {change_iota:.3e}. "
+          f"{len(rows)} seeded chains, off the target's resonance {max(off_new):.2e}, off the file's {min(off_file):.2e}. "
+          f"|p - p*| / |p*| {err:.3e}, against the file's profile {err_file:.3e}. max dW / E0 {max(dW) / E0:+.1e}")
+    assert miss_twist < MISS_TWIST
+    assert rows and max(off_new) < 1e-2 and max(off_new) < 0.5 * min(off_file)
+    assert min(dt_star) > 0.0
+    assert max(dW) < eps() * E0, f"W not monotone: {dW}"
+    assert miss_end < MISS_END and miss_end < change_iota / 3
+    assert err < PRESSURE_ERROR and err < 0.5 * err_file

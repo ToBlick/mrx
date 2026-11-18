@@ -15,7 +15,9 @@ surface.
   current ``I(s)``, to a target profile.
 - :func:`twist_field` is the move for a given ``F(s)``.
 - :func:`iota_fit`, :func:`iota_profile` and :func:`enclosed_current` measure the transform and the current on the
-  label's level sets, :func:`layer_iota` the transform on the logical surfaces.
+  label's level sets, :func:`layer_iota` the transform on the logical surfaces. :func:`label_iota` is the
+  transform of a field on its own label as a function of the logical radius, the one the island seeds of
+  :func:`mrx.relaxation.seeding.energy_seed` resonate with.
 - :func:`load_iota_target` reads a target from a wout (its transform) or a VMEC input namelist (its transform, or
   with ``NCURR = 1`` its current).
 
@@ -31,7 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DiscreteFunction
-from mrx.flux_label import enclosed_flux_map, flux_label
+from mrx.flux_label import enclosed_flux, enclosed_flux_map, flux_label
 from mrx.relaxation.physics import compute_divergence_norm, current as weak_current
 from mrx.relaxation.shells import LABEL_TOL
 
@@ -103,10 +105,23 @@ def enclosed_current(seq, B, s_q, edges):
     return np.array([np.sum((s < e) * w * Jz) for e in edges]) / np.sum(np.asarray(seq.quad.w_z))
 
 
+def label_iota(seq, B, T, degree=6):
+    """The transform per full turn of the field ``B`` as a spline in the logical radius: :func:`iota_fit` on the
+    flux label of the temperature ``T``, at the label's mean ``s`` on each radial quadrature layer. Where the logical
+    surfaces are near the flux surfaces this is the transform at the logical radius, also after the field has moved
+    away from the file it was read from (a relaxation, a twist)."""
+    from scipy.interpolate import CubicSpline
+
+    s_q = np.asarray(enclosed_flux(seq, T, seq.odd.evaluate_at_quadrature(B, 2)))
+    w = np.asarray(seq.quad.w).reshape(seq.quad.shape)
+    s_layer = (w * s_q.reshape(seq.quad.shape)).sum((1, 2)) / w.sum((1, 2))
+    return CubicSpline(np.asarray(seq.quad.x_x), iota_fit(seq, B, s_q, degree)(s_layer))
+
+
 def layer_iota(seq, B):
     """``(r, iota)``: the transform per full turn on the radial quadrature layers, the ratio of the layer's poloidal
     and toroidal flux. It is the surface's transform where the logical surfaces are flux surfaces (a field read from
-    an equilibrium file), the form :func:`mrx.relaxation.seeding.energy_seed` takes."""
+    an equilibrium file)."""
     Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2))
     Bw = (np.asarray(seq.quad.w)[:, None] * Bq).reshape(*seq.quad.shape, 3)
     return np.asarray(seq.quad.x_x), seq.nfp * Bw[..., 1].sum((1, 2)) / Bw[..., 2].sum((1, 2))
@@ -147,7 +162,7 @@ def retarget_iota(seq, B, iota=None, current=None, T=None, bins=20, degree=6, co
 
     ``record`` holds the bins, the transform and the current before and after, the target, ``F`` and the checks
     (``div dB``, the wall flux of the free ``dB``, the relative size of ``dB``), and the layer transform after the
-    twist (:func:`layer_iota`, the argument :func:`mrx.relaxation.seeding.energy_seed` takes).
+    twist (:func:`layer_iota`), a check apart from the label.
     """
     if (iota is None) == (current is None):
         raise ValueError("retarget_iota takes one of iota and current")

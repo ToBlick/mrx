@@ -1,8 +1,10 @@
 """Island seeds: small resonant perturbations of an equilibrium field that let island chains open.
 
-An equilibrium read from a file has nested flux surfaces. Seeding adds at rational surfaces ``iota = nfp n / m``
+A field with nested flux surfaces (an equilibrium read from a file, or a relaxed field) gets, at its rational surfaces
+``iota = nfp n / m``,
 a perturbation ``dB = curl(A B / |B|)`` with ``A = a(r) cos(2 pi (m theta - n zeta))`` (the SIESTA seed), so
-that the relaxation can open island chains there. ``dB`` is divergence-free and tangent to the wall.
+that the relaxation can open island chains there. The transform is that of the field itself, measured on its flux
+label (:func:`mrx.relaxation.twist.label_iota`), not the file's. ``dB`` is divergence-free and tangent to the wall.
 
 - :func:`energy_seed` is the entry point. It seeds every resonance in the field's iota range with
   ``m <= n_theta / 2`` (or only the chains nearest the given ``iotas``) at once. By default the profiles
@@ -26,8 +28,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DiscreteFunction
-from mrx.spline_bases import basis_table
 from mrx.equilibria import StateField
+from mrx.flux_label import flux_label
+from mrx.relaxation.shells import LABEL_TOL
+from mrx.relaxation.twist import label_iota
+from mrx.spline_bases import basis_table
 
 #: The (r, theta, zeta) grid on which the seed's resonant amplitude is measured, and the number of points
 #: evaluated at once.
@@ -71,7 +76,7 @@ def parallel_seed(seq, B, m, n, profile, r_grid):
     return odd.G[1] @ odd.M[1].solve(load)
 
 
-def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, iota=None):
+def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, T=None):
     """Seed the field ``B`` of an equilibrium-file sequence. Returns ``(B + scale * dB, rows)``.
 
     ``rows`` has one dict per seeded chain with ``m``, ``n``, the resonant radius ``r``, ``diota = |d iota / dr|``
@@ -79,9 +84,9 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, io
     estimate ``w = sqrt(8 |dBr| nfp / (pi m diota))``. ``iotas`` restricts the seeds to the chains nearest those
     rotational transforms. ``amplitudes`` (one per entry of ``iotas``) rescales each chain's energy-optimal seed
     so that its ``dBr`` takes the given value. If no chain with ``m <= n_theta / 2`` lies in the field's iota range,
-    the field is returned unseeded with a warning and ``rows`` is empty. ``iota`` (per full turn, a spline in the
-    logical radius) replaces the file's transform, for a field whose transform was changed after it was read
-    (:func:`mrx.relaxation.twist.retarget_iota`). The function runs eagerly and cannot be traced by ``jax.jit``.
+    the field is returned unseeded with a warning and ``rows`` is empty. The transform is measured on the flux label of
+    ``B`` (:func:`mrx.relaxation.twist.label_iota`), whose temperature ``T`` is solved here unless given. The
+    function runs eagerly and cannot be traced by ``jax.jit``.
     """
     nfp = int(seq.nfp)
     ns = seq.ns
@@ -90,7 +95,11 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, io
     h_r = 1.0 / (rb.n - rb.p)
     lam_h = StateField(seq.equilibrium["LA"], nfp)
     lam = lambda x: lam_h(x) / (2.0 * jnp.pi)   # noqa: E731  (lambda in turns)
-    iota_s = seq.equilibrium["profiles"]["iota"] if iota is None else iota   # per full turn
+    if T is None:
+        T, info = flux_label(seq, odd.evaluate_at_quadrature(B, 2), tol=LABEL_TOL)
+        if verbose:
+            print(f"[seed] flux label CG {int(info)}", flush=True)
+    iota_s = label_iota(seq, B, T)                            # per full turn, in the logical radius
     rr = np.linspace(1e-3, 1.0, 40001)
     iota_rr = np.abs(iota_s(rr))
 

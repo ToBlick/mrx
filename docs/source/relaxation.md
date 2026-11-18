@@ -64,6 +64,16 @@ and so on).
 The tutorials build the same configuration in Python
 (`RelaxConfig(geometry=Geometry(...), ...)`).
 
+## Island seeds
+
+`--seed` adds small resonant perturbations to the start field, or to the
+field of a restart, so that the relaxation can open island chains
+({func}`mrx.relaxation.seeding.energy_seed`). The seeds sit at the rational
+surfaces of the field's own transform. It is measured on the field's flux
+label, the same label the iota and pressure targets use, and never taken
+from the file. The amplitudes lower the energy the most, or are given per
+chain with `--seed.iotas` and `--seed.amplitudes`.
+
 ## Rotational transform
 
 The relaxation keeps the fluxes of every flux surface, so it keeps the
@@ -75,7 +85,8 @@ flux label's surfaces, $dB = \nabla \times (F(s) \nabla \zeta)$ with $\zeta$ the
 logical toroidal angle. It keeps every surface, its toroidal flux and the wall
 flux, and it changes the net toroidal current. Where an island keeps the label
 flat it adds nothing, and a target missed there is a warning. The seed
-(`--seed`) then resonates with the new transform. `relax.json` holds the
+(`--seed`) then resonates with the new transform, which it measures on the
+field. `relax.json` holds the
 transform before and after under `iota`.
 
 ## Prescribed pressure

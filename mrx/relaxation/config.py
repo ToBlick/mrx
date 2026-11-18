@@ -107,12 +107,12 @@ class Iota:
 
 @dataclass(frozen=True)
 class Seed:
-    """Island seeding of the start field (see mrx.relaxation.seeding)."""
+    """Island seeding of the start field, at the resonances of its own transform (see mrx.relaxation.seeding)."""
     seed: Annotated[bool, tyro.conf.arg(name="seed", prefix_name=False)] = field(
         default=False, metadata=dict(record="seed"))
     """Add island seeds to the start field (the initial field or the --output.restart checkpoint)."""
     iotas: Optional[tuple[float, ...]] = None
-    """The rotational transforms nfp n / m of the island chains to seed. Unset, every resonance in the iota range is seeded."""
+    """The rotational transforms nfp n / m of the island chains to seed. Unset, every resonance in the iota range of the field, measured on its flux label, is seeded."""
     amplitudes: Optional[tuple[float, ...]] = None
     """One signed amplitude per --seed.iotas value: the resonant normal field |dB^r| / |B^zeta| at the resonant surface. Unset, the amplitudes minimise the energy."""
     scale: float = 1.0
