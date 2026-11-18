@@ -64,10 +64,11 @@ def test_vacuum_field_and_its_shape_derivative(seq):
     fd = (4 * central(FD_EPS / 2) - central(FD_EPS)) / 3
     assert abs(jax.grad(mean_iota)(x) @ d - fd) <= 1e-6 * abs(fd)
 
-    # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off
+    # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off. The perturbation is
+    # small enough that the map does not fold (at 1e-2 det DPhi reached -1.3), so the vacuum solve below is well posed
     aspect = 6.0
     held = sa.BoundaryShape.from_map(seq, seq.map, aspect=aspect)
-    Phi = held.map_at(seq, 1e-2 * jnp.asarray(np.random.default_rng(2).standard_normal(var_shape)))
+    Phi = held.map_at(seq, 3e-3 * jnp.asarray(np.random.default_rng(2).standard_normal(var_shape)))
     V, _, S = sa.section_moments(seq, Phi)
     assert abs(float(V - held.volume)) <= round_off(1e3) * float(V)
     assert abs(float(seq.nfp * V / (2.0 * np.sqrt(np.pi) * S ** 1.5)) - aspect) <= round_off(1e3) * aspect
@@ -88,7 +89,8 @@ def test_vacuum_field_and_its_shape_derivative(seq):
 
     # the terms of the quasi-symmetry residual at quadrature points away from the axis, against jax.grad of |B|
     sq = seq.with_geometry(hand)
-    h, _ = sa.vacuum_two_form(sq, seed)
+    h, info = sa.vacuum_two_form(sq, seed)
+    assert info > 0
     B_mag, parallel, cross, _, _ = sa._residual_terms(sq, h, Phi, sa._tables(sq))
     field = Pushforward(DiscreteFunction(h, sq.odd.basis_2, sq.odd.E(2)), sq.map, 2)
     away = np.flatnonzero(np.asarray(seq.quad.x[:, 0]) > 0.3)

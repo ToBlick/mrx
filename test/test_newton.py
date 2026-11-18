@@ -20,13 +20,15 @@ in float32 (:data:`mrx.precision.PRECOND_DTYPE`), so the symmetry holds to the r
 
 A short run with the production stepper takes positive steps, lowers the energy at every step, lowers the force,
 keeps ``div B`` at round-off and the helicity up to grid-scale effects, records the best state, and writes a
-checkpoint that reads back. A few steps of the gradient descent take positive steps and lower the energy too.
+checkpoint that reads back. Two builds of the map are the same bit for bit, so a restart meets its run's geometry.
+A few steps of the gradient descent take positive steps and lower the energy too.
 """
 import os
 
 import jax
 import numpy as np
 
+from mrx.equilibria import build_map
 from mrx.precision import PRECOND_DTYPE, eps
 from mrx.relaxation.loop import (TimeStepper, initial_state, read_checkpoint, relax,
                                  write_checkpoint)
@@ -146,6 +148,16 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
     write_checkpoint(path, res.state, STEPS, seq)
     state, step = read_checkpoint(path, ts)
     assert step == STEPS and np.array_equal(np.asarray(state.B_n), np.asarray(res.state.B_n))
+
+
+def test_the_map_is_the_same_in_every_build(seq):
+    """Two projections of the file's map onto the spline space are equal bit for bit, so a restart meets the geometry
+    of its run. Summed in the order of a GPU scatter they were not, in either precision. In float32 on an H200 two
+    builds differed by a few units in the last place of R, the metric near the axis turned that into 7e-4 of the
+    inverse metric, and a restart of li383 1.4m at a residual of 1e-10 started at 1e-7 (2026-11-17)."""
+    maps = [build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0] for _ in range(2)]
+    assert all(np.array_equal(np.asarray(getattr(maps[0], name)), np.asarray(getattr(maps[1], name)))
+               for name in ("raw_X1", "raw_X2"))
 
 
 def test_gradient_descent_descends(seq, b0):
