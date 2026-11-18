@@ -1,14 +1,15 @@
-"""The profiles of a VMEC input namelist (:mod:`mrx.equilibria.indata`).
+"""The profiles of a VMEC input namelist (:mod:`mrx.equilibria.indata`) and the pressure target it gives.
 
 Every profile type is checked against a closed form or an independent computation: types that describe one function
 in two ways against each other, end values the type fixes, and the current profiles that integrate a density against
 that density integrated by ``scipy.integrate.quad``. The current is scaled to ``CURTOR`` at the edge, the pressure is
-``mu0 p`` in T^2.
+``mu0 p`` in T^2, and a namelist that tabulates the geometry file's pressure gives the file's target.
 """
 import numpy as np
 from scipy.integrate import quad
 
 from mrx.equilibria.indata import MU0, PCURR_TYPES, profile, read_indata
+from mrx.relaxation.shells import load_target, target_beta
 
 X = np.linspace(0.0, 1.0, 41)
 EPS = np.finfo(np.float64).eps
@@ -152,3 +153,21 @@ def test_namelist_profiles(tmp_path):
                                      + " ".join(map(str, ac)) + ", " + aux, "in4")).current(np.array([0.0, 1.0]))
         assert abs(current[0]) < 8 * EPS * MU0 * 1.5e5 and abs(current[1] / (MU0 * -1.5e5) - 1.0) < 8 * EPS, kind
 
+
+def test_namelist_target_is_the_file_target(seq, b0, tmp_path):
+    """The namelist target in T^2: a namelist whose pressure tabulates the geometry file's in Pa (a cubic spline in
+    ``s`` through 201 knots, the edge value kept in the profile) gives the file's target to the spline's
+    interpolation error, 4.3e-8 of its maximum measured (6.6e-8 in float32), and the same target beta on the
+    fixture's field (0.5 s on the CPU after the fixture)."""
+    p_r = seq.equilibrium["profiles"]["pressure"]
+    s = np.linspace(0.0, 1.0, 201)
+    body = (f"PMASS_TYPE = 'cubic_spline', PRES_SCALE = 2.0\n  AM_AUX_S = {' '.join(f'{v:.17g}' for v in s)}\n"
+            f"  AM_AUX_F = {' '.join(f'{v:.17g}' for v in 0.5 * p_r(np.sqrt(s)))}")
+    file_target = load_target(seq, "file", 0.3).profile
+    namelist_target = load_target(seq, _write(tmp_path, body), 0.3).profile
+    s_q = seq.quad.x[:, 0] ** 2
+    a, b = np.asarray(file_target(s_q)), np.asarray(namelist_target(s_q))
+    print(f"\n  |namelist - file| / max file {np.max(np.abs(a - b)) / np.max(a):.1e},  target beta "
+          f"{target_beta(seq, b0, a):.6e} vs {target_beta(seq, b0, b):.6e}")
+    assert np.max(np.abs(a - b)) < 1e-6 * np.max(a)
+    assert abs(target_beta(seq, b0, b) / target_beta(seq, b0, a) - 1.0) < 1e-6

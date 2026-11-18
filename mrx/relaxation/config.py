@@ -175,7 +175,7 @@ class Drive:
 class Pressure:
     """Prescribed pressure: the volumes of the flux shells are unknowns of every Newton step (mrx.relaxation.shells), so the relaxation ends at the target pressure instead of keeping the start's."""
     target: Optional[str] = None
-    """The pressure to reach: file (the geometry file's pressure) or a JSON file of measured pressure in pascal, {"rho": [...], "p_pa": [...]} on flux surfaces or {"points": [[R, Z, phi_deg], ...], "p_pa": [...]} at points in space. Unset, the run keeps the start's pressure."""
+    """The pressure to reach: file (the geometry file's pressure), a VMEC input namelist (its pressure profile), or a JSON file of measured pressure in pascal, {"rho": [...], "p_pa": [...]} on flux surfaces or {"points": [[R, Z, phi_deg], ...], "p_pa": [...]} at points in space. Unset, the run keeps the start's pressure."""
     scale: float = 1.0
     """Multiply the target by this factor."""
     beta: Optional[float] = None

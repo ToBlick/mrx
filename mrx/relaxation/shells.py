@@ -30,8 +30,8 @@ shell divergences is zero: the shells kept are the combinations whose coefficien
 pressure cannot move a fixed wall. The pressure's constant, which no move changes, is the gauge ``<p> = <p*>``
 (:func:`pressure_error`): with it all ``K`` moments of ``p - p*`` vanish at an equilibrium.
 
-The targets: a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a measured profile on flux surfaces,
-:class:`PressureTarget`), made constant across seeded island chains (:func:`plateau_intervals`,
+The targets: a profile ``p*(s)`` (mu0 p in T^2, from the geometry file, a VMEC input namelist or a measured profile
+on flux surfaces, :class:`PressureTarget`), made constant across seeded island chains (:func:`plateau_intervals`,
 :func:`flattened`), or pressure data at points in space (:class:`PressureData`), refitted to a profile of the current
 labels at every rebuild.
 """
@@ -314,19 +314,26 @@ class PressureData(NamedTuple):
 
 
 def load_target(seq, spec, scale=1.0, smoothing=1e-3):
-    """The :class:`PressureTarget` of ``spec``: ``"file"`` (the geometry file's pressure) or a JSON file of measured
-    pressure in pascal, ``{"rho": [...], "p_pa": [...]}`` on flux surfaces (``rho = sqrt(s)``) or
-    ``{"points": [[R, Z, phi_deg], ...], "p_pa": [...]}`` at points in space (metres, degrees). Profiles are
-    multiplied by ``scale``. The constant of a measured profile is removed so that it vanishes on the wall (a uniform
-    pressure does no work on a fixed wall), points are fitted at every rebuild (:class:`PressureData`) with
-    ``smoothing``."""
+    """The :class:`PressureTarget` of ``spec``: ``"file"`` (the geometry file's pressure), a VMEC input namelist (its
+    pressure profile, :meth:`mrx.equilibria.indata.Indata.pressure`) or a JSON file of measured pressure in pascal,
+    ``{"rho": [...], "p_pa": [...]}`` on flux surfaces (``rho = sqrt(s)``) or ``{"points": [[R, Z, phi_deg], ...],
+    "p_pa": [...]}`` at points in space (metres, degrees). Every target is mu0 p in T^2 multiplied by ``scale``.
+    The constant of a profile is removed so that it vanishes on the wall (a uniform pressure does no work on a fixed
+    wall), points are fitted at every rebuild (:class:`PressureData`) with ``smoothing``."""
     import json
+
+    from mrx.equilibria.indata import read_indata
     mu0 = 4e-7 * np.pi
     if spec == "file":
         p_r = seq.equilibrium["profiles"]["pressure"]               # Pa, a function of r = sqrt(s)
         edge = float(p_r(1.0))
         s = np.linspace(0.0, 1.0, 2001)
         values = jnp.asarray(scale * mu0 * (p_r(np.sqrt(s)) - edge))
+        return PressureTarget(profile=lambda x: jnp.interp(x, jnp.asarray(s), values))
+    if not spec.endswith(".json"):
+        indata = read_indata(spec)                                  # mu0 p in T^2
+        s = np.linspace(0.0, 1.0, 2001)
+        values = jnp.asarray(scale * (indata.pressure(s) - indata.pressure(1.0)))
         return PressureTarget(profile=lambda x: jnp.interp(x, jnp.asarray(s), values))
     with open(spec) as fh:
         d = json.load(fh)

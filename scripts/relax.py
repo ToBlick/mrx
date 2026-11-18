@@ -12,11 +12,11 @@ by one heat step of ``--drive.reference-smoothing`` h_r^2 and can be given an is
 and ``--drive.eps``.
 
 With ``--pressure.target`` the volumes of the flux shells are unknowns of every Newton step, so the relaxation ends
-at the target pressure, a profile (the file's, scaled by ``--pressure.scale`` or to ``--pressure.beta``) or measured
-data on flux surfaces or at points in space (:mod:`mrx.relaxation.shells`). The shells and the target are rebuilt on
-the flux label of the field before every chunk. With ``--seed`` the target is made constant across the seeded chains
-(``--pressure.plateau-margin``). Such a run takes all of ``--budget.steps``: the force residual does not see the
-shells, so ``--budget.floor-tol`` does not end it.
+at the target pressure, a profile (the file's or a VMEC input namelist's, scaled by ``--pressure.scale`` or to
+``--pressure.beta``) or measured data on flux surfaces or at points in space (:mod:`mrx.relaxation.shells`). The
+shells and the target are rebuilt on the flux label of the field before every chunk. With ``--seed`` the target is
+made constant across the seeded chains (``--pressure.plateau-margin``). Such a run takes all of ``--budget.steps``:
+the force residual does not see the shells, so ``--budget.floor-tol`` does not end it.
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 

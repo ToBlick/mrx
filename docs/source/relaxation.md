@@ -84,7 +84,8 @@ changes the shells' volumes. The trace has `dW` next to `dE`: the change of
 $W$ over the step, with the target pressure's work to first order in the step.
 The summary's `W_removed` is its sum.
 
-The target is the geometry file's pressure (`--pressure.target file`) or
+The target is the geometry file's pressure (`--pressure.target file`), the
+pressure profile of a VMEC input namelist (`--pressure.target input.<name>`) or
 measured pressure in pascal from a JSON file, on flux surfaces (`{"rho": [...], "p_pa": [...]}`) or at points in space
 (`{"points": [[R, Z, phi_deg], ...], "p_pa": [...]}`). Data at points are
 refitted to a profile of their current labels at every rebuild, so they follow
@@ -121,6 +122,22 @@ the target over 32 bins of $\sqrt{s}$ is 1.4e-2 after 20 Newton steps, 7.5e-3
 after 30, 9.7e-4 after 100 and 4.6e-4 after 300, with $C$ at 9.4e-4 of the
 target's maximum. `dW` is negative on every step (one H200, 10 minutes with
 the build of the operators, 2026-11-17).
+
+A VMEC input namelist gives its pressure profile, `PRES_SCALE` times the
+`PMASS_TYPE` profile of `AM` (or of `AM_AUX_S` and `AM_AUX_F`) in pascal, as
+$\mu_0 p$ (`mrx.equilibria.indata`). Only the profiles of the namelist are
+read, the geometry is the geometry file's. A namelist with `GAMMA` other than
+zero is refused. With a namelist `input.li383_two_power` that holds
+`PMASS_TYPE = 'two_power', AM = 7.34e4 1.0 2.0`, the pressure $(1 - s)^2$,
+
+    python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 32 44 20 \
+        --geometry.graded --budget.steps 300 --pressure.target input.li383_two_power --pressure.beta 0.01
+
+ends at an error of 2.8e-4, with $C$ at -7.0e-5 of the target's maximum,
+from 1.3 at the start (7.4e-3 after 20 steps, 6.1e-4 after 100, one H200,
+10 minutes). A namelist that tabulates the file's own pressure ends where
+`--pressure.target file` ends, to 1.3e-6 in the field's coefficients, as close as two runs
+of the file's target on different nodes (3.8e-6).
 
 ## Stopping
 
