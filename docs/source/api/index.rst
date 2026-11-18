@@ -39,6 +39,7 @@ documented in their source and in the concept pages.
    :caption: Diagnostics
 
    diagnostics.poincare
+   flux_label
    diagnostics.plotting
 
 .. toctree::

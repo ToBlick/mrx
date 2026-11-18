@@ -9,7 +9,7 @@ tracked in the repository.
 ## Four statements
 
 The suite tests four mathematical statements about the discretisation, which between them run most of
-the code, plus the field-line tracer, the shape derivative and the readers:
+the code, plus the field-line tracer, the shape derivative, the readers and the flux label:
 
 | file | statement |
 |---|---|
@@ -20,6 +20,7 @@ the code, plus the field-line tracer, the shape derivative and the readers:
 | `test_poincare.py` | the field-line tracer measures the file's rotational transform on the equilibrium's own field, whose lines stay on their logical surfaces, the padding lines stay on their surfaces both ways, the crossings of a closed-form field are its exact lines forwards and backwards, a lost line is cut at the boundary, and on a map in the cylindrical frame the sections `phi = const` are the sections `zeta = const` |
 | `test_shape_ad.py` | the vacuum field of the shape derivative is harmonic, its derivative in the map coefficients matches central differences, and on a frame that changes along zeta with points out of its planes the hand-derived metric and `det DPhi` are those of the map's Jacobian |
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
+| `test_flux_label.py` | the flux label of the equilibrium's field is constant on its logical surfaces up to the anisotropy, falls from the axis to the wall and encloses the flux `r^2` |
 
 The fixtures of `test/conftest.py` build the li383 equilibrium
 (`data/wout_li383_low_res_reference.nc`) at `(16, 32, 12)` per field period,
