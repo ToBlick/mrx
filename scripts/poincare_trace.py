@@ -12,7 +12,7 @@ folder. ``scripts/poincare_plot.py`` draws it and is cheap enough for the login 
 repeats the trace. All checkpoints of one call go into ONE archive, so the plotter can put them on one iota scale
 and one pressure scale.
 
-    python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc outputs/run/checkpoints/state_*.h5
+    python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc <run>/checkpoints/state_*.h5
 
 The archive (numpy .npz) holds ``fields`` (the checkpoint names, in order), ``planes``, ``resolution``, ``p``,
 ``nfp``, ``symmetry``, ``steps`` (per period), ``source``, ``sections`` (``zeta`` or ``phi``, see ``--sections``)

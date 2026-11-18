@@ -2,7 +2,10 @@
 .DS_Store
 .vscode
 .idea
-.claude
+
+# Claude Code: CLAUDE.md and .claude/skills/ are shared, the rest is per machine
+.claude/*
+!.claude/skills/
 
 # Python
 __pycache__/
@@ -18,7 +21,8 @@ venv/
 .coverage
 .ipynb_checkpoints
 
-# Runs and data
+# Runs, untracked inputs and caches live in $MRX_DATA next to the checkout
+# (docs/source/cluster.md). outputs/ is the fallback without MRX_DATA.
 data/*
 !data/wout_li383_low_res_reference.nc
 !data/wout_li383_1.4m.nc
@@ -26,18 +30,9 @@ data/*
 !data/desc_li383_low_res_reference.h5
 !data/desc_LandremanPaul2021_QA.h5
 !data/gvec_gframe/
-outputs
-out
-logs
-*.log
-.hydra
-multirun*
-jax-caches/
-.jax_cache
-slurm/job_*
+outputs/
 
-# Site-specific slurm and GKE settings, Terraform state (never commit)
-slurm/site.env
+# GKE settings and Terraform state (never commit)
 gcp.env
 terraform/.terraform/
 terraform/*.tfstate

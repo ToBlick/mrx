@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The test suite in the two precisions, two GPU jobs. Logs under outputs/suite/<stamp>/suite_<dtype>.log.
+# The test suite in the two precisions, two GPU jobs. Logs under suite/<stamp>/suite_<dtype>.log in the runs root
+# (see run.sh).
 #
 #   bash slurm/suite.sh            # both
 #   bash slurm/suite.sh float32    # one of float64 | float32

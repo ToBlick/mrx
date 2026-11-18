@@ -28,6 +28,7 @@ print("[tutorial 3] Newton relaxation of li383: importing JAX and MRX", flush=Tr
 
 import tyro
 
+from mrx.paths import runs_root
 from mrx.relaxation.config import Budget, Geometry, Newton
 
 _INTERACTIVE = "ipykernel" in sys.modules
@@ -41,7 +42,7 @@ class Options:
     newton: Newton = Newton()
     budget: Budget = Budget(steps=20, chunk=5, floor_tol=0.0)
     """The step budget of the Newton run."""
-    out: str = "outputs/tutorials/3_li383_newton"
+    out: str = os.path.join(runs_root(), "tutorials", "3_li383_newton")
     """The directory of the Newton run."""
 
 

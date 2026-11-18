@@ -16,6 +16,7 @@ documented in their source and in the concept pages.
    nullspace
    solvers
    precision
+   paths
 
 .. toctree::
    :maxdepth: 1

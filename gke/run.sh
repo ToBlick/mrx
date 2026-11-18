@@ -6,7 +6,8 @@
 #   TPU_GEN=v5p|v6e        the TPU family (default: either). The job waits in every TPU pool of the family on the
 #                          clusters of gcp.env and runs in the first to get a node; the others are deleted
 #   COMPUTE_CLASS          a ComputeClass (gke/compute-classes.yaml) instead of TPU_GEN
-#   FOLLOW=1               stream the logs, wait for the end, copy the outputs to ./outputs/<job>/, exit 0 on success
+#   FOLLOW=1               stream the logs, wait for the end, copy the outputs to <job>/ in the runs root, exit 0 on
+#                          success. The runs root is $MRX_DATA/runs/mrx, or outputs/ in the checkout without MRX_DATA
 #   TIMEOUT_MIN            deadline of the job in minutes (default 480)
 #   EXTRA_ENV="A=1 B=2"    environment variables exported in the container
 #   JOB_NAME, OUTSUB       job name (default mrx-<MRX_USER>-<timestamp>) and output directory (default: the job name);
@@ -35,6 +36,8 @@ elif [[ -f "${MRX_ROOT}/gcp.env.example" ]]; then
     source "${MRX_ROOT}/gcp.env.example"
 fi
 _ENV_COMPUTE_CLASS="${COMPUTE_CLASS:-}"
+LOCAL_RUNS="${MRX_DATA:+${MRX_DATA}/runs/mrx}"
+LOCAL_RUNS="${LOCAL_RUNS:-${MRX_ROOT}/outputs}"
 _ENV_TPU_GEN="${TPU_GEN:-}"
 
 [[ -n "${_CLI_PROJECT_ID}" ]] && export PROJECT_ID="${_CLI_PROJECT_ID}"
@@ -235,7 +238,7 @@ if (( ${#JOBS[@]} > 1 )); then
     if [[ "${FOLLOW}" != "1" ]]; then
         # Without FOLLOW a watcher on this machine settles the race; it stops if the machine sleeps or shuts down,
         # and then make stop deletes the jobs left over
-        mkdir -p "${MRX_ROOT}/outputs"
+        mkdir -p "${LOCAL_RUNS}"
         (
             trap '' HUP
             if w="$(race)"; then
@@ -245,8 +248,8 @@ if (( ${#JOBS[@]} > 1 )); then
             else
                 echo "$(date '+%F %T') no job got a node (deleted, or past the deadline)"
             fi
-        ) > "${MRX_ROOT}/outputs/${JOB_NAME}-race.log" 2>&1 &
-        echo "A watcher on this machine keeps the first job to get a node and deletes the others (outputs/${JOB_NAME}-race.log)"
+        ) > "${LOCAL_RUNS}/${JOB_NAME}-race.log" 2>&1 &
+        echo "A watcher on this machine keeps the first job to get a node and deletes the others (${LOCAL_RUNS}/${JOB_NAME}-race.log)"
         exit 0
     fi
     echo "Waiting for a TPU node in any of the ${#JOBS[@]} pools (a node takes about 3 minutes when a zone has capacity)"
@@ -284,8 +287,8 @@ if [[ "${FOLLOW}" == "1" ]]; then
     done
     STATUS="Failed"
     [[ " ${CONDITIONS} " == *" Complete "* ]] && STATUS="Complete"
-    mkdir -p "${MRX_ROOT}/outputs/${OUTSUB}"
-    gcloud storage rsync -r "gs://${GCS_BUCKET}/outputs/${OUTSUB}" "${MRX_ROOT}/outputs/${OUTSUB}" --project="${PROJECT_ID}" 2>/dev/null || true
-    echo "Job ${JOB_NAME} finished with status: ${STATUS} (local outputs: outputs/${OUTSUB}/)"
+    mkdir -p "${LOCAL_RUNS}/${OUTSUB}"
+    gcloud storage rsync -r "gs://${GCS_BUCKET}/outputs/${OUTSUB}" "${LOCAL_RUNS}/${OUTSUB}" --project="${PROJECT_ID}" 2>/dev/null || true
+    echo "Job ${JOB_NAME} finished with status: ${STATUS} (local outputs: ${LOCAL_RUNS}/${OUTSUB}/)"
     [[ "${STATUS}" == "Complete" ]]
 fi

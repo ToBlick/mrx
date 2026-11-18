@@ -16,7 +16,7 @@ The pressure shown is the archived weak pressure divided by the field's mean mag
 ``p_norm = p / <B^2 / 2>``. ``--no-pressure`` leaves it out. The resonant iota values marked on the colour bar are
 picked from the iota range shown.
 
-    python scripts/poincare_plot.py outputs/run/trace.npz
+    python scripts/poincare_plot.py <run>/trace.npz
 """
 import os
 import sys

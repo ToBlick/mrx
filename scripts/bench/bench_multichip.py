@@ -141,7 +141,9 @@ def parse_args():
     ap.add_argument("--gradient-chunk", type=int, default=200, help="gradient descent steps per compiled chunk")
     ap.add_argument("--newton-steps", type=int, default=20, help="Newton steps per field, a multiple of --newton-chunk")
     ap.add_argument("--newton-chunk", type=int, default=10, help="Newton steps per compiled chunk")
-    ap.add_argument("--out", default="outputs/bench/multichip", help="output directory, for multichip_results.json")
+    ap.add_argument("--out", default=None,
+                    help="output directory, for multichip_results.json (default: bench/multichip in the runs root, "
+                         "mrx.paths.runs_root)")
     args = ap.parse_args()
     # RelaxConfig rejects a non-multiple too, but only after the setup and under relax.py's --budget.* names.
     budgets = dict(gradient=(args.gradient_steps, args.gradient_chunk), newton=(args.newton_steps, args.newton_chunk))
@@ -170,6 +172,7 @@ def main():
     # MRX_DTYPE must be in the environment before mrx is imported: mrx/precision.py reads it once, at import.
     import mrx  # noqa: PLC0415
     from mrx.nullspace import compute_nullspaces  # noqa: PLC0415
+    from mrx.paths import runs_root  # noqa: PLC0415
     from mrx.precision import inner, lift  # noqa: PLC0415
     from mrx.relaxation.config import Budget, Descent, Geometry, Method, RelaxConfig  # noqa: PLC0415
     from mrx.relaxation.initial_conditions import initial_field  # noqa: PLC0415
@@ -177,8 +180,9 @@ def main():
     # rebuilds that scan with the stepper's arrays as an argument, replicated by shard_map and jit_vmap.
     from mrx.relaxation.loop import _chunk_body, _run_chunk, initial_state  # noqa: PLC0415
 
-    os.makedirs(args.out, exist_ok=True)
-    out_path = os.path.join(args.out, "multichip_results.json")
+    out_dir = args.out or os.path.join(runs_root(), "bench", "multichip")
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "multichip_results.json")
     devices = jax.devices()
     n_dev = args.devices or len(devices)
     devices = devices[:n_dev]

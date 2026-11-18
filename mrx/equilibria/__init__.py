@@ -46,6 +46,7 @@ from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
 from mrx.extraction_operators import gram_inverse
+from mrx.paths import data_file
 from mrx.precision import DTYPE
 from mrx.quadrature import composite_quad
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
@@ -59,7 +60,9 @@ READERS = {".dat": ("gvec", read_state), ".nc": ("vmec", read_wout), ".h5": ("de
 
 def read_equilibrium(path):
     """Read the equilibrium file ``path`` and return its state. The file extension selects the reader
-    (:data:`READERS`)."""
+    (:data:`READERS`). A file that is not at ``path`` is looked up by name in ``$MRX_DATA/data``
+    (:func:`mrx.paths.data_file`), and the state's ``path`` is the file that was read."""
+    path = data_file(path)
     ext = os.path.splitext(path)[1]
     if ext not in READERS:
         raise ValueError(f"{path}: not an equilibrium file, MRX reads GVEC state files (.dat), "
