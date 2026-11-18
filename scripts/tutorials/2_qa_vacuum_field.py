@@ -33,6 +33,7 @@ print("[tutorial 2] the vacuum field of the QA stellarator: importing JAX and MR
 
 import tyro
 
+from mrx.paths import runs_root
 from mrx.relaxation.config import Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
@@ -50,7 +51,7 @@ class Options:
     """The number of field periods each line is traced."""
     lines: int = 160
     """The number of field lines in the Poincare sections."""
-    out: str = "outputs/tutorials/2_qa_vacuum_field"
+    out: str = os.path.join(runs_root(), "tutorials", "2_qa_vacuum_field")
     """The directory for the figures."""
 
 

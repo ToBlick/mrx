@@ -16,8 +16,10 @@ import pytest
 
 # Compiled programs are cached on disk, keyed by their HLO, so a stale entry
 # costs only a recompile. MRX_XLA_CACHE names the directory. An empty value disables the cache.
-_CACHE = os.environ.get("MRX_XLA_CACHE", os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                                       "outputs", "xla_cache"))
+# Unset, it is $MRX_DATA/cache/xla, or outputs/xla_cache in the repository without MRX_DATA.
+_CACHE = os.environ.get("MRX_XLA_CACHE",
+                        os.path.join(os.environ["MRX_DATA"], "cache", "xla") if os.environ.get("MRX_DATA")
+                        else os.path.join(os.path.dirname(os.path.dirname(__file__)), "outputs", "xla_cache"))
 if _CACHE:
     jax.config.update("jax_compilation_cache_dir", _CACHE)
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)

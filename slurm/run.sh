@@ -5,18 +5,19 @@
 #   SCRIPT=scripts/tutorials/1_qa_geometry.py bash slurm/run.sh
 #   SCRIPT="-m pytest -q test" JOB_NAME=tests TIMEOUT_MIN=120 bash slurm/run.sh
 #
-# Site settings come from the environment, never from this file. Put them in
-# a file outside the repo (or in slurm/site.env, which is gitignored) and
-# source it first:
+# Site settings never live in the repository. They are read from one file in the
+# user's home, ~/.config/mrx/site.env, or from the file MRX_SITE_ENV names:
 #
 #   export SLURM_ACCOUNT=<account> SLURM_PARTITION=<gpu partition>
 #   export SLURM_EXCLUDE=<comma-separated nodes to avoid>   # optional
+#   export MRX_DATA=<data root outside the repository>      # optional
 #
 # Variables:
 #   SCRIPT       (required) path relative to MRX_ROOT, or "-m module"
 #   ARGS         arguments passed to the script
 #   JOB_NAME     slurm job name and log file stem          (default: run)
-#   OUTSUB       log directory under MRX_ROOT/outputs/     (default: JOB_NAME)
+#   OUTSUB       log directory under the runs root         (default: JOB_NAME)
+#                The runs root is $MRX_DATA/runs/mrx if MRX_DATA is set, MRX_ROOT/outputs otherwise.
 #   MRX_ROOT     checkout to run; defaults to the repo containing this file.
 #                Also exported as PYTHONPATH so an editable install pinned to
 #                another checkout does not shadow it.
@@ -32,7 +33,12 @@
 set -euo pipefail
 
 MRX_ROOT=${MRX_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-[ -f "${MRX_ROOT}/slurm/site.env" ] && source "${MRX_ROOT}/slurm/site.env"
+SITE_ENV=${MRX_SITE_ENV:-${HOME}/.config/mrx/site.env}
+if [ ! -f "${SITE_ENV}" ]; then
+  echo "run.sh: no site settings at ${SITE_ENV} (see docs/source/cluster.md, Site settings)" >&2
+  exit 1
+fi
+source "${SITE_ENV}"
 
 SCRIPT=${SCRIPT:?set SCRIPT}
 ARGS=${ARGS:-}
@@ -50,12 +56,14 @@ VENV=${MRX_VENV:-${MRX_ROOT}/.venv}
 [ -d "${VENV}" ] || VENV=$(cd "${MRX_ROOT}" && git rev-parse --path-format=absolute --git-common-dir)/../.venv
 
 STAMP=$(date +%Y-%m-%d/%H-%M-%S)
-OUTDIR="${MRX_ROOT}/outputs/${OUTSUB}/${STAMP}"
+RUNS=${MRX_DATA:+${MRX_DATA}/runs/mrx}
+OUTDIR="${RUNS:-${MRX_ROOT}/outputs}/${OUTSUB}/${STAMP}"
 mkdir -p "${OUTDIR}"
 LOG="${OUTDIR}/${JOB_NAME}.log"
 
 CMD="set -euo pipefail; cd ${MRX_ROOT}; source ${VENV}/bin/activate; \
 export MRX_ROOT=${MRX_ROOT} PYTHONPATH=${MRX_ROOT} PYTHONUNBUFFERED=1; \
+${MRX_DATA:+export MRX_DATA=${MRX_DATA}; } \
 ${EXTRA_ENV:+export ${EXTRA_ENV}; } \
 python -c 'import mrx; print(\"mrx from:\", mrx.__file__)'; \
 python -u ${SCRIPT} ${ARGS}"

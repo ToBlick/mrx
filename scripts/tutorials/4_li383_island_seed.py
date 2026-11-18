@@ -16,8 +16,9 @@ The tutorial draws Poincare sections of the unseeded minimal force state and bot
 field lines (160 by default, the paper's li383 figures trace 320 for 600 periods) each traced for ``--periods`` field periods (400 by default). It then relaxes the 
 automatic seed.
 
-The tutorial starts from the Newton state of Tutorial 3 (``outputs/tutorials/3_li383_newton``) on the same
-``(12, 16, 16) p = 2`` mesh, so run Tutorial 3 first.
+The tutorial starts from the Newton state of Tutorial 3 (``tutorials/3_li383_newton`` in the runs root, which is
+``$MRX_DATA/runs/mrx``, or ``outputs`` without ``MRX_DATA``) on the same ``(12, 16, 16) p = 2`` mesh, so run Tutorial
+3 first.
 
     python -u scripts/tutorials/4_li383_island_seed.py
     python -u scripts/tutorials/4_li383_island_seed.py --iotas 0.5 0.6 --amplitudes 3e-3 -2e-3
@@ -36,6 +37,7 @@ from typing import Optional
 
 import tyro
 
+from mrx.paths import runs_root
 from mrx.relaxation.config import Budget, Geometry
 
 _INTERACTIVE = "ipykernel" in sys.modules
@@ -47,7 +49,7 @@ class Options:
     """Tutorial 4: seed island chains by the energy criterion and by hand, on li383."""
     geometry: Geometry = Geometry(path="data/wout_li383_low_res_reference.nc", resolution=(12, 16, 16),
                                   spline_degree=2)
-    warm_start: str = "outputs/tutorials/3_li383_newton"
+    warm_start: str = os.path.join(runs_root(), "tutorials", "3_li383_newton")
     """The run directory of Tutorial 3 to start from."""
     iotas: tuple[float, ...] = (0.5,)
     """The chains seeded by hand, by their rotational transforms nfp n / m."""
@@ -61,7 +63,7 @@ class Options:
     """The number of field lines in the Poincare sections."""
     periods: int = 400
     """The number of field periods each line is traced."""
-    out: str = "outputs/tutorials/4_li383_island_seed"
+    out: str = os.path.join(runs_root(), "tutorials", "4_li383_island_seed")
     """The directory of the run."""
 
 

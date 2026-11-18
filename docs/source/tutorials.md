@@ -38,10 +38,12 @@ SCRIPT=scripts/tutorials/3_li383_newton.py JOB_NAME=li383_newton bash slurm/run.
 The command line is built with `tyro`, and its `--geometry` and `--budget`
 groups are those of `scripts/relax.py`. `--help` lists every option.
 
-Every tutorial writes to `outputs/tutorials/<script name>/`. Tutorials 4 and
-5 start from the run of the previous tutorial there when it has the same
-mesh, and build what is missing themselves otherwise. The Poincare sections
+Every tutorial writes to `tutorials/<script name>/` in the runs root, which
+is `$MRX_DATA/runs/mrx`, or `outputs/` in the working directory without
+`MRX_DATA` ([Running on a cluster](cluster.md)). Tutorial 4 starts from the
+run of Tutorial 3 there and Tutorial 5 from the run of Tutorial 4, so run
+them in order. The Poincare sections
 of Tutorials 2, 4 and 5 are written as `trace.npz` and drawn into
 `poincare/` as `scripts/poincare_plot.py` draws them, so
-`python scripts/poincare_plot.py outputs/tutorials/<script name>` redraws
+`python scripts/poincare_plot.py <runs root>/tutorials/<script name>` redraws
 them with other options.

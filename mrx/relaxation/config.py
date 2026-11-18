@@ -19,6 +19,7 @@ from typing import Annotated, Literal, Optional
 import tyro
 
 from mrx.flux_label import ANISOTROPY
+from mrx.paths import data_file
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
 from mrx.relaxation.shells import LABEL_TOL
 
@@ -40,7 +41,7 @@ class Method(StrEnum):
 class Geometry:
     """Geometry, initial condition and discretisation."""
     path: str = field(metadata=dict(record="geometry"))
-    """The file that sets both the geometry and the initial field. A VMEC wout (.nc), GVEC state (.dat) or DESC output (.h5) gives the map and the equilibrium's own magnetic field."""
+    """The file that sets both the geometry and the initial field. A VMEC wout (.nc), GVEC state (.dat) or DESC output (.h5) gives the map and the equilibrium's own magnetic field. A file that is not at this path is looked up by name in $MRX_DATA/data."""
     symmetry: Symmetry = Symmetry.STELLARATOR
     """The symmetry of the geometry: nfp field periods with stellarator symmetry, field periods only, or none."""
     resolution: tuple[int, int, int] = (32, 64, 64)
@@ -69,8 +70,9 @@ class Geometry:
     def __post_init__(self):
         if self.max_batch < 0:
             raise ValueError("--geometry.max-batch must be non-negative (0 is one vmap over all points)")
-        if not os.path.isfile(self.path):
-            raise ValueError(f"--geometry.path {self.path!r} is not a file (a .nc, .dat or .h5)")
+        if not os.path.isfile(data_file(self.path)):
+            raise ValueError(f"--geometry.path {self.path!r} is not a file (a .nc, .dat or .h5), neither there nor by "
+                             "name in $MRX_DATA/data")
 
     @property
     def knots(self):
@@ -203,7 +205,7 @@ class Pressure:
 class Output:
     """Output directory and restart."""
     out: Optional[str] = None
-    """The directory the run writes to. Unset, it is outputs/relax/<date>/<time>."""
+    """The directory the run writes to. Unset, it is relax/<date>/<time> under $MRX_DATA/runs/mrx, or under outputs without MRX_DATA."""
     restart: Optional[str] = None
     """Continue from a checkpoint file checkpoints/state_<step>.h5 written with the same geometry, resolution and spline degree."""
 

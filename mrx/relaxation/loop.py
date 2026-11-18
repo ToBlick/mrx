@@ -446,13 +446,16 @@ def checkpoint_attrs(path: str) -> dict:
 def check_checkpoint(path: str, seq: DeRhamSequence) -> None:
     """Raise if the checkpoint ``path`` was written on another discretisation than that of ``seq``: another
     resolution, degree, number of field periods, symmetry, knots, theta count of a ring or theta cells of the map.
-    The ring counts of a checkpoint written before they were stored are not checked, only its graded flag."""
+    The ring counts of a checkpoint written before they were stored are not checked, only its graded flag. The
+    precision it was written in is not checked: a checkpoint of either precision belongs to the sequence of the
+    other."""
     with h5py.File(path, "r") as fh:
         a = dict(fh.attrs)
     stored = (tuple(int(v) for v in a["resolution"]), int(a["degree"]), int(a["nfp"]), str(a["symmetry"]),
               bool(a.get("graded", False)), int(a.get("map_theta", a["resolution"][1])))
-    same_knots = all(np.allclose(a[f"knots_{name}"], bp, rtol=0.0, atol=1e-12) if a[f"knots_{name}"].shape == bp.shape
-                     else False for name, bp in zip(_AXES, _breakpoints(seq)))
+    # a float32 sequence holds its breakpoints rounded to float32, so the two precisions agree to that spacing
+    same_knots = all(np.allclose(a[f"knots_{name}"], bp, rtol=0.0, atol=np.finfo(np.float32).eps)
+                     if a[f"knots_{name}"].shape == bp.shape else False for name, bp in zip(_AXES, _breakpoints(seq)))
     counts, stored_counts = _theta_counts(seq), a.get("theta_counts")
     same_counts = stored_counts is None or np.array_equal(stored_counts, counts)
     graded = seq.theta_counts is not None
@@ -476,7 +479,8 @@ def read_field(path: str, seq: DeRhamSequence) -> tuple[jnp.ndarray, int]:
 def read_checkpoint(path: str, ts: TimeStepper) -> tuple[State, int]:
     """Return the ``(state, step)`` saved by :func:`write_checkpoint`. ``ts`` must be built on a sequence with
     the same discretisation. Arrays missing from the file are taken from :func:`initial_state` of the stored
-    field."""
+    field. The arrays are read in the precision of ``ts``: a float64 checkpoint read in float32 is rounded once, a
+    float32 one read in float64 is exact."""
     check_checkpoint(path, ts.seq)
     with h5py.File(path, "r") as fh:
         step = int(fh.attrs["step"])

@@ -154,6 +154,10 @@ chunk restarts it (`--output.restart`).
 
 ## Output
 
+A run writes to `--output.out`, by default `relax/<date>/<time>/` in the
+runs root, which is `$MRX_DATA/runs/mrx`, or `outputs/` in the working
+directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
+
 | file | content |
 |---|---|
 | `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with `--pressure.target` also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with `--pressure.target` also `W_removed`, `beta`, `pressure_error` and `pressure_constant` at the end. |
@@ -181,7 +185,7 @@ To evaluate a checkpoint's field:
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.relaxation.loop import checkpoint_attrs, read_field
 
-path = "outputs/relax/<date>/<time>/checkpoints/best.h5"
+path = "<run>/checkpoints/best.h5"
 a = checkpoint_attrs(path)
 seq = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"],
                      graded=a["graded"], map_theta=a["map_theta"])
@@ -202,8 +206,8 @@ Two scripts split the work by cost:
 
 ```bash
 python -u scripts/poincare_trace.py --geometry data/wout_li383_1.4m.nc \
-    outputs/run/checkpoints/state_000000.h5 outputs/run/checkpoints/best.h5
-python scripts/poincare_plot.py outputs/run            # -> outputs/run/poincare/
+    <run>/checkpoints/state_000000.h5 <run>/checkpoints/best.h5   # -> <run>/trace.npz
+python scripts/poincare_plot.py <run>                            # -> <run>/poincare/
 ```
 
 `poincare_trace.py` (a GPU job) traces every checkpoint it is given in one

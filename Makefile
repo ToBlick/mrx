@@ -49,7 +49,7 @@ help:
 	echo "  make sharded                     Run the benchmark with your last build (SHARDED_ARGS)"; \
 	echo "  make status                      Show everyone's jobs and pods, and the cluster nodes"; \
 	echo "  make logs                        Show recent logs from your latest job (FOLLOW=1 to stream)"; \
-	echo "  make pull                        Sync gs://<bucket>/outputs/ to ./outputs/"; \
+	echo "  make pull                        Sync gs://<bucket>/outputs/ to the runs root (\$$MRX_DATA/runs/mrx, else ./outputs/)"; \
 	echo "  make stop                        Delete your jobs (idle TPU nodes scale to zero)"; \
 	echo "  make regions                     Show the enabled TPU families, their regions and cluster names"; \
 	echo "  make setup                       Admin: create or update the clusters (Terraform) and build your image"; \
@@ -119,8 +119,9 @@ logs:
 
 pull:
 	@$(LOAD_ENV) && $(CHECK_PROJECT) && \
-	mkdir -p outputs && \
-	gcloud storage rsync -r "gs://$${GCS_BUCKET}/outputs" ./outputs --project="$${PROJECT_ID}"
+	LOCAL_RUNS="$${MRX_DATA:+$${MRX_DATA}/runs/mrx}"; LOCAL_RUNS="$${LOCAL_RUNS:-outputs}"; \
+	mkdir -p "$${LOCAL_RUNS}" && \
+	gcloud storage rsync -r "gs://$${GCS_BUCKET}/outputs" "$${LOCAL_RUNS}" --project="$${PROJECT_ID}"
 
 stop:
 	@$(LOAD_ENV) && $(CHECK_PROJECT) && $(ACTIVE_CLUSTERS); \
