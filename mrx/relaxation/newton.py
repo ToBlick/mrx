@@ -15,6 +15,8 @@ At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
   potential ``a`` by Newton-MR, a MINRES solve that keeps and reorthogonalises its Lanczos vectors. The
   preconditioner is :func:`spline_preconditioner`. The two mass solves of every Hessian apply run to a
   tolerance inside the operator, which MINRES tolerates once they are accurate enough.
+* :func:`shell_direction` is :func:`newton_direction` with the volumes of the flux shells as further unknowns, for a
+  prescribed pressure (:mod:`mrx.relaxation.shells`).
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
 them as its defaults.
@@ -263,6 +265,49 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
         return jnp.sqrt(r @ P(r))
     a, info = newton_mr(A, P, curl_t(load), a_guess, tol, maxiter, norm)
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
+
+
+def shell_direction(seq, B, load, a_guess, shells, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
+                    mass_tol=NEWTON_MASS_SOLVE_TOL):
+    """The Gauss-Newton direction with the shell volumes as unknowns (:mod:`mrx.relaxation.shells`). Returns
+    ``(u, a, info, c)`` with ``u = curl a + W c``.
+
+    ``shells`` is a :class:`~mrx.relaxation.shells.Shells`. The unknowns are the potential ``a`` of the
+    divergence-free part and the coefficients ``c`` of the shell velocities ``W c``, with ``W`` the map ``velocity``
+    of :func:`~mrx.relaxation.shells.shell_maps` (one 3-form mass solve to ``mass_tol``) and ``W_t`` its transpose.
+    The system is the Gauss-Newton part of the Hessian on that space,
+
+        [ curl^T H curl    curl^T H W ] [a]   [ curl^T load      ]
+        [ W_t H curl       W_t H W    ] [c] = [ W_t load + g_p   ],
+
+    solved by :func:`newton_mr` with the block-diagonal preconditioner ``(SplineAtom, D_inv)``. The last rows are the
+    derivatives of the energy less the target pressure's work along the shells. ``load`` is the unprojected Lorentz
+    force ``J x B``: along the shells its gradient part is what counts."""
+    even = seq.even
+    g_p, D_inv = shells.g_p, shells.D_inv
+    n_a, n_c = a_guess.size, g_p.size
+    _, _, W, W_t = shells.maps(seq, mass_tol)
+    profiles = atom_profiles(seq, B)
+    penalty = parallel_penalty_profile(profiles, kappa)
+    Hs = second_variation(seq, B, None, penalty, mass_tol)
+    atom = spline_preconditioner(seq, profiles, penalty)
+    curl = even.G[1]
+
+    def velocity(z):
+        return curl @ z[:n_a] + W(z[n_a:])
+
+    def A(z):
+        Hu = Hs(velocity(z))
+        return jnp.concatenate([curl.T @ Hu, W_t(Hu)])
+
+    def P(z):
+        return jnp.concatenate([atom(even, z[:n_a]), D_inv @ z[n_a:]])
+
+    def norm(r):
+        return jnp.sqrt(r @ P(r))
+    rhs = jnp.concatenate([curl.T @ load, W_t(load) + g_p])
+    z, info = newton_mr(A, P, rhs, jnp.concatenate([a_guess, jnp.zeros(n_c, a_guess.dtype)]), tol, maxiter, norm)
+    return velocity(z), z[:n_a], jnp.asarray(info, dtype=jnp.int32), z[n_a:]
 
 
 def _newton_system(seq, B, penalty, mass_tol):

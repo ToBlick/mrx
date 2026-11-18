@@ -69,9 +69,9 @@ seq = geometry.build()
 compute_nullspaces(seq)
 
 # %%
-# 3) Set the initial condition: the equilibrium field of li383 as B = dA' from the Clebsch potential.
+# 3) Set the initial condition: the equilibrium field of li383 as B = dA' from the Clebsch potential, in tesla.
 B0, ic = initial_field(seq)
-print(f"[ic] ||B||_M before normalisation {ic['B_norm_raw']:.4e}, ||div B|| {ic['div']:.2e}, "
+print(f"[ic] ||B||_M {float(seq.odd.l2_norm(B0, 2)):.4e} T m^3/2, ||div B|| {ic['div']:.2e}, "
       f"wall-normal part {ic['wall_discarded']:.1e}")
 
 # %%
@@ -87,15 +87,15 @@ it_n = np.asarray(res.trace["newton_it"])
 dt_n = np.asarray(res.trace["dt_star"], dtype=float)
 print(f"[newton] {res.steps} steps in {res.wall:.0f} s ({res.wall / res.steps:.1f} s/step): "
       f"||F|| {F[0]:.3e} -> {F[-1]:.3e} (lowest {F.min():.3e} at step {F.argmin() + 1}), "
-      f"E_0 - E = {-dE.sum():.3e}, dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}, "
+      f"(E_0 - E) / E_0 = {-dE.sum() / res.E0:.3e}, dH/H_0 = {(H[-1] - H[0]) / H[0]:+.1e}, "
       f"||div B|| {float(res.trace['div'][-1]):.1e}")
 print(f"[newton] MINRES iterations mean {np.abs(it_n).mean():.0f}, at the budget on "
       f"{int((it_n < 0).sum())}/{res.steps} steps, dt* mean {dt_n.mean():.2f} "
       f"(1 is the Newton step)")
 
 # %%
-# 5) Plots. Draw ||F|| and the energy released against the step.
-fig, _ = plot_twin_axis(F, np.cumsum(-dE), left_label=r"$\|F\|_M$", right_label=r"$E_0 - E$",
+# 5) Plots. Draw ||F|| and the fraction of the energy released against the step.
+fig, _ = plot_twin_axis(F, np.cumsum(-dE) / res.E0, left_label=r"$\|F\|_M$", right_label=r"$(E_0 - E) / E_0$",
                         left_plot_kwargs=dict(marker="o"), right_plot_kwargs=dict(marker=""))
 finish_figure(fig, os.path.join(cli.out, "trace.png"))
 

@@ -139,7 +139,7 @@ projected onto the natural 1-forms, which keep its normal component, and
 split as `v = F_w + grad p_w` with `p_w = 0` on the wall (one k = 0 Dirichlet
 solve). At a fixed point `F_w` vanishes and `dp_w/dn` is the wall force.
 Read `p_w` for the pressure profile and beta:
-`beta_vol = int p_w dV / int |B|^2/2 dV` in code units. It is computed by the
+`beta_vol = int p_w dV / int |B|^2/2 dV`, with `p_w` in T^2 (`mu_0` times the pressure in Pa). It is computed by the
 sampler at every chunk and by `scripts/poincare_trace.py` at the crossings.
 
 ## 4. The loop
@@ -181,4 +181,13 @@ Dirichlet 2-forms. So `div B = 0` to round-off, and no derivative of
 `lambda` is ever sampled. It also returns the wall-normal part the
 Dirichlet restriction discards, a check of the file.
 
-The field is normalised to `||B||_M = 1`.
+The field is in the file's units, tesla on a map in metres. Its flux
+through a section `zeta = const` is the file's toroidal flux. The norms
+integrate over one field period, so the energy `E` is in T^2 m^3 (`mu_0`
+times the energy in joules), the force norm `||F||_M` in T^2 m^1/2 and the
+helicity in T^2 m^4. The step `dt u` does not depend on the field's scale.
+The Newton `dt` is a number, the `dt` of gradient descent scales as
+`|B|^-2`. The force residual `resid`, the relative energy and helicity
+changes, `beta_vol`, the seed amplitudes and the iteration counts are
+ratios and do not depend on it. A run from the field times any factor is
+the same run up to round-off.

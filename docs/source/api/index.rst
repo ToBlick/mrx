@@ -31,6 +31,7 @@ documented in their source and in the concept pages.
    relaxation.physics
    relaxation.loop
    relaxation.newton
+   relaxation.shells
    relaxation.initial_conditions
    relaxation.seeding
    relaxation.config
@@ -40,6 +41,7 @@ documented in their source and in the concept pages.
    :caption: Diagnostics
 
    diagnostics.poincare
+   flux_label
    diagnostics.plotting
 
 .. toctree::

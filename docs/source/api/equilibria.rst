@@ -23,6 +23,12 @@ mrx.equilibria.desc
 .. automodule:: mrx.equilibria.desc
    :members:
 
+mrx.equilibria.indata
+---------------------
+
+.. automodule:: mrx.equilibria.indata
+   :members:
+
 mrx.equilibria.fit
 ------------------
 

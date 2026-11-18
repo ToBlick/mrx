@@ -107,6 +107,17 @@ are left-handed (a VMEC wout), so the logical coordinates are always
 right-handed, and `theta_reversed` in the state records it. Kinetic or anisotropic pressure and other
 profile classes are refused.
 
+**Profiles of a VMEC input namelist.** `mrx.equilibria.indata.read_indata`
+reads the profiles of the `&INDATA` namelist of a VMEC input file, not its
+geometry: the pressure `mu0 p(s)` in T^2, the transform (`NCURR = 0`) and
+the net toroidal current `mu0 I(s)` scaled to `CURTOR` (`NCURR = 1`), as
+functions of the normalised toroidal flux `s`, with every profile type of
+VMEC's `profile_functions.f`. The transform is in MRX's poloidal angle. A
+namelist with `GAMMA != 0` is refused, since its pressure then depends on
+the equilibrium VMEC finds. The namelist's pressure can be the target of a
+relaxation (`--pressure.target input.<name>`, the guide's "Prescribed
+pressure").
+
 ## 3. The map
 
 `build_map(st, seq, nfp, stellarator_symmetric)` returns `(Phi, info)`, a
