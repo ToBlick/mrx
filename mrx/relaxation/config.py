@@ -1,7 +1,7 @@
 """The settings of a relaxation run, used by ``scripts/relax.py`` and the tutorials.
 
 :class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, seeding,
-descent method, Newton solve, step budget, resistive drive, output). The defaults on the classes are the
+descent method, Newton solve, step budget, resistive drive, prescribed pressure, output). The defaults on the classes are the
 production values, and invalid combinations raise a ``ValueError`` when the config is created. ``relax.py`` turns
 the same classes into its command line with ``tyro.cli``. The docstring under each field is its help text, and a
 field ``x`` of the group ``g`` is the option ``--g.x`` (underscores written as hyphens). :attr:`RelaxConfig.params`
@@ -18,7 +18,9 @@ from typing import Annotated, Literal, Optional
 
 import tyro
 
+from mrx.flux_label import ANISOTROPY
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
+from mrx.relaxation.shells import LABEL_TOL
 
 
 class Symmetry(StrEnum):
@@ -170,6 +172,34 @@ class Drive:
 
 
 @dataclass(frozen=True)
+class Pressure:
+    """Prescribed pressure: the volumes of the flux shells are unknowns of every Newton step (mrx.relaxation.shells), so the relaxation ends at the target pressure instead of keeping the start's."""
+    target: Optional[str] = None
+    """The pressure to reach: file (the geometry file's pressure) or a JSON file of measured pressure in pascal, {"rho": [...], "p_pa": [...]} on flux surfaces or {"points": [[R, Z, phi_deg], ...], "p_pa": [...]} at points in space. Unset, the run keeps the start's pressure."""
+    scale: float = 1.0
+    """Multiply the target by this factor."""
+    beta: Optional[float] = None
+    """Instead of --pressure.scale, scale the target's profile to this volume beta, int p* dV / int B^2/2 dV, on the field of every rebuild. It is the beta of the run's pressure in the gauge <p> = <p*>. beta_vol, of the weak pressure that vanishes on the wall, differs from it by the pressure's constant."""
+    plateau_margin: float = 1.0
+    """With --seed, the target is made constant across each seeded chain, sqrt(s) in r +- margin w / 2 from the seeding's estimate of its radius r and width w: a pressure that falls across an island cannot be met. 0 leaves the target as it is."""
+    anisotropy: float = ANISOTROPY
+    """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
+    label_tol: float = LABEL_TOL
+    """The relative tolerance of that label's solve."""
+    smoothing: float = 1e-3
+    """The smoothing of the fit of measured data to a profile (mrx.relaxation.shells.fit_profile)."""
+
+    def __post_init__(self):
+        if self.beta is not None and self.scale != 1.0:
+            raise ValueError("--pressure.beta and --pressure.scale both set the target's size: give one")
+        if self.target is not None and self.target.endswith(".json") and self.beta is not None:
+            raise ValueError("--pressure.beta rescales a profile shape, measured data carry their own size")
+
+    def __bool__(self):
+        return self.target is not None
+
+
+@dataclass(frozen=True)
 class Output:
     """Output directory and restart."""
     out: Optional[str] = None
@@ -192,6 +222,7 @@ class RelaxConfig:
     newton: Newton = field(default=Newton(), metadata=dict(record_prefix="newton_"))
     budget: Budget = Budget()
     drive: Drive = field(default=Drive(), metadata=dict(record_prefix="drive_"))
+    pressure: Pressure = field(default=Pressure(), metadata=dict(record_prefix="pressure_"))
     output: Output = Output()
 
     def __post_init__(self):
@@ -202,6 +233,9 @@ class RelaxConfig:
         object.__setattr__(self, "budget", replace(b, steps=steps, chunk=chunk))
         if chunk < 1 or steps % chunk:
             raise ValueError("--budget.steps must be a positive multiple of --budget.chunk")
+        if self.pressure and (not d.newton or self.drive):
+            raise ValueError("--pressure.target needs Newton steps (--descent.method newton) and goes without "
+                             "--drive.resistivity")
 
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""
