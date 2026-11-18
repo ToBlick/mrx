@@ -38,12 +38,15 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import scipy.sparse as sp
 from scipy.interpolate import BSpline
 
 from mrx.differential_forms import det33
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
 from mrx.equilibria.vmec import read_wout
+from mrx.extraction_operators import gram_inverse
+from mrx.precision import DTYPE
 from mrx.quadrature import composite_quad
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 from mrx.spline_bases import SplineBasis
@@ -288,7 +291,14 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
     nfp = st["nfp"] if nfp is None else int(nfp)
     br, bt, bz = seq.basis_0.Lambda
     free = seq.free                   # the map's coefficients are not zero on the wall
-    E = free.E(0)
+    # The projection v = (E E^T)^-1 E c (DeRhamSequence.conforming) and E^T v run on the host in float64 and are
+    # rounded once, so every build has the same map bit for bit, in both precisions. On a GPU the sparse applies are
+    # a scatter, which adds in an order the device chooses, and near the axis the metric turns a few units in the
+    # last place of R into 1e-3 of the inverse metric in float32.
+    e = free.E(0)
+    rows, cols, vals = e.entries()
+    E = sp.csr_matrix((vals, (rows, cols)), shape=e.forward_shape)
+    gram_inv = gram_inverse(e, free.core_rows(0), free._gram[(0, False)])
 
     def raw(block):
         # the map's nfp, not the file's: with an override logical zeta spans nfp_file / nfp periods
@@ -300,8 +310,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        dofs = free.conforming(jnp.asarray(C.reshape(-1)), 0)
-        return (E.T @ dofs).reshape(seq.basis_0.shape[0])
+        return jnp.asarray(E.T @ (gram_inv @ (E @ C.reshape(-1))), dtype=DTYPE).reshape(seq.basis_0.shape[0])
 
     raw_X1, raw_X2 = raw(st["X1"]), raw(st["X2"])
     if stellarator_symmetric:
