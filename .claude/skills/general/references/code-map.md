@@ -135,8 +135,10 @@ something close (`J x B` in `compute_force`). Test tolerances are multiples of `
 
 `read_equilibrium(path)` picks by extension: VMEC `wout_*.nc`, GVEC `*.dat`, DESC `*.h5`. One state
 dict (`X1`, `X2`, `LA` blocks, profiles in `r = sqrt(s)`: `phi` (flux / 2 pi), `iota`, `pressure`).
-`build_map` = L2 projection of the series onto the polar 0-forms, a `CylindricalMap`, or a `FrameMap` for
-a GVEC G-frame state (example in `data/gvec_gframe/`). The initial field is rebuilt from scalars, so
+`build_map` = L2 projection of the series onto the polar 0-forms, a `FrameMap` in the frame the file's
+solver supplies: the cylindrical frame (`X1 = R`, `X2 = Z`) for VMEC, DESC and cylindrical GVEC states,
+GVEC's own frame for a G-frame state (example in `data/gvec_gframe/`). `X3`, out of the frame's plane, is
+zero for every file. The initial field is rebuilt from scalars, so
 `div B = 0`, `B.n = 0` and nested surfaces are exact. No separate analytic-shape input: write a mock file
 (`test/synthetic_gvec.py`, `test/synthetic_desc.py`).
 
@@ -148,7 +150,7 @@ a GVEC G-frame state (example in `data/gvec_gframe/`). The initial field is rebu
 - Module-level `eqx.filter_jit` functions taking the sequence/stepper as arguments. Never jitted
   closures per call, never functions stored on a pytree (recompiles per build).
 - A Python float in an eqx.Module is static: changing it recompiles. Geometry-derived scalars are
-  device arrays. A map given as a pytree (`CylindricalMap`, `FrameMap`) reuses compiled solves across
+  device arrays. A map given as a pytree (`FrameMap`) reuses compiled solves across
   geometries.
 - `--geometry.max-batch` (default 262144) bounds the quadrature points evaluated at once when those loops
   run out of device memory.

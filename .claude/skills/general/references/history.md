@@ -53,7 +53,8 @@ the maintainers.
 - Half-period quadrature + parity views for stellarator symmetry (`symmetry=stellarator|field-period|none`).
 - Graded polar spaces (2026-10-17): fewer theta cells near the axis, the map on uniform theta. Resolution
   `(n, 2n, 2n)` and cubes are not used for results. No p = 5. W7-X at p = 2.
-- `FrameMap` beside `CylindricalMap` reads GVEC G-frame states.
+- `FrameMap` beside `CylindricalMap` reads GVEC G-frame states. Since #54 (2026-11-17) `FrameMap` is the only
+  map and every file is read in its solver's frame.
 - Library compacted 2026-09-28: subpackages `mrx.equilibria`, `mrx.relaxation` (`newton` was `hessian`,
   `config` was `relax_config`), `mrx.diagnostics`.
 
