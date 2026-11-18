@@ -122,7 +122,7 @@ something close (`J x B` in `compute_force`). Test tolerances are multiples of `
   `dt_star` exact line search, CFL clip, `dt <= 1` with Newton. Optional resistive step
   `(M_2 + eps L_2) delta = -eps L_2 (B - B_ref)`, done as one `shifted_stiffness(1, eps)` solve.
 - `newton.py`: Gauss-Newton part of the Hessian `H`, `newton_direction` solves `curl^T H curl a = curl^T load(J x B)`
-  by Newton-MR (MINRES with reorthogonalised Lanczos vectors), harmonic-atom preconditioner, parallel penalty
+  by Newton-MR (MINRES with reorthogonalised Lanczos vectors), spline-atom preconditioner (`spline_preconditioner`), parallel penalty
   `kappa * strain` lifting the field-aligned null space. Defaults: penalty 3, tol 0.1, maxiter 300, the two
   `M_1` solves per Hessian apply by PCG to `newton_mass_solve_tol = 1e-6`.
 - `seeding.py`: `energy_seed`, island seeds at every resonance in the iota range (or the given `iotas`),
