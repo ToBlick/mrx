@@ -152,9 +152,9 @@ def test_newton_relaxation_descends(seq, b0, tmp_path):
 
 def test_the_map_is_the_same_in_every_build(seq):
     """Two projections of the file's map onto the spline space are equal bit for bit, so a restart meets the geometry
-    of its run. Summed in the order of a float32 scatter they were not: on an H200 two builds differed by a few units
-    in the last place of R, the metric near the axis turned that into 7e-4 of the inverse metric, and a restart of
-    li383 1.4m at a residual of 1e-10 started at 1e-7 (2026-11-17)."""
+    of its run. Summed in the order of a GPU scatter they were not, in either precision. In float32 on an H200 two
+    builds differed by a few units in the last place of R, the metric near the axis turned that into 7e-4 of the
+    inverse metric, and a restart of li383 1.4m at a residual of 1e-10 started at 1e-7 (2026-11-17)."""
     maps = [build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0] for _ in range(2)]
     assert all(np.array_equal(np.asarray(getattr(maps[0], name)), np.asarray(getattr(maps[1], name)))
                for name in ("raw_X1", "raw_X2"))

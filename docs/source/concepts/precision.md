@@ -50,14 +50,16 @@ round-off. The geometry and the basis tables are float32 data.
 ## The map and checkpoints
 
 The spline coefficients of the map are the projection of the file's
-series, computed in the accurate precision and rounded once. Every build of
-a sequence therefore has the same map bit for bit, on the CPU and on a GPU.
-A float32 projection would add its terms in the order of a scatter, which a
-GPU chooses anew each time. Near the axis the map is `R0` plus a part of the
-size of the ring's radius, so the metric turns a few units in the last place
-of `R` into `1e-3` of the inverse metric. A float32 restart of li383
-(48,64,24) at a residual of `1.2e-10` then started at `1.3e-7`
-(2026-11-17).
+series, computed on the host in float64 and rounded once. Every build of a
+sequence therefore has the same map bit for bit in both precisions, on the
+CPU and on a GPU. A projection on the GPU would add its terms in the order
+of a scatter, which the GPU chooses anew each time. Near the axis the map is
+`R0` plus a part of the size of the ring's radius, so the metric turns a few
+units in the last place of `R` into `1e-3` of the inverse metric in float32.
+A float32 restart of li383 (48,64,24) at a residual of `1.2e-10` then
+started at `1.3e-7` (2026-11-17). In float64 two builds differed by up to
+16 units in the last place of `R` and `1.5e-11` of the inverse metric,
+harmless but not reproducible.
 
 The float32 geometry evaluated from the same map still differs between a
 CPU and a GPU by up to `1e-3` of the inverse metric near the axis, for the
