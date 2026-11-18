@@ -1,6 +1,6 @@
 """The settings of a relaxation run, used by ``scripts/relax.py`` and the tutorials.
 
-:class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, seeding,
+:class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, the twist, seeding,
 descent method, Newton solve, step budget, resistive drive, prescribed pressure, output). The defaults on the classes are the
 production values, and invalid combinations raise a ``ValueError`` when the config is created. ``relax.py`` turns
 the same classes into its command line with ``tyro.cli``. The docstring under each field is its help text, and a
@@ -87,6 +87,22 @@ class Geometry:
         return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
                               tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry), graded=self.graded,
                               map_theta=self.map_theta)
+
+
+@dataclass(frozen=True)
+class Iota:
+    """A twist of the start field to a target rotational transform, applied once before the seed (see
+    mrx.relaxation.twist)."""
+    target: Optional[str] = None
+    """A wout (its transform) or a VMEC input namelist (its transform, or with NCURR = 1 its net toroidal current) whose
+    profile the start field is twisted to. Unset, no twist."""
+    bins: int = 20
+    """The flux-label bins, equal in s, on which the transform is reported."""
+    corrections: int = 2
+    """The corrections of the twist by the measured residual."""
+
+    def __bool__(self):
+        return self.target is not None
 
 
 @dataclass(frozen=True)
@@ -219,6 +235,7 @@ class RelaxConfig:
     is created. The ``record_prefix`` of a group is put before its field names in the flat record ``params``.
     """
     geometry: Geometry
+    iota: Iota = field(default=Iota(), metadata=dict(record_prefix="iota_"))
     seed: Seed = field(default=Seed(), metadata=dict(record_prefix="seed_"))
     descent: Descent = Descent()
     newton: Newton = field(default=Newton(), metadata=dict(record_prefix="newton_"))

@@ -1,8 +1,9 @@
 """Relax a magnetic field toward minimum energy at fixed helicity. This is the command line of :func:`mrx.relaxation.loop.relax`.
 
 The script builds the de Rham sequence of ``--geometry.path`` and the initial field on it, or reads the field of
-an earlier run with ``--output.restart``. It can then open island chains (``--seed``, see
-:func:`mrx.relaxation.seeding.energy_seed`). The descent runs in compiled chunks of steps until the force residual
+an earlier run with ``--output.restart``. It can then twist the field to the rotational transform of a file
+(``--iota.target``, see :func:`mrx.relaxation.twist.retarget_iota`) and open island chains at the transform it has
+then (``--seed``, see :func:`mrx.relaxation.seeding.energy_seed`). The descent runs in compiled chunks of steps until the force residual
 stops falling or the step budget is spent. The fixed point satisfies ``J x B = grad p``, where ``p`` is the
 pressure that keeps the flow divergence-free, so the result is a finite-beta equilibrium.
 
@@ -25,7 +26,7 @@ the force residual does not see the shells, so ``--budget.floor-tol`` does not e
 
 Output (in ``--output.out``):
     relax.json                   The configuration (flat, plus facts of the run) under ``params``, then ``ic``,
-                                 ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
+                                 ``iota`` (the twist), ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
                                  and at the end the pressure's error against it and the target's beta), the per-step
                                  ``trace``, the per-chunk ``qoi`` and the ``summary``. The file is rewritten after every chunk.
     checkpoints/state_<step>.h5  The descent state at the start and after every chunk
@@ -49,6 +50,8 @@ def main(cfg):
     from mrx.relaxation.shells import (build_shells, flattened, label, load_target, plateau_intervals, pressure_error,
                                        target_beta)
     from mrx.relaxation.seeding import energy_seed
+    from mrx.relaxation.twist import load_iota_target, retarget_iota
+    from scipy.interpolate import CubicSpline
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
@@ -82,9 +85,15 @@ def main(cfg):
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
                           for k, v in ic.items() if k != "kind"), flush=True)
         state, it0 = initial_state(B0, ts), 0
+    iota_seed = None                         # the transform the seed resonates with: the file's, or the twisted one
+    if cfg.iota:
+        B_twisted, results["iota"] = retarget_iota(seq, state.B_n, **load_iota_target(cfg.iota.target),
+                                                   bins=cfg.iota.bins, corrections=cfg.iota.corrections)
+        iota_seed = CubicSpline(results["iota"]["r_layer"], results["iota"]["iota_layer"])
+        state = initial_state(B_twisted, ts, step=it0)
     if cfg.seed:
         B_seeded, rows = energy_seed(seq, state.B_n, iotas=cfg.seed.iotas, amplitudes=cfg.seed.amplitudes,
-                                     scale=cfg.seed.scale)
+                                     scale=cfg.seed.scale, iota=iota_seed)
         results["seed"] = rows
         state = initial_state(B_seeded, ts, step=it0)
     write_checkpoint(os.path.join(ckpt_dir, f"state_{it0:06d}.h5"), state, it0, seq)

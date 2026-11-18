@@ -47,6 +47,7 @@ the pair `--seed` / `--no-seed`:
 | group | flags |
 |---|---|
 | geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.graded`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
+| iota | `--iota.target`, `--iota.bins`, `--iota.corrections` |
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
@@ -62,6 +63,20 @@ and so on).
 
 The tutorials build the same configuration in Python
 (`RelaxConfig(geometry=Geometry(...), ...)`).
+
+## Rotational transform
+
+The relaxation keeps the fluxes of every flux surface, so it keeps the
+rotational transform of the start field. `--iota.target <file>` changes it
+once before the relaxation, to the transform of a wout or of a VMEC input
+namelist, or with `NCURR = 1` to the namelist's net toroidal current. The
+move ({func}`mrx.relaxation.twist.retarget_iota`) adds poloidal flux on the
+flux label's surfaces, $dB = \nabla \times (F(s) \nabla \zeta)$ with $\zeta$ the
+logical toroidal angle. It keeps every surface, its toroidal flux and the wall
+flux, and it changes the net toroidal current. Where an island keeps the label
+flat it adds nothing, and a target missed there is a warning. The seed
+(`--seed`) then resonates with the new transform. `relax.json` holds the
+transform before and after under `iota`.
 
 ## Prescribed pressure
 
@@ -160,7 +175,7 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with `--pressure.target` also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with `--pressure.target` also `W_removed`, `beta`, `pressure_error` and `pressure_constant` at the end. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with `--pressure.target` also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with `--pressure.target` also `W_removed`, `beta`, `pressure_error` and `pressure_constant` at the end. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 

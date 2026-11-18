@@ -71,7 +71,7 @@ def parallel_seed(seq, B, m, n, profile, r_grid):
     return odd.G[1] @ odd.M[1].solve(load)
 
 
-def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
+def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, iota=None):
     """Seed the field ``B`` of an equilibrium-file sequence. Returns ``(B + scale * dB, rows)``.
 
     ``rows`` has one dict per seeded chain with ``m``, ``n``, the resonant radius ``r``, ``diota = |d iota / dr|``
@@ -79,8 +79,9 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
     estimate ``w = sqrt(8 |dBr| nfp / (pi m diota))``. ``iotas`` restricts the seeds to the chains nearest those
     rotational transforms. ``amplitudes`` (one per entry of ``iotas``) rescales each chain's energy-optimal seed
     so that its ``dBr`` takes the given value. If no chain with ``m <= n_theta / 2`` lies in the field's iota range,
-    the field is returned unseeded with a warning and ``rows`` is empty. The function runs eagerly and cannot be
-    traced by ``jax.jit``.
+    the field is returned unseeded with a warning and ``rows`` is empty. ``iota`` (per full turn, a spline in the
+    logical radius) replaces the file's transform, for a field whose transform was changed after it was read
+    (:func:`mrx.relaxation.twist.retarget_iota`). The function runs eagerly and cannot be traced by ``jax.jit``.
     """
     nfp = int(seq.nfp)
     ns = seq.ns
@@ -89,7 +90,7 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True):
     h_r = 1.0 / (rb.n - rb.p)
     lam_h = StateField(seq.equilibrium["LA"], nfp)
     lam = lambda x: lam_h(x) / (2.0 * jnp.pi)   # noqa: E731  (lambda in turns)
-    iota_s = seq.equilibrium["profiles"]["iota"]              # per full turn
+    iota_s = seq.equilibrium["profiles"]["iota"] if iota is None else iota   # per full turn
     rr = np.linspace(1e-3, 1.0, 40001)
     iota_rr = np.abs(iota_s(rr))
 
