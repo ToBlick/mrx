@@ -328,8 +328,8 @@ def slip_request(seq, B, T, s_q, iota, cells=PROFILE_CELLS, degree=6, samples=FI
 
 @eqx.filter_jit
 def _relaxed_moments(ts, B, values, indices, S, d):
-    """The moments of ``B + T d + Q u``, ``u`` the Newton velocity (with the shells of ``ts``) of the step with the
-    slips held at ``d``: the current the field carries once the ideal part has followed the slips, to first order. Also
+    """The moments of ``B + T d + Q u``, ``u`` the Newton velocity (with the harmonic flow and the shells of ``ts``) of
+    the step with the slips held at ``d``: the current the field carries once the ideal part has followed the slips, to first order. Also
     returns the signed MINRES count of that solve."""
     from mrx.relaxation.newton import gauss_newton_parts, target_direction
     seq = ts.seq
@@ -337,10 +337,10 @@ def _relaxed_moments(ts, B, values, indices, S, d):
     dB = move(d.astype(S.dtype))
     change, change_t, _ = gauss_newton_parts(seq, B, None, ts.newton_mass_solve_tol)
     _, load = ts._lorentz(B, None)
-    # the slip column moved to the right-hand side: the ideal and shell rows of target_direction's system
-    u, _, info, _, _, _ = target_direction(seq, B, load - change_t(dB), jnp.zeros(seq.even.n(1)), ts.shells, None,
-                                           ts.newton_penalty, ts.newton_tol, ts.newton_maxiter,
-                                           ts.newton_mass_solve_tol)
+    # the slip column moved to the right-hand side: the ideal, harmonic and shell rows of target_direction's system
+    u, _, info, _, _, _, _ = target_direction(seq, B, load - change_t(dB), jnp.zeros(seq.even.n(1)),
+                                              ts.harmonic_flows, ts.shells, None, ts.newton_penalty, ts.newton_tol,
+                                              ts.newton_maxiter, ts.newton_mass_solve_tol)
     return current_moments(seq, B + dB + change(seq.even.evaluate_at_quadrature(u, 2)), move_t), info
 
 
