@@ -15,8 +15,9 @@ At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
   potential ``a`` by Newton-MR, a MINRES solve that keeps and reorthogonalises its Lanczos vectors. The
   preconditioner is :func:`spline_preconditioner`. The two mass solves of every Hessian apply run to a
   tolerance inside the operator, which MINRES tolerates once they are accurate enough.
-* :func:`shell_direction` is :func:`newton_direction` with the volumes of the flux shells as further unknowns, for a
-  prescribed pressure (:mod:`mrx.relaxation.shells`).
+* :func:`target_direction` is :func:`newton_direction` with the volumes of the flux shells as further unknowns, for a
+  prescribed pressure (:mod:`mrx.relaxation.shells`), and with the poloidal flux slips between the flux surfaces, for
+  a prescribed current (:class:`mrx.relaxation.twist.Slips`).
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
 them as its defaults.
@@ -188,6 +189,40 @@ class SplineAtom(eqx.Module):
         return E @ self._C(E.T @ y)
 
 
+def gauss_newton_parts(seq, B, penalty=None, mass_tol=None):
+    """``(change, change_t, parallel)``: the pieces of the Gauss-Newton part of the Hessian at ``B``.
+
+    ``change(u_jk)`` is the field change ``Q = curl M_1^-1 load(u x B)`` (a 2-form of ``seq.odd``) of the velocity
+    with the values ``u_jk`` at the quadrature points, ``change_t(X)`` is ``Q^T M_2 X`` (a dual 2-form of
+    ``seq.even``) and ``parallel(u_jk)`` the parallel-flow penalty of :func:`second_variation` (zero for
+    ``penalty=None``). So ``change_t(change(u_jk)) + parallel(u_jk)`` is ``H u`` without the terms in ``J``. Each of
+    ``change`` and ``change_t`` costs one 1-form mass solve to the relative tolerance ``mass_tol``."""
+    odd, even = seq.odd, seq.even
+    B_jk = odd.evaluate_at_quadrature(B, 2)
+    curl = odd.G[1]
+    tol = seq.tol if mass_tol is None else mass_tol
+
+    def m1_inv(x):
+        return _mass_solve(odd, x, 1, tol=tol)
+
+    def change(u_jk):
+        return curl @ m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
+
+    def change_t(X):
+        Y = m1_inv(odd.D[1].T @ X)
+        return even.cross_product_load_values(B_jk, odd.evaluate_at_quadrature(Y, 1), 2, 2, 1)
+
+    if penalty is None:
+        return change, change_t, lambda u_jk: 0.0
+    Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
+    weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
+
+    def parallel(u_jk):
+        s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
+        return even.vector_load_values(B_jk * (weight * s)[:, None], 2, 2)
+    return change, change_t, parallel
+
+
 def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
@@ -201,39 +236,30 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     """
     # B, J and the intermediate forms live in the odd parity view, u and H u in the even one
     odd, even = seq.odd, seq.even
+    change, change_t, parallel = gauss_newton_parts(seq, B, penalty, mass_tol)
+    if J is None:
+        def apply(u):
+            u_jk = even.evaluate_at_quadrature(u, 2)
+            Hu = change_t(change(u_jk))
+            return Hu if penalty is None else Hu + parallel(u_jk)
+        return apply
+
     B_jk = odd.evaluate_at_quadrature(B, 2)
-    if penalty is not None:
-        Bsq_over_J2 = jnp.einsum('qi,qij,qj->q', B_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2
-        weight = jnp.repeat(penalty, int(seq.quad.shape[1]) * int(seq.quad.shape[2]))
-
     curl = odd.G[1]
-    if J is not None:
-        J_jk = odd.evaluate_at_quadrature(J, 1)
-
+    J_jk = odd.evaluate_at_quadrature(J, 1)
     tol = seq.tol if mass_tol is None else mass_tol
-
-    def m1_inv(x):
-        return _mass_solve(odd, x, 1, tol=tol)
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
-        E = m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
-        Q = curl @ E
-        if J is None:
-            Y = m1_inv(odd.D[1].T @ Q)
-            Hu = even.cross_product_load_values(B_jk, odd.evaluate_at_quadrature(Y, 1), 2, 2, 1)
-        else:
-            Q_jk = odd.evaluate_at_quadrature(Q, 2)
-            JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
-            # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
-            Y = m1_inv(odd.D[1].T @ Q + 0.5 * (curl.T @ JxU))
-            Y_jk = odd.evaluate_at_quadrature(Y, 1)
-            Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
-                  + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
-        if penalty is None:
-            return Hu
-        s = jnp.einsum('qi,qij,qj->q', u_jk, seq.metric_jkl, B_jk) / seq.jacobian_j ** 2 / Bsq_over_J2
-        return Hu + even.vector_load_values(B_jk * (weight * s)[:, None], 2, 2)
+        Q = change(u_jk)
+        Q_jk = odd.evaluate_at_quadrature(Q, 2)
+        JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
+        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
+        Y = _mass_solve(odd, odd.D[1].T @ Q + 0.5 * (curl.T @ JxU), 1, tol=tol)
+        Y_jk = odd.evaluate_at_quadrature(Y, 1)
+        Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
+              + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        return Hu if penalty is None else Hu + parallel(u_jk)
 
     return apply
 
@@ -267,47 +293,82 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-def shell_direction(seq, B, load, a_guess, shells, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
-                    mass_tol=NEWTON_MASS_SOLVE_TOL):
-    """The Gauss-Newton direction with the shell volumes as unknowns (:mod:`mrx.relaxation.shells`). Returns
-    ``(u, a, info, c)`` with ``u = curl a + W c``.
+def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTON_PENALTY, tol=NEWTON_TOL,
+                     maxiter=NEWTON_MAXITER, mass_tol=NEWTON_MASS_SOLVE_TOL):
+    """The Gauss-Newton direction with the shell volumes (:mod:`mrx.relaxation.shells`) or the poloidal flux slips
+    (:class:`mrx.relaxation.twist.Slips`) or both as unknowns. Returns ``(u, a, info, c, d, dB_slip)``: the velocity
+    ``u = curl a + W c``, the field change of the slips ``dB_slip = T d``, so that the step's field change is
+    ``curl(u x B) + T d``, and the coefficients ``c`` and ``d`` (``None`` for what is not given).
 
-    ``shells`` is a :class:`~mrx.relaxation.shells.Shells`. The unknowns are the potential ``a`` of the
-    divergence-free part and the coefficients ``c`` of the shell velocities ``W c``, with ``W`` the map ``velocity``
-    of :func:`~mrx.relaxation.shells.shell_maps` (one 3-form mass solve to ``mass_tol``) and ``W_t`` its transpose.
-    The system is the Gauss-Newton part of the Hessian on that space,
+    ``shells`` is a :class:`~mrx.relaxation.shells.Shells`, with the shell velocities ``W c`` and their transpose
+    ``W_t`` (:func:`~mrx.relaxation.shells.shell_maps`, one 3-form mass solve to ``mass_tol``). ``slips`` is a
+    :class:`~mrx.relaxation.twist.Slips`, with the field changes ``T d`` of the twists and their transpose ``T_t``.
+    The system is the Gauss-Newton part of the Hessian of the energy on that space, with ``Q`` the field change of a
+    velocity and ``M`` the 2-form mass matrix (:func:`gauss_newton_parts`),
 
-        [ curl^T H curl    curl^T H W ] [a]   [ curl^T load      ]
-        [ W_t H curl       W_t H W    ] [c] = [ W_t load + g_p   ],
+        [ curl^T H curl    curl^T H W    curl^T Q^T M T ] [a]   [ curl^T load        ]
+        [ W_t H curl       W_t H W       W_t Q^T M T    ] [c] = [ W_t load + g_p     ]
+        [ T_t M Q curl     T_t M Q W     T_t M T        ] [d]   [ -T_t M B + g_slip  ],
 
-    solved by :func:`newton_mr` with the block-diagonal preconditioner ``(SplineAtom, D_inv)``. The last rows are the
-    derivatives of the energy less the target pressure's work along the shells. ``load`` is the unprojected Lorentz
-    force ``J x B``: along the shells its gradient part is what counts."""
+    solved by :func:`newton_mr` with the block-diagonal preconditioner ``(SplineAtom, D_inv, D_inv)`` of the
+    atom and the two dense blocks. The last two rows are the derivatives of the energy less the targets' work along
+    the shells and the slips. ``load`` is the unprojected Lorentz force ``J x B``: along the shells its gradient
+    part is what counts. The slip block ``T_t M T`` is the energy's own second derivative along the slips, since
+    the field is linear in ``d``."""
     even = seq.even
-    g_p, D_inv = shells.g_p, shells.D_inv
-    n_a, n_c = a_guess.size, g_p.size
-    _, _, W, W_t = shells.maps(seq, mass_tol)
+    n_a = a_guess.size
     profiles = atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
-    Hs = second_variation(seq, B, None, penalty, mass_tol)
     atom = spline_preconditioner(seq, profiles, penalty)
     curl = even.G[1]
+    n_c = 0 if shells is None else shells.g_p.size
+    n_d = 0 if slips is None else slips.g.size
+    if shells is not None:
+        _, _, W, W_t = shells.maps(seq, mass_tol)
 
     def velocity(z):
-        return curl @ z[:n_a] + W(z[n_a:])
+        u = curl @ z[:n_a]
+        return u if shells is None else u + W(z[n_a:n_a + n_c])
 
-    def A(z):
-        Hu = Hs(velocity(z))
-        return jnp.concatenate([curl.T @ Hu, W_t(Hu)])
+    rhs = [curl.T @ load]
+    blocks = [shells.D_inv] if shells is not None else []
+    if shells is not None:
+        rhs.append(W_t(load) + shells.g_p)
+    if slips is None:
+        Hs = second_variation(seq, B, None, penalty, mass_tol)
+
+        def A(z):
+            Hu = Hs(velocity(z))
+            return jnp.concatenate([curl.T @ Hu] + ([W_t(Hu)] if shells is not None else []))
+    else:
+        change, change_t, parallel = gauss_newton_parts(seq, B, penalty, mass_tol)
+        T, T_t = slips.maps(seq)
+        M2 = seq.odd.M[2]
+        rhs.append(slips.g - T_t(M2 @ B))
+        blocks.append(slips.D_inv)
+
+        def A(z):
+            u = velocity(z)
+            u_jk = even.evaluate_at_quadrature(u, 2)
+            X = change(u_jk) + T(z[n_a + n_c:])
+            Hu = change_t(X) + parallel(u_jk)
+            return jnp.concatenate([curl.T @ Hu] + ([W_t(Hu)] if shells is not None else []) + [T_t(M2 @ X)])
 
     def P(z):
-        return jnp.concatenate([atom(even, z[:n_a]), D_inv @ z[n_a:]])
+        out, off = [atom(even, z[:n_a])], n_a
+        for D_inv in blocks:
+            out.append(D_inv @ z[off:off + D_inv.shape[0]])
+            off += D_inv.shape[0]
+        return jnp.concatenate(out)
 
     def norm(r):
         return jnp.sqrt(r @ P(r))
-    rhs = jnp.concatenate([curl.T @ load, W_t(load) + g_p])
-    z, info = newton_mr(A, P, rhs, jnp.concatenate([a_guess, jnp.zeros(n_c, a_guess.dtype)]), tol, maxiter, norm)
-    return velocity(z), z[:n_a], jnp.asarray(info, dtype=jnp.int32), z[n_a:]
+    z0 = jnp.concatenate([a_guess, jnp.zeros(n_c + n_d, a_guess.dtype)])
+    z, info = newton_mr(A, P, jnp.concatenate(rhs), z0, tol, maxiter, norm)
+    c = z[n_a:n_a + n_c] if shells is not None else None
+    d = z[n_a + n_c:] if slips is not None else None
+    dB_slip = T(d) if slips is not None else None
+    return velocity(z), z[:n_a], jnp.asarray(info, dtype=jnp.int32), c, d, dB_slip
 
 
 def _newton_system(seq, B, penalty, mass_tol):

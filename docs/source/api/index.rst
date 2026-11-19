@@ -34,6 +34,7 @@ documented in their source and in the concept pages.
    relaxation.shells
    relaxation.initial_conditions
    relaxation.seeding
+   relaxation.twist
    relaxation.mesh_motion
    relaxation.config
 

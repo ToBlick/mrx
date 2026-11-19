@@ -6,8 +6,11 @@ The velocity of a step is then
 
     u = curl a + sum_k c_k w_k,        div w_k ~ phi_k(s) - <phi_k>,
 
-with ``phi_k`` the radial 0-form B-splines of the mesh as functions of ``x = sqrt(s)``, ``s`` the flux label of the
-field (:mod:`mrx.flux_label`). The space of these velocities depends only on the divergences ``f_k`` of the ``w_k``,
+with ``phi_k`` the splines of the profile space (:func:`profile_basis`) and ``s`` the flux label of the field
+(:mod:`mrx.flux_label`). The profile space is its own: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints
+are uniform in ``sqrt(s)``. It does not refer to the mesh, which has only to resolve it. A spline in ``s`` is a smooth
+function in space next to the magnetic axis, where ``s`` goes as the squared distance, so every profile of the space
+is regular there, ``p = p0 + p1 s + ...``. A spline in ``sqrt(s)`` would be a cone at the axis. The space of these velocities depends only on the divergences ``f_k`` of the ``w_k``,
 since two velocities with one divergence differ by a divergence-free one, which ``curl a`` already holds. So each
 ``w_k`` is an explicit velocity with that divergence (:func:`radial_velocity`): the radial flux summed along ``r``
 from the axis, which needs no storage per shell. The divergence ``f_k`` is the projection of ``phi_k - <phi_k>``
@@ -18,7 +21,7 @@ shells (gamma = 0),
     W = int B^2/2 dV - int p*(s) dV,
 
 whose derivative along ``w_k`` at a relaxed field is ``int (p - p*) f_k dxi``, with ``p`` the multiplier of the
-divergence of the relaxation's 2-form velocity. The Newton step (:func:`mrx.relaxation.newton.shell_direction`)
+divergence of the relaxation's 2-form velocity. The Newton step (:func:`mrx.relaxation.newton.target_direction`)
 solves the Gauss-Newton system of ``W`` on this enlarged velocity space. The pressure term's own second variation is
 left out: it is the term that makes the step indefinite on compressible velocities (finite gamma), and on the
 shells the magnetic part alone is a good model.
@@ -46,8 +49,15 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.flux_label import enclosed_flux, enclosed_flux_map, flux_label
 from mrx.operators import _mass_solve
 from mrx.relaxation.newton import atom_profiles, parallel_penalty_profile, second_variation
-from mrx.spline_bases import basis_table
+from mrx.spline_bases import SplineBasis, basis_table, knot_vector
 
+
+#: The degree of the splines of the profile space (:func:`profile_basis`).
+PROFILE_DEGREE = 3
+#: The default number of cells of the profile space.
+PROFILE_CELLS = 16
+#: The number of bins uniform in ``sqrt(s)`` on which :func:`pressure_error` compares the pressure with its target.
+ERROR_BINS = 48
 
 #: The relative tolerance of the shells' label solve. Solved cold on the fields of a run, the label ``s`` is then
 #: within 3.1e-6 of the converged one (1e-9) at less than half its iterations: 754 to 861 against 1795 to 1909 on W7-X
@@ -65,12 +75,24 @@ def label(seq, B, anisotropy, guess=None, tol=LABEL_TOL):
     return enclosed_flux(seq, T, B_jk), T, info
 
 
-def shell_table(seq, x_q):
-    """``(values, indices)``, each ``(n_q, p + 1)``: the radial 0-form B-splines of the mesh (degree ``p``, its graded
-    knots, the axis and wall splines included) that can be nonzero at ``x = sqrt(s)``, at the quadrature points. On the
-    surfaces the mesh was cut along, ``x`` is the logical radius, so the shells follow the mesh's grading. They sum to
-    one."""
-    return jax.vmap(seq.basis_0.Lambda[0].evaluate_local)(x_q)
+def profile_knots(n):
+    """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` whose
+    breakpoints are uniform in ``sqrt(s)``, ``s_i = (i / cells)^2``. A float64 numpy array."""
+    cells = n - PROFILE_DEGREE
+    return knot_vector((np.arange(cells + 1) / cells) ** 2, PROFILE_DEGREE, False)
+
+
+def profile_basis(n):
+    """The ``n`` splines of the profile space in ``s`` (:func:`profile_knots`). They sum to one. Every profile of the
+    pressure, every shell and every slip of the current is a combination of them, so the controls are functions of the
+    flux label alone, the same on every mesh. ``n`` is the number of cells plus three."""
+    return SplineBasis(n, PROFILE_DEGREE, "clamped", jnp.asarray(profile_knots(n)))
+
+
+def shell_table(n, s_q):
+    """``(values, indices)``, each ``(n_q, 4)``: the splines of the profile space (``n`` of them) that can be nonzero
+    at the labels ``s_q``."""
+    return jax.vmap(profile_basis(n).evaluate_local)(s_q)
 
 
 def zero_total(f, e, m):
@@ -129,10 +151,10 @@ def radial_velocity(seq, f):
     return even.conforming(jnp.concatenate([w_r.ravel(), w_t.ravel(), w_z.ravel()]), 2)
 
 
-def shell_maps(seq, x, Q, e, m, mass_tol):
+def shell_maps(seq, s, Q, e, m, mass_tol):
     """``(div, div_t, velocity, velocity_t)``: the maps ``c -> sum_k c_k f_k`` (3-forms) and ``c -> sum_k c_k w_k``
-    (2-forms, :func:`radial_velocity`) of the coefficients ``c`` of the zero-sum combinations ``Q`` of the shells, at
-    the label ``x = sqrt(s)`` (quadrature points), and their transposes.
+    (2-forms, :func:`radial_velocity`) of the coefficients ``c`` of the zero-sum combinations ``Q`` ``(K, K - 1)`` of the
+    ``K`` shells, at the label ``s`` (quadrature points), and their transposes.
 
     The divergence of the combination ``g = sum_k (Q c)_k phi_k`` is the projection of ``g - <g>`` onto the 3-forms,
     ``M_3^-1 load(g)`` less its mean (:func:`zero_total`). Since everything is linear in ``c``, one 3-form mass solve
@@ -144,7 +166,7 @@ def shell_maps(seq, x, Q, e, m, mass_tol):
     against 2.3e-6 on li383 graded (16,32,12), 2.4e-6 against 6.9e-6 on (48,64,24), 3.4e-6 against 2.0e-5 on
     (64,80,32), the largest of four random pairs), the 3-form solve takes 2 to 3 iterations, and MINRES takes the same
     count at the step's tolerance 0.1 for any 3-form tolerance from 1e-3 to 1e-10 (2026-11-17)."""
-    table = shell_table(seq, x)
+    table = shell_table(Q.shape[0], s)
     even = seq.even
     zero = jnp.zeros(Q.shape[1], Q.dtype)
 
@@ -171,13 +193,13 @@ def shell_maps(seq, x, Q, e, m, mass_tol):
 
 
 class Shells(eqx.Module):
-    """The frozen part of the shell-volume Newton step: the label ``x = sqrt(s)`` at the quadrature points, the
-    orthonormal combinations ``Q`` ``(K, K - 1)`` of the splines whose coefficients sum to zero (on which the block is
+    """The frozen part of the shell-volume Newton step: the label ``s`` at the quadrature points, the
+    orthonormal combinations ``Q`` ``(K, K - 1)`` of the ``K`` splines of the profile space whose coefficients sum to zero (on which the block is
     positive definite, a singular block would make the step's preconditioner singular), the 3-form ``e`` of the
     constant 1 and the integrals ``m`` of the 3-form basis functions (:func:`zero_total`), the pressure part ``g_p`` of
     the right-hand side and ``D_inv``, the inverse of the Gauss-Newton block of the shell velocities. Nothing in it
     holds a vector per shell, so it grows as the mesh does. Arrays only, so a rebuild does not recompile the step."""
-    x: jnp.ndarray
+    s: jnp.ndarray
     Q: jnp.ndarray
     e: jnp.ndarray
     m: jnp.ndarray
@@ -186,12 +208,12 @@ class Shells(eqx.Module):
 
     def maps(self, seq, mass_tol):
         """The maps of :func:`shell_maps` of these shells, with their 3-form mass solves to ``mass_tol``."""
-        return shell_maps(seq, self.x, self.Q, self.e, self.m, mass_tol)
+        return shell_maps(seq, self.s, self.Q, self.e, self.m, mass_tol)
 
 
 @eqx.filter_jit
-def _shell_parts(seq, B, x, Q, e, m, p_q, kappa, mass_tol):
-    _, div_t, velocity, velocity_t = shell_maps(seq, x, Q, e, m, mass_tol)
+def _shell_parts(seq, B, s, Q, e, m, p_q, kappa, mass_tol):
+    _, div_t, velocity, velocity_t = shell_maps(seq, s, Q, e, m, mass_tol)
     n = Q.shape[1]
     g_p = div_t(seq.even._scalar_load_values(p_q, 3))
     penalty = parallel_penalty_profile(atom_profiles(seq, B), kappa)
@@ -200,29 +222,28 @@ def _shell_parts(seq, B, x, Q, e, m, p_q, kappa, mass_tol):
     return g_p, 0.5 * (D + D.T)
 
 
-def build_shells(seq, B, s_q, p_q, kappa, mass_tol):
+def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
     """The :class:`Shells` at the field ``B``, with the flux label ``s_q`` and the target ``p_q`` (mu0 p) at the
-    quadrature points, and the penalty ``kappa`` and mass-solve tolerance of the Newton operator. It costs one Hessian
-    apply and two 3-form mass solves per shell for the block, and two 3-form mass solves for ``e`` and ``g_p``. The
-    pressure part is ``int p* f_k dxi``, the target's work along ``w_k``."""
+    quadrature points, the penalty ``kappa`` and mass-solve tolerance of the Newton operator, on the profile space of
+    ``cells`` cells. It costs one Hessian apply and two 3-form mass solves per shell for the block, and two 3-form mass
+    solves for ``e`` and ``g_p``. The pressure part is ``int p* f_k dxi``, the target's work along ``w_k``."""
     even = seq.even
-    x = jnp.sqrt(s_q)                                     # the label is a share of the toroidal flux, in [0, 1]
-    K = seq.basis_0.Lambda[0].n
+    K = cells + PROFILE_DEGREE
     Q = jnp.asarray(np.linalg.qr(np.eye(K) - 1.0 / K)[0][:, :K - 1])
     m = even._scalar_load_values(jnp.ones_like(s_q), 3)          # the integrals of the basis functions
     e = even.M[3].solve(m)
-    g_p, D = _shell_parts(seq, B, x, Q, e, m, p_q, kappa, mass_tol)
+    g_p, D = _shell_parts(seq, B, s_q, Q, e, m, p_q, kappa, mass_tol)
     # inverted on the host in float64, as the polar Gram blocks are: the block's condition (2e6 on li383 graded
     # (16,32,12)) is beyond a float32 inverse, which came out indefinite and stopped MINRES on nonpositive curvature
-    return Shells(x, Q, e, m, g_p, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64))))
+    return Shells(s_q, Q, e, m, g_p, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64))))
 
 
 def plateau_intervals(rows, margin=1.0):
     """The intervals of ``s`` that seeded island chains occupy, from the seeding's estimate (the rows of
-    :func:`mrx.relaxation.seeding.energy_seed`: resonant radius ``r`` and estimated full width ``w`` in the logical
-    radius, which is ``sqrt(s)`` on the file's surfaces): ``sqrt(s)`` in ``r +- margin w / 2``, overlapping intervals
-    merged. Ideal moves keep the toroidal flux of every surface, so the intervals stay where the chains are."""
-    iv = sorted((max(row["r"] - 0.5 * margin * row["w"], 0.0) ** 2, min(row["r"] + 0.5 * margin * row["w"], 1.0) ** 2)
+    :func:`mrx.relaxation.seeding.energy_seed`: the resonant surface ``x = sqrt(s)`` and the estimated full width
+    ``w`` in ``x``): ``sqrt(s)`` in ``x +- margin w / 2``, overlapping intervals merged. Ideal moves keep the toroidal
+    flux of every surface, so the intervals stay where the chains are."""
+    iv = sorted((max(row["x"] - 0.5 * margin * row["w"], 0.0) ** 2, min(row["x"] + 0.5 * margin * row["w"], 1.0) ** 2)
                 for row in rows)
     merged = []
     for lo, hi in iv:
@@ -247,18 +268,18 @@ def flattened(profile, intervals):
     return lambda x: jnp.interp(x, s, values)
 
 
-def fit_profile(seq, s_i, p_i, smoothing=1e-3):
-    """The profile ``p*(s)`` through the data ``(s_i, p_i)`` in the radial 0-form splines of ``sqrt(s)``: least
-    squares with ``smoothing`` times the squared second differences of the coefficients (relative to the data's
-    scale), and ``p*(1) = 0`` (the wall spline's coefficient zero). The edge value is imposed because data rarely reach
+def fit_profile(s_i, p_i, smoothing=1e-3, cells=PROFILE_CELLS):
+    """The profile ``p*(s)`` through the data ``(s_i, p_i)`` in the profile space of ``cells`` cells
+    (:func:`profile_basis`): least squares with ``smoothing`` times the squared second differences of the coefficients
+    (relative to the data's scale), and ``p*(1) = 0`` (the wall spline's coefficient zero). The edge value is imposed because data rarely reach
     the wall, and the drop between the last datum and the wall sets the level of the relaxation's pressure everywhere
     (it vanishes on the wall), a constant no shell move changes."""
-    rb = seq.basis_0.bases[0].bases[0]
-    A = np.asarray(basis_table(rb, jnp.sqrt(jnp.asarray(s_i)))).T[:, :-1]
+    rb = profile_basis(cells + PROFILE_DEGREE)
+    A = np.asarray(basis_table(rb, jnp.asarray(s_i))).T[:, :-1]
     D2 = np.diff(np.eye(A.shape[1] + 1), 2, axis=0)[:, :-1]
     w = smoothing * np.linalg.norm(A, 2) ** 2
     a = jnp.asarray(np.append(np.linalg.solve(A.T @ A + w * D2.T @ D2, A.T @ np.asarray(p_i)), 0.0))
-    return lambda s: basis_table(rb, jnp.sqrt(s)).T @ a
+    return lambda s: basis_table(rb, s).T @ a
 
 
 def logical_points(seq, X, newton_steps=8):
@@ -297,10 +318,11 @@ class PressureTarget(NamedTuple):
 
 class PressureData(NamedTuple):
     """Pressure data at points in space: the logical points ``x`` (from :func:`logical_points`, once, the mesh does
-    not move), the values ``p`` (mu0 p in T^2) and the ``smoothing`` of :func:`fit_profile`."""
+    not move), the values ``p`` (mu0 p in T^2), the ``smoothing`` and the ``cells`` of :func:`fit_profile`."""
     x: jnp.ndarray
     p: np.ndarray
     smoothing: float = 1e-3
+    cells: int = PROFILE_CELLS
 
     def labels(self, seq, B, T):
         """The flux labels of the points for the field ``B`` with the label temperature ``T``."""
@@ -310,16 +332,17 @@ class PressureData(NamedTuple):
 
     def fit(self, seq, B, T):
         """The profile through the data at the points' current labels (they move with the surfaces)."""
-        return fit_profile(seq, self.labels(seq, B, T), self.p, self.smoothing)
+        return fit_profile(self.labels(seq, B, T), self.p, self.smoothing, self.cells)
 
 
-def load_target(seq, spec, scale=1.0, smoothing=1e-3):
+def load_target(seq, spec, scale=1.0, smoothing=1e-3, cells=PROFILE_CELLS):
     """The :class:`PressureTarget` of ``spec``: ``"file"`` (the geometry file's pressure), a VMEC input namelist (its
     pressure profile, :meth:`mrx.equilibria.indata.Indata.pressure`) or a JSON file of measured pressure in pascal,
     ``{"rho": [...], "p_pa": [...]}`` on flux surfaces (``rho = sqrt(s)``) or ``{"points": [[R, Z, phi_deg], ...],
     "p_pa": [...]}`` at points in space (metres, degrees). Every target is mu0 p in T^2 multiplied by ``scale``.
     The constant of a profile is removed so that it vanishes on the wall (a uniform pressure does no work on a fixed
-    wall), points are fitted at every rebuild (:class:`PressureData`) with ``smoothing``."""
+    wall), points are fitted at every rebuild (:class:`PressureData`) with ``smoothing``, data are fitted in the profile
+    space of ``cells`` cells."""
     import json
 
     from mrx.equilibria.indata import read_indata
@@ -340,14 +363,14 @@ def load_target(seq, spec, scale=1.0, smoothing=1e-3):
     p = scale * mu0 * np.asarray(d["p_pa"], dtype=float)
     if "rho" in d:
         rho = np.asarray(d["rho"], dtype=float)
-        return PressureTarget(profile=fit_profile(seq, rho ** 2, p - np.interp(1.0, rho, p), smoothing))
+        return PressureTarget(profile=fit_profile(rho ** 2, p - np.interp(1.0, rho, p), smoothing, cells))
     pts = np.asarray(d["points"], dtype=float)
     phi = np.radians(pts[:, 2])
     x, miss = logical_points(seq, np.stack([pts[:, 0] * np.cos(phi), pts[:, 0] * np.sin(phi), pts[:, 1]], axis=1))
     if float(jnp.max(miss)) > 1e-6 * float(jnp.max(jnp.abs(jnp.asarray(pts[:, :2])))):
         raise ValueError(f"{spec}: a point is outside the domain or the map inversion failed "
                          f"(|Phi(x) - X| up to {float(jnp.max(miss)):.1e} m)")
-    return PressureTarget(data=PressureData(x, p, smoothing))
+    return PressureTarget(data=PressureData(x, p, smoothing, cells))
 
 
 def target_beta(seq, B, p_q):

@@ -94,8 +94,8 @@ conversions `lift`, `to_working`, `low`. A solve returns its accumulated solutio
   `NEWTON_TOL`, `NEWTON_MAXITER`, `NEWTON_MASS_SOLVE_TOL`.
 - `seeding.py`: `energy_seed`, `parallel_seed`, `resonances`. No resonance in the iota range: warns and returns the
   field unseeded.
-- `initial_conditions.py`: `initial_field`, `potential_two_form`. The field is normalised to `||B||_M = 1`
-  (`B_norm_raw` in the info).
+- `initial_conditions.py`: `initial_field`, `potential_two_form`. The field is in the file's units, tesla, not
+  normalised (since #58): E, F, helicity in T^2 m^3, T^2 m^1/2, T^2 m^4 per field period.
 - `config.py`: tyro dataclasses `RelaxConfig(geometry, seed, descent, newton, budget, drive, output)`.
 
 ## Equilibrium input (`concepts/equilibrium_input.md`, `mrx/equilibria/`)

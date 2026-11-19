@@ -1,7 +1,7 @@
 """The settings of a relaxation run, used by ``scripts/relax.py`` and the tutorials.
 
-:class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, seeding,
-descent method, Newton solve, step budget, resistive drive, prescribed pressure, mesh motion, output). The defaults on the classes are the
+:class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, the target transform, seeding,
+descent method, Newton solve, step budget, resistive drive, prescribed pressure, prescribed current, mesh motion, output). The defaults on the classes are the
 production values, and invalid combinations raise a ``ValueError`` when the config is created. ``relax.py`` turns
 the same classes into its command line with ``tyro.cli``. The docstring under each field is its help text, and a
 field ``x`` of the group ``g`` is the option ``--g.x`` (underscores written as hyphens). :attr:`RelaxConfig.params`
@@ -21,7 +21,7 @@ import tyro
 from mrx.flux_label import ANISOTROPY
 from mrx.paths import data_file
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
-from mrx.relaxation.shells import LABEL_TOL
+from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS
 
 
 class Symmetry(StrEnum):
@@ -96,13 +96,23 @@ class Geometry:
 
 
 @dataclass(frozen=True)
+class Iota:
+    """Target rotational transform: an outer loop sets the current of the prescribed current (the slips, see mrx.relaxation.twist.iota_slips) before every chunk, from the transform the field has on its flux label. With --mesh.align the loop starts once the mesh is aligned or out of moves. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
+    target: Optional[str] = None
+    """A wout or a VMEC input namelist with NCURR = 0 whose transform the relaxation ends at. A namelist with NCURR = 1 prescribes the current, see --current.target. Unset, the run keeps the start's poloidal fluxes."""
+
+    def __bool__(self):
+        return self.target is not None
+
+
+@dataclass(frozen=True)
 class Seed:
-    """Island seeding of the start field (see mrx.relaxation.seeding)."""
+    """Island seeding of the start field, at the resonances of its own transform (see mrx.relaxation.seeding)."""
     seed: Annotated[bool, tyro.conf.arg(name="seed", prefix_name=False)] = field(
         default=False, metadata=dict(record="seed"))
     """Add island seeds to the start field (the initial field or the --output.restart checkpoint)."""
     iotas: Optional[tuple[float, ...]] = None
-    """The rotational transforms nfp n / m of the island chains to seed. Unset, every resonance in the iota range is seeded."""
+    """The rotational transforms nfp n / m of the island chains to seed. Unset, every resonance in the iota range of the field, measured on its flux label, is seeded."""
     amplitudes: Optional[tuple[float, ...]] = None
     """One signed amplitude per --seed.iotas value: the resonant normal field |dB^r| / |B^zeta| at the resonant surface. Unset, the amplitudes minimise the energy."""
     scale: float = 1.0
@@ -196,12 +206,26 @@ class Pressure:
     """The relative tolerance of that label's solve."""
     smoothing: float = 1e-3
     """The smoothing of the fit of measured data to a profile (mrx.relaxation.shells.fit_profile)."""
+    cells: int = PROFILE_CELLS
+    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips) and the transform's loop (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
 
     def __post_init__(self):
         if self.beta is not None and self.scale != 1.0:
             raise ValueError("--pressure.beta and --pressure.scale both set the target's size: give one")
         if self.target is not None and self.target.endswith(".json") and self.beta is not None:
             raise ValueError("--pressure.beta rescales a profile shape, measured data carry their own size")
+
+    def __bool__(self):
+        return self.target is not None
+
+
+@dataclass(frozen=True)
+class Current:
+    """Prescribed current: poloidal flux slips between the flux surfaces are unknowns of every Newton step (mrx.relaxation.twist.Slips), so the relaxation ends at the target net toroidal current inside every surface instead of keeping the start's poloidal fluxes. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
+    target: Optional[str] = None
+    """The current to reach: file (the current of the geometry file's field on its flux label) or a VMEC input namelist with NCURR = 1 (CURTOR times its PCURR_TYPE profile of AC, or of AC_AUX_S and AC_AUX_F). Unset, the run keeps the start's poloidal fluxes."""
+    scale: float = 1.0
+    """Multiply the target by this factor."""
 
     def __bool__(self):
         return self.target is not None
@@ -245,12 +269,14 @@ class RelaxConfig:
     is created. The ``record_prefix`` of a group is put before its field names in the flat record ``params``.
     """
     geometry: Geometry
+    iota: Iota = field(default=Iota(), metadata=dict(record_prefix="iota_"))
     seed: Seed = field(default=Seed(), metadata=dict(record_prefix="seed_"))
     descent: Descent = Descent()
     newton: Newton = field(default=Newton(), metadata=dict(record_prefix="newton_"))
     budget: Budget = Budget()
     drive: Drive = field(default=Drive(), metadata=dict(record_prefix="drive_"))
     pressure: Pressure = field(default=Pressure(), metadata=dict(record_prefix="pressure_"))
+    current: Current = field(default=Current(), metadata=dict(record_prefix="current_"))
     mesh: Mesh = field(default=Mesh(), metadata=dict(record_prefix="mesh_"))
     output: Output = Output()
 
@@ -265,6 +291,14 @@ class RelaxConfig:
         if self.pressure and (not d.newton or self.drive):
             raise ValueError("--pressure.target needs Newton steps (--descent.method newton) and goes without "
                              "--drive.resistivity")
+        if self.current and (not d.newton or self.drive):
+            raise ValueError("--current.target needs Newton steps (--descent.method newton) and goes without "
+                             "--drive.resistivity")
+        if self.iota and (not d.newton or self.drive):
+            raise ValueError("--iota.target needs Newton steps (--descent.method newton) and goes without "
+                             "--drive.resistivity")
+        if self.current and self.iota:
+            raise ValueError("--iota.target and --current.target both set the current: give one")
         if self.mesh:
             if self.drive:
                 raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the "

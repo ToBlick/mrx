@@ -48,7 +48,13 @@ def compute_divergence_norm(B: jnp.ndarray, seq: DeRhamSequence) -> float:
 
 @eqx.filter_jit
 def current(B: jnp.ndarray, seq: DeRhamSequence, guess: jnp.ndarray | None = None) -> jnp.ndarray:
-    """The current ``J = curl B`` of the odd 2-form ``B``, a 1-form computed weakly: ``M_1 J = D_1^T B``."""
+    """The current ``J = curl B`` of the odd 2-form ``B``, a 1-form computed weakly: ``M_1 J = D_1^T B``.
+
+    This is the L2 projection of ``curl B`` onto the Dirichlet 1-forms, the space of the electric fields ``u x B`` of
+    the admissible motions, so its pairing with them is the exact derivative of the discrete energy. It has no
+    tangential part on the wall by construction. That is a property of this representation, not a condition on the
+    plasma: the tangential current at the wall is set by the equilibrium alone, and as a pointwise field ``J`` is not
+    the current within the last radial cell."""
     odd = seq.odd
     return odd.M[1].solve(odd.D[1].T @ B, guess=guess)
 
