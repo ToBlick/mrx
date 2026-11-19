@@ -11,8 +11,13 @@ It holds the profiles a fixed-boundary run takes from the namelist, and what the
 - With ``NCURR = 1`` the net toroidal current inside each surface ``PCURR_TYPE``, ``AC``, ``AC_AUX_S``, ``AC_AUX_F``,
   scaled so that ``I(1) = CURTOR`` (A, positive along ``phi``, :meth:`Indata.current`).
 - The orientation of the boundary: the sums of the ``m = 1`` coefficients of ``RBC`` and ``ZBS``, which fix the sign
-  of the transform in MRX's poloidal angle. The boundary itself is not read. MRX takes its geometry from an
-  equilibrium file.
+  of the transform in MRX's poloidal angle.
+- The boundary ``RBC``, ``ZBS`` and the axis ``RAXIS_CC``, ``ZAXIS_CS`` (:meth:`Indata.boundary_rows`).
+
+:func:`indata_state` is the namelist as a state of :mod:`mrx.equilibria`, a map from the boundary alone: the boundary
+filled as VMEC fills it between the axis and the boundary (:mod:`mrx.equilibria.fill`), with the axis guessed when
+the namelist has none, lambda zero and no field, and the namelist's profiles. :func:`mrx.equilibria.read_equilibrium`
+reads a file named ``input.<name>`` this way.
 
 The profiles are VMEC's (``profile_functions.f``), the types in :data:`PMASS_TYPES`, :data:`PIOTA_TYPES` and
 :data:`PCURR_TYPES`. Their argument is the normalised toroidal flux ``s``, so VMEC's ``APHI``, which only places
@@ -31,6 +36,7 @@ transform in MRX's angle. The current does not depend on the poloidal angle.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -493,6 +499,27 @@ class Indata:
     ai: np.ndarray
     ai_aux_s: np.ndarray
     ai_aux_f: np.ndarray
+    rbc: dict
+    zbs: dict
+    raxis_cc: np.ndarray
+    zaxis_cs: np.ndarray
+
+    def boundary_rows(self):
+        """``(boundary, axis)``: the rows ``(m, n, R_mn, Z_mn)`` of the boundary, ``R = sum R_mn cos(m u - n v)``,
+        ``Z = sum Z_mn sin(m u - n v)`` with ``n`` a multiple of ``NFP`` and ``u`` the namelist's own angle, and the
+        rows ``(n, R_n, Z_n)`` of ``RAXIS_CC``, ``ZAXIS_CS`` (:mod:`mrx.equilibria.fill`), empty without them."""
+        table = {}
+        for n, m in set(self.rbc) | set(self.zbs):
+            R, Z = self.rbc.get((n, m), 0.0), self.zbs.get((n, m), 0.0)
+            # m = 0: cos(-n v) is even in n and sin(-n v) odd, so a negative n adds to |n| with Z negated
+            key, RZ = ((0, abs(n)), (R, Z if n >= 0 else -Z)) if m == 0 else ((m, n), (R, Z))
+            old = table.get(key, (0.0, 0.0))
+            table[key] = (old[0] + RZ[0], old[1] + RZ[1])
+        rows = [[m, n * self.nfp, R, Z] for (m, n), (R, Z) in sorted(table.items())]
+        nz = max(self.raxis_cc.size, self.zaxis_cs.size)
+        R_a, Z_a = _padded(self.raxis_cc, nz), _padded(self.zaxis_cs, nz)
+        axis = [[n * self.nfp, R_a[n], Z_a[n]] for n in range(nz)] if np.any(R_a) else []
+        return rows, axis
 
     def _x(self, s):
         """VMEC's profile argument ``min(|s bloat|, 1)``."""
@@ -545,6 +572,10 @@ def read_indata(path):
         raise ValueError(f"{path}: GAMMA != 0, VMEC's pressure is then a mass over V'(s)^GAMMA of the equilibrium it "
                          f"finds, not a profile of the namelist")
 
+    def modes(name):
+        """The boundary coefficients ``NAME(n, m)`` as a dict from ``(n, m)``."""
+        return {idx: float(vals[0]) for idx, vals in nl.get(name, {}).items()}
+
     def m1_sum(name):
         """The sum of the ``m = 1`` coefficients ``NAME(n, 1)``."""
         return sum(float(vals[0]) for idx, vals in nl.get(name, {}).items() if idx[1:] == (1,))
@@ -559,4 +590,29 @@ def read_indata(path):
         pcurr_type=str(_scalar(nl, "PCURR_TYPE", "power_series")), ac=_vector(nl, "AC", 0),
         ac_aux_s=_aux(nl, "AC_AUX_S"), ac_aux_f=_aux(nl, "AC_AUX_F"), curtor=float(_scalar(nl, "CURTOR", 0.0)),
         piota_type=str(_scalar(nl, "PIOTA_TYPE", "power_series")), ai=_vector(nl, "AI", 0),
-        ai_aux_s=_aux(nl, "AI_AUX_S"), ai_aux_f=_aux(nl, "AI_AUX_F"))
+        ai_aux_s=_aux(nl, "AI_AUX_S"), ai_aux_f=_aux(nl, "AI_AUX_F"), rbc=modes("RBC"), zbs=modes("ZBS"),
+        raxis_cc=_vector(nl, "RAXIS_CC", 0), zaxis_cs=_vector(nl, "ZAXIS_CS", 0))
+
+
+def is_indata(path):
+    """Whether ``path`` names a VMEC input file, ``input.<name>`` by VMEC's convention."""
+    return os.path.basename(str(path)).startswith("input.")
+
+
+def indata_state(path):
+    """The namelist ``path`` as a state of :mod:`mrx.equilibria`: the fill between the axis (``RAXIS_CC``,
+    ``ZAXIS_CS``, or :func:`mrx.equilibria.fill.guess_axis` without them) and the boundary
+    (:func:`mrx.equilibria.fill.fill_state`), lambda zero, and the profiles ``phi`` (``PHIEDGE s / 2 pi``) and
+    ``pressure`` (Pa) as functions of ``r = sqrt(s)``. ``indata`` holds the :class:`Indata`. The state has no field:
+    the initial field of a relaxation on it is the vacuum field with the toroidal flux ``PHIEDGE``
+    (:func:`mrx.relaxation.initial_conditions.initial_field`)."""
+    from mrx.equilibria.fill import fill_state, guess_axis
+    from mrx.equilibria.fit import fit_profile
+
+    nl = read_indata(path)
+    rows, axis = nl.boundary_rows()
+    st = fill_state(rows, axis if axis else guess_axis(rows, nl.nfp), nl.nfp)
+    r = np.linspace(0.0, 1.0, 65)
+    st["profiles"] = dict(phi=fit_profile(r, nl.phiedge * r ** 2 / TWO_PI, 3),
+                          pressure=fit_profile(r, nl.pressure(r ** 2) / MU0, 3))
+    return dict(st, indata=nl)

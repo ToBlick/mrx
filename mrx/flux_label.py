@@ -33,6 +33,10 @@ from mrx.solvers import preconditioned_cg
 #: The default ``kperp``: ten times better aligned with the surfaces than 1e-5 at about 1.8 times the CG iterations
 #: (li383 (16,32,32)), far from the spurious maxima below about 1e-9.
 ANISOTROPY = 1e-6
+#: The iteration cap of the label solve. A mesh whose logical surfaces are far from the flux surfaces needs more
+#: iterations: the vacuum's label on li383 graded (48,64,24) at the tolerance 1e-5 takes 1624 on the wout's mesh and
+#: 4191 on the mesh filled from the boundary alone, 2965 and 6544 at 1e-8 (one H200, 2026-11-18).
+MAXITER = 20000
 
 
 def _conductivity(seq, B_jk, anisotropy):
@@ -124,7 +128,7 @@ def flux_label_preconditioner(seq, B_jk, anisotropy=ANISOTROPY, radial_wavenumbe
     return apply
 
 
-def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=2000):
+def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=MAXITER):
     """Return ``(T, info)``, the temperature of :func:`flux_label_operator` with the source 1 per volume.
 
     ``T`` is a 0-form on ``seq.even``. It scales like ``1 / kperp``. The solve is preconditioned conjugate
