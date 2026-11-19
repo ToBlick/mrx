@@ -10,6 +10,12 @@ and calls :func:`relax`, which runs the steps in compiled chunks and prints diag
 
 The sequence and the stepper's switches (Newton or not, resistive or not) are compiled in. Changing them
 recompiles. A new geometry or a new field on the same sequence does not.
+
+An outer loop acts between the chunks: :func:`relax` calls its ``rebuild`` before every chunk with the state and the
+step, and runs the chunk with the state and the stepper it returns. There the loop reads the field on its flux label
+and sets the prescribed pressure and current of the next chunk (:meth:`TimeStepper.with_shells`,
+:meth:`TimeStepper.with_slips`). ``scripts/relax.py`` runs its own loops this way, the transform's among them, and
+``scripts/pressure_fit.py`` adds one written outside the library.
 """
 import json
 import os
@@ -555,18 +561,27 @@ class RelaxResult(NamedTuple):
 def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int = 0,
           floor_tol: float = 0.0,
           on_chunk: Optional[Callable[[RelaxResult], None]] = None,
+          rebuild: Optional[Callable[[State, int], tuple[State, TimeStepper]]] = None,
           verbose: bool = True) -> RelaxResult:
     """Run up to ``steps`` relaxation steps in compiled chunks of ``chunk`` steps and return a :class:`RelaxResult`.
 
     Diagnostics are computed and printed after every chunk, the energy and helicity as changes relative to the
     start of the run. The run stops early when the mean force residual
     of a chunk falls below ``floor_tol``. ``on_chunk`` (for example a checkpoint writer) is called after every
-    chunk. ``it0`` is the step number of ``state``, nonzero for a restart. ``steps`` must be a multiple of
-    ``chunk``.
+    chunk, the last included, with the run so far: it observes, ``rebuild`` acts. ``it0`` is the step number of
+    ``state``, nonzero for a restart. ``steps`` must be a multiple of ``chunk``.
+
+    ``rebuild(state, it)`` is called before every chunk, the first one before the start's diagnostics, with the
+    state at the step ``it``. It returns the state and the stepper the chunk runs with: an outer loop sets the targets
+    of the stepper there (the shells and the slips hold the flux label of one field, so they are rebuilt every chunk),
+    a move of the mesh or a seed changes the state. A stepper with arrays of the same shapes does not recompile the
+    chunk. The time of ``rebuild`` is not in the result's ``wall``.
     """
     if chunk < 1 or steps % chunk:
         raise ValueError("steps must be a positive multiple of chunk")
     seq = ts.seq
+    if rebuild is not None:
+        state, ts = rebuild(state, it0)
     trace: dict = {k: [] for k in ("dE_ls", "cos")}    # the per-step scalars are added at the first chunk
     qoi: dict = {}
 
@@ -578,7 +593,7 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
             qoi.setdefault(k, []).append(v)
 
     t_arm = time.perf_counter()
-    t_out = 0.0     # time spent in samples and callbacks, which wall excludes
+    t_out = 0.0     # time spent in samples, callbacks and rebuilds, which wall excludes
     pw = jnp.zeros(seq.even.n(0))
     tq = time.perf_counter()
     state, pw, scalars = sample(ts, state, pw)   # the start of THIS run
@@ -592,6 +607,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
 
     n_done, stop = 0, "running"
     for _ in range(steps // chunk):
+        if rebuild is not None and n_done:
+            tr = time.perf_counter()
+            state, ts = rebuild(state, it0 + n_done)
+            t_out += time.perf_counter() - tr
         state, ch = _run_chunk(ts, state, jnp.asarray(it0 + n_done), chunk)
         ch = {k: np.asarray(v) for k, v in ch.items()}
         n_done += chunk
