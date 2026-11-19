@@ -437,18 +437,20 @@ class DeRhamSequence():
             for k, index in self._dirichlet_dofs.items()}
         return view
 
-    def build_preconditioners(self, mass_atom="slab", laplacian_atom="lumping"):
+    def build_preconditioners(self, mass_atom="slab", laplacian_atom="lumping", degrees=(0, 1, 2, 3)):
         """Build the mass and Laplacian preconditioners of every space for the installed geometry,
         install them as :attr:`operators` and return them. ``mass_atom`` selects the mass
         preconditioner of ``k = 1, 2``, one of :data:`mrx.operators.MASS_ATOMS`, and ``laplacian_atom``
         whether the co-closed 2-form solves use the multigrid, one of :data:`mrx.operators.LAPLACIAN_ATOMS`. The harmonic forms stay zero until
-        :func:`mrx.nullspace.compute_nullspaces` runs. Needs ``n_r >= p + 2``."""
+        :func:`mrx.nullspace.compute_nullspaces` runs. Only the spaces of the form degrees ``degrees`` get
+        preconditioners: the solves of the 0-forms alone, before a map is final, need only ``(0,)``. Needs
+        ``n_r >= p + 2``."""
         self._require_geometry()
         if self.parity is not None:
             # a parity view reuses the preconditioners of the full sequence, restricted to its space
             base = self._base.operators
             if base is None:
-                base = self._base.build_preconditioners(mass_atom, laplacian_atom)
+                base = self._base.build_preconditioners(mass_atom, laplacian_atom, degrees)
             ops = op.new_operators(self)
             ops = eqx.tree_at(lambda o: (o.mass_lumping, o.laplacian_lumping, o.mass_model, o.stiffness), ops,
                               tuple({key: ReducedAtom(atom, self.reduction[key]) for key, atom in atoms.items()}
@@ -457,7 +459,7 @@ class DeRhamSequence():
                               is_leaf=lambda x: x is None or isinstance(x, dict))
             self.operators = ops
             return ops
-        ops = op.assemble_preconditioners(self, op.new_operators(self), mass_atom, laplacian_atom)
+        ops = op.assemble_preconditioners(self, op.new_operators(self), mass_atom, laplacian_atom, degrees)
         self.operators = ops
         if self.half_period:
             for view in (self.odd, self.even):

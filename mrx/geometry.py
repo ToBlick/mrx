@@ -65,7 +65,7 @@ SYMMETRIES = ("stellarator", "field-period", "none")
 
 def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
                    symmetry="stellarator", graded=False, mass_atom="slab", laplacian_atom="lumping",
-                   quad_points=None, map_theta=None):
+                   quad_points=None, map_theta=None, zeta="phi"):
     """Build the de Rham sequence of the geometry file ``geometry`` and return it.
 
     The sequence has its map installed and its preconditioners built (``seq.operators``). The
@@ -100,6 +100,9 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
             by the field spaces, not by the map.
         laplacian_atom: the atoms alone, or with the multigrid of the co-closed 2-form solves, one of
             :data:`mrx.operators.LAPLACIAN_ATOMS`.
+        zeta: the toroidal coordinate, ``"phi"`` for the file's sections or ``"harmonic"`` for the level sets of the
+            vacuum field's potential (:func:`mrx.relaxation.mesh_motion.harmonic_build`). The map is moved there with
+            the 0-form preconditioners alone, and all of them are built once, on the final map.
     """
     from mrx.derham_sequence import AXIS_TYPES, DeRhamSequence      # both import this module
     from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium
@@ -138,6 +141,10 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
           f"symmetry {symmetry} ({note})", flush=True)
     seq.set_geometry_from_map(Phi)
     seq.map_theta = m
+    if zeta == "harmonic":
+        from mrx.relaxation.mesh_motion import harmonic_build   # imports this module
+        seq.build_preconditioners(degrees=(0,))
+        harmonic_build(seq)
     seq.build_preconditioners(mass_atom, laplacian_atom)
     print(f"[geom] sequence {seq.ns} p={p} built in {time.perf_counter() - t0:.0f} s", flush=True)
     return seq

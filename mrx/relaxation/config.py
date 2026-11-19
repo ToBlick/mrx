@@ -1,7 +1,7 @@
 """The settings of a relaxation run, used by ``scripts/relax.py`` and the tutorials.
 
 :class:`RelaxConfig` holds every setting of a run, grouped into small frozen dataclasses (geometry, seeding,
-descent method, Newton solve, step budget, resistive drive, prescribed pressure, output). The defaults on the classes are the
+descent method, Newton solve, step budget, resistive drive, prescribed pressure, mesh motion, output). The defaults on the classes are the
 production values, and invalid combinations raise a ``ValueError`` when the config is created. ``relax.py`` turns
 the same classes into its command line with ``tyro.cli``. The docstring under each field is its help text, and a
 field ``x`` of the group ``g`` is the option ``--g.x`` (underscores written as hyphens). :attr:`RelaxConfig.params`
@@ -64,12 +64,17 @@ class Geometry:
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000
     """The maximum number of iterations of every linear solve."""
+    zeta: Literal["phi", "harmonic"] = "phi"
+    """The toroidal coordinate of the first mesh: phi, the cylindrical angle (the surfaces zeta = const are the planes phi = const), or harmonic, the angle of the vacuum field (they are the level sets of its potential, the map moved there by mrx.relaxation.mesh_motion.harmonic_build). harmonic needs a VMEC input namelist, whose start is the vacuum field."""
     max_batch: int = 262144
     """The number of points evaluated at once in the quadrature loops. 0 evaluates all of them at once. Lower it when one of these loops runs out of device memory."""
 
     def __post_init__(self):
         if self.max_batch < 0:
             raise ValueError("--geometry.max-batch must be non-negative (0 is one vmap over all points)")
+        if self.zeta == "harmonic" and not os.path.basename(self.path).startswith("input."):
+            raise ValueError("--geometry.zeta harmonic re-sections a VMEC input namelist's fill: a file's field lives "
+                             "on the file's sections")
         if not os.path.isfile(data_file(self.path)):
             raise ValueError(f"--geometry.path {self.path!r} is not a file (a .nc, .dat or .h5), neither there nor by "
                              "name in $MRX_DATA/data")
@@ -79,14 +84,15 @@ class Geometry:
         return [self.knots_r, self.knots_theta, self.knots_zeta]
 
     def build(self):
-        """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`.
+        """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`, with its
+        map re-sectioned onto the harmonic angle for ``zeta = harmonic``.
         ``max_batch`` becomes the batch of the loops over quadrature points (:data:`mrx.MAP_BATCH_SIZE_INNER`)."""
         import mrx
         from mrx.geometry import build_sequence
         mrx.MAP_BATCH_SIZE_INNER = self.max_batch
         return build_sequence(self.path, self.resolution, self.spline_degree, self.solve_maxiter,
                               tol=self.solve_tol, knots=self.knots, symmetry=str(self.symmetry), graded=self.graded,
-                              map_theta=self.map_theta)
+                              map_theta=self.map_theta, zeta=self.zeta)
 
 
 @dataclass(frozen=True)
@@ -202,6 +208,26 @@ class Pressure:
 
 
 @dataclass(frozen=True)
+class Mesh:
+    """Motion of the mesh towards the flux surfaces of the field between chunks (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
+    align: bool = False
+    """Move the mesh towards the flux surfaces until it is aligned."""
+    tol: float = 1e-2
+    """The volume rms of s - S(r), the flux label against its mean on each logical surface, below which the mesh is aligned (with the magnetic axis within a quarter of the first radial cell of the mesh axis). Then the run only relaxes."""
+    moves: int = 8
+    """The largest number of moves."""
+    start: int = 20
+    """The step from which on a move may happen: the label of the start field may be far from that of the relaxed field. A multiple of --budget.chunk."""
+    every: int = 20
+    """The steps between two moves, with which the relaxation removes the error of the carried field. A multiple of --budget.chunk."""
+    axis_only: bool = False
+    """Move only the mesh axis onto the magnetic axis (the axis step of a move), not the points between it and the wall. The mesh is then aligned once the axis is within a quarter of the first radial cell, whatever --mesh.tol."""
+
+    def __bool__(self):
+        return self.align
+
+
+@dataclass(frozen=True)
 class Output:
     """Output directory and restart."""
     out: Optional[str] = None
@@ -225,6 +251,7 @@ class RelaxConfig:
     budget: Budget = Budget()
     drive: Drive = field(default=Drive(), metadata=dict(record_prefix="drive_"))
     pressure: Pressure = field(default=Pressure(), metadata=dict(record_prefix="pressure_"))
+    mesh: Mesh = field(default=Mesh(), metadata=dict(record_prefix="mesh_"))
     output: Output = Output()
 
     def __post_init__(self):
@@ -238,6 +265,12 @@ class RelaxConfig:
         if self.pressure and (not d.newton or self.drive):
             raise ValueError("--pressure.target needs Newton steps (--descent.method newton) and goes without "
                              "--drive.resistivity")
+        if self.mesh:
+            if self.drive:
+                raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the "
+                                 "mesh it was written on")
+            if self.mesh.start % chunk or self.mesh.every % chunk or self.mesh.every < chunk:
+                raise ValueError("--mesh.start and --mesh.every must be multiples of --budget.chunk")
 
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""

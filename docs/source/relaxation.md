@@ -37,6 +37,48 @@ after 50 steps and 4.7e-3 after 400. The label's solve takes 4267
 iterations on the vacuum and 1700 to 3300 later (one H200, float64, 4.7
 minutes for the operators and 5.7 for the 257 steps, 2026-11-19).
 
+The toroidal coordinate of the first mesh is set by `--geometry.zeta`. With
+`phi`, the default, the surfaces $\zeta = $ const are the planes
+$\phi = $ const of the cylindrical angle, as in the files. With `harmonic`
+they are the level sets of the potential of the vacuum field of the domain,
+so that $\nabla \zeta$ is the harmonic 1-form $h$, the direction of the
+vacuum field, fixed by the boundary alone. The planes are not: on li383, W7-X
+and HSX $\|\nabla \zeta - h\| / \|h\|$ is 0.29, 0.35 and 0.65 on the
+planes. The map gets there by moves of the same kind as the alignment with
+the flux surfaces (see Mesh motion below), with a different misfit.
+
+The misfit is a scalar $q$ on the mesh. One Neumann solve for the Laplacian
+on the map gives the harmonic angle $\zeta + q$
+(`mrx.nullspace.harmonic_angle`), so $q$ says how far the logical $\zeta$
+is from the harmonic angle at each point. The mesh is aligned in $\zeta$
+when $q = 0$, as it is aligned radially when the flux label is a function
+of $r$. A move slides every point along its line of constant $r$ and
+$\theta$, from $\zeta$ to the point the map has at
+$\zeta - q / (1 + \partial_\zeta q)$
+(`mrx.relaxation.mesh_motion.harmonic_displacement`). The surfaces
+$r = $ const and the poloidal angle stay, and the wall slides along
+itself. The change of the map is projected onto its spline space and halved
+if a cell would fold, as in a flux move. On the moved map $q$ is solved
+again. The shift is the Newton step of $q = 0$ along each line, so each
+move about squares the error until the tolerance of the solves. From the planes the distance
+$\|\nabla \zeta - h\| / \|h\|$ (`mrx.nullspace.zeta_harmonic_distance`) falls
+0.29, 1.6e-2, 1.6e-5, 2.5e-7 on li383, 0.35, 3.1e-2, 9.5e-5, 2.3e-7 on
+W7-X and 0.65, 9.3e-2, 2.4e-3, 5.3e-6 on HSX. The moves stop below 1e-5,
+after three moves on all three. The first move shifts the points by up to
+1.4, 1.8 and 2.8 toroidal cells, the later ones by a tenth of a cell and
+less. The wall moves by 0.3, 0.2 and 0.1 mm, the error of its spline. The
+map is the one a single exact section along the lines gives, to 0.2 mm.
+
+The moves are made before the field exists, so they only change the map and
+nothing is carried. Each costs one Neumann solve, a fraction of a second
+after the first. The solves need only the preconditioners of the 0-forms,
+so the others are built once, on the final map, and the vacuum field is
+computed there. On one H200 at the resolutions of the mesh motion below the
+setup takes 35 to 55 s longer than with `phi`, which takes 240 to 285 s,
+and the relaxation is the same (2026-11-19). The harmonic choice
+needs a VMEC input namelist, whose start is the vacuum field. A file's field
+lives on the file's sections.
+
 ```python
 from mrx.geometry import build_sequence
 from mrx.relaxation.initial_conditions import initial_field
@@ -68,13 +110,14 @@ the pair `--seed` / `--no-seed`:
 
 | group | flags |
 |---|---|
-| geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.graded`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
+| geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.graded`, `--geometry.zeta`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.smoothing` |
+| mesh | `--mesh.align`, `--mesh.axis-only`, `--mesh.tol`, `--mesh.moves`, `--mesh.start`, `--mesh.every` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -160,6 +203,81 @@ from 1.3 at the start (7.4e-3 after 20 steps, 6.1e-4 after 100, one H200,
 10 minutes). A namelist that tabulates the file's own pressure ends where
 `--pressure.target file` ends, to 1.3e-6 in the field's coefficients, as close as two runs
 of the file's target on different nodes (3.8e-6).
+
+## Mesh motion
+
+A mesh filled from the boundary alone (`--geometry.path input.<name>`) is
+not aligned with the flux surfaces of the field, and its axis is where the
+fill's guess puts it, not on the magnetic axis. The relaxation
+converges more slowly on it. With `--mesh.align` the mesh moves towards the
+flux surfaces between chunks (`mrx.relaxation.mesh_motion`). A move is a
+property of the mesh only. The physical field stays, and the pressure
+target, a function of the flux label, does not see it.
+
+Every point moves within its surface $\zeta = $ const and the wall stays, so
+a harmonic $\zeta$ stays harmonic: $\|\nabla \zeta - h\| / \|h\|$ is
+recorded after every move. A
+move first puts the mesh axis on the magnetic axis, the maximum of the flux
+label's temperature in each plane, by the shift with which the fill places
+its axis, $d(\zeta)(1 - r^2)$. Then it moves the points so that the label
+$s$ comes closer to its volume mean $S(r)$ on each logical surface, by a
+velocity from one weighted Helmholtz solve per component of the plane,
+smoothed over two radial cells. Both parts are halved until no cell loses
+more than half its volume. With `--mesh.axis-only` a move is the axis step
+alone, and the mesh counts as aligned once its axis is on the magnetic axis.
+
+The field keeps its coefficients, which moves the physical field with the
+mesh and keeps every flux through every face of the mesh. The drag is then
+undone by the relaxation's ideal update with the mesh's velocity in place of
+the flow's, on the maps between the old and the new one, in SSP-RK3 substeps
+that cross at most the relaxation's CFL cap of half a cell, the cheapest
+explicit method that is stable for this advection
+(`mrx.relaxation.mesh_motion.undrag`). $\nabla \cdot B = 0$, $B \cdot n = 0$ and
+the toroidal flux hold exactly. The fluxes inside the other surfaces and the
+topology are kept to the accuracy of the transport. One move changes the
+physical field by the transport's spatial error, 2.6e-3 for the 9.9 cm first
+move on W7-X graded (24,48,28), in 27 substeps and 2 s on one H200. Twelve
+moves there and back return the field to 2.5e-5, and a seeded island chain
+on li383 keeps its width (2026-11-18). The new map is data of the sequence:
+the compiled relaxation is reused and the preconditioners of the start map
+are kept. Once the mesh is aligned or out of moves the preconditioners of
+the final map are built, in about a minute of host assembly at the sizes
+above. The kept ones precondition the moved operators with the same Newton
+and label counts, but the mass solves inside every step take more
+iterations, which made the steps on the moved meshes of li383, W7-X and HSX
+12 to 26 % slower (2026-11-19).
+
+A move happens before the shells are rebuilt, from step
+`--mesh.start` on and every `--mesh.every` steps, at most `--mesh.moves`
+times. The motion stops for good once the volume rms of $s - S(r)$ is below
+`--mesh.tol` and the label's maximum is within a quarter of the first radial
+cell of the mesh axis. Every move kicks the force residual up by the error
+of the carried field, so a few moves while the field is far from its
+equilibrium cost little and moves late in a run delay it.
+
+    python -u scripts/relax.py --geometry.path input.li383 --geometry.graded --geometry.resolution 48 64 24 \
+        --budget.steps 400 --pressure.target input.li383 --mesh.align
+
+From the vacuum on li383's fill with the namelist's pressure, as above, four
+moves at steps 20 to 80 align the mesh. The rms of $s - S(r)$ falls from
+5.0e-2 to 8.5e-3, and the mesh axis, 5.5 radial cells off at first, ends on
+the magnetic axis. The squared force residual stays below 1e-8 from step 90
+on, against step 257 without the motion. A move costs 5 to 8 s after the
+first, which compiles (106 s). The steps on the moved mesh cost more, 10 s per
+chunk of ten against 6 s, so both runs reach a residual of 1e-8 in about ten
+minutes with the build of the operators (one H200, float64, 2026-11-19).
+
+The `mesh` record of `relax.json` holds every move: the step, the alignment
+error before and after it, the axis offset in first radial cells, the
+largest move, the range of the change of $\det D\Phi$, the change of the
+physical field at fixed physical points and of the energy, the substeps of
+the transport and the label's
+CG counts, and `preconditioners`, the step and the wall time of the build on
+the final map. Every checkpoint of such a run holds its map, which a restart and
+`scripts/poincare_trace.py` install. It also holds the state of the schedule
+(the moves made, the step of the last move and the step the mesh was aligned
+at), so a restart moves on the steps the run would have moved on. `best.h5` is
+the best field since the last move.
 
 ## Stopping
 
