@@ -56,7 +56,8 @@ import numpy as np
 import mrx
 import mrx.operators as op
 from mrx.differential_forms import DifferentialForm
-from mrx.extraction_operators import build_extraction, conforming_restriction, dirichlet_dofs, get_xi, gram_blocks
+from mrx.extraction_operators import (build_extraction, conforming_restriction, core_gram_inverse, dirichlet_dofs, get_xi,
+                                      gram_blocks)
 from mrx.geometry import SYMMETRIES, SequenceGeometry, map_jacobian_at
 from mrx.incidence import build_matrixfree_incidence, build_polar_derivative
 from mrx.mass import attach_weights, mass_plan, projection_plan
@@ -174,6 +175,8 @@ class DeRhamSequence():
                                                               self.extraction[(k, True)]))
                                 for k in range(4)}
         self._gram = {(k, d): gram_blocks(forms[k], d, self.theta_counts) for k in range(4) for d in (False, True)}
+        # computed on the host from the extraction's entries, which a compiled function of a full sequence traces
+        self._core_gram = {key: core_gram_inverse(e, self.core[key]) for key, e in self.extraction.items()}
 
         lam, dlam = self.basis_0.Lambda, self.basis_0.dLambda
         x = (self.quad.x_x, self.quad.x_y, self.quad.x_z)
@@ -268,7 +271,7 @@ class DeRhamSequence():
         this is ``X^T`` of the full space's, since ``E E^T`` commutes with the reflection."""
         key = (int(k), self.dirichlet)
         base = self if self.parity is None else self._base
-        v = conforming_restriction(base.extraction[key], c, base.core[key], base._gram[key])
+        v = conforming_restriction(base.extraction[key], c, base.core[key], base._core_gram[key], base._gram[key])
         return v if self.parity is None else self.reduction[key].T @ v
 
     def core_rows(self, k):
@@ -594,5 +597,5 @@ class DeRhamSequence():
 
 
 # ``_base`` (the full sequence behind a parity view) is static. As a pytree child it would
-# form a cycle with the full sequence's ``_parity_views``.
-register_arrays(DeRhamSequence, static=("equilibrium", "_base"))
+# form a cycle with the full sequence's ``_parity_views``. ``_core_gram`` stays on the host.
+register_arrays(DeRhamSequence, static=("equilibrium", "_base", "_core_gram"))
