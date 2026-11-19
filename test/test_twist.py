@@ -83,7 +83,7 @@ def test_iota_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
             state, seed_step = initial_state(B_seeded, ts), k * CHUNK
             s_q, T, _ = label(seq, state.B_n, ANISOTROPY, T)
         ts = ts.with_shells(build_shells(seq, state.B_n, s_q, p_t(s_q), ts.newton_penalty, ts.newton_mass_solve_tol,
-                                         CELLS))
+                                         CELLS)[0])
         ts = ts.with_slips(iota_slips(seq, state.B_n, T, np.asarray(s_q), iota_t, ts, CELLS)[0])
         res = relax(state, ts, steps=CHUNK, chunk=CHUNK, verbose=False)
         state, E0 = res.state, res.E0 if E0 is None else E0
@@ -204,7 +204,7 @@ def test_current_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
     for _ in range(STEPS // CHUNK):
         s_q, T, _ = label(seq, state.B_n, ANISOTROPY, T)
         ts = ts.with_shells(build_shells(seq, state.B_n, s_q, p_t(s_q), ts.newton_penalty, ts.newton_mass_solve_tol,
-                                         CELLS))
+                                         CELLS)[0])
         ts = ts.with_slips(build_slips(seq, state.B_n, T, mu_t)[0])
         res = relax(state, ts, steps=CHUNK, chunk=CHUNK, verbose=False)
         state, E0 = res.state, res.E0 if E0 is None else E0
