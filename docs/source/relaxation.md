@@ -117,7 +117,7 @@ the pair `--seed` / `--no-seed`:
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
-| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.smoothing`, `--pressure.cells` |
+| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
 | mesh | `--mesh.align`, `--mesh.axis-only`, `--mesh.tol`, `--mesh.moves`, `--mesh.start`, `--mesh.every` |
 | output | `--output.out`, `--output.restart` |
@@ -172,12 +172,10 @@ changes the shells' volumes. The trace has `dW` next to `dE`: the change of
 $W$ over the step, with the target pressure's work to first order in the step.
 The summary's `W_removed` is its sum.
 
-The target is the geometry file's pressure (`--pressure.target file`), the
-pressure profile of a VMEC input namelist (`--pressure.target input.<name>`) or
-measured pressure in pascal from a JSON file, on flux surfaces (`{"rho": [...], "p_pa": [...]}`) or at points in space
-(`{"points": [[R, Z, phi_deg], ...], "p_pa": [...]}`). Data at points are
-refitted to a profile of their current labels at every rebuild, so they follow
-the surfaces as they move. The target is $\mu_0 p$ in T^2, the units of the
+The target is the geometry file's pressure (`--pressure.target file`) or the
+pressure profile of a VMEC input namelist (`--pressure.target input.<name>`).
+Measured pressure is fitted by `scripts/pressure_fit.py`, an outer loop (see
+Outer loops below). The target is $\mu_0 p$ in T^2, the units of the
 field. A profile is multiplied by `--pressure.scale`, or
 scaled to `--pressure.beta`: at every rebuild its factor is set so that
 $\int p^* \,dV / \int B^2/2 \,dV$ is that beta on the field as it is then.
@@ -305,7 +303,7 @@ rotational transform of the start field. With `--iota.target <file>` it ends
 at the transform of a wout or of a VMEC input namelist with `NCURR = 0`. The
 transform is no control of the energy, the current is. So the transform sets
 the target of the prescribed current in an outer loop, before every chunk
-({func}`mrx.relaxation.twist.iota_slips`):
+({func}`mrx.relaxation.twist.iota_current`):
 
 1. the poloidal flux $\psi(s)$ inside the flux label's level sets is measured
    and compared with the target's, $\psi^*(s) = \Phi/n_{fp} \int_0^s \iota^*$.
@@ -336,6 +334,58 @@ after 10 Newton steps and 4.1e-4 after 200, the floor of the label's fit. `dW`
 is negative on every step and the force residual reaches 1.4e-10 after 200
 steps. A step costs what a step without targets costs, the update 1.6 s per
 chunk, about one Newton step (one H200, 2026-11-18).
+
+## Outer loops
+
+The pressure and the current targets are the controls of the energy. An
+outer loop sets them from the field between chunks of Newton steps. The
+transform's loop above is one.
+A loop of your own is a function `rebuild(state, it)` that
+{func}`mrx.relaxation.loop.relax` calls before every chunk. It returns the
+state and the stepper the chunk runs with:
+
+```python
+def rebuild(state, it):
+    s_q, T, _ = label(seq, state.B_n, ANISOTROPY)               # the flux label of the field
+    ...                                                         # read the field, set p_star and mu_star
+    ts_k = ts.with_shells(build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty,
+                                       ts.newton_mass_solve_tol, cells))
+    ts_k = ts_k.with_slips(build_slips(seq, state.B_n, T, mu_star)[0])
+    return state, ts_k
+
+res = relax(initial_state(B0, ts), ts, steps, chunk, rebuild=rebuild)
+```
+
+What the loop can read on the label: the label $s$ at the quadrature points
+and its temperature `T` ({func}`mrx.relaxation.shells.label`), the label at
+points in space ({func}`mrx.relaxation.shells.logical_points` once, then
+{func}`mrx.relaxation.shells.point_labels`), the current's moments
+({func}`mrx.relaxation.twist.current_on_label`), the transform
+({func}`mrx.relaxation.twist.iota_fit`) and the pressure, the weak pressure
+({func}`mrx.relaxation.physics.weak_pressure`) against $s$ at the quadrature
+points, with its constant fixed against a target by
+{func}`mrx.relaxation.shells.pressure_error`. What it sets: the pressure
+target as a function of $s$ (mu0 p in T^2), whose values at the quadrature
+points the shells take, and the current target as moments on the profile space
+({func}`mrx.relaxation.twist.current_target` turns a function of $s$ into
+them). The shells and the slips hold the label of one field, so they are
+rebuilt every chunk whether the targets change or not.
+
+`scripts/pressure_fit.py` is a loop written outside the library. It fits a
+pressure profile to measured data, at points in space or on flux surfaces, as
+a Bayesian posterior whose prior weight the evidence sets, refits data at
+points on their labels before every chunk and writes the posterior's band. It
+runs `scripts/relax.py` with its fit as the pressure target (relax.py's `main`
+takes it as `fit`), so it takes every flag of relax.py, with the data file as
+`--pressure.target`. Its docstring states the model.
+
+```bash
+python -u scripts/pressure_fit.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 48 64 24 \
+    --geometry.graded --budget.steps 300 --pressure.target data.json
+```
+
+with `data.json` = `{"points": [[R, Z, phi_deg], ...], "p_pa": [...], "sigma_pa": ...}`
+or `{"rho": [...], "p_pa": [...], "sigma_pa": ...}` (`"sigma_pa"` optional).
 
 ## Mesh motion
 
@@ -444,7 +494,7 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 

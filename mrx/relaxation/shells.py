@@ -36,12 +36,12 @@ shell divergences is zero: the shells kept are the combinations whose coefficien
 pressure cannot move a fixed wall. The pressure's constant, which no move changes, is the gauge ``<p> = <p*>``
 (:func:`pressure_error`): with it all ``K`` moments of ``p - p*`` vanish at an equilibrium.
 
-The targets: a profile ``p*(s)`` (mu0 p in T^2, from the geometry file, a VMEC input namelist or a measured profile
-on flux surfaces, :class:`PressureTarget`), made constant across seeded island chains (:func:`plateau_intervals`,
-:func:`flattened`), or pressure data at points in space (:class:`PressureData`), refitted to a profile of the current
-labels at every rebuild.
+The target is a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a VMEC input namelist,
+:func:`load_target`), made constant across seeded island chains (:func:`plateau_intervals`, :func:`flattened`). A
+profile that an outer loop sets from the field, such as a fit of pressure data (``scripts/pressure_fit.py``), takes
+its place between chunks (:func:`mrx.relaxation.loop.relax`). The labels of points in space on a field are
+:func:`point_labels`, after :func:`logical_points` once.
 """
-from typing import NamedTuple, Optional
 
 import equinox as eqx
 import jax
@@ -53,7 +53,7 @@ from mrx.flux_label import enclosed_flux, enclosed_flux_map, flux_label
 from mrx.operators import _hodge_split
 from mrx.precision import to_working
 from mrx.relaxation.newton import atom_profiles, parallel_penalty_profile, second_variation
-from mrx.spline_bases import SplineBasis, basis_table, knot_vector
+from mrx.spline_bases import SplineBasis, knot_vector
 
 
 #: The degree of the splines of the profile space (:func:`profile_basis`).
@@ -208,20 +208,6 @@ def flattened(profile, intervals):
     return lambda x: jnp.interp(x, s, values)
 
 
-def fit_profile(s_i, p_i, smoothing=1e-3, cells=PROFILE_CELLS):
-    """The profile ``p*(s)`` through the data ``(s_i, p_i)`` in the profile space of ``cells`` cells
-    (:func:`profile_basis`): least squares with ``smoothing`` times the squared second differences of the coefficients
-    (relative to the data's scale), and ``p*(1) = 0`` (the wall spline's coefficient zero). The edge value is imposed because data rarely reach
-    the wall, and the drop between the last datum and the wall sets the level of the relaxation's pressure everywhere
-    (it vanishes on the wall), a constant no shell move changes."""
-    rb = profile_basis(cells + PROFILE_DEGREE)
-    A = np.asarray(basis_table(rb, jnp.asarray(s_i))).T[:, :-1]
-    D2 = np.diff(np.eye(A.shape[1] + 1), 2, axis=0)[:, :-1]
-    w = smoothing * np.linalg.norm(A, 2) ** 2
-    a = jnp.asarray(np.append(np.linalg.solve(A.T @ A + w * D2.T @ D2, A.T @ np.asarray(p_i)), 0.0))
-    return lambda s: basis_table(rb, s).T @ a
-
-
 def logical_points(seq, X, newton_steps=8):
     """``(x, miss)``: the logical points of the physical points ``X`` (Cartesian, ``(n, 3)``) and the distance
     ``|Phi(x) - X|`` left. The nearest point of a coarse logical grid, then Newton in the chart ``(r cos 2 pi theta,
@@ -245,72 +231,29 @@ def logical_points(seq, X, newton_steps=8):
     return jax.vmap(invert)(x0, X)
 
 
-class PressureTarget(NamedTuple):
-    """A pressure target ``p*(s)``, mu0 p in T^2 as a function of the normalised toroidal flux. ``profile`` is fixed,
-    or ``None`` when ``data`` (a :class:`PressureData`) refits it at every rebuild."""
-    profile: Optional[object] = None
-    data: Optional["PressureData"] = None
-
-    def at(self, seq, B, T):
-        """The profile for the field ``B`` with the label temperature ``T``."""
-        return self.profile if self.data is None else self.data.fit(seq, B, T)
+def point_labels(seq, B, T, x):
+    """The flux labels ``s`` at the logical points ``x`` (``(n, 3)``, from :func:`logical_points`) for the field
+    ``B`` with the label temperature ``T`` (:func:`label`): the toroidal flux fraction inside the level set of ``T``
+    through each point. The points stay, the labels move with the surfaces."""
+    B_jk = seq.odd.evaluate_at_quadrature(B, 2)
+    T_x = jax.vmap(DiscreteFunction(T, seq.basis_0, seq.even.E(0)))(x)[:, 0]
+    return enclosed_flux_map(seq, T, B_jk)(T_x)
 
 
-class PressureData(NamedTuple):
-    """Pressure data at points in space: the logical points ``x`` (from :func:`logical_points`, once, the mesh does
-    not move), the values ``p`` (mu0 p in T^2), the ``smoothing`` and the ``cells`` of :func:`fit_profile`."""
-    x: jnp.ndarray
-    p: np.ndarray
-    smoothing: float = 1e-3
-    cells: int = PROFILE_CELLS
-
-    def labels(self, seq, B, T):
-        """The flux labels of the points for the field ``B`` with the label temperature ``T``."""
-        B_jk = seq.odd.evaluate_at_quadrature(B, 2)
-        T_x = jax.vmap(DiscreteFunction(T, seq.basis_0, seq.even.E(0)))(self.x)[:, 0]
-        return enclosed_flux_map(seq, T, B_jk)(T_x)
-
-    def fit(self, seq, B, T):
-        """The profile through the data at the points' current labels (they move with the surfaces)."""
-        return fit_profile(self.labels(seq, B, T), self.p, self.smoothing, self.cells)
-
-
-def load_target(seq, spec, scale=1.0, smoothing=1e-3, cells=PROFILE_CELLS):
-    """The :class:`PressureTarget` of ``spec``: ``"file"`` (the geometry file's pressure), a VMEC input namelist (its
-    pressure profile, :meth:`mrx.equilibria.indata.Indata.pressure`) or a JSON file of measured pressure in pascal,
-    ``{"rho": [...], "p_pa": [...]}`` on flux surfaces (``rho = sqrt(s)``) or ``{"points": [[R, Z, phi_deg], ...],
-    "p_pa": [...]}`` at points in space (metres, degrees). Every target is mu0 p in T^2 multiplied by ``scale``.
-    The constant of a profile is removed so that it vanishes on the wall (a uniform pressure does no work on a fixed
-    wall), points are fitted at every rebuild (:class:`PressureData`) with ``smoothing``, data are fitted in the profile
-    space of ``cells`` cells."""
-    import json
-
+def load_target(seq, spec, scale=1.0):
+    """The target profile ``p*(s)`` of ``spec``, mu0 p in T^2 as a function of the normalised toroidal flux times
+    ``scale``: ``"file"`` (the geometry file's pressure) or a VMEC input namelist (its pressure profile,
+    :meth:`mrx.equilibria.indata.Indata.pressure`). The constant of a profile is removed so that it vanishes on the wall
+    (a uniform pressure does no work on a fixed wall)."""
     from mrx.equilibria.indata import read_indata
-    mu0 = 4e-7 * np.pi
+    s = np.linspace(0.0, 1.0, 2001)
     if spec == "file":
         p_r = seq.equilibrium["profiles"]["pressure"]               # Pa, a function of r = sqrt(s)
-        edge = float(p_r(1.0))
-        s = np.linspace(0.0, 1.0, 2001)
-        values = jnp.asarray(scale * mu0 * (p_r(np.sqrt(s)) - edge))
-        return PressureTarget(profile=lambda x: jnp.interp(x, jnp.asarray(s), values))
-    if not spec.endswith(".json"):
+        values = jnp.asarray(scale * 4e-7 * np.pi * (p_r(np.sqrt(s)) - float(p_r(1.0))))
+    else:
         indata = read_indata(spec)                                  # mu0 p in T^2
-        s = np.linspace(0.0, 1.0, 2001)
         values = jnp.asarray(scale * (indata.pressure(s) - indata.pressure(1.0)))
-        return PressureTarget(profile=lambda x: jnp.interp(x, jnp.asarray(s), values))
-    with open(spec) as fh:
-        d = json.load(fh)
-    p = scale * mu0 * np.asarray(d["p_pa"], dtype=float)
-    if "rho" in d:
-        rho = np.asarray(d["rho"], dtype=float)
-        return PressureTarget(profile=fit_profile(rho ** 2, p - np.interp(1.0, rho, p), smoothing, cells))
-    pts = np.asarray(d["points"], dtype=float)
-    phi = np.radians(pts[:, 2])
-    x, miss = logical_points(seq, np.stack([pts[:, 0] * np.cos(phi), pts[:, 0] * np.sin(phi), pts[:, 1]], axis=1))
-    if float(jnp.max(miss)) > 1e-6 * float(jnp.max(jnp.abs(jnp.asarray(pts[:, :2])))):
-        raise ValueError(f"{spec}: a point is outside the domain or the map inversion failed "
-                         f"(|Phi(x) - X| up to {float(jnp.max(miss)):.1e} m)")
-    return PressureTarget(data=PressureData(x, p, smoothing, cells))
+    return lambda x: jnp.interp(x, jnp.asarray(s), values)
 
 
 def target_beta(seq, B, p_q):
