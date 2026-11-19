@@ -154,11 +154,15 @@ cubic splines in $s$ on `--pressure.cells` cells (16 by default) whose
 breakpoints are uniform in $\sqrt{s}$. It does not refer to the mesh, which
 has only to resolve it. A spline in $s$ is smooth in space next to the
 magnetic axis, where $s$ goes as the squared distance from it, so every
-profile is regular there. Each shell's volume change is carried by an explicit
-velocity, its radial flux summed from the axis, so a shell costs no stored
-vector. Its divergence is the projection of the shell function onto the
-3-forms, and a step needs it only for a combination of the shells, one 3-form
-mass solve per apply. The step minimises $W = \int B^2/2 \,dV - \int
+profile is regular there. Each shell's volume change is carried by a
+gradient $\xi_k = \nabla \chi_k$ with $\nabla \cdot \xi_k = f_k$ and
+$\xi_k \cdot n = 0$ on the wall, $f_k$ the projection of the shell function
+less its mean onto the 3-forms. It is the velocity part of a mixed Poisson
+problem of the 3-forms, the same solve as the Leray projection's. A gradient is
+orthogonal to every divergence-free velocity, so the shells add to the step
+only what changes the volumes. The rebuild solves one such problem per shell
+and keeps one velocity per shell, 200 to 420 conjugate gradients each on li383
+and W7-X. The step minimises $W = \int B^2/2 \,dV - \int
 p^*(s) \,dV$ over the divergence-free velocities and the shells' volume
 changes. Its shell rows vanish when the shell moments of the pressure and the
 target agree. The shells and the label are rebuilt before every chunk.
@@ -440,7 +444,7 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 
