@@ -15,6 +15,28 @@ used by writing a mock equilibrium file from its formulas, for example a
 VMEC wout or a GVEC state, as `test/synthetic_gvec.py` and
 `test/synthetic_desc.py` do.
 
+A VMEC input namelist (`--geometry.path input.<name>`) gives the map from
+its boundary alone. The interior is filled between a guessed magnetic axis
+and the boundary as VMEC fills its first surfaces
+([Equilibrium input](concepts/equilibrium_input.md)), and the initial field
+is the vacuum field of the domain with the namelist's toroidal flux
+`PHIEDGE`. The vacuum field carries no current, so it is already an
+equilibrium without pressure. A run from it needs a pressure target, for
+example the namelist's own (`--pressure.target input.<name>`, see
+"Prescribed pressure" below). The logical surfaces of the fill are not the
+flux surfaces of the field, so the run takes more steps than on the mesh of
+an equilibrium file.
+
+    python -u scripts/relax.py --geometry.path input.li383 --geometry.graded --geometry.resolution 48 64 24 \
+        --budget.steps 400 --pressure.target input.li383
+
+With li383's boundary and pressure (`PHIEDGE` and the wout's pressure
+tabulated in the namelist, beta 4.3 %), the squared force residual stays
+below 1e-8 from step 257 on, and the pressure misses its target by 9.7e-3
+after 50 steps and 4.7e-3 after 400. The label's solve takes 4267
+iterations on the vacuum and 1700 to 3300 later (one H200, float64, 4.7
+minutes for the operators and 5.7 for the 257 steps, 2026-11-19).
+
 ```python
 from mrx.geometry import build_sequence
 from mrx.relaxation.initial_conditions import initial_field
@@ -125,8 +147,8 @@ the build of the operators, 2026-11-17).
 
 A VMEC input namelist gives its pressure profile, `PRES_SCALE` times the
 `PMASS_TYPE` profile of `AM` (or of `AM_AUX_S` and `AM_AUX_F`) in pascal, as
-$\mu_0 p$ (`mrx.equilibria.indata`). Only the profiles of the namelist are
-read, the geometry is the geometry file's. A namelist with `GAMMA` other than
+$\mu_0 p$ (`mrx.equilibria.indata`). As a target only the profiles of the
+namelist are read, the geometry is the geometry file's. A namelist with `GAMMA` other than
 zero is refused. With a namelist `input.li383_two_power` that holds
 `PMASS_TYPE = 'two_power', AM = 7.34e4 1.0 2.0`, the pressure $(1 - s)^2$,
 

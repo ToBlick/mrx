@@ -11,6 +11,10 @@ where ``Psi`` is the toroidal flux and ``lambda`` the angle shift to straight fi
 
 The discrete field is the discrete curl of a vector potential, so ``div B = 0`` holds exactly
 (:func:`potential_two_form`).
+
+A state without a field, the map of a VMEC input namelist filled from its boundary (``kind`` ``"indata"``), starts
+from the vacuum field instead: the harmonic 2-form with the namelist's toroidal flux ``PHIEDGE``
+(:func:`vacuum_field`). It has no current and no pressure.
 """
 from __future__ import annotations
 
@@ -62,12 +66,30 @@ def potential_two_form(seq):
     return B, wall
 
 
+def toroidal_flux(seq, B):
+    """The flux of the 2-form ``B`` through a section ``zeta = const``, in the file's units (Wb for a map in metres
+    and a field in tesla): the volume sum of its ``zeta`` density over the ``zeta`` extent of the quadrature."""
+    return jnp.sum(seq.quad.w * seq.odd.evaluate_at_quadrature(B, 2)[:, 2]) / jnp.sum(seq.quad.w_z)
+
+
+def vacuum_field(seq, flux):
+    """The vacuum field of the domain with the toroidal flux ``flux``: the harmonic Dirichlet 2-form
+    (``seq.odd.nullspace(2)``, which :func:`mrx.nullspace.compute_nullspaces` fills) scaled to it."""
+    h = seq.odd.nullspace(2)[0]
+    return h * (flux / toroidal_flux(seq, h))
+
+
 def initial_field(seq):
     """The initial field of the sequence's geometry file. Returns ``(B, info)``.
 
     ``info`` holds numbers worth recording: ``kind``, the divergence ``div``, ``nfp``,
-    ``iota_axis`` and ``iota_edge`` (per full turn) and ``wall_discarded``."""
+    ``iota_axis`` and ``iota_edge`` (per full turn) and ``wall_discarded``, or for the vacuum field of a namelist
+    ``kind``, ``nfp``, ``flux`` and ``div``."""
     eq = seq.equilibrium
+    if eq["kind"] == "indata":
+        B = vacuum_field(seq, eq["indata"].phiedge)
+        return B, dict(kind="indata", nfp=int(seq.nfp), flux=float(toroidal_flux(seq, B)),
+                       div=float(compute_divergence_norm(B, seq)))
     B, wall = potential_two_form(seq)
     iota = eq["profiles"]["iota"]
     return B, dict(kind=eq["kind"], nfp=int(seq.nfp), iota_axis=float(iota(0.0)), iota_edge=float(iota(1.0)),
