@@ -15,9 +15,12 @@ At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
   potential ``a`` by Newton-MR, a MINRES solve that keeps and reorthogonalises its Lanczos vectors. The
   preconditioner is :func:`spline_preconditioner`. The two mass solves of every Hessian apply run to a
   tolerance inside the operator, which MINRES tolerates once they are accurate enough.
-* :func:`target_direction` is :func:`newton_direction` with the volumes of the flux shells as further unknowns, for a
-  prescribed pressure (:mod:`mrx.relaxation.shells`), and with the poloidal flux slips between the flux surfaces, for
-  a prescribed current (:class:`mrx.relaxation.twist.Slips`).
+* :func:`target_direction` is :func:`newton_direction` with further unknowns: the amplitude of the harmonic flow
+  ``h`` of the domain, the volumes of the flux shells, for a prescribed pressure (:mod:`mrx.relaxation.shells`), and
+  the poloidal flux slips between the flux surfaces, for a prescribed current (:class:`mrx.relaxation.twist.Slips`).
+  The curls do not reach ``h``, a divergence-free flow tangent to the wall, and only ``u = curl a + c h`` spans every
+  incompressible flow. With stellarator symmetry ``h`` is odd and the force even, so the force has no harmonic part
+  and the parity view of the flows holds no ``h``.
 
 The module constants are the production defaults of the Newton solve. :class:`mrx.relaxation.config.Newton` uses
 them as its defaults.
@@ -266,8 +269,10 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
 
 def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL, maxiter=NEWTON_MAXITER,
                      mass_tol=NEWTON_MASS_SOLVE_TOL):
-    """The Gauss-Newton direction at ``B``. Returns ``(u, a, info)`` with ``u = curl a``.
+    """The Gauss-Newton direction at ``B`` among the curls. Returns ``(u, a, info)`` with ``u = curl a``.
 
+    It is the step of a domain whose flows hold no harmonic field, the even flows of a stellarator-symmetric
+    sequence. Otherwise :func:`target_direction` adds the harmonic flow.
     ``load`` is the Lorentz force ``J x B`` as a dual 2-form. It need not be projected: the right-hand side
     ``curl^T load`` is blind to its gradient and harmonic parts. ``a_guess`` is the warm start for the potential
     ``a`` (pass the previous step's ``a``) and ``kappa`` the weight of the parallel-flow penalty. The operator is
@@ -293,34 +298,41 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
     return curl(a), a, jnp.asarray(info, dtype=jnp.int32)
 
 
-def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTON_PENALTY, tol=NEWTON_TOL,
-                     maxiter=NEWTON_MAXITER, mass_tol=NEWTON_MASS_SOLVE_TOL):
-    """The Gauss-Newton direction with the shell volumes (:mod:`mrx.relaxation.shells`) or the poloidal flux slips
-    (:class:`mrx.relaxation.twist.Slips`) or both as unknowns. Returns ``(u, a, info, c, d, dB_slip)``: the velocity
-    ``u = curl a + W c``, the field change of the slips ``dB_slip = T d``, so that the step's field change is
-    ``curl(u x B) + T d``, and the coefficients ``c`` and ``d`` (``None`` for what is not given).
+def target_direction(seq, B, load, a_guess, harmonic=None, shells=None, slips=None, kappa=NEWTON_PENALTY,
+                     tol=NEWTON_TOL, maxiter=NEWTON_MAXITER, mass_tol=NEWTON_MASS_SOLVE_TOL):
+    """The Gauss-Newton direction with scalar borders: the amplitudes of the harmonic flows ``harmonic``, the shell
+    volumes (:mod:`mrx.relaxation.shells`) and the poloidal flux slips (:class:`mrx.relaxation.twist.Slips`). Returns
+    ``(u, a, info, c_h, c, d, dB_slip)``: the velocity ``u = curl a + h^T c_h + W c``, the field change of the slips
+    ``dB_slip = T d``, so that the step's field change is ``curl(u x B) + T d``, and the coefficients ``c_h``, ``c`` and
+    ``d`` (``None`` for what is not given).
 
+    ``harmonic`` holds the harmonic 2-forms ``h`` of the flows as rows (``seq.even.nullspace(2)``), the one of a solid
+    torus without stellarator symmetry. With the symmetry the even flows hold none and the force has no harmonic part.
     ``shells`` is a :class:`~mrx.relaxation.shells.Shells`, with the shell velocities ``W c`` and their transpose
     ``W_t`` (products with its stored gradient velocities). ``slips`` is a
     :class:`~mrx.relaxation.twist.Slips`, with the field changes ``T d`` of the twists and their transpose ``T_t``.
     The system is the Gauss-Newton part of the Hessian of the energy on that space, with ``Q`` the field change of a
     velocity and ``M`` the 2-form mass matrix (:func:`gauss_newton_parts`),
 
-        [ curl^T H curl    curl^T H W    curl^T Q^T M T ] [a]   [ curl^T load        ]
-        [ W_t H curl       W_t H W       W_t Q^T M T    ] [c] = [ W_t load + g_p     ]
-        [ T_t M Q curl     T_t M Q W     T_t M T        ] [d]   [ -T_t M B + g_slip  ],
+        [ curl^T H curl    curl^T H h^T    curl^T H W    curl^T Q^T M T ] [a  ]   [ curl^T load        ]
+        [ h H curl         h H h^T         h H W         h Q^T M T      ] [c_h] = [ h load             ]
+        [ W_t H curl       W_t H h^T       W_t H W       W_t Q^T M T    ] [c  ]   [ W_t load + g_p     ]
+        [ T_t M Q curl     T_t M Q h^T     T_t M Q W     T_t M T        ] [d  ]   [ -T_t M B + g_slip  ],
 
-    solved by :func:`newton_mr` with the block-diagonal preconditioner ``(SplineAtom, D_inv, D_inv)`` of the
-    atom and the two dense blocks. The last two rows are the derivatives of the energy less the targets' work along
-    the shells and the slips. ``load`` is the unprojected Lorentz force ``J x B``: along the shells its gradient
-    part is what counts. The slip block ``T_t M T`` is the energy's own second derivative along the slips, since
-    the field is linear in ``d``."""
+    solved by :func:`newton_mr` with the block-diagonal preconditioner of the atom and the inverses of the diagonal
+    blocks: ``h H h^T`` (one apply of the system per harmonic form) and the dense blocks of the shells and the slips.
+    The curls do not reach ``h``, and the harmonic row ``h load`` is the harmonic part of the force, which the
+    potential alone cannot remove. The rows of the shells and the slips are the derivatives of the energy less the
+    targets' work along them. ``load`` is the unprojected Lorentz force ``J x B``: along the shells its gradient
+    part is what counts. The slip block ``T_t M T`` is the energy's own second derivative along the slips, since the
+    field is linear in ``d``."""
     even = seq.even
     n_a = a_guess.size
     profiles = atom_profiles(seq, B)
     penalty = parallel_penalty_profile(profiles, kappa)
     atom = spline_preconditioner(seq, profiles, penalty)
     curl = even.G[1]
+    n_h = 0 if harmonic is None else harmonic.shape[0]
     n_c = 0 if shells is None else shells.g_p.size
     n_d = 0 if slips is None else slips.g.size
     if shells is not None:
@@ -328,18 +340,24 @@ def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTO
 
     def velocity(z):
         u = curl @ z[:n_a]
-        return u if shells is None else u + W(z[n_a:n_a + n_c])
+        if harmonic is not None:
+            u = u + harmonic.T @ z[n_a:n_a + n_h]
+        return u if shells is None else u + W(z[n_a + n_h:n_a + n_h + n_c])
 
-    rhs = [curl.T @ load]
-    blocks = [shells.D_inv] if shells is not None else []
+    def rows(Hu):
+        """The rows of the potential, the harmonic forms and the shells of the dual 2-form ``Hu``."""
+        return ([curl.T @ Hu] + ([harmonic @ Hu] if harmonic is not None else [])
+                + ([W_t(Hu)] if shells is not None else []))
+
+    rhs = rows(load)
     if shells is not None:
-        rhs.append(W_t(load) + shells.g_p)
+        rhs[-1] = rhs[-1] + shells.g_p
+    blocks = [shells.D_inv] if shells is not None else []
     if slips is None:
         Hs = second_variation(seq, B, None, penalty, mass_tol)
 
         def A(z):
-            Hu = Hs(velocity(z))
-            return jnp.concatenate([curl.T @ Hu] + ([W_t(Hu)] if shells is not None else []))
+            return jnp.concatenate(rows(Hs(velocity(z))))
     else:
         change, change_t, parallel = gauss_newton_parts(seq, B, penalty, mass_tol)
         T, T_t = slips.maps(seq)
@@ -350,9 +368,13 @@ def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTO
         def A(z):
             u = velocity(z)
             u_jk = even.evaluate_at_quadrature(u, 2)
-            X = change(u_jk) + T(z[n_a + n_c:])
-            Hu = change_t(X) + parallel(u_jk)
-            return jnp.concatenate([curl.T @ Hu] + ([W_t(Hu)] if shells is not None else []) + [T_t(M2 @ X)])
+            X = change(u_jk) + T(z[n_a + n_h + n_c:])
+            return jnp.concatenate(rows(change_t(X) + parallel(u_jk)) + [T_t(M2 @ X)])
+    n = n_a + n_h + n_c + n_d
+    if harmonic is not None:
+        # h H h^T is positive: the penalty alone holds it up where h is along B (the vacuum field)
+        e = jnp.eye(n_h, n, n_a, dtype=a_guess.dtype)
+        blocks.insert(0, jnp.linalg.inv(jax.lax.map(lambda x: A(x)[n_a:n_a + n_h], e)))
 
     def P(z):
         out, off = [atom(even, z[:n_a])], n_a
@@ -363,12 +385,13 @@ def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTO
 
     def norm(r):
         return jnp.sqrt(r @ P(r))
-    z0 = jnp.concatenate([a_guess, jnp.zeros(n_c + n_d, a_guess.dtype)])
+    z0 = jnp.concatenate([a_guess, jnp.zeros(n - n_a, a_guess.dtype)])
     z, info = newton_mr(A, P, jnp.concatenate(rhs), z0, tol, maxiter, norm)
-    c = z[n_a:n_a + n_c] if shells is not None else None
-    d = z[n_a + n_c:] if slips is not None else None
+    c_h = z[n_a:n_a + n_h] if harmonic is not None else None
+    c = z[n_a + n_h:n_a + n_h + n_c] if shells is not None else None
+    d = z[n_a + n_h + n_c:] if slips is not None else None
     dB_slip = T(d) if slips is not None else None
-    return velocity(z), z[:n_a], jnp.asarray(info, dtype=jnp.int32), c, d, dB_slip
+    return velocity(z), z[:n_a], jnp.asarray(info, dtype=jnp.int32), c_h, c, d, dB_slip
 
 
 def _newton_system(seq, B, penalty, mass_tol):
