@@ -10,7 +10,7 @@ tracked in the repository.
 
 The suite tests four mathematical statements about the discretisation, which between them run most of
 the code, plus the prescribed pressure, the field-line tracer, the shape derivative, the readers, the profiles of a
-VMEC input namelist and the flux label:
+VMEC input namelist, the map from a boundary alone and the flux label:
 
 | file | statement |
 |---|---|
@@ -23,6 +23,7 @@ VMEC input namelist and the flux label:
 | `test_shape_ad.py` | the vacuum field of the shape derivative is harmonic, its derivative in the map coefficients matches central differences, and on a frame that changes along zeta with points out of its planes the hand-derived metric and `det DPhi` are those of the map's Jacobian |
 | `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
 | `test_indata.py` | every profile type of a VMEC input namelist is its closed form, or its density's integral for a current, the current is `CURTOR` at the edge, the pressure is `mu0 p` in T^2, and a namelist that tabulates the geometry file's pressure gives the file's target |
+| `test_fill.py` | the map filled from a namelist's boundary is the axis at `rho = 0` and the boundary at `rho = 1` mode by mode, the guessed axis leaves the fill unfolded and moving it by 1 cm lowers the guess's objective, the spline map meets the boundary within its projection error with a positive Jacobian at every quadrature point, and the vacuum start has the namelist's toroidal flux through every plane, no divergence and no current |
 | `test_flux_label.py` | the flux label of the equilibrium's field is constant on its logical surfaces up to the anisotropy, falls from the axis to the wall and encloses the flux `r^2`, and the label at the shells' tolerance, solved cold or warm-started from the label of another field, is the converged one to twice that tolerance |
 
 The fixtures of `test/conftest.py` build the li383 equilibrium

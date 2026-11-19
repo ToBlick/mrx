@@ -2,7 +2,9 @@
 
 :func:`read_equilibrium` reads a GVEC ``.dat`` (:mod:`mrx.equilibria.gvec`), a VMEC ``.nc``
 (:mod:`mrx.equilibria.vmec`) or a DESC ``.h5`` (:mod:`mrx.equilibria.desc`) file and returns the same
-dict for every code, called the *state*. :func:`build_map` turns a state into the spline map ``Phi`` of an
+dict for every code, called the *state*. A VMEC input namelist ``input.<name>`` (:mod:`mrx.equilibria.indata`) gives
+a state from its boundary alone: a map filled between a guessed axis and the boundary, no field, and the namelist's
+profiles. :func:`build_map` turns a state into the spline map ``Phi`` of an
 MRX de Rham sequence. :class:`StateField` evaluates one field of the state, for example lambda, as a JAX
 function of the logical point.
 
@@ -44,6 +46,7 @@ from scipy.interpolate import BSpline
 from mrx.differential_forms import det33
 from mrx.equilibria.desc import read_desc
 from mrx.equilibria.gvec import read_state
+from mrx.equilibria.indata import indata_state, is_indata
 from mrx.equilibria.vmec import read_wout
 from mrx.extraction_operators import gram_inverse
 from mrx.paths import data_file
@@ -60,14 +63,17 @@ READERS = {".dat": ("gvec", read_state), ".nc": ("vmec", read_wout), ".h5": ("de
 
 def read_equilibrium(path):
     """Read the equilibrium file ``path`` and return its state. The file extension selects the reader
-    (:data:`READERS`). A file that is not at ``path`` is looked up by name in ``$MRX_DATA/data``
+    (:data:`READERS`), a VMEC input file is named ``input.<name>``. A file that is not at ``path`` is looked up by name in ``$MRX_DATA/data``
     (:func:`mrx.paths.data_file`), and the state's ``path`` is the file that was read."""
     path = data_file(path)
     ext = os.path.splitext(path)[1]
-    if ext not in READERS:
-        raise ValueError(f"{path}: not an equilibrium file, MRX reads GVEC state files (.dat), "
-                         "VMEC wout files (.nc) and DESC output files (.h5)")
-    kind, read = READERS[ext]
+    if is_indata(path):
+        kind, read = "indata", indata_state
+    elif ext in READERS:
+        kind, read = READERS[ext]
+    else:
+        raise ValueError(f"{path}: not an equilibrium file, MRX reads GVEC state files (.dat), VMEC wout files (.nc), "
+                         "DESC output files (.h5) and VMEC input files (input.<name>)")
     st = dict(read(path), kind=kind, path=path)
     reverse = _left_handed(st)
     return dict(_reverse_theta(st) if reverse else st, theta_reversed=reverse)

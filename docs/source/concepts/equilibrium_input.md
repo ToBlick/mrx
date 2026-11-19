@@ -3,7 +3,8 @@
 `mrx.equilibria` reads a GVEC state file (`GVEC_State_*.dat`,
 `mrx.equilibria.gvec`), a VMEC wout (`wout_*.nc`, `mrx.equilibria.vmec`) or
 a DESC output (`*.h5`, `mrx.equilibria.desc`) into one representation, and everything downstream (the map, the initial
-field) is built from it in closed form, with no evaluation grid in between.
+field) is built from it in closed form, with no evaluation grid in between. A VMEC input namelist
+(`input.<name>`, `mrx.equilibria.indata`) gives the same representation from its boundary alone.
 
 ## 1. The premise
 
@@ -26,7 +27,7 @@ sqrt(g) B^zeta  = Psi' (1 + dLA/dtheta)
 `read_equilibrium(path)` picks the reader by the extension and returns the
 state, a dict with
 
-- `nfp`, `kind` (`"gvec"`, `"vmec"` or `"desc"`) and `path`.
+- `nfp`, `kind` (`"gvec"`, `"vmec"`, `"desc"` or `"indata"`) and `path`.
 - the blocks `X1 = R`, `X2 = Z` and `LA = lambda` (radians):
   `sum_mn c_mn(r) cos(m theta - n zeta) + s_mn(r) sin(m theta - n zeta)` in
   radian angles with `zeta` the full-turn toroidal angle. A block holds `m`,
@@ -108,8 +109,7 @@ right-handed, and `theta_reversed` in the state records it. Kinetic or anisotrop
 profile classes are refused.
 
 **Profiles of a VMEC input namelist.** `mrx.equilibria.indata.read_indata`
-reads the profiles of the `&INDATA` namelist of a VMEC input file, not its
-geometry: the pressure `mu0 p(s)` in T^2, the transform (`NCURR = 0`) and
+reads the profiles of the `&INDATA` namelist of a VMEC input file: the pressure `mu0 p(s)` in T^2, the transform (`NCURR = 0`) and
 the net toroidal current `mu0 I(s)` scaled to `CURTOR` (`NCURR = 1`), as
 functions of the normalised toroidal flux `s`, with every profile type of
 VMEC's `profile_functions.f`. The transform is in MRX's poloidal angle. A
@@ -117,6 +117,37 @@ namelist with `GAMMA != 0` is refused, since its pressure then depends on
 the equilibrium VMEC finds. The namelist's pressure can be the target of a
 relaxation (`--pressure.target input.<name>`, the guide's "Prescribed
 pressure").
+
+**A boundary alone.** `read_equilibrium` reads a file named `input.<name>` as
+a VMEC input namelist (`indata_state`). Its boundary `RBC`, `ZBS` gives the
+map, and the interior is filled as VMEC fills its first surfaces
+(`mrx.equilibria.fill`). A boundary mode with `m >= 1` is scaled by
+`rho^m`, and the `m = 0` modes go from the axis at `rho = 0` to the boundary
+as `rho^2`. In each plane `phi = const` this is the harmonic extension of the
+boundary into the disk plus a shift of its centre onto the axis, so every
+mode behaves at the axis as a smooth function does. The fill is sampled at
+41 radii and fitted mode by mode by radial splines of degree 5. `lambda` is
+zero. The radial coordinate `rho` of this map is not a flux label.
+
+The axis is the namelist's `RAXIS_CC`, `ZAXIS_CS` if it has them. Otherwise
+`guess_axis` places it. The fill folds when the axis is in the wrong place:
+about the area centroid of li383's bean 7 % of the cells fold. In each of
+`4 (N + 1)` planes per field period, with `N` the largest toroidal mode
+number of the boundary, the guess takes the point that maximises the mean of
+`log(J / rho)` of the fill over the plane, with `J` the Jacobian of
+`(rho, u) -> (R, Z)`. The logarithm is a barrier. The mean is minus infinity
+where the fill folds, and it rewards a Jacobian that stays away from zero
+everywhere. The axis is the least-squares Fourier series through these
+points with the boundary's toroidal modes. VMEC's own rule maximises the
+smallest `J` instead. Its points jump from plane to plane, and on W7-X its
+axis carries 2 cm in the fourth toroidal harmonic, against 1e-4 m with the
+mean of `log J` at the same smallest `J`.
+
+The state has the profiles `phi` (`PHIEDGE s / 2 pi`) and `pressure` of the
+namelist, but no field and no transform. A relaxation on it starts from the
+vacuum field of the domain, the harmonic 2-form scaled to the toroidal flux
+`PHIEDGE` (`mrx.relaxation.initial_conditions.vacuum_field`). It carries no
+current and no pressure.
 
 ## 3. The map
 
