@@ -3,7 +3,9 @@
 The Laplacian and Leray solves on a sequence use these forms to remove the null space of ``L_k``.
 Run :func:`compute_nullspaces` once the preconditioners are built. The forms depend on the geometry, so
 installing a new map drops them together with the preconditioners, and both must be built again.
-:func:`harmonic_rayleigh` checks how harmonic a given form is.
+:func:`harmonic_rayleigh` checks how harmonic a given form is. :func:`harmonic_one_form` is the free harmonic 1-form
+with the circulation of ``d zeta``, and :func:`zeta_harmonic_distance` measures how far the mesh's ``grad zeta`` is from
+it, a diagnostic of the mesh.
 
 In float32 the forms are computed and stored as :class:`~mrx.double_single.DS`. A form rounded to float32 is
 1e-7 from the kernel, and a solve that removes it does not get below that.
@@ -134,8 +136,48 @@ def _compute(space, verbose):
     if op.n_vectors(betti, 0, False):
         store(space.free, 0, _constant(space.free, 0))
     if op.n_vectors(betti, 1, False):
-        # curl-free since the seed is closed, weakly divergence-free by the Leray projection
-        free = space.free
-        seed1 = _constant_seed(free, 1)
-        q = free.L[0].solve(-(free.D[0].T @ seed1), accurate=True)
-        store(free, 1, seed1 + free.G[0] @ q)
+        store(space.free, 1, harmonic_one_form(space.free))
+
+
+def harmonic_angle(free):
+    """The 0-form ``q`` of the free 0-forms ``free`` (a sequence's or a parity view's ``free``) for which ``zeta + q``
+    is the harmonic toroidal angle: ``L_0 q = -D_0^T d zeta``, one ``L_0`` Neumann solve. The level sets of
+    ``zeta + q`` are the level sets of the potential of the vacuum field, one period per unit."""
+    return free.L[0].solve(-(free.D[0].T @ _constant_seed(free, 1)), accurate=True)
+
+
+def harmonic_one_form(free):
+    """The harmonic 1-form ``h = d zeta + grad q`` of the free 1-forms ``free`` (a sequence's or a parity view's
+    ``free``), not normalised: closed to round-off since ``d zeta`` is (:func:`_constant_seed`) and the gradient is
+    exact, weakly divergence-free with ``h . n = 0`` on the wall by the Leray projection, one ``L_0`` solve for the
+    single-valued ``q`` (:func:`harmonic_angle`). Its circulation along a toroidal loop is that of ``d zeta``, one per
+    unit of ``zeta``. As a vector field it is the direction of the vacuum field, fixed by the domain alone. It changes
+    with the map."""
+    return _constant_seed(free, 1) + free.G[0] @ harmonic_angle(free)
+
+
+def zeta_harmonic_distance(seq, q=None):
+    """How far the mesh's toroidal angle is from the harmonic angle of the domain: ``(rel, worst, where)``.
+
+    ``h`` is the harmonic 1-form of the free 1-forms (:func:`harmonic_one_form`) on the view that holds the fields,
+    with the circulation of ``d zeta``. It is the 1-form of the vacuum field: closed, co-closed and tangent to the wall.
+    ``d zeta - h = -grad q`` is exact. ``rel`` is ``||d zeta - h||_M / ||h||_M``, ``worst`` the largest pointwise
+    ``|d zeta - h| / |h|`` over the quadrature points and ``where`` the logical point of it. Both are zero when the
+    surfaces ``zeta = const`` are the level sets of the vacuum field's potential, as on an axisymmetric torus with
+    ``zeta`` the cylindrical angle. ``grad phi`` of a cylindrical map is closed and co-closed but not tangent to a wall
+    that is not axisymmetric, so on a stellarator's file mesh the distance is not zero. It takes one ``L_0`` solve, so
+    it is a diagnostic: call it after every change of the map. ``q``, the solution of :func:`harmonic_angle` on
+    ``seq.odd.free`` if it is at hand, saves that solve."""
+    free = seq.odd.free
+    seed = to_working(_constant_seed(free, 1))
+    e = -(free.G[0] @ (to_working(harmonic_angle(free)) if q is None else q))
+    h = seed - e
+    rel = float(free.l2_norm(e, 1) / free.l2_norm(h, 1))
+    G = seq.metric_inv_jkl
+
+    def size(v):
+        q = free.evaluate_at_quadrature(v, 1)
+        return jnp.sqrt(jnp.einsum("qi,qij,qj->q", q, G, q))
+    ratio = size(e) / size(h)
+    k = int(jnp.argmax(ratio))
+    return rel, float(ratio[k]), tuple(float(v) for v in seq.quad.x[k])

@@ -125,9 +125,9 @@ MASS_ATOMS = ("lumping", "slab")
 LAPLACIAN_ATOMS = ("lumping", "multigrid")
 
 
-def assemble_preconditioners(seq, operators, mass_atom="slab", laplacian_atom="lumping"):
+def assemble_preconditioners(seq, operators, mass_atom="slab", laplacian_atom="lumping", degrees=(0, 1, 2, 3)):
     """A copy of ``operators`` with the mass and Laplacian preconditioners of the Dirichlet and the
-    free spaces of every degree built for the installed geometry. ``mass_atom`` is one of
+    free spaces of the form degrees ``degrees`` built for the installed geometry. ``mass_atom`` is one of
     :data:`MASS_ATOMS` and ``laplacian_atom`` one of :data:`LAPLACIAN_ATOMS`. This needs at least two
     radial elements (``n >= p + 2``)."""
     from mrx.metric_lumping import MetricLumpingLaplacian, MetricLumpingMass   # imports this module
@@ -137,7 +137,7 @@ def assemble_preconditioners(seq, operators, mass_atom="slab", laplacian_atom="l
         raise ValueError(f"mass_atom must be one of {MASS_ATOMS}, not {mass_atom!r}")
     if laplacian_atom not in LAPLACIAN_ATOMS:
         raise ValueError(f"laplacian_atom must be one of {LAPLACIAN_ATOMS}, not {laplacian_atom!r}")
-    views = [(k, view) for k in range(4) for view in (seq.free, seq)]
+    views = [(k, view) for k in degrees for view in (seq.free, seq)]
     mass = dict(operators.mass_lumping)
     for k, view in views:
         mass[(k, view.dirichlet)] = MetricLumpingMass(view, k)
@@ -150,7 +150,8 @@ def assemble_preconditioners(seq, operators, mass_atom="slab", laplacian_atom="l
     for k, view in views:
         laplacian[(k, view.dirichlet)] = MetricLumpingLaplacian(view, operators, k)
     operators = _replace(operators, "laplacian_lumping", laplacian)
-    stiffness = {(2, True): StiffnessMultigrid(seq, operators, 2)} if laplacian_atom == "multigrid" else {}
+    stiffness = ({(2, True): StiffnessMultigrid(seq, operators, 2)} if laplacian_atom == "multigrid" and 2 in degrees
+                 else {})
     return _replace(operators, "stiffness", stiffness)
 
 
