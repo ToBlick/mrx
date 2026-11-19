@@ -78,15 +78,33 @@ with the gradient `-load(J x B)` and the symmetric Hessian
 at an equilibrium minus the ideal-MHD force operator at `p = 0`
 (`mrx.relaxation.newton.second_variation`). Without the two terms in `J` what
 remains is the Gauss-Newton part `(u, H v) = (Q_u, Q_v)_M`, positive
-semidefinite. `newton_direction` solves `curl^T H curl a = curl^T load(J x B)`
-with that part for `u = curl a`, divergence-free by construction. The
-right-hand side needs no projection, because `curl^T` annihilates the gradient
-and the harmonic part of the force exactly (`G_2 G_1 = 0`). It is solved by
-MINRES preconditioned by the spline atom, warm-started from the previous
-potential, until the residual in the norm of the preconditioner falls below
-`newton_tol` (0.1) of the right-hand side or after `newton_maxiter` (300)
-iterations. `H` vanishes on field-aligned flows `u = f B`, and a penalty of
-`newton_penalty` times the strain along the field lifts that null space.
+semidefinite. The flows are `u = curl a + c h`, divergence-free by
+construction, with `h` the harmonic 2-form of the domain (`seq.even.nullspace(2)`,
+`B . n = 0` on the wall) and `c` a number. The curls are `M`-orthogonal to `h`, so
+`curl a` alone never moves the field along `h`. The step solves the
+Gauss-Newton system with that part of `H` for `a` and `c`,
+
+```
+[ curl^T H curl    curl^T H h ] [a]   [ curl^T load(J x B) ]
+[ h^T H curl       h^T H h    ] [c] = [ h^T load(J x B)    ].
+```
+
+The right-hand side needs no projection. `curl^T` annihilates the gradient
+part of the force exactly (`G_2 G_1 = 0`), and `h^T load(J x B)` is the
+harmonic part of the force, the derivative of the energy along `h`. The force
+`F` and the residual hold that part too. With stellarator symmetry `h` is odd
+and the force even, so the harmonic part vanishes. The even flows of a
+half-period sequence hold no `h`, and the step is `newton_direction`, the
+first row alone. Without the symmetry the step is `target_direction` with the
+harmonic border, and the trace records the norm of the force's harmonic part
+(`F_h`) and of the harmonic displacement of each step (`c_h`). The system is
+solved by MINRES, preconditioned by the spline atom on `a` and by
+`1 / (h^T H h)` on `c`, warm-started from the previous potential, until the
+residual in the norm of the preconditioner falls below `newton_tol` (0.1) of
+the right-hand side or after `newton_maxiter` (300) iterations. `H` vanishes
+on field-aligned flows `u = f B`, and a penalty of `newton_penalty` times the
+strain along the field lifts that null space. The penalty also keeps
+`h^T H h` positive on the vacuum field, where `h` is along `B`.
 
 The spline atom is the Laplacian atom scaled on both sides by `lambda^{-1/2}`,
 with `lambda` a model of `H`: on each logical component `u` of the 1-forms the

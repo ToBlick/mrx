@@ -116,7 +116,8 @@ class Direction(NamedTuple):
     results. ``slope`` is ``<F, u>``, the energy decrease per unit ``dt`` at ``dt = 0``. With shells or slips ``work``
     is the work of the targets per unit ``dt``, ``int p* div u dV`` and the slips' ``d . g``, which ``slope`` then
     includes, ``dB_slip`` the slips' field change per unit ``dt`` (zero without slips) and ``slip`` the slips' ``d``
-    (None without slips)."""
+    (None without slips). Where the flows hold the harmonic field ``h``, ``F_h`` is the norm of the force's harmonic
+    part and ``c_h`` that of the harmonic part ``c h`` of ``u``."""
     u: jnp.ndarray
     u_jk: jnp.ndarray
     Mu: jnp.ndarray
@@ -131,6 +132,8 @@ class Direction(NamedTuple):
     dB_slip: jnp.ndarray
     work: jnp.ndarray = 0.0
     slip: jnp.ndarray = None
+    F_h: jnp.ndarray = 0.0
+    c_h: jnp.ndarray = 0.0
 
 
 #: The largest number of logical cells a substep of a step crosses.
@@ -145,9 +148,11 @@ class TimeStepper(eqx.Module):
 
     The force is ``F = curl a + c h``, the divergence-free part of ``J x B`` computed from a vector potential
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
-    With ``newton=True`` the velocity ``u`` is the Gauss-Newton direction of
-    :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol``,
-    ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator.
+    With ``newton=True`` the velocity ``u`` is the Gauss-Newton direction ``curl a + c h``
+    (:func:`mrx.relaxation.newton.target_direction`), with ``c`` the amplitude of the harmonic flow, controlled by
+    ``newton_penalty``, ``newton_tol``, ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass
+    solves inside its operator. With stellarator symmetry the flows hold no ``h`` and the direction is
+    :func:`mrx.relaxation.newton.newton_direction`, ``curl a`` alone.
     Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
     2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment
     ``curl(u x B_n)``, for Newton at most 1, the full Newton step. The field is carried for that time by
@@ -203,6 +208,12 @@ class TimeStepper(eqx.Module):
         self.resistivity = jnp.asarray(self.resistivity, dtype=float)
         self.cfl_weights = logical_cfl_weights(self.seq)
 
+    @property
+    def harmonic_flows(self):
+        """The harmonic 2-forms as unknowns of the Newton step, ``None`` where the flows hold none (the even view of a
+        stellarator-symmetric sequence). The shape decides it, which is static, so no tolerance does."""
+        return self.harmonic if self.harmonic.shape[0] else None
+
     def with_shells(self, shells) -> "TimeStepper":
         """This stepper with the shell volumes of ``shells`` (:class:`~mrx.relaxation.shells.Shells`) as unknowns of
         its Newton step. The same shapes do not recompile the chunk."""
@@ -227,7 +238,8 @@ class TimeStepper(eqx.Module):
 
     def _force(self, JxB_dual: jnp.ndarray, a_guess: jnp.ndarray):
         """Return ``(F, M F, a)``: the divergence-free force ``F = curl a + c h`` of the Lorentz force
-        ``JxB_dual``, with ``a`` a vector potential of the force and ``c h`` its harmonic part."""
+        ``JxB_dual``, with ``a`` a vector potential of the force and ``c h`` its harmonic part. ``F`` holds the
+        harmonic part, so the force residual counts it."""
         seq = self.seq.even
         # only curl a enters, so a keeps a gradient that nothing controls
         a = seq.S[1].solve(seq.G[1].T @ lift(JxB_dual), guess=a_guess)
@@ -252,12 +264,13 @@ class TimeStepper(eqx.Module):
         odd, even = seq.odd, seq.even
         J, JxB_dual = self._lorentz(B, w.J)
         F, MF, a_F = self._force(JxB_dual, w.a_F)
-        work, dB_slip, d = 0.0, None, None
-        if self.shells is not None or self.slips is not None:
+        work, dB_slip, d, c_h = 0.0, None, None, None
+        harmonic = self.harmonic_flows
+        if self.newton and (harmonic is not None or self.shells is not None or self.slips is not None):
             # along the shells the gradient part of the load counts: the slope is <J x B, u> plus the targets' work
             # c . g_p and d . g, less the energy's own rate (B, T d) along the slips, not <F, u>
-            u, a, newton_it, c, d, dB_slip = target_direction(
-                seq, B, JxB_dual, w.a, self.shells, self.slips, self.newton_penalty, self.newton_tol,
+            u, a, newton_it, c_h, c, d, dB_slip = target_direction(
+                seq, B, JxB_dual, w.a, harmonic, self.shells, self.slips, self.newton_penalty, self.newton_tol,
                 self.newton_maxiter, self.newton_mass_solve_tol)
             if self.shells is not None:
                 work = c @ self.shells.g_p
@@ -267,8 +280,9 @@ class TimeStepper(eqx.Module):
             if self.slips is not None:
                 slope = slope - dB_slip @ (odd.M[2] @ B)
         elif self.newton:
-            # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
-            # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
+            # the Newton system and dt* see the force only through curl^T, which annihilates the gradient part
+            # exactly, and the force has no harmonic part, so they take the unprojected load. F is formed for the
+            # residual only.
             u, a, newton_it = newton_direction(seq, B, JxB_dual, w.a, self.newton_penalty, self.newton_tol,
                                                self.newton_maxiter, self.newton_mass_solve_tol)
         else:
@@ -278,8 +292,13 @@ class TimeStepper(eqx.Module):
             slope = F @ Mu
         u_jk = even.evaluate_at_quadrature(u, 2)
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
+        F_h = c_h_norm = 0.0
+        if self.newton and harmonic is not None:
+            # the M-norms of the harmonic parts, the forms being M-orthogonal
+            F_h = jnp.linalg.norm((harmonic @ JxB_dual) / jnp.sqrt(self.harmonic_norm_sq))
+            c_h_norm = jnp.linalg.norm(c_h * jnp.sqrt(self.harmonic_norm_sq))
         return Direction(u, u_jk, Mu, F, MF, J, cfl_max, a, a_F, newton_it, slope,
-                         jnp.zeros_like(B) if dB_slip is None else dB_slip, work, d)
+                         jnp.zeros_like(B) if dB_slip is None else dB_slip, work, d, F_h, c_h_norm)
 
     def relaxation_step(self, state: State) -> tuple[jnp.ndarray, WarmStarts, dict]:
         """One step from ``state.B_n``. Returns ``(B_{n+1}, warm starts, scalars)``, where ``scalars`` holds what
@@ -287,7 +306,9 @@ class TimeStepper(eqx.Module):
         ``dt``, ``dt_star``, ``cfl`` (the largest CFL number of the velocity, so ``dt cfl`` cells are crossed),
         ``substeps``, ``newton_it``, ``res_it`` and ``res_moved`` (see :func:`relax`), and with shells or slips
         ``work`` (the targets' work over the step, ``dt int p* div u dV`` and ``dt d . g``), and with slips ``slip``,
-        the slips ``dt d`` the step took.
+        the slips ``dt d`` the step took. Where the Newton step has the harmonic flow as an unknown, ``F_h`` is the
+        norm of the harmonic part of the force, a part of ``F``, and ``c_h`` the norm of the harmonic displacement
+        ``dt c h`` the step took.
 
         The substeps run in one loop whose first pass also sets the step: its increment ``curl(u x B_n)`` gives
         ``dt`` and the number of substeps. So the mass solve of ``u x B`` is compiled once."""
@@ -326,6 +347,8 @@ class TimeStepper(eqx.Module):
             scalars["work"] = dt * d.work
         if self.slips is not None:
             scalars["slip"] = dt * d.slip
+        if self.newton and self.harmonic_flows is not None:
+            scalars.update(F_h=d.F_h, c_h=dt * d.c_h)
         return B_new, warm, scalars
 
 
@@ -699,6 +722,10 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "
               f"unconverged on {int((np.array(tr['newton_it']) < 0).sum())}/{n} steps,  "
               f"dt* mean {dt_star.mean():.3e}", flush=True)
+    if "F_h" in tr:
+        F_h = np.array(tr["F_h"])
+        print(f"    harmonic part of the force {F_h[0]:.3e} -> {F_h[-1]:.3e} ({F_h[-1] / tr['F'][-1]:.2e} of the "
+              f"force), harmonic displacement per step max {max(tr['c_h']):.3e}", flush=True)
 
 
 def save_run(out: str, cfg, seq: DeRhamSequence, start: State, res: RelaxResult, start_kind: str, **record) -> None:
