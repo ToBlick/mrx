@@ -301,7 +301,7 @@ def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTO
     ``curl(u x B) + T d``, and the coefficients ``c`` and ``d`` (``None`` for what is not given).
 
     ``shells`` is a :class:`~mrx.relaxation.shells.Shells`, with the shell velocities ``W c`` and their transpose
-    ``W_t`` (:func:`~mrx.relaxation.shells.shell_maps`, one 3-form mass solve to ``mass_tol``). ``slips`` is a
+    ``W_t`` (products with its stored gradient velocities). ``slips`` is a
     :class:`~mrx.relaxation.twist.Slips`, with the field changes ``T d`` of the twists and their transpose ``T_t``.
     The system is the Gauss-Newton part of the Hessian of the energy on that space, with ``Q`` the field change of a
     velocity and ``M`` the 2-form mass matrix (:func:`gauss_newton_parts`),
@@ -324,7 +324,7 @@ def target_direction(seq, B, load, a_guess, shells=None, slips=None, kappa=NEWTO
     n_c = 0 if shells is None else shells.g_p.size
     n_d = 0 if slips is None else slips.g.size
     if shells is not None:
-        _, _, W, W_t = shells.maps(seq, mass_tol)
+        W, W_t = shells.velocity, shells.velocity_t
 
     def velocity(z):
         u = curl @ z[:n_a]
