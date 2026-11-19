@@ -158,10 +158,11 @@ def core_gram_inverse(e, core):
     return np.linalg.inv(row_products(rows, rows, (len(core), len(core))))
 
 
-def conforming_restriction(e, c, core, blocks=()):
+def conforming_restriction(e, c, core, core_inverse, blocks=()):
     """The extracted DoF vector ``v = (E E^T)^-1 E c`` whose raw coefficients ``E^T v`` are closest
     (in the least-squares sense) to the raw tensor-product coefficients ``c``. ``core`` are the
-    polar core rows of ``e``. Away from them ``E E^T`` is the identity on a uniform space and one
+    polar core rows of ``e`` and ``core_inverse`` the inverse of ``E E^T`` on them (:func:`core_gram_inverse`, a
+    float64 numpy array). Away from them ``E E^T`` is the identity on a uniform space and one
     small block per ring and zeta layer on a graded one, given as ``blocks`` (:func:`gram_blocks`).
     A :class:`~mrx.double_single.DS` ``c`` is restricted in double-single."""
     a = e @ c
@@ -173,8 +174,7 @@ def conforming_restriction(e, c, core, blocks=()):
             a = a.at[rows].set(a[rows] @ to_working(inverse))
     if len(core) == 0:
         return a
-    gram_inverse = core_gram_inverse(e, core)
-    gram_inverse = ds.from_host(gram_inverse) if isinstance(a, ds.DS) else jnp.asarray(gram_inverse)
+    gram_inverse = ds.from_host(core_inverse) if isinstance(a, ds.DS) else jnp.asarray(core_inverse)
     return ds.set_at(a, core, ds.matvec(gram_inverse, a[core]))
 
 

@@ -21,9 +21,9 @@ and the boundary as VMEC fills its first surfaces
 ([Equilibrium input](concepts/equilibrium_input.md)), and the initial field
 is the vacuum field of the domain with the namelist's toroidal flux
 `PHIEDGE`. The vacuum field carries no current, so it is already an
-equilibrium without pressure. A run from it needs a pressure target, for
-example the namelist's own (`--pressure.target input.<name>`, see
-"Prescribed pressure" below). The logical surfaces of the fill are not the
+equilibrium without pressure. A run from it needs a target, for example the
+namelist's own pressure (`--pressure.target input.<name>`, see "Prescribed
+pressure" below) or its current. The logical surfaces of the fill are not the
 flux surfaces of the field, so the run takes more steps than on the mesh of
 an equilibrium file.
 
@@ -111,12 +111,14 @@ the pair `--seed` / `--no-seed`:
 | group | flags |
 |---|---|
 | geometry | `--geometry.path`, `--geometry.symmetry`, `--geometry.resolution`, `--geometry.spline-degree`, `--geometry.knots-r/theta/zeta`, `--geometry.graded`, `--geometry.zeta`, `--geometry.solve-tol`, `--geometry.solve-maxiter`, `--geometry.max-batch` |
+| iota | `--iota.target` |
 | seed | `--seed`, `--seed.iotas`, `--seed.amplitudes`, `--seed.scale` |
 | descent | `--descent.method {newton,gradient}` |
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
-| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.smoothing` |
+| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.smoothing`, `--pressure.cells` |
+| current | `--current.target`, `--current.scale` |
 | mesh | `--mesh.align`, `--mesh.axis-only`, `--mesh.tol`, `--mesh.moves`, `--mesh.start`, `--mesh.every` |
 | output | `--output.out`, `--output.restart` |
 
@@ -128,14 +130,31 @@ and so on).
 The tutorials build the same configuration in Python
 (`RelaxConfig(geometry=Geometry(...), ...)`).
 
+## Island seeds
+
+`--seed` adds small resonant perturbations to the start field, or to the
+field of a restart, so that the relaxation can open island chains
+({func}`mrx.relaxation.seeding.energy_seed`). The seeds sit at the rational
+surfaces of the field's own transform. It is measured on the field's flux
+label as a function of $s$, the same label the iota and pressure targets use,
+and never taken from the file. The seeds' radial profiles are functions of
+$s$ too, so a seed sits on its resonant surface wherever the mesh puts it. The amplitudes lower the energy the most, or are given per
+chain with `--seed.iotas` and `--seed.amplitudes`. With `--iota.target` the
+seed waits until the transform is at its target (see below).
+
 ## Prescribed pressure
 
 The incompressible relaxation keeps the volume of every flux shell, so it ends
 with the pressure the start's volumes give. With `--pressure.target` the
 volumes become unknowns of every Newton step and the run ends at the target
-pressure (`mrx.relaxation.shells`, `mrx.relaxation.newton.shell_direction`).
-The shells are the mesh's radial splines as functions of $\sqrt{s}$, $s$ the
-flux label of the field. Each shell's volume change is carried by an explicit
+pressure (`mrx.relaxation.shells`, `mrx.relaxation.newton.target_direction`).
+The shells are the splines of the profile space, $s$ the flux label of the
+field. The profile space is its own, shared by the pressure and the current:
+cubic splines in $s$ on `--pressure.cells` cells (16 by default) whose
+breakpoints are uniform in $\sqrt{s}$. It does not refer to the mesh, which
+has only to resolve it. A spline in $s$ is smooth in space next to the
+magnetic axis, where $s$ goes as the squared distance from it, so every
+profile is regular there. Each shell's volume change is carried by an explicit
 velocity, its radial flux summed from the axis, so a shell costs no stored
 vector. Its divergence is the projection of the shell function onto the
 3-forms, and a step needs it only for a combination of the shells, one 3-form
@@ -170,8 +189,8 @@ run's pressure is $p_w + C$, with $p_w$ the weak pressure, which vanishes on
 the wall, and $C = \langle p^* - p_w \rangle$. A target is set to zero on the
 wall. And a pressure that falls across an island chain cannot be met, since
 the two branches of its separatrix are one surface. With `--seed` the target
-is made constant across each seeded chain, over $\sqrt{s} \in r \pm m\, w/2$
-from the seeding's estimate of its radius $r$ and width $w$
+is made constant across each seeded chain, over $\sqrt{s} \in x \pm m\, w/2$
+from the seeding's estimate of its resonant surface $x = \sqrt{s}$ and width $w$
 (`--pressure.plateau-margin` $m$).
 
 The `pressure` record has the error of $p_w + C$ against the target, $C$ and
@@ -183,10 +202,13 @@ example below).
         --geometry.graded --budget.steps 300 --pressure.target file --pressure.beta 0.01
 
 On this mesh, from the file's field at 4.28 %, the pressure's error against
-the target over 32 bins of $\sqrt{s}$ is 1.4e-2 after 20 Newton steps, 7.5e-3
-after 30, 9.7e-4 after 100 and 4.6e-4 after 300, with $C$ at 9.4e-4 of the
+the target over 48 bins of $\sqrt{s}$ is 1.4e-2 after 20 Newton steps, 7.5e-3
+after 30, 1.3e-3 after 100 and 2.7e-3 after 300, with $C$ at 1.2e-3 of the
 target's maximum. `dW` is negative on every step (one H200, 10 minutes with
-the build of the operators, 2026-11-17).
+the build of the operators, 2026-11-18). The 32 radial cells of this mesh
+resolve the 16 cells of the profile space only just: on (48,64,24) with both
+of the file's targets the error is 4.9e-4 after 200 steps, and 6.7e-4 and
+3.4e-4 with `--pressure.cells` 8 and 24.
 
 A VMEC input namelist gives its pressure profile, `PRES_SCALE` times the
 `PMASS_TYPE` profile of `AM` (or of `AM_AUX_S` and `AM_AUX_F`) in pascal, as
@@ -198,11 +220,118 @@ zero is refused. With a namelist `input.li383_two_power` that holds
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 32 44 20 \
         --geometry.graded --budget.steps 300 --pressure.target input.li383_two_power --pressure.beta 0.01
 
-ends at an error of 2.8e-4, with $C$ at -7.0e-5 of the target's maximum,
-from 1.3 at the start (7.4e-3 after 20 steps, 6.1e-4 after 100, one H200,
+ends at an error of 2.7e-3, with $C$ at 8.5e-5 of the target's maximum,
+from 1.3 at the start (7.4e-3 after 20 steps, 9.5e-4 after 100, one H200,
 10 minutes). A namelist that tabulates the file's own pressure ends where
 `--pressure.target file` ends, to 1.3e-6 in the field's coefficients, as close as two runs
 of the file's target on different nodes (3.8e-6).
+
+## Prescribed current
+
+The ideal relaxation keeps the toroidal and the poloidal flux of every flux
+surface, so it ends with the net toroidal current that these fluxes give.
+With `--current.target` the poloidal flux between the flux surfaces becomes
+an unknown of every Newton step and the run ends at the target current inside
+every surface (`mrx.relaxation.twist.Slips`,
+`mrx.relaxation.newton.target_direction`). The move is a twist of the
+flux label's surfaces, $dB = \nabla \times (F(s) \nabla \zeta)$ with $\zeta$ the
+logical toroidal angle. It keeps every
+surface and its toroidal flux and has no flux through the wall. $F$ is a
+combination of steps of the splines of the profile space, each of which slips
+poloidal flux across one spline. The steps vanish on the axis, since a
+constant $F$ is no move. They are splines in $s$, so the first goes as $s$ at
+the magnetic axis and the potential is smooth there. The last step changes
+the poloidal flux inside the wall and with it the total current.
+
+The derivative of the magnetic energy along a step is the mean of the
+enclosed current $\mu_0 I$ over its spline. So the step minimises the energy
+less the work of the target current on the poloidal flux it slips,
+$W = \int B^2/2 \,dV - \int \mu_0 I^*(s) \,d\psi(s)$, over the ideal moves and
+the slips. Its slip rows vanish when the spline means of the current and of
+the target agree, the spline next to the axis included. There is no constant
+to fix, since the current vanishes on the axis. $W$ is quadratic in the slips, so the slip
+block of the Newton system is the energy's own second derivative and it is
+positive definite. An iteration of the step's MINRES costs a tenth more than one
+without slips.
+The slips change the helicity, as a current drive does. With a pressure
+target too, the step has both the shells and the slips on one flux label, and
+both are rebuilt before every chunk.
+
+The target is the current of the geometry file's field on its flux label
+(`--current.target file`) or the current profile of a VMEC input namelist
+with `NCURR = 1` (`CURTOR` times the `PCURR_TYPE` profile of `AC`, or of
+`AC_AUX_S` and `AC_AUX_F`), multiplied by `--current.scale`. It is $\mu_0 I$
+in T m, the units of the field. The namelist's current is along $\phi$, it is
+turned along the field by the sign of `PHIEDGE`. One namelist gives both
+targets, `--pressure.target input.x --current.target input.x`. A current
+target sets the transform, so it goes without `--iota.target`, which reads a
+namelist with `NCURR = 0` only and sets the current target itself (below). The label of the current target is the
+pressure's (`--pressure.anisotropy`, `--pressure.label-tol`).
+
+The `current` record has, before every chunk and at the end, the spline means
+of the field's current and their error against the target's, the L2 error in
+$s$ relative to the target. A zero target has no size to compare with, its
+error is the absolute one in T m.
+
+A pressure fixes an equilibrium only together with the current or the
+transform, the other is an outcome. Without `--current.target` and
+`--iota.target` the slips are no unknowns: every surface keeps its poloidal
+flux, so the run keeps the start's transform and the current follows from it.
+A boundary and a pressure alone are closed by no net current on any surface,
+`--current.target file --current.scale 0` from the vacuum field, which has
+none: the slips are unknowns and the transform is free.
+
+    python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 48 64 24 \
+        --geometry.graded --budget.steps 200 --current.target file --current.scale 0.9
+
+On this mesh the current's error against 0.9 times the file's current is
+1.1e-1 at the start, 4.4e-4 after 10 Newton steps and 2.5e-6 after 200. `dW`
+is negative on every step, the force residual reaches 4.2e-11 as without the
+target, and the helicity changes by 10 %. With a namelist `input.x` that
+holds the file's pressure and current, the pressure reshaped by
+$1 + 0.05 (1 - 2s)$ and the current times 0.95, `--pressure.target input.x
+--current.target input.x` ends at a pressure error of 4.9e-4 and a current
+error of 2.3e-6 after 200 steps (2.7e-3 and 1.2e-4 after 20, one H200,
+2026-11-18).
+
+## Rotational transform
+
+The relaxation keeps the fluxes of every flux surface, so it keeps the
+rotational transform of the start field. With `--iota.target <file>` it ends
+at the transform of a wout or of a VMEC input namelist with `NCURR = 0`. The
+transform is no control of the energy, the current is. So the transform sets
+the target of the prescribed current in an outer loop, before every chunk
+({func}`mrx.relaxation.twist.iota_slips`):
+
+1. the poloidal flux $\psi(s)$ inside the flux label's level sets is measured
+   and compared with the target's, $\psi^*(s) = \Phi/n_{fp} \int_0^s \iota^*$.
+   It is the volume integral of $B \cdot \nabla\theta_a$ over the region inside
+   each level set, with $\theta_a$ an angle about the label's own axis, so it
+   depends on $s$ alone, wherever the magnetic axis sits on the mesh,
+2. the slips that close the miss with the rest of the field frozen are a
+   least-squares fit to it, in the mean transform inside each surface,
+3. one Newton solve with the slips held there lets the ideal part and the
+   shells follow, and the current the field then carries is the current
+   target of the chunk.
+
+The current's response to a slip with the ideal part relaxed is 0.6 to 0.9
+times the slip block's, so the slip block alone would overshoot and the
+update would oscillate. Nothing is carried from one chunk to the next, so a
+restart recomputes the target from the field. With `--seed` the seed is applied at the first chunk boundary at which
+the transform misses its target by less than 1 % of its largest value, since
+the seed resonates with the field's own transform. With `--mesh.align` the
+loop starts at the first chunk after the mesh is aligned or out of moves:
+its first slips sit next to the magnetic axis, which a mesh resolves only
+once its axis is there. The `iota` record has,
+before every chunk, the transform's miss, the slips asked for and the current
+target.
+
+On li383 (48,64,24), graded, with 0.95 times the file's transform from the
+file's field, the label's transform misses by 3.3e-2 at the start, 7.9e-4
+after 10 Newton steps and 4.1e-4 after 200, the floor of the label's fit. `dW`
+is negative on every step and the force residual reaches 1.4e-10 after 200
+steps. A step costs what a step without targets costs, the update 1.6 s per
+chunk, about one Newton step (one H200, 2026-11-18).
 
 ## Mesh motion
 
@@ -211,8 +340,8 @@ not aligned with the flux surfaces of the field, and its axis is where the
 fill's guess puts it, not on the magnetic axis. The relaxation
 converges more slowly on it. With `--mesh.align` the mesh moves towards the
 flux surfaces between chunks (`mrx.relaxation.mesh_motion`). A move is a
-property of the mesh only. The physical field stays, and the pressure
-target, a function of the flux label, does not see it.
+property of the mesh only. The physical field stays, and the pressure and
+current targets, functions of the flux label, do not see it.
 
 Every point moves within its surface $\zeta = $ const and the wall stays, so
 a harmonic $\zeta$ stays harmonic: $\|\nabla \zeta - h\| / \|h\|$ is
@@ -247,7 +376,7 @@ and label counts, but the mass solves inside every step take more
 iterations, which made the steps on the moved meshes of li383, W7-X and HSX
 12 to 26 % slower (2026-11-19).
 
-A move happens before the shells are rebuilt, from step
+A move happens before the shells and the slips are rebuilt, from step
 `--mesh.start` on and every `--mesh.every` steps, at most `--mesh.moves`
 times. The motion stops for good once the volume rms of $s - S(r)$ is below
 `--mesh.tol` and the label's maximum is within a quarter of the first radial
@@ -267,6 +396,17 @@ first, which compiles (106 s). The steps on the moved mesh cost more, 10 s per
 chunk of ten against 6 s, so both runs reach a residual of 1e-8 in about ten
 minutes with the build of the operators (one H200, float64, 2026-11-19).
 
+    python -u scripts/relax.py --geometry.path input.w7x --geometry.graded --geometry.resolution 24 48 28 \
+        --budget.steps 200 --pressure.target input.w7x --current.target input.w7x --mesh.align
+
+From the fill and the vacuum with both targets of one namelist, the squared
+force residual stays below 1e-8 from step 63 on W7-X graded (24,48,28), where
+the plain fill does not get there in 400 steps (33 on the nested solver's
+mesh), from step 83 on li383 graded (48,64,24) against 236 (69), and from
+step 25 on HSX graded (32,64,36) against 23 on the plain fill (15), after
+three, three and one moves (one H200, 2026-11-18). A tighter `--mesh.tol`
+costs steps, since every move after the residual is low delays it.
+
 The `mesh` record of `relax.json` holds every move: the step, the alignment
 error before and after it, the axis offset in first radial cells, the
 largest move, the range of the change of $\det D\Phi$, the change of the
@@ -285,9 +425,9 @@ The squared normalised force residual
 $\mathrm{resid} = \|F\|_M^2 / \|\nabla(B^2/2)\|^2$ is recorded at every
 step. The run stops when its mean over the last chunk falls below
 `--budget.floor-tol`, or when `--budget.steps` is spent. With
-`--pressure.target` the run takes all of `--budget.steps`: the residual does
-not see the shells, so its floor does not end a run that still approaches its
-target. The residual is not monotone.
+`--pressure.target` or `--current.target` the run takes all of
+`--budget.steps`: the residual does not see the shells or the slips, so its
+floor does not end a run that still approaches its target. The residual is not monotone.
 Judge a run by the floor it settles at, and take `checkpoints/best.h5` when
 it went past it. A job's time limit is no stop: the checkpoint of every
 chunk restarts it (`--output.restart`).
@@ -300,7 +440,7 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with `--pressure.target` also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with `--pressure.target` also `W_removed`, `beta`, `pressure_error` and `pressure_constant` at the end. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 
