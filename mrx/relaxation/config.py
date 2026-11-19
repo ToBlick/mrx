@@ -97,7 +97,7 @@ class Geometry:
 
 @dataclass(frozen=True)
 class Iota:
-    """Target rotational transform: an outer loop sets the current of the prescribed current (the slips, see mrx.relaxation.twist.iota_slips) before every chunk, from the transform the field has on its flux label. With --mesh.align the loop starts once the mesh is aligned or out of moves. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
+    """Target rotational transform: an outer loop sets the current of the prescribed current (mrx.relaxation.twist.iota_current) before every chunk, from the transform the field has on its flux label. With --mesh.align the loop starts once the mesh is aligned or out of moves. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
     target: Optional[str] = None
     """A wout or a VMEC input namelist with NCURR = 0 whose transform the relaxation ends at. A namelist with NCURR = 1 prescribes the current, see --current.target. Unset, the run keeps the start's poloidal fluxes."""
 
@@ -193,7 +193,7 @@ class Drive:
 class Pressure:
     """Prescribed pressure: the volumes of the flux shells are unknowns of every Newton step (mrx.relaxation.shells), so the relaxation ends at the target pressure instead of keeping the start's."""
     target: Optional[str] = None
-    """The pressure to reach: file (the geometry file's pressure), a VMEC input namelist (its pressure profile), or a JSON file of measured pressure in pascal, {"rho": [...], "p_pa": [...]} on flux surfaces or {"points": [[R, Z, phi_deg], ...], "p_pa": [...]} at points in space. Unset, the run keeps the start's pressure."""
+    """The pressure to reach: file (the geometry file's pressure) or a VMEC input namelist (its pressure profile). Measured pressure, a JSON file, is fitted by scripts/pressure_fit.py, which takes the flags of this script. Unset, the run keeps the start's pressure."""
     scale: float = 1.0
     """Multiply the target by this factor."""
     beta: Optional[float] = None
@@ -204,16 +204,12 @@ class Pressure:
     """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
     label_tol: float = LABEL_TOL
     """The relative tolerance of that label's solve."""
-    smoothing: float = 1e-3
-    """The smoothing of the fit of measured data to a profile (mrx.relaxation.shells.fit_profile)."""
     cells: int = PROFILE_CELLS
-    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips) and the transform's loop (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
+    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
 
     def __post_init__(self):
         if self.beta is not None and self.scale != 1.0:
             raise ValueError("--pressure.beta and --pressure.scale both set the target's size: give one")
-        if self.target is not None and self.target.endswith(".json") and self.beta is not None:
-            raise ValueError("--pressure.beta rescales a profile shape, measured data carry their own size")
 
     def __bool__(self):
         return self.target is not None

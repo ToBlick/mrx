@@ -163,9 +163,10 @@ number, the iteration counts) goes into the trace, not the state.
 `initial_state(B, ts)` evaluates the force once, so the first step's solves
 start warm.
 
-`relax(state, ts, steps, chunk, it0, floor_tol, on_chunk)` runs the steps
+`relax(state, ts, steps, chunk, it0, floor_tol, on_chunk, rebuild)` runs the steps
 in compiled chunks (one `lax.scan` of `chunk` steps, returning the per-step
-trace), samples the diagnostics once per chunk (`sample`: energy, force
+trace). Before every chunk it calls `rebuild`, which returns the state and the
+stepper of the chunk (an outer loop sets its targets there). After every chunk it samples the diagnostics once per chunk (`sample`: energy, force
 residual, helicity, `||J||/||B||`, `int J . B`, `beta_vol`, all at the
 current field), calls `on_chunk`, and stops when the chunk mean of
 `resid` falls below `floor_tol` or after `steps`. It returns a

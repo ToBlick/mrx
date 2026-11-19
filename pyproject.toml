@@ -55,6 +55,8 @@ select = ["E4", "E7", "E9", "F"]
 # The tutorials are VS Code cell scripts: imports follow the argument-parsing
 # cell, so E402 is expected.
 "scripts/tutorials/*.py" = ["E402"]
+# scripts/pressure_fit.py sets the precision from its command line before mrx is imported.
+"scripts/pressure_fit.py" = ["E402"]
 
 [tool.setuptools.dynamic]
 version = {attr = "mrx.__version__"}
