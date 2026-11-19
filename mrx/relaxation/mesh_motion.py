@@ -33,7 +33,7 @@ while the wall is fixed, which :func:`mrx.nullspace.zeta_harmonic_distance` meas
    (:data:`MIN_DET_RATIO` of ``det DPhi``).
 5. The field (:func:`undrag`). The coefficients are kept, which drags the physical field with the mesh and keeps
    every flux through every face of the mesh, and the drag is undone by the relaxation's ideal update with the
-   mesh's velocity, in SSP-RK3 substeps of at most the relaxation's CFL cap. ``div B = 0``, ``B . n = 0`` and the
+   mesh's velocity, in SSP-RK3 substeps of at most the relaxation's substep of CFL cells. ``div B = 0``, ``B . n = 0`` and the
    toroidal flux hold exactly. One move changes the physical field by the spatial error of the transport (2.6e-3 on
    W7-X graded (24,48,28) for a 9.9 cm move). Moves there and back return the field to the time error (2.5e-5 after
    twelve on W7-X), and a seeded island chain on li383 keeps its width (2026-11-18).
@@ -365,10 +365,12 @@ def undrag(seq, B, Phi_new):
     coefficients of a fixed physical field change as ``db / dtau = d(i_xi b) = -curl(xi x b)``, ``xi`` the logical
     velocity of the mesh: the ideal update of the relaxation with the mesh's velocity in place of the flow's
     (:func:`_rate`, on the map of each stage). Its eigenvalues lie near the imaginary axis, at most 1.41 times the
-    logical cells crossed per unit ``tau`` (li383 (8..16, 16..32, 8), dense, 2026-11-18). Forward Euler and the
-    two-stage methods amplify every such mode, SSP-RK3 is stable up to ``|z| = 3^(1/2)``. So it is integrated from
-    ``tau = 0`` to 1 by SSP-RK3 in substeps that cross at most the relaxation's :data:`~mrx.relaxation.loop.CFL`
-    logical cells (:func:`~mrx.relaxation.loop.logical_cfl_weights`), the cap of its ideal steps. Every increment is a
+    logical cells crossed per unit ``tau`` (li383 (8..16, 16..32, 8), dense, 2026-11-18). Unlike a relaxation step,
+    whose error the next Newton step removes, this advection is not corrected afterwards: forward Euler and the
+    two-stage methods amplify every such mode (forward Euler substeps blew up over repeated moves at every cap down to
+    0.05 cells on W7-X, 2026-11-19), SSP-RK3 is stable up to ``|z| = 3^(1/2)``. So it is integrated from ``tau = 0``
+    to 1 by SSP-RK3 in substeps that cross at most :data:`~mrx.relaxation.loop.CFL` logical cells
+    (:func:`~mrx.relaxation.loop.logical_cfl_weights`), the cap of the relaxation's substeps. Every increment is a
     curl of a Dirichlet 1-form, so ``div B = 0``, ``B . n = 0`` and the toroidal flux hold exactly. The fluxes of the
     other surfaces and the topology are kept to the accuracy of the transport, as by the relaxation's own steps.
     ``record`` holds the number of substeps, the cells the move crosses, the number of mass solves and the number of

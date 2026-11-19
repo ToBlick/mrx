@@ -359,8 +359,9 @@ The field keeps its coefficients, which moves the physical field with the
 mesh and keeps every flux through every face of the mesh. The drag is then
 undone by the relaxation's ideal update with the mesh's velocity in place of
 the flow's, on the maps between the old and the new one, in SSP-RK3 substeps
-that cross at most the relaxation's CFL cap of half a cell, the cheapest
-explicit method that is stable for this advection
+that cross at most half a cell, the relaxation's own substep, the cheapest
+explicit method that is stable for this advection, which nothing corrects
+afterwards
 (`mrx.relaxation.mesh_motion.undrag`). $\nabla \cdot B = 0$, $B \cdot n = 0$ and
 the toroidal flux hold exactly. The fluxes inside the other surfaces and the
 topology are kept to the accuracy of the transport. One move changes the
@@ -400,11 +401,10 @@ minutes with the build of the operators (one H200, float64, 2026-11-19).
         --budget.steps 200 --pressure.target input.w7x --current.target input.w7x --mesh.align
 
 From the fill and the vacuum with both targets of one namelist, the squared
-force residual stays below 1e-8 from step 63 on W7-X graded (24,48,28), where
-the plain fill does not get there in 400 steps (33 on the nested solver's
-mesh), from step 83 on li383 graded (48,64,24) against 236 (69), and from
-step 25 on HSX graded (32,64,36) against 23 on the plain fill (15), after
-three, three and one moves (one H200, 2026-11-18). A tighter `--mesh.tol`
+force residual stays below 1e-8 from step 63 on W7-X graded (24,48,28) (14
+on the nested solver's mesh), from step 64 on li383 graded (48,64,24) against
+239 without the motion (40), and from step 24 on HSX graded (32,64,36) (8),
+after three, three and one moves (one H200, 2026-11-19). A tighter `--mesh.tol`
 costs steps, since every move after the residual is low delays it.
 
 The `mesh` record of `relax.json` holds every move: the step, the alignment
@@ -440,20 +440,20 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's) and `scale` (its factor, with `--pressure.beta`). `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`. `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
 leaves its trace and its last state. A healthy ideal run has `dE < 0` at
-every step, `dE` equal to `dE_ls` to round-off, `helicity` constant up to
+every step, `dE` close to `dE_ls` (equal on a step of one substep), `helicity` constant up to
 grid-scale reconnection and `div` at round-off.
 
 The field is in the units of the equilibrium file, tesla for every reader,
 and the norms integrate over one field period. So `E` is in T^2 m^3,
 `F` in T^2 m^1/2, `helicity` in T^2 m^4 and the pressure in T^2. The
 gradient-descent `dt` scales as `|B|^-2`. `resid`, `beta_vol`, `cos`,
-`dt/dt*`, the CFL number and the printed `(E_0-E)/E_0` and `dH/|H_0|` are
+`dt/dt*`, the CFL number, the cells crossed and the printed `(E_0-E)/E_0` and `dH/|H_0|` are
 ratios. A checkpoint written before the field was kept in the file's units
 holds it normalised to `||B||_M = 1`. A restart from it continues the same
 run in those units, but it must not be paired with a field in tesla, for
