@@ -4,8 +4,8 @@ A mesh filled from the boundary alone (:mod:`mrx.equilibria.fill`) has its logic
 fill puts them, not on the flux surfaces of the field, and its axis ``r = 0`` where the fill's quality guess puts it,
 not on the magnetic axis. The relaxation converges more slowly on such a mesh. A move changes the map ``Phi`` so that
 the flux label ``s`` of the field (:mod:`mrx.flux_label`) becomes closer to a function of ``r`` alone. It is a
-property of the mesh only: the field is carried so that the physical field stays what it is, and the targets,
-functions of the flux label, do not see it.
+property of the mesh only: the field is carried so that the physical field stays what it is, and the profile control,
+a function of the flux label, does not see it.
 
 Every point moves within its surface ``zeta = const``: the move is given by the change of ``X1``, ``X2`` of the
 :class:`~mrx.equilibria.FrameMap` (``R`` and ``Z`` in the cylindrical frame), and ``X3`` follows the surface to first

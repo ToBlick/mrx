@@ -101,7 +101,7 @@ with open(os.path.join(cli.seeded, "relax.json")) as fh:
     rows = json.load(fh)["seed"]
 print(f"[start] the seeded state {ckpts[-1]} and the reference {ref}")
 for r in rows:
-    print(f"[start] seeded chain ({r['m']},{r['n']}) iota {nfp * r['n'] / r['m']:.4f} at r {r['r']:.3f}: "
+    print(f"[start] seeded chain ({r['m']},{r['n']}) iota {nfp * r['n'] / r['m']:.4f} at x {r['x']:.3f}: "
           f"amplitude {r['dBr']:+.3e}, pendulum width {r['w']:.4f}")
 print(f"[start] ||B_seeded - B*|| / ||B*|| = "
       f"{float(seq.odd.l2_norm(B_seeded - B_floor, 2) / seq.odd.l2_norm(B_floor, 2)):.3e}")
