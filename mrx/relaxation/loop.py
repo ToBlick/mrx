@@ -24,10 +24,11 @@ import numpy as np
 from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL,
-                                   newton_direction, shell_direction)
+                                   newton_direction, target_direction)
 from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
                                    weak_pressure)
 from mrx.relaxation.shells import Shells
+from mrx.relaxation.twist import Slips
 
 
 def knot_spacing(seq: DeRhamSequence) -> np.ndarray:
@@ -105,8 +106,9 @@ class State(eqx.Module):
 
 class Increment(NamedTuple):
     """The ideal increment ``dB = curl(u x B)`` at one field, with the intermediate results of the step.
-    ``slope`` is ``<F, u>``, the energy decrease per unit ``dt`` at ``dt = 0``. With shells ``work`` is the work of
-    the target pressure per unit ``dt``, ``int p* div u dV``, which ``slope`` then includes."""
+    ``slope`` is ``<F, u>``, the energy decrease per unit ``dt`` at ``dt = 0``. With shells or slips ``work`` is the
+    work of the targets per unit ``dt``, ``int p* div u dV`` and the slips' ``d . g``, which ``slope`` then
+    includes. ``slip`` is the slips' ``d`` (None without slips)."""
     dB: jnp.ndarray
     u: jnp.ndarray
     Mu: jnp.ndarray
@@ -120,6 +122,7 @@ class Increment(NamedTuple):
     newton_it: jnp.ndarray
     slope: jnp.ndarray
     work: jnp.ndarray = 0.0
+    slip: jnp.ndarray = None
 
 
 #: The step cap in logical cells: ``dt = min(dt_star, CFL / cfl_max)``.
@@ -147,9 +150,11 @@ class TimeStepper(eqx.Module):
     :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
 
     With ``shells`` (a :class:`~mrx.relaxation.shells.Shells`, :meth:`with_shells`) the Newton step also changes the
-    volumes of the flux shells towards a prescribed pressure (:func:`~mrx.relaxation.newton.shell_direction`), and
-    ``dt`` minimises the energy less the target pressure's work. The shells hold the flux label of one field, so the
-    caller rebuilds them every chunk (:func:`mrx.relaxation.shells.build_shells`).
+    volumes of the flux shells towards a prescribed pressure, with ``slips`` (a :class:`~mrx.relaxation.twist.Slips`,
+    :meth:`with_slips`) it slips poloidal flux between the flux surfaces towards a prescribed current
+    (:func:`~mrx.relaxation.newton.target_direction`), and ``dt`` minimises the energy less the targets' work. Both
+    hold the flux label of one field, so the caller rebuilds them every chunk
+    (:func:`mrx.relaxation.shells.build_shells`, :func:`mrx.relaxation.twist.build_slips`).
     The remaining fields are computed from the sequence at construction and should not be passed.
     """
     seq: DeRhamSequence
@@ -166,10 +171,11 @@ class TimeStepper(eqx.Module):
     harmonic_norm_sq: jnp.ndarray = None
     resistive: bool = eqx.field(static=True, default=False)
     shells: Optional[Shells] = None
+    slips: Optional[Slips] = None
 
     def __post_init__(self):
-        if self.shells is not None and not self.newton:
-            raise ValueError("the shell volumes are unknowns of the Newton step (newton=True)")
+        if (self.shells is not None or self.slips is not None) and not self.newton:
+            raise ValueError("the shell volumes and the slips are unknowns of the Newton step (newton=True)")
         # with stellarator symmetry the harmonic form is odd and the force even, so this is empty
         even = self.seq.even
         hs = even.nullspace(2)
@@ -188,6 +194,11 @@ class TimeStepper(eqx.Module):
         """This stepper with the shell volumes of ``shells`` (:class:`~mrx.relaxation.shells.Shells`) as unknowns of
         its Newton step. The same shapes do not recompile the chunk."""
         return eqx.tree_at(lambda t: t.shells, self, shells, is_leaf=lambda x: x is None)
+
+    def with_slips(self, slips) -> "TimeStepper":
+        """This stepper with the poloidal flux slips of ``slips`` (:class:`~mrx.relaxation.twist.Slips`) as unknowns
+        of its Newton step. The same shapes do not recompile the chunk."""
+        return eqx.tree_at(lambda t: t.slips, self, slips, is_leaf=lambda x: x is None)
 
     def with_reference(self, B_ref: jnp.ndarray) -> "TimeStepper":
         """This stepper with ``B_ref`` as the reference field of the resistive drive."""
@@ -228,14 +239,20 @@ class TimeStepper(eqx.Module):
         odd, even = seq.odd, seq.even
         J, JxB_dual = self._lorentz(B, w.J)
         F, MF, a_F = self._force(JxB_dual, w.a_F)
-        work = 0.0
-        if self.shells is not None:
-            # along the shells the gradient part of the load counts: the slope is <J x B, u> plus the target
-            # pressure's work c . g_p, not <F, u>
-            u, a, newton_it, c = shell_direction(seq, B, JxB_dual, w.a, self.shells, self.newton_penalty,
-                                                 self.newton_tol, self.newton_maxiter, self.newton_mass_solve_tol)
-            work = c @ self.shells.g_p
+        work, dB_slip, d = 0.0, None, None
+        if self.shells is not None or self.slips is not None:
+            # along the shells the gradient part of the load counts: the slope is <J x B, u> plus the targets' work
+            # c . g_p and d . g, less the energy's own rate (B, T d) along the slips, not <F, u>
+            u, a, newton_it, c, d, dB_slip = target_direction(
+                seq, B, JxB_dual, w.a, self.shells, self.slips, self.newton_penalty, self.newton_tol,
+                self.newton_maxiter, self.newton_mass_solve_tol)
+            if self.shells is not None:
+                work = c @ self.shells.g_p
+            if self.slips is not None:
+                work = work + d @ self.slips.g
             slope = u @ JxB_dual + work
+            if self.slips is not None:
+                slope = slope - dB_slip @ (odd.M[2] @ B)
         elif self.newton:
             # the Newton system and dt* see the force only through curl^T, which annihilates the gradient and
             # harmonic parts exactly, so they take the unprojected load. F is formed for the residual only.
@@ -244,7 +261,7 @@ class TimeStepper(eqx.Module):
         else:
             u, a, newton_it = self._smooth(F, a_F), a_F, jnp.int32(0)    # u the smoothed force
         Mu = even.M[2] @ u
-        if self.shells is None:
+        if self.shells is None and self.slips is None:
             slope = F @ Mu
         u_jk = even.evaluate_at_quadrature(u, 2)
         E_dual = odd.cross_product_load_values(u_jk, odd.evaluate_at_quadrature(B, 2), 1, 2, 2)
@@ -252,7 +269,9 @@ class TimeStepper(eqx.Module):
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
         # the topological curl: div B is conserved exactly, no mass solve
         dB = odd.G[1] @ E
-        return Increment(dB, u, Mu, F, MF, J, E, cfl_max, a, a_F, newton_it, slope, work)
+        if dB_slip is not None:
+            dB = dB + dB_slip
+        return Increment(dB, u, Mu, F, MF, J, E, cfl_max, a, a_F, newton_it, slope, work, d)
 
     def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
         """Return ``(dt, dt_star)``. ``dt_star = <F, u> / ||dB||^2`` minimises the energy along the increment and
@@ -268,8 +287,8 @@ class TimeStepper(eqx.Module):
         """One step from ``state.B_n``. Returns ``(B_{n+1}, warm starts, scalars)``, where ``scalars`` holds what
         the step measured at ``B_n``: ``F`` and ``v`` (the norms of force and velocity), ``Fu`` (``<F, u>``),
         ``dt``, ``dt_star``, ``cfl`` (the largest CFL number of the velocity), ``newton_it``, ``res_it`` and
-        ``res_moved`` (see :func:`relax`), and with shells ``work`` (the work of the target pressure over the step,
-        ``dt int p* div u dV``)."""
+        ``res_moved`` (see :func:`relax`), and with shells or slips ``work`` (the targets' work over the step,
+        ``dt int p* div u dV`` and ``dt d . g``), and with slips ``slip``, the slips ``dt d`` the step took."""
         w = state.warm
         inc = self._ideal_increment(state.B_n, w)
         dt, dt_star = self._step_size(inc)
@@ -282,8 +301,10 @@ class TimeStepper(eqx.Module):
         scalars = dict(F=jnp.sqrt(inc.F @ inc.MF), v=jnp.sqrt(inc.u @ inc.Mu), Fu=inc.slope, dt=dt,
                        dt_star=dt_star, cfl=inc.cfl_max, newton_it=inc.newton_it, res_it=res_it,
                        res_moved=res_moved)
-        if self.shells is not None:
+        if self.shells is not None or self.slips is not None:
             scalars["work"] = dt * inc.work
+        if self.slips is not None:
+            scalars["slip"] = dt * inc.slip
         return B_new, warm, scalars
 
 
@@ -316,8 +337,8 @@ def _chunk_body(ts, state, it):
                      resid=jnp.where(better, resid, state.best.resid).astype(state.best.resid.dtype),
                      step=jnp.where(better, it - 1, state.best.step).astype(state.best.step.dtype))
     trace = dict(scalars, dE=dE, div=compute_divergence_norm(B_new, seq), resid=resid)
-    if ts.shells is not None:
-        # the step lowers the energy less the work of the target pressure, to first order in the shells' move
+    if ts.shells is not None or ts.slips is not None:
+        # the step lowers the energy less the targets' work, to first order in the shells' move
         trace["dW"] = dE - trace.pop("work")
     return State(B_n=B_new, warm=warm, best=best), trace
 
@@ -330,9 +351,9 @@ def _run_chunk(ts, state, it0, n_chunk):
 
     ``it0`` is the step number before the chunk. ``trace[name]`` is an array with one value per step: the
     scalars of :meth:`TimeStepper.relaxation_step` and ``dE`` (the energy change), ``div`` (``||div B||``) and
-    ``resid``, the squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. With shells ``dW`` replaces
-    ``work``: the change of ``W = int B^2/2 dV - int p* dV``, the energy less the work of the target pressure, with
-    that work to first order in the step (``dE - dt int p* div u dV``). A field with a lower ``resid`` than
+    ``resid``, the squared normalised force residual ``||F||^2 / ||grad(B^2/2)||^2``. With shells or slips ``dW``
+    replaces ``work``: the change of ``W``, the energy less the targets' work, with the pressure's work to first order
+    in the step (``dE - dt int p* div u dV - dt d . g``). A field with a lower ``resid`` than
     ``state.best`` replaces it. Only a new ``n_chunk`` compiles again.
     """
     return jax.lax.scan(lambda st, it: _chunk_body(ts, st, it), state, it0 + jnp.arange(1, n_chunk + 1))
@@ -502,7 +523,7 @@ class RelaxResult(NamedTuple):
     is ``"steps"``, ``"floor"`` or ``"running"``. ``wall`` is the time in seconds spent in the steps themselves.
     ``trace`` holds the per-step values of :func:`_run_chunk` except ``v`` and ``Fu``, plus ``dE_ls`` (the
     energy change the line search predicts, ``-dt <F, u> (1 - dt / 2 dt_star)``) and ``cos`` (the cosine between
-    force and velocity). With shells the line search predicts ``dW``, not ``dE``: the magnetic energy alone may
+    force and velocity). With shells or slips the line search predicts ``dW``, not ``dE``: the magnetic energy alone may
     rise on a step that lowers ``W``. ``qoi`` holds the diagnostics of :func:`sample` once per chunk, the first
     entry being the start of the run. ``E0`` is the energy at the start.
     """
@@ -611,7 +632,7 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     tr, q = res.trace, res.qoi
     n = res.steps
     E0 = res.E0
-    # with shells the line search predicts, and the step lowers, W: the energy less the target pressure's work
+    # with shells or slips the line search predicts, and the step lowers, W: the energy less the targets' work
     name = "dW" if "dW" in tr else "dE"
     dE, dE_ls = np.array(tr[name]), np.array(tr["dE_ls"])
     removed = E0 - q["E"][-1]

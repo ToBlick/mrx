@@ -55,6 +55,20 @@ because JAX splits the gradient of a tie between the two branches. The spline
 evaluators continue their end pieces past `r = 1` instead, so pass `r` as it
 is.
 
+## The stored current has no tangential part on the wall
+
+{func}`mrx.relaxation.physics.current` returns the projection of `curl B` onto
+the Dirichlet 1-forms, the space of the electric fields of the admissible
+motions. Paired with them it gives the energy's derivative exactly, so the
+force and the Newton step are those of the discrete energy, and the enclosed
+current $I(s)$ is unaffected.
+
+It is not the pointwise current in the last radial cell. There the true
+tangential current, the diamagnetic and parallel currents at the edge, is in
+general not zero, while the stored one goes to zero on the wall by
+construction. To look at the current density at the wall, evaluate the curl of
+`B` directly there.
+
 ## The angles are right-handed, so a VMEC file's iota reads negative
 
 MRX's logical coordinates `(r, theta, zeta)` are right-handed, with the map

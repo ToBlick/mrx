@@ -145,3 +145,28 @@ def test_interpolation_commutes_with_the_derivative(seq):
         rel = float(jnp.linalg.norm(space.G[k] @ space.interpolate(f, k) - rhs) / jnp.linalg.norm(rhs))
         print(f"\n  k={k}: |G Pi f - Pi df| / |Pi df| = {rel:.1e}")
         assert rel < EXACT, f"k={k}: interpolation does not commute with the derivative ({rel:.2e})"
+
+
+def test_zeta_harmonic_distance(seq):
+    """:func:`mrx.nullspace.zeta_harmonic_distance` is zero to round-off on an axisymmetric torus with ``zeta`` the
+    cylindrical angle, where ``grad zeta`` is harmonic: the fixture's map averaged over ``zeta``. On the fixture
+    itself (li383, ``zeta`` the cylindrical angle of the wout) it is 0.297 in the mass norm and 0.62 at worst, next to
+    the wall (2026-11-18), the poloidal part of the vacuum field, which ``grad phi`` lacks: checked against the band
+    0.25 to 0.35. 30 s on four CPU cores after the fixture."""
+    import dataclasses
+
+    from mrx.geometry import build_sequence
+    from mrx.nullspace import zeta_harmonic_distance
+    from test.conftest import GEOMETRY, NS, P
+    rel, worst, _ = zeta_harmonic_distance(seq)
+    ax = build_sequence(GEOMETRY, NS, P, symmetry="stellarator", graded=True)
+    Phi = seq.map
+
+    def avg(raw):
+        return jnp.broadcast_to(jnp.mean(raw, axis=2, keepdims=True), raw.shape)
+    ax.set_geometry_from_map(dataclasses.replace(Phi, raw_X1=avg(Phi.raw_X1), raw_X2=avg(Phi.raw_X2)))
+    ax.build_preconditioners()
+    rel_ax, worst_ax, _ = zeta_harmonic_distance(ax)
+    print(f"\n  li383 {rel:.3e} (worst {worst:.3e}), axisymmetric {rel_ax:.1e} (worst {worst_ax:.1e})")
+    assert rel_ax < 1e3 * eps() and worst_ax < 1e3 * eps()
+    assert 0.25 < rel < 0.35

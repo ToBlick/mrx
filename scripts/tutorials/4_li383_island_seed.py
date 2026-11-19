@@ -108,10 +108,10 @@ print(f"[floor] warm-started from {ckpts[-1]}")
 def report(rows, what):
     h_r = float(np.sqrt(h_r_sq))
     print(f"[{what}] {len(rows)} chain(s) seeded:")
-    print(f"  {'chain':>7}  {'iota':>7}  {'r_mn':>6}  {'|diota/dr|':>10}  {'amplitude dBr':>13}  "
+    print(f"  {'chain':>7}  {'iota':>7}  {'x_mn':>6}  {'|diota/dx|':>10}  {'amplitude dBr':>13}  "
           f"{'width w':>8}  {'w / h_r':>7}")
     for r in rows:
-        print(f"  ({r['m']:>2},{r['n']:>2})  {nfp * r['n'] / r['m']:7.4f}  {r['r']:6.3f}  {r['diota']:10.3e}  "
+        print(f"  ({r['m']:>2},{r['n']:>2})  {nfp * r['n'] / r['m']:7.4f}  {r['x']:6.3f}  {r['diota']:10.3e}  "
               f"{r['dBr']:+13.3e}  {r['w']:8.4f}  {r['w'] / h_r:7.2f}")
 
 B_auto, rows_auto = energy_seed(seq, B_floor, scale=cli.scale)
