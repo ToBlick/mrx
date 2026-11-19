@@ -379,7 +379,11 @@ def main(cfg):
                 s_q, info = label_of(state)
         if pr:
             p_q = measure(state, it, s_q, info)
-            ts = ts.with_shells(build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, pr.cells))
+            shells, shell_it = build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, pr.cells)
+            shell_it = np.asarray(shell_it).tolist()
+            results["pressure"]["rebuilds"][-1]["shell_it"] = shell_it
+            print(f"[pressure] step {it}: shell gradients, Poisson CG {min(shell_it)} .. {max(shell_it)}", flush=True)
+            ts = ts.with_shells(shells)
         if cu:
             slips, mu = build_slips(seq, state.B_n, T_label, mu_star)
             record_current(it, mu, info)
