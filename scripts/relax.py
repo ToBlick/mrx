@@ -13,8 +13,9 @@ and ``--drive.eps``.
 
 With ``--pressure.target`` the volumes of the flux shells are unknowns of every Newton step, so the relaxation ends
 at the target pressure, a profile (the file's or a VMEC input namelist's, scaled by ``--pressure.scale`` or to
-``--pressure.beta``) or measured data on flux surfaces or at points in space (:mod:`mrx.relaxation.shells`). The
-shells and the target are rebuilt on the flux label of the field before every chunk. With ``--seed`` the target is
+``--pressure.beta``, :mod:`mrx.relaxation.shells`). Measured pressure is fitted by ``scripts/pressure_fit.py``, which
+runs this script with its fit as the target. The shells and the target are rebuilt on the flux label of the field
+before every chunk. With ``--seed`` the target is
 made constant across the seeded chains (``--pressure.plateau-margin``). Such a run takes all of ``--budget.steps``:
 the force residual does not see the shells, so ``--budget.floor-tol`` does not end it.
 
@@ -26,7 +27,7 @@ on the flux label before every chunk, the one label of both targets. Such a run 
 With ``--iota.target`` the relaxation ends at the rotational transform of a wout or of a VMEC input namelist with
 NCURR = 0. The transform is no control of the energy: it sets the target of the prescribed current in an outer loop.
 Before every chunk the field's poloidal flux on its label is measured, the slips that close the miss are asked for and
-the current target is the current the field carries once it has followed them (:func:`mrx.relaxation.twist.iota_slips`).
+the current target is the current the field carries once it has followed them (:func:`mrx.relaxation.twist.iota_current`).
 Nothing is stored between chunks, so a restart recomputes it. A current target and ``--iota.target`` exclude each
 other. With ``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which the
 transform misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
@@ -68,7 +69,11 @@ import time
 
 import h5py
 
-def main(cfg):
+def main(cfg, fit=None):
+    """Run the relaxation of ``cfg`` and return its output directory. ``fit(seq, B, T)`` is an outer loop's pressure
+    target in place of the profile of ``--pressure.target``: called before every chunk with the field ``B`` and its
+    label temperature ``T``, it returns the profile ``p*(s)`` (mu0 p in T^2) and a dict for the record
+    (``scripts/pressure_fit.py``)."""
     import numpy as np
 
     import mrx
@@ -82,7 +87,7 @@ def main(cfg):
     from mrx.relaxation.shells import (ERROR_BINS, build_shells, flattened, label, load_target, plateau_intervals,
                                        pressure_error, target_beta)
     from mrx.relaxation.seeding import energy_seed
-    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_fit, iota_slips,
+    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_current, iota_fit,
                                       load_current_target, load_iota_target, spline_centres)
     from mrx.flux_label import ANISOTROPY
 
@@ -180,11 +185,11 @@ def main(cfg):
         s_q, T_label, info = label(seq, state.B_n, pr.anisotropy, T_label, pr.label_tol)
         return s_q, int(info)
     if pr:
-        target = load_target(seq, pr.target, pr.scale, pr.smoothing, pr.cells)
+        if fit is None and pr.target.endswith(".json"):
+            raise ValueError(f"--pressure.target {pr.target}: measured pressure is fitted by scripts/pressure_fit.py")
+        target = load_target(seq, pr.target, pr.scale) if fit is None else None
         plateaus = (plateau_intervals(results["seed"], pr.plateau_margin)
-                    if "seed" in results and pr.plateau_margin and target.profile is not None else [])
-        if plateaus:
-            target = target._replace(profile=flattened(target.profile, plateaus))
+                    if "seed" in results and pr.plateau_margin else [])
         results["pressure"] = dict(target=pr.target, plateaus=plateaus, rebuilds=[])
         print(f"[pressure] target {pr.target}" + (f", constant on s in {plateaus}" if plateaus else "")
               + (f", scaled to beta {pr.beta:g}" if pr.beta is not None else ""), flush=True)
@@ -192,7 +197,8 @@ def main(cfg):
         def measure(state, it, s_q, info):
             """``p_q``: the target on the label ``s_q`` of the field of ``state``, at the quadrature points. The
             pressure's error against the target and the target's beta go into the record."""
-            p_q = target.at(seq, state.B_n, T_label)(s_q)
+            profile, record = (target, {}) if fit is None else fit(seq, state.B_n, T_label)
+            p_q = (flattened(profile, plateaus) if plateaus else profile)(s_q)
             beta, scale = target_beta(seq, state.B_n, p_q), {}
             if pr.beta is not None:
                 # scaled on this field: the shells change their volumes along the run, and with them the volume
@@ -202,7 +208,7 @@ def main(cfg):
             err, const = pressure_error(seq, weak_pressure(current(state.B_n, seq), state.B_n, seq), s_q, p_q,
                                         ERROR_BINS)
             results["pressure"]["rebuilds"].append(dict(step=it, label_it=info, error=err, constant=const,
-                                                        beta=beta, **scale))
+                                                        beta=beta, **scale, **record))
             print(f"[pressure] step {it}: |p - p*| / |p*| {err:.3e} in the gauge <p> = <p*> (p = p_w + C, "
                   f"C {const:+.2e} max p*), beta {beta:.5e}, label CG {info}", flush=True)
             return p_q
@@ -238,7 +244,6 @@ def main(cfg):
                   f"(s 0.05..0.95), at s 0.01 {rec['miss_axis']:.3e}, |d_req|_H {rec['d_req_H']:.3e}, "
                   f"lambda near the wall {rec['lam'][-1]:+.4e} T m (mu {rec['mu'][-1]:+.4e}), label CG {info}",
                   flush=True)
-        seed_pending = bool(cfg.seed)
         iota_max = float(np.abs(np.asarray(iota_star(np.linspace(0.05, 0.95, 19)))).max())
 
         def seed_converged(state, it, s_q):
@@ -246,7 +251,7 @@ def main(cfg):
             which the first chunks still move. The field is seeded at the first chunk boundary at which the label
             fit misses the target by less than AT_TARGET of its largest value, and the
             pressure target is flattened across the seeded chains then. Returns the state and whether it seeded."""
-            nonlocal target
+            nonlocal plateaus
             s = np.linspace(0.05, 0.95, 19)
             miss = float(np.abs(np.abs(iota_fit(seq, state.B_n, T_label, np.asarray(s_q), 6)(s))
                                 - np.abs(np.asarray(iota_star(s)))).max())
@@ -258,9 +263,8 @@ def main(cfg):
             results["iota"]["seed_step"] = it
             print(f"[seed] step {it}: the transform misses by {miss:.2e} < {AT_TARGET:g} of its largest value, "
                   f"seeded", flush=True)
-            if pr and pr.plateau_margin and target.profile is not None and rows:
+            if pr and pr.plateau_margin and rows:
                 plateaus = plateau_intervals(rows, pr.plateau_margin)
-                target = target._replace(profile=flattened(target.profile, plateaus))
                 results["pressure"]["plateaus"] = plateaus
             return initial_state(B_seeded, ts, step=it), True
     # --- the motion of the mesh towards the flux surfaces, between chunks ---
@@ -283,7 +287,7 @@ def main(cfg):
         def align_mesh(state, it):
             """The state at step ``it`` after a move of the mesh, or ``state`` when no move is due. The label is
             solved on the current mesh, and again on the new one after a move."""
-            nonlocal T_label, ts, target
+            nonlocal T_label, ts
             if (motion["aligned"] is not None or motion["moves"] >= mm.moves or it < mm.start
                     or (motion["last"] is not None and it - motion["last"] < mm.every)):
                 return state
@@ -321,9 +325,6 @@ def main(cfg):
                 ts = cfg.stepper(seq)
             else:
                 final_map(it)
-            if pr and target.data is not None:
-                # measured points are held as logical points of the map they were located in
-                target = load_target(seq, pr.target, pr.scale, pr.smoothing, pr.cells)
             return initial_state(B, ts, step=it)
     params["start_step"] = it0
     kwargs = cfg.relax_kwargs()
@@ -338,40 +339,17 @@ def main(cfg):
           f"floor-tol={kwargs['floor_tol']:.1e}"
           + (f"  drive: resistivity={dr.resistivity:g} h_r^2" if dr else "") + " ===", flush=True)
 
-    # --- the run, in one call, or with a target one call per chunk with the shells and the slips rebuilt before it
-    every = kwargs["chunk"] if targets or mm else kwargs["steps"]
-    kwargs["steps"] = every
-    done = dict(trace={}, qoi={})                  # the earlier calls
-
-    def save(res, start):
-        """Write the checkpoint of this step, then rewrite relax.json with the run so far."""
-        it = start + res.steps
-        checkpoint(f"state_{it:06d}.h5", res.state, it)
-        trace = {k: done["trace"].get(k, []) + list(v) for k, v in res.trace.items()}
-        qoi = {k: done["qoi"].get(k, []) + list(v) for k, v in res.qoi.items()}
-        last = {k: v[-1] for k, v in res.qoi.items() if k not in ("it", "wall")}
-        results.update(
-            trace=trace, qoi=qoi,
-            summary=dict(steps=it - it0, stop=res.stop, wall=res.wall,
-                         E0=qoi["E"][0], E_removed=qoi["E"][0] - qoi["E"][-1], F_final=trace["F"][-1],
-                         resid_final=trace["resid"][-1],
-                         resid_window_mean=float(sum(trace["resid"][-res.chunk:]) / res.chunk),
-                         best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
-                         **last))
-        write()
-
-    def write():
-        with open(os.path.join(out, "relax.json"), "w") as fh:
-            json.dump(results, fh, indent=1)
-
-    it = it0
-    for _ in range(b.steps // every):
-        start = it
+    # --- the run, in one call: before every chunk the mesh moves when a move is due and the label, the shells and
+    # the slips are rebuilt on the field (mrx.relaxation.loop.relax's rebuild)
+    def rebuild(state, it):
+        """The state and the stepper of the chunk from step ``it``."""
+        nonlocal ts, seed_pending
         if mm:
             state = align_mesh(state, it)
+        if not targets:
+            return state, ts
         t_rebuild = time.perf_counter()
-        if targets:
-            s_q, info = label_of(state)
+        s_q, info = label_of(state)
         if cfg.iota and seed_pending:
             state, seeded = seed_converged(state, it, s_q)
             if seeded:
@@ -391,23 +369,40 @@ def main(cfg):
         if cfg.iota and (not mm or motion["aligned"] is not None or motion["moves"] >= mm.moves):
             # with --mesh.align the loop waits for the mesh: its first slips are next to the magnetic axis, which
             # only a mesh whose axis is there resolves
-            slips, rec = iota_slips(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)
+            lam, rec = iota_current(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)
             record_iota(it, rec, info)
-            ts = ts.with_slips(slips)
-        if targets:
-            # the cost of the rebuild of the label, the shells and the slips, outside the steps
-            results.setdefault("rebuild_wall", []).append(time.perf_counter() - t_rebuild)
-        res = relax(state, ts, it0=start, on_chunk=lambda r, start=start: save(r, start), **kwargs)
-        for key in ("trace", "qoi"):
-            for name, v in getattr(res, key).items():
-                done[key][name] = done[key].get(name, []) + list(v)
-        it, state = start + res.steps, res.state
-        if res.stop != "steps":
-            break
+            ts = ts.with_slips(build_slips(seq, state.B_n, T_label, lam)[0])
+        # the cost of the rebuild of the label, the shells and the slips, outside the steps
+        results.setdefault("rebuild_wall", []).append(time.perf_counter() - t_rebuild)
+        return state, ts
+
+    def save(res):
+        """Write the checkpoint of this step, then rewrite relax.json with the run so far."""
+        it = it0 + res.steps
+        checkpoint(f"state_{it:06d}.h5", res.state, it)
+        trace, qoi = res.trace, res.qoi
+        last = {k: v[-1] for k, v in qoi.items() if k not in ("it", "wall")}
+        results.update(
+            trace=trace, qoi=qoi,
+            summary=dict(steps=res.steps, stop=res.stop, wall=res.wall,
+                         E0=qoi["E"][0], E_removed=qoi["E"][0] - qoi["E"][-1], F_final=trace["F"][-1],
+                         resid_final=trace["resid"][-1],
+                         resid_window_mean=float(sum(trace["resid"][-res.chunk:]) / res.chunk),
+                         best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
+                         **last))
+        write()
+
+    def write():
+        with open(os.path.join(out, "relax.json"), "w") as fh:
+            json.dump(results, fh, indent=1)
+
+    seed_pending = bool(cfg.iota and cfg.seed)
+    res = relax(state, ts, it0=it0, on_chunk=save, rebuild=rebuild if targets or mm else None, **kwargs)
+    state, it = res.state, it0 + res.steps
     if targets:
         # the end state against the targets, and what the steps removed of the energy less the targets' work
         s_q, info = label_of(state)
-        results["summary"].update(W_removed=-sum(done["trace"]["dW"]))
+        results["summary"].update(W_removed=-sum(res.trace["dW"]))
         if pr:
             measure(state, it, s_q, info)
             end = results["pressure"]["rebuilds"][-1]
@@ -417,13 +412,14 @@ def main(cfg):
             record_current(it, current_on_label(seq, state.B_n, T_label, pr.cells), info)
             results["summary"].update(current_error=results["current"]["rebuilds"][-1]["error"])
         if cfg.iota:
-            record_iota(it, iota_slips(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)[1], info)
+            record_iota(it, iota_current(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)[1], info)
             results["summary"].update(iota_miss_max=results["iota"]["rebuilds"][-1]["miss_max"])
         write()
     checkpoint("best.h5", initial_state(res.state.best.B, ts, step=int(res.state.best.step)),
                int(res.state.best.step))
     print(f"wrote {out}/relax.json and {ckpt_dir}/ (best.h5: step {int(res.state.best.step)}, "
           f"residual {float(res.state.best.resid):.3e})", flush=True)
+    return out
 
 
 if __name__ == "__main__":

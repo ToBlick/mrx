@@ -28,14 +28,15 @@ cones at the axis.) ``F(1)`` is free, so the total current is a target. The curr
 on the axis.
 
 A target transform is not a control of ``W``. It sets the current target in an outer loop: before every chunk of
-Newton steps :func:`iota_slips` measures the field's poloidal flux on its label, asks for the slips that close the
-miss and takes as the current target the current the field carries once it has followed them.
+Newton steps :func:`iota_current` measures the field's poloidal flux on its label, asks for the slips that close the
+miss and takes as the current target the current the field carries once it has followed them. The chunk then runs
+with the slips of that target (:func:`build_slips`), as with any other.
 
 - :func:`build_slips`, :func:`slip_table`, :func:`slip_maps` and :func:`current_moments` are the move as Newton
   unknowns, :func:`current_on_label` the moments of a field, :func:`current_target` those of a target and
   :func:`current_error` the current's error against them.
-- :func:`iota_slips` is the outer loop's update of the current target from a target transform, :func:`slip_request`
-  its request.
+- :func:`iota_current` is the outer loop's update of the current target from a target transform,
+  :func:`slip_request` its request.
 - :func:`iota_fit` and :func:`enclosed_current` measure the transform and the current on the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
@@ -343,10 +344,11 @@ def _relaxed_moments(ts, B, values, indices, S, d):
     return current_moments(seq, B + dB + change(seq.even.evaluate_at_quadrature(u, 2)), move_t), info
 
 
-def iota_slips(seq, B, T, s_q, iota, ts, cells=PROFILE_CELLS, degree=6):
-    """``(slips, record)``: the :class:`Slips` at the field ``B`` (label temperature ``T``, label ``s_q`` at the
-    quadrature points) whose current ``lambda`` is the multiplier of the target transform ``iota(s)``, for the
-    stepper ``ts`` (its Newton settings and shells), on the profile space of ``cells`` cells.
+def iota_current(seq, B, T, s_q, iota, ts, cells=PROFILE_CELLS, degree=6):
+    """``(lam, record)``: the current target ``lambda`` (moments as those of :func:`current_target`, T m) that is the
+    multiplier of the target transform ``iota(s)`` at the field ``B`` (label temperature ``T``, label ``s_q`` at the
+    quadrature points), for the stepper ``ts`` (its Newton settings and shells), on the profile space of ``cells``
+    cells. The chunk runs with ``build_slips(seq, B, T, lam)``.
 
     The energy is ``W = int B^2/2 dV - int p* dV - int lambda dpsi_pol``, the work of the unknown current on the
     slipped flux. Its stationary points in the slips have the moments ``mu = lambda``. ``lambda`` is set from the field
@@ -362,7 +364,6 @@ def iota_slips(seq, B, T, s_q, iota, ts, cells=PROFILE_CELLS, degree=6):
     ``s = 0.01``."""
     values, indices, S, mu, D = _slip_parts(seq, B, T, cells)
     d, fit = slip_request(seq, B, T, s_q, iota, cells, degree)
-    Z = float(jnp.sum(seq.quad.w_z))
     D = np.asarray(D, dtype=np.float64)
     lam, info = _relaxed_moments(ts, B, values, indices, S, jnp.asarray(d))
     lam = np.asarray(lam, dtype=np.float64)
@@ -371,8 +372,7 @@ def iota_slips(seq, B, T, s_q, iota, ts, cells=PROFILE_CELLS, degree=6):
     rec = dict(mu=np.asarray(mu).tolist(), lam=lam.tolist(), d_req=d.tolist(), d_req_H=float(np.sqrt(d @ D @ d)),
                response_it=int(info), miss_max=float(miss.max()), miss_median=float(np.median(miss)),
                miss_axis=float(abs(abs(fit(0.01)) - abs(float(iota(0.01))))))
-    slips = Slips(values, indices, S, jnp.asarray(-Z * lam, dtype=S.dtype), jnp.asarray(np.linalg.inv(D)))
-    return slips, rec
+    return jnp.asarray(lam, dtype=T.dtype), rec
 
 
 @eqx.filter_jit
