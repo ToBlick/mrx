@@ -1,7 +1,8 @@
 """The relaxation loop, which lowers the magnetic energy of ``B`` towards an MHD equilibrium.
 
-Each step moves the field as ``B <- B + dt curl(u x B)``. This keeps ``div B = 0`` and the helicity fixed, so
-only the energy changes. The velocity ``u`` is either a Newton direction or a smoothed Lorentz force.
+Each step carries the field along a velocity ``u`` for a time ``dt``, ``dB / ds = curl(u x B)``, in forward Euler
+substeps of at most :data:`CFL` logical cells. This keeps ``div B = 0`` and the helicity fixed, so only the energy
+changes. The velocity ``u`` is either a Newton direction or a smoothed Lorentz force.
 
 A typical run builds a :class:`TimeStepper` for a sequence, makes the start state with :func:`initial_state`
 and calls :func:`relax`, which runs the steps in compiled chunks and prints diagnostics after every chunk.
@@ -104,28 +105,29 @@ class State(eqx.Module):
     best: BestState
 
 
-class Increment(NamedTuple):
-    """The ideal increment ``dB = curl(u x B)`` at one field, with the intermediate results of the step.
-    ``slope`` is ``<F, u>``, the energy decrease per unit ``dt`` at ``dt = 0``. With shells or slips ``work`` is the
-    work of the targets per unit ``dt``, ``int p* div u dV`` and the slips' ``d . g``, which ``slope`` then
-    includes. ``slip`` is the slips' ``d`` (None without slips)."""
-    dB: jnp.ndarray
+class Direction(NamedTuple):
+    """The velocity ``u`` of a step at one field, its values ``u_jk`` at the quadrature points, and the intermediate
+    results. ``slope`` is ``<F, u>``, the energy decrease per unit ``dt`` at ``dt = 0``. With shells or slips ``work``
+    is the work of the targets per unit ``dt``, ``int p* div u dV`` and the slips' ``d . g``, which ``slope`` then
+    includes, ``dB_slip`` the slips' field change per unit ``dt`` (zero without slips) and ``slip`` the slips' ``d``
+    (None without slips)."""
     u: jnp.ndarray
+    u_jk: jnp.ndarray
     Mu: jnp.ndarray
     F: jnp.ndarray
     MF: jnp.ndarray
     J: jnp.ndarray
-    E: jnp.ndarray
     cfl_max: jnp.ndarray
     a: jnp.ndarray
     a_F: jnp.ndarray
     newton_it: jnp.ndarray
     slope: jnp.ndarray
+    dB_slip: jnp.ndarray
     work: jnp.ndarray = 0.0
     slip: jnp.ndarray = None
 
 
-#: The step cap in logical cells: ``dt = min(dt_star, CFL / cfl_max)``.
+#: The largest number of logical cells a substep of a step crosses.
 CFL = 0.5
 #: The velocity smoothing scale in squared radial cells, ``mu = SMOOTHING_C h_r^2`` (:func:`radial_cell_sq`).
 #: It damps the shortest radial mode (two cells) by ``1 / (1 + SMOOTHING_C pi^2)`` on any mesh.
@@ -133,7 +135,7 @@ SMOOTHING_C = 0.075
 
 
 class TimeStepper(eqx.Module):
-    """One step of the energy descent, ``B_{n+1} = B_n + dt curl(u x B)`` (forward Euler).
+    """One step of the energy descent: ``B`` carried along the velocity ``u`` for the time ``dt``.
 
     The force is ``F = curl a + c h``, the divergence-free part of ``J x B`` computed from a vector potential
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
@@ -141,10 +143,15 @@ class TimeStepper(eqx.Module):
     :func:`mrx.relaxation.newton.newton_direction`, controlled by ``newton_penalty``, ``newton_tol``,
     ``newton_maxiter`` and ``newton_mass_solve_tol``, the tolerance of the mass solves inside its operator.
     Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
-    2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment, capped by the CFL limit and, for Newton, by 1.
+    2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment
+    ``curl(u x B_n)``, for Newton at most 1, the full Newton step. The field is carried for that time by
+    ``dB / ds = curl(u x B)`` with ``u`` held, in the fewest forward Euler substeps of equal length that cross at most
+    :data:`CFL` logical cells each, one mass solve per substep. The step is a descent that the next Newton step
+    corrects, so the first-order substeps suffice, while the cap of a single step on the CFL limit held back many
+    early steps (25 of 33 on W7-X, 47 of 68 on li383, 2026-11-19).
     The step ``dt u`` does not depend on the scale of ``B``. The Newton direction is a displacement and its ``dt``
     a number. The smoothed force scales as ``|B|^2``, so the ``dt`` of gradient descent scales as ``|B|^-2``
-    (m^2 / T^2 for a field in tesla), and so does its CFL cap.
+    (m^2 / T^2 for a field in tesla).
 
     A nonzero ``resistivity`` (the dose ``eta dt`` per step, a length squared) adds a
     :func:`~mrx.relaxation.physics.resistive_step` towards ``resistive_reference`` after every ideal step.
@@ -233,8 +240,8 @@ class TimeStepper(eqx.Module):
         a_s = seq.shifted_stiffness(1, self.velocity_smoothing_scale).solve(seq.M[1] @ a, guess=a)
         return F + seq.G[1] @ (a_s - a)
 
-    def _ideal_increment(self, B: jnp.ndarray, w: WarmStarts) -> Increment:
-        """The ideal increment at ``B``, every Krylov solve warm-started from ``w``."""
+    def _direction(self, B: jnp.ndarray, w: WarmStarts) -> Direction:
+        """The direction of the step at ``B``, every Krylov solve warm-started from ``w``."""
         seq = self.seq
         odd, even = seq.odd, seq.even
         J, JxB_dual = self._lorentz(B, w.J)
@@ -264,47 +271,55 @@ class TimeStepper(eqx.Module):
         if self.shells is None and self.slips is None:
             slope = F @ Mu
         u_jk = even.evaluate_at_quadrature(u, 2)
-        E_dual = odd.cross_product_load_values(u_jk, odd.evaluate_at_quadrature(B, 2), 1, 2, 2)
-        E = odd.M[1].solve(E_dual, guess=w.E)
         cfl_max = jnp.max(jnp.abs(u_jk) * self.cfl_weights)
-        # the topological curl: div B is conserved exactly, no mass solve
-        dB = odd.G[1] @ E
-        if dB_slip is not None:
-            dB = dB + dB_slip
-        return Increment(dB, u, Mu, F, MF, J, E, cfl_max, a, a_F, newton_it, slope, work, d)
-
-    def _step_size(self, inc: Increment) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """Return ``(dt, dt_star)``. ``dt_star = <F, u> / ||dB||^2`` minimises the energy along the increment and
-        ``dt`` is ``dt_star`` after the caps."""
-        dt_star = inc.slope / self.seq.odd.l2_norm_sq(inc.dB, 2)
-        # a non-positive dt* is no step: a negative one would climb the energy
-        dt = jnp.minimum(jnp.maximum(dt_star, 0.0), CFL / inc.cfl_max)
-        if self.newton:
-            dt = jnp.minimum(dt, 1.0)              # the Newton length
-        return dt, dt_star
+        return Direction(u, u_jk, Mu, F, MF, J, cfl_max, a, a_F, newton_it, slope,
+                         jnp.zeros_like(B) if dB_slip is None else dB_slip, work, d)
 
     def relaxation_step(self, state: State) -> tuple[jnp.ndarray, WarmStarts, dict]:
         """One step from ``state.B_n``. Returns ``(B_{n+1}, warm starts, scalars)``, where ``scalars`` holds what
         the step measured at ``B_n``: ``F`` and ``v`` (the norms of force and velocity), ``Fu`` (``<F, u>``),
-        ``dt``, ``dt_star``, ``cfl`` (the largest CFL number of the velocity), ``newton_it``, ``res_it`` and
-        ``res_moved`` (see :func:`relax`), and with shells or slips ``work`` (the targets' work over the step,
-        ``dt int p* div u dV`` and ``dt d . g``), and with slips ``slip``, the slips ``dt d`` the step took."""
+        ``dt``, ``dt_star``, ``cfl`` (the largest CFL number of the velocity, so ``dt cfl`` cells are crossed),
+        ``substeps``, ``newton_it``, ``res_it`` and ``res_moved`` (see :func:`relax`), and with shells or slips
+        ``work`` (the targets' work over the step, ``dt int p* div u dV`` and ``dt d . g``), and with slips ``slip``,
+        the slips ``dt d`` the step took.
+
+        The substeps run in one loop whose first pass also sets the step: its increment ``curl(u x B_n)`` gives
+        ``dt`` and the number of substeps. So the mass solve of ``u x B`` is compiled once."""
         w = state.warm
-        inc = self._ideal_increment(state.B_n, w)
-        dt, dt_star = self._step_size(inc)
-        B_new = state.B_n + dt * inc.dB
+        d = self._direction(state.B_n, w)
+        odd = self.seq.odd
+
+        def substep(c):
+            k, B, E, E0, dt, dt_star, n = c
+            E = odd.M[1].solve(odd.cross_product_load_values(d.u_jk, odd.evaluate_at_quadrature(B, 2), 1, 2, 2),
+                               guess=E)
+            # the topological curl: div B is conserved exactly, no mass solve
+            dB = odd.G[1] @ E
+            first = k == 0
+            star = d.slope / odd.l2_norm_sq(dB + d.dB_slip, 2)
+            # a non-positive dt* is no step: a negative one would climb the energy
+            length = jnp.maximum(star, 0.0)
+            if self.newton:
+                length = jnp.minimum(length, 1.0)          # the full Newton step
+            dt = jnp.where(first, length, dt)
+            n = jnp.where(first, jnp.maximum(jnp.ceil(length * d.cfl_max / CFL), 1.0), n)
+            return (k + 1, B + (dt / n) * dB, E, jnp.where(first, E, E0), dt, jnp.where(first, star, dt_star), n)
+        zero = jnp.zeros((), dtype=d.slope.dtype)
+        _, B_new, _, E0, dt, dt_star, n = jax.lax.while_loop(
+            lambda c: c[0] < c[6], substep, (jnp.int32(0), state.B_n, w.E, w.E, zero, zero, zero + 1.0))
+        B_new = B_new + dt * d.dB_slip
         res_a, res_it, res_moved = w.resistive_a, jnp.int32(0), jnp.zeros(())
         if self.resistive:
             B_new, res_it, res_moved, res_a = resistive_step(B_new, self.seq, self.resistivity,
                                                              self.resistive_reference, guess=res_a)
-        warm = WarmStarts(J=inc.J, E=inc.E, a=inc.a, a_F=inc.a_F, A=w.A, resistive_a=res_a)
-        scalars = dict(F=jnp.sqrt(inc.F @ inc.MF), v=jnp.sqrt(inc.u @ inc.Mu), Fu=inc.slope, dt=dt,
-                       dt_star=dt_star, cfl=inc.cfl_max, newton_it=inc.newton_it, res_it=res_it,
+        warm = WarmStarts(J=d.J, E=E0, a=d.a, a_F=d.a_F, A=w.A, resistive_a=res_a)
+        scalars = dict(F=jnp.sqrt(d.F @ d.MF), v=jnp.sqrt(d.u @ d.Mu), Fu=d.slope, dt=dt, dt_star=dt_star,
+                       cfl=d.cfl_max, substeps=n.astype(jnp.int32), newton_it=d.newton_it, res_it=res_it,
                        res_moved=res_moved)
         if self.shells is not None or self.slips is not None:
-            scalars["work"] = dt * inc.work
+            scalars["work"] = dt * d.work
         if self.slips is not None:
-            scalars["slip"] = dt * inc.slip
+            scalars["slip"] = dt * d.slip
         return B_new, warm, scalars
 
 
@@ -654,13 +669,12 @@ def print_summary(res: RelaxResult, ts: TimeStepper) -> None:
     print(f"    beta_vol {q['beta_vol'][0]:.4e} -> {q['beta_vol'][-1]:.4e}")
     dts, dt_star = np.array(tr["dt"]), np.array(tr["dt_star"])
     taken = dts * np.array(tr["cfl"])
-    capped = dts < dt_star
-    cfl_bound = capped & np.isclose(taken, CFL, rtol=1e-5)
-    # a capped step not at the CFL limit is at the Newton length 1, the only other cap
-    newton_bound = f"Newton length bound on {int((capped & ~cfl_bound).sum())}/{n},  " if ts.newton else ""
-    print(f"    CFL cap (C={CFL}) bound on {int(cfl_bound.sum())}/{n} steps,  {newton_bound}"
-          f"dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f},  "
-          f"CFL number taken max {taken.max():.3f}")
+    sub = np.array(tr["substeps"])
+    # the only cap of a step is the full Newton step
+    newton_bound = f"Newton length bound on {int((dts < dt_star).sum())}/{n},  " if ts.newton else ""
+    print(f"    {newton_bound}dt/dt* min {(dts / dt_star).min():.3f} mean {(dts / dt_star).mean():.3f},  "
+          f"cells crossed per step max {taken.max():.2f},  substeps of at most {CFL} cells mean {sub.mean():.1f} "
+          f"max {sub.max()}")
     if ts.newton:
         nit = np.abs(np.array(tr["newton_it"]))
         print(f"    newton: MINRES iterations mean {nit.mean():.1f}  max {nit.max()}  "

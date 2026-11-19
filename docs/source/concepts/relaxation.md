@@ -27,9 +27,9 @@ route, the k = 3 Hodge split, which also gives the strong pressure `p`. The rela
 
 `TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_solve_tol, resistivity,
 resistive_reference)`
-is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` does
-one forward-Euler step `B_{n+1} = B_n + dt curl(u x B)` and returns `B_{n+1}`, the warm starts of the next
-step and the step's scalars:
+is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` carries
+the field along a fixed velocity `u` for a time `dt`, `dB/ds = curl(u x B)`, and returns `B_{n+1}`, the warm
+starts of the next step and the step's scalars:
 
 1. **Direction** `u`. With `newton`, the Newton direction (below). Without,
    the smoothed force,
@@ -44,15 +44,27 @@ step and the step's scalars:
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
 4. **Step size**. `dt_star = <F, u>_M / ||dB||^2_M` minimises the energy
-   along the increment, and `dt = min(dt_star, CFL / cfl_max)`, with `cfl_max`
-   the largest logical CFL number of `u`, and `dt <= 1` (the Newton length)
-   with Newton.
-5. **Resistive step**, with `resistivity > 0`: `resistive_step` below,
+   along the increment, and `dt = dt_star`, with Newton at most 1, the full
+   Newton step. There is no CFL cap on the step.
+5. **Substeps**. The field is carried for `dt` in the fewest forward-Euler
+   substeps of equal length that cross at most `CFL` = 0.5 logical cells
+   each (`dt cfl_max / CFL` of them, `cfl_max` the largest logical CFL number
+   of `u`), each one mass solve of steps 2 and 3 at the substep's field. The
+   step is a descent whose error the next Newton step removes, so first-order
+   substeps suffice. A step capped at one substep held back most early steps
+   from a vacuum start (25 of the 33 steps to a squared residual of 1e-8 on
+   W7-X, 47 of 68 on li383), the substeps halve those runs (14 and 37,
+   2026-11-19). The first substep's increment is the one of step 3, so one
+   loop holds the only mass solve of `u x B`.
+6. **Resistive step**, with `resistivity > 0`: `resistive_step` below,
    towards `resistive_reference`.
 
 The energy change of every step is recorded exactly (`dE`) next to the line
-search's prediction (`dE_ls`). For a divergence-free `u` they agree to
-round-off. The force residual is not monotone.
+search's prediction (`dE_ls`), which is that of a single substep. For a
+divergence-free `u` and one substep they agree to round-off. With several
+substeps the field follows the flow of `u` further than the linear
+increment, and `dE` differs from `dE_ls` by the higher orders. The force
+residual is not monotone.
 
 ### Newton
 
