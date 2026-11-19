@@ -19,7 +19,7 @@ from mrx.relaxation.physics import compute_divergence_norm, current, weak_pressu
 from mrx.relaxation.seeding import energy_seed
 from mrx.relaxation.shells import ERROR_BINS, PROFILE_CELLS, build_shells, label, load_target, pressure_error
 from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, current_target,
-                                  enclosed_current, iota_fit, iota_slips, load_current_target, load_iota_target)
+                                  enclosed_current, iota_current, iota_fit, load_current_target, load_iota_target)
 
 #: The cells of the profile space on the fixture. Its 14 radial cells resolve 8 cells of the profile space, not the
 #: default 16 of finer meshes: with 16 the slip block's condition is 1.1e7 and the moments miss the weak current by
@@ -44,7 +44,7 @@ def test_iota_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
     namelist: the transform 0.95 times the file's and the pressure the file's reshaped by ``1 + 0.05 (1 - 2 s)``.
 
     Twenty Newton steps in two chunks from the file's field, with the label, the shells and the slips at the current
-    target the transform asks for (:func:`mrx.relaxation.twist.iota_slips`) rebuilt before each, take positive steps
+    target the transform asks for (:func:`mrx.relaxation.twist.iota_current`) rebuilt before each, take positive steps
     and lower ``W`` at every step. The seed waits for the transform: it is applied at step 10, where the label fit
     misses the target by less than AT_TARGET of its largest value. At the end the transform misses by 4.60e-3 (0.14 of
     the change of 3.29e-2) and the pressure by 6.98e-3, against 2.81e-2 from the file's pressure, in float64. At the
@@ -66,7 +66,7 @@ def test_iota_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
                     f"  PMASS_TYPE = 'cubic_spline'\n  AM_AUX_S = {row(s)}\n"
                     f"  AM_AUX_F = {row(p_file(np.sqrt(s)) * (1.0 + 0.05 * (1.0 - 2.0 * s)))}\n/\n")
     iota_t = load_iota_target(str(path))
-    p_t, p_f = load_target(seq, str(path)).profile, load_target(seq, "file").profile
+    p_t, p_f = load_target(seq, str(path)), load_target(seq, "file")
     want = np.abs(np.asarray(iota_t(S_TEST)))
     change_iota = np.abs(np.abs(iota_file(np.sqrt(S_TEST))) - want).max()
 
@@ -84,7 +84,8 @@ def test_iota_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
             s_q, T, _ = label(seq, state.B_n, ANISOTROPY, T)
         ts = ts.with_shells(build_shells(seq, state.B_n, s_q, p_t(s_q), ts.newton_penalty, ts.newton_mass_solve_tol,
                                          CELLS)[0])
-        ts = ts.with_slips(iota_slips(seq, state.B_n, T, np.asarray(s_q), iota_t, ts, CELLS)[0])
+        lam, _ = iota_current(seq, state.B_n, T, np.asarray(s_q), iota_t, ts, CELLS)
+        ts = ts.with_slips(build_slips(seq, state.B_n, T, lam)[0])
         res = relax(state, ts, steps=CHUNK, chunk=CHUNK, verbose=False)
         state, E0 = res.state, res.E0 if E0 is None else E0
         dW += list(np.asarray(res.trace["dW"], dtype=float))
@@ -197,7 +198,7 @@ def test_current_and_pressure_targets_from_one_namelist(seq, b0, tmp_path):
                     f"  AC_AUX_F = {row(I_phi / I_phi[-1])}\n  PMASS_TYPE = 'cubic_spline'\n  AM_AUX_S = {row(s)}\n"
                     f"  AM_AUX_F = {row(p_file(np.sqrt(s)) * (1.0 + 0.05 * (1.0 - 2.0 * s)))}\n/\n")
     mu_t, mu_f = load_current_target(seq, str(path), b0, cells=CELLS), current_on_label(seq, b0, T, CELLS)
-    p_t, p_f = load_target(seq, str(path)).profile, load_target(seq, "file").profile
+    p_t, p_f = load_target(seq, str(path)), load_target(seq, "file")
 
     ts = TimeStepper(seq=seq, newton=True)
     state, dW, dt_star, E0 = initial_state(b0, ts), [], [], None

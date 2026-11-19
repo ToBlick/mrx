@@ -163,8 +163,8 @@ def test_namelist_target_is_the_file_target(seq, b0, tmp_path):
     s = np.linspace(0.0, 1.0, 201)
     body = (f"PMASS_TYPE = 'cubic_spline', PRES_SCALE = 2.0\n  AM_AUX_S = {' '.join(f'{v:.17g}' for v in s)}\n"
             f"  AM_AUX_F = {' '.join(f'{v:.17g}' for v in 0.5 * p_r(np.sqrt(s)))}")
-    file_target = load_target(seq, "file", 0.3).profile
-    namelist_target = load_target(seq, _write(tmp_path, body), 0.3).profile
+    file_target = load_target(seq, "file", 0.3)
+    namelist_target = load_target(seq, _write(tmp_path, body), 0.3)
     s_q = seq.quad.x[:, 0] ** 2
     a, b = np.asarray(file_target(s_q)), np.asarray(namelist_target(s_q))
     print(f"\n  |namelist - file| / max file {np.max(np.abs(a - b)) / np.max(a):.1e},  target beta "
