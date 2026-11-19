@@ -77,11 +77,11 @@ def _relax_to_current(seq, B, mu_star):
 
 def test_the_same_current_gives_the_same_field_on_two_meshes(seq, b0, tmp_path):
     """The current target alone from the vacuum, on the fixture's mesh and on the mesh with the axis moved 4 cm
-    inwards. After twenty Newton steps each meets the target (9.0e-5 and 8.3e-5) and the two transforms on their own
-    labels agree on ``s`` in 0.05 .. 0.95 to 3.1e-3, the fields at common physical points to 6.5e-3, the size of the
+    inwards. After twenty Newton steps each meets the target (8.3e-5 and 8.2e-5) and the two transforms on their own
+    labels agree on ``s`` in 0.05 .. 0.95 to 3.0e-3, the fields at common physical points to 6.5e-3, the size of the
     two meshes' discretisation difference at this resolution. The bounds are CURRENT_ERROR, IOTA_DIFF and B_DIFF. On
-    CELLS cells of the profile space. 664 s on four CPU cores after the fixture (2026-11-18). Skipped in float32, where a Newton step costs three times as much on the
-    CPU."""
+    CELLS cells of the profile space. 1278 s on four CPU cores after the fixture (2026-11-19). Skipped in float32,
+    where a Newton step costs three times as much on the CPU."""
     if DTYPE != np.float64:
         pytest.skip("a float32 Newton step costs three times a float64 one on the CPU, the float64 run covers the claim")
     path = str(tmp_path / "wout_shifted.nc")
