@@ -1,8 +1,7 @@
 name: CI
 
+# Runs on pull requests into main, not again after the merge.
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
 
