@@ -64,8 +64,8 @@ class Geometry:
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000
     """The maximum number of iterations of every linear solve."""
-    zeta: Literal["phi", "harmonic"] = "phi"
-    """The toroidal coordinate of the first mesh: phi, the cylindrical angle (the surfaces zeta = const are the planes phi = const), or harmonic, the angle of the vacuum field (they are the level sets of its potential, the map moved there by mrx.relaxation.mesh_motion.harmonic_build). harmonic needs a VMEC input namelist, whose start is the vacuum field."""
+    zeta: Literal["axis-normal", "phi", "harmonic"] = "axis-normal"
+    """The toroidal coordinate of the first mesh. axis-normal: the surfaces zeta = const are the planes normal to the axis of the file's map, each point slid along its flux surface and the file's field carried (mrx.relaxation.mesh_motion.axis_normal_map). phi: the file's own sections (the planes phi = const of a VMEC or DESC file). harmonic: the angle of the vacuum field (the level sets of its potential, the map moved there from the file's sections by mrx.relaxation.mesh_motion.harmonic_build). harmonic needs a VMEC input namelist, whose start is the vacuum field."""
     max_batch: int = 262144
     """The number of points evaluated at once in the quadrature loops. 0 evaluates all of them at once. Lower it when one of these loops runs out of device memory."""
 
@@ -85,7 +85,7 @@ class Geometry:
 
     def build(self):
         """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`, with its
-        map re-sectioned onto the harmonic angle for ``zeta = harmonic``.
+        map re-sectioned as ``zeta`` says.
         ``max_batch`` becomes the batch of the loops over quadrature points (:data:`mrx.MAP_BATCH_SIZE_INNER`)."""
         import mrx
         from mrx.geometry import build_sequence

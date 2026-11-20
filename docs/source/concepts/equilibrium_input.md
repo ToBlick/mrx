@@ -168,7 +168,7 @@ GVEC's frame. Every other file, VMEC, DESC or a cylindrical GVEC state, is
 read in the planes `phi = const` and has the cylindrical frame
 (`cylindrical_frame()`): `a = 0`, `N = e_R`, `B = e_z`, so that `X1 = R`
 and `X2 = Z`, and the cross-sections `zeta = const` are the planes
-`phi = const` of the file. No file is cut into another frame.
+`phi = const` of the file. `build_map` cuts no file into another frame.
 
 A map built from a file has `X3 = 0`, so its surface `zeta = const` is
 exactly the plane of the frame and `(X1, X2)` are coordinates in it. `X3`
@@ -187,6 +187,27 @@ shape optimisation can move all of them
 (`mrx.optimization.shape_ad.frame_geometry`). `state_position(st)` is the
 state's own map as a JAX function, the reference the spline map
 approximates.
+
+**Sections normal to the axis.** `build_sequence` (`zeta="axis-normal"`,
+the default) does not install that map. It cuts the state's own map by the
+planes normal to its axis (`mrx.relaxation.mesh_motion.axis_normal_map`).
+The frame is that of the axis: `a` the axis, `N` the radial direction made
+normal to the axis, `B = N x t` with `t` the axis tangent, so that
+`T = -t` as in the cylindrical frame and `X1`, `X2` are about `R`, `Z`
+about the axis. Each point keeps `r` and `theta` and slides along its
+surface into the plane of its `zeta`, `Phi'(r, theta, zeta) =
+position(r, theta, zeta + f)`, `f` found by Newton's method along the line.
+`X1`, `X2` and `f` are interpolated at the Greville points and projected
+onto the polar space, `X3 = 0`. The exact map is cut, not its spline: a
+spline map cut this way is only C1 where a line crosses its knots. The
+field of the file is the curl of the potential with
+`lambda'(r, theta, zeta) = lambda(r, theta, zeta + f) - iota(r) (2 pi / nfp) f`
+(`seq.equilibrium["zeta_shift"]` holds `f`), which is the file's field in
+the new coordinates: `theta + lambda'` and `zeta` are straight-field-line
+angles, the file's shifted by `iota` times the same change of the toroidal
+angle. On li383, W7-X and HSX the map is 0.08, 0.13 and 0.02 mm from the
+exact cut at most, against 0.24, 0.28 and 0.09 mm for the cut of the spline
+map (2026-11-20). `zeta="phi"` keeps the file's frame.
 
 ## 4. Conventions that must be stated
 

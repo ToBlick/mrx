@@ -53,6 +53,13 @@ the moved map until ``zeta`` is harmonic (:func:`harmonic_build`). ``--geometry.
 map, before the field exists, so a move is only a change of the map. A move of a field ends in :func:`carry` whichever
 misfit gave it.
 
+A third choice of the toroidal coordinate is a cut, not a move: the planes normal to the axis of the map
+(:func:`axis_normal_map`), in the frame of the axis, GVEC's G-frame, the default of
+:func:`mrx.geometry.build_sequence` for every file. Every point slides along its line of constant ``r`` and
+``theta`` into the plane of its ``zeta`` at once, by Newton's method along the line, and the map is in the new frame
+with ``X3 = 0``. With the temperature of a flux label the planes are those normal to the magnetic axis instead. The
+shift of ``zeta`` the cut returns carries a field given in the old logical coordinates, a file's field above all.
+
 The moves of either misfit keep the preconditioners of the map they start from (:func:`install_map`), and those of the
 final map are built once: by :func:`mrx.geometry.build_sequence` after the harmonic moves, by ``scripts/relax.py``
 once the mesh is aligned or out of moves.
@@ -65,17 +72,18 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction, Pushforward, inv33
+from mrx.differential_forms import DiscreteFunction, Pushforward, det33, inv33
+from mrx.equilibria import FrameMap, frame_derivatives, polar_projection
 from mrx.flux_label import enclosed_flux_map
 from mrx.geometry import SequenceGeometry, map_jacobian_at
 from mrx.nullspace import compute_nullspaces
 from mrx.optimization.shape_ad import frame_geometry
-from mrx.precision import lift, to_working
+from mrx.precision import DTYPE, lift, to_working
 from mrx.relaxation.initial_conditions import toroidal_flux
 from mrx.relaxation.loop import CFL, logical_cfl_weights, radial_cell_sq
 from mrx.relaxation.physics import compute_divergence_norm
 from mrx.solvers import preconditioned_cg
-from mrx.symmetry import stellarator_symmetric_scalar
+from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 
 #: The fraction ``kappa`` of the linearised alignment error a move removes.
 GAIN = 1.0
@@ -313,11 +321,11 @@ def _velocity(seq, e, g, alpha, kappa):
 
 
 class _Path(eqx.Module):
-    """The maps ``Phi_tau = Phi0 + tau delta`` from the installed map to a new one: a frame map is affine in its
-    coefficients, so ``DPhi_tau = D0 + tau (D1 - D0)`` exactly. ``D0``, ``D1`` are the Jacobians of the two ends at the
-    quadrature points and ``d_q = Phi_1 - Phi_0`` there, the velocity of the mesh per unit ``tau``."""
+    """The maps ``Phi_tau = Phi0 + tau (Phi1 - Phi0)`` from the installed map to a new one, the straight paths of the
+    points, so ``DPhi_tau = D0 + tau (D1 - D0)`` exactly, whatever the frames of the two maps. ``D0``, ``D1`` are the
+    Jacobians of the two ends at the quadrature points and ``d_q = Phi_1 - Phi_0`` there, the velocity of the mesh per
+    unit ``tau``. The geometry of ``Phi_tau`` keeps ``Phi0`` as its map: the steps use only its metric."""
     Phi0: object
-    delta: jnp.ndarray
     D0: jnp.ndarray
     D1: jnp.ndarray
     d_q: jnp.ndarray
@@ -326,9 +334,7 @@ class _Path(eqx.Module):
         """``(seq_tau, D)``: ``seq`` with the geometry of ``Phi_tau`` and the Jacobian ``D`` of ``Phi_tau``."""
         D = self.D0 + tau * (self.D1 - self.D0)
         G = jnp.einsum("qki,qkj->qij", D, D)
-        Phi = self.Phi0.with_coordinates(*(c + tau * dc for c, dc in zip(
-            (self.Phi0.raw_X1, self.Phi0.raw_X2, self.Phi0.raw_X3), self.delta)))
-        return seq.with_geometry(SequenceGeometry(Phi, G, jax.vmap(inv33)(G), jnp.linalg.det(D))), D
+        return seq.with_geometry(SequenceGeometry(self.Phi0, G, jax.vmap(inv33)(G), jnp.linalg.det(D))), D
 
 
 def _rate(seq, path, tau, b):
@@ -378,8 +384,7 @@ def undrag(seq, B, Phi_new):
     x, Phi = seq.quad.x, seq.map
     D0, D1 = map_jacobian_at(Phi, x), map_jacobian_at(Phi_new, x)
     d_q = jax.vmap(Phi_new)(x) - jax.vmap(Phi)(x)
-    delta = jnp.stack([Phi_new.raw_X1 - Phi.raw_X1, Phi_new.raw_X2 - Phi.raw_X2, Phi_new.raw_X3 - Phi.raw_X3])
-    path = _Path(Phi, delta, D0, D1, d_q)
+    path = _Path(Phi, D0, D1, d_q)
     weights = logical_cfl_weights(seq)
     cells = max(float(jnp.max(jnp.abs(seq.jacobian_j[:, None]
                                       * jnp.linalg.solve(D0 + t * (D1 - D0), d_q[..., None])[..., 0]) * weights))
@@ -580,28 +585,225 @@ def harmonic_build(seq):
           + " -> ".join(f"{d:.2e}" for d in rec["drift"]) + f", {rec['seconds']:.0f} s", flush=True)
 
 
+#: The samples of the mesh axis per spline of ``zeta`` from which :func:`axis_normal_map` fits its curve. The curve's
+#: series has half as many modes as the map has splines of ``zeta``, what the splines resolve: a spline axis also
+#: carries the kinks of its pieces, at the cell frequency, and a series that keeps them gives the frame's vectors
+#: wiggles there (HSX (24,48,48) with 48 modes: 1.8e-4 in ``N`` at mode 47, and a vacuum transform 3e-3 low, 2026-11-20).
+AXIS_SAMPLES_PER_SPLINE = 4
+#: The Newton steps of the cut of :func:`axis_normal_map` along every line ``(r, theta)``.
+CUT_NEWTON_STEPS = 12
+
+
+def _fourier_fit(zetas, values, n_modes):
+    """``(cos, sin, rms)``: the least-squares series ``sum_k cos_k cos(-2 pi k zeta) + sin_k sin(-2 pi k zeta)``,
+    ``k = 0 .. n_modes``, of the ``values`` ``(K, c)`` at the logical ``zetas``, ``(c, n_modes + 1)`` each, and the rms
+    of its residual at the samples."""
+    arg = -2.0 * np.pi * np.outer(zetas, np.arange(n_modes + 1))
+    A = np.concatenate([np.cos(arg), np.sin(arg[:, 1:])], axis=1)
+    coef = np.linalg.lstsq(A, values, rcond=None)[0]
+    rms = float(np.sqrt(np.mean(np.sum((A @ coef - values) ** 2, axis=1))))
+    sin = np.concatenate([np.zeros((1, values.shape[1])), coef[n_modes + 1:]])
+    return coef[:n_modes + 1].T, sin.T, rms
+
+
+def curve_frame(zetas, points, nfp, n_modes):
+    """``(frame, rms)``: the frame of the planes normal to a closed curve, in the form of a state's ``frame``
+    (:func:`mrx.equilibria.gvec.read_frame`), and the rms distance (in the map's units) of the curve's series from
+    its samples.
+
+    ``points`` ``(K, 3)`` are Cartesian points of the curve at the logical ``zetas`` of one field period. Turned back
+    by ``2 pi zeta / nfp`` about the ``z`` axis they are periodic in ``zeta``, and their least-squares series with
+    ``n_modes`` modes per field period is the frame's axis ``a``. Its unit tangent ``t`` in space is ``a'`` plus the
+    turn ``(2 pi / nfp) e_z x a``. ``N`` is the radial unit vector ``e_R`` made normal to ``t``, ``B = N x t``, so
+    ``N x B = -t``, the orientation of the cylindrical frame (``N = e_R``, ``B = e_z``), and ``X1``, ``X2`` are
+    about ``R``, ``Z`` about the axis. ``N`` and ``B`` are the series with ``2 n_modes`` modes that interpolate them
+    at ``4 n_modes + 1`` angles. A curve symmetric under ``(x, y, z) -> (x, -y, -z)`` at ``-zeta`` gives a frame with
+    that symmetry, to round-off."""
+    omega = 2.0 * np.pi / nfp
+    c, s = np.cos(-omega * zetas), np.sin(-omega * zetas)
+    p = np.asarray(points, dtype=np.float64)
+    turned = np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
+    a_cos, a_sin, rms = _fourier_fit(np.asarray(zetas, dtype=np.float64), turned, n_modes)
+    m = 2 * n_modes
+    cos, sin = np.zeros((3, 3, m + 1)), np.zeros((3, 3, m + 1))
+    cos[0, :, :n_modes + 1], sin[0, :, :n_modes + 1] = a_cos, a_sin
+    z = np.arange(2 * m + 1) / (2 * m + 1)
+    n_per = jnp.arange(m + 1, dtype=float)
+    a, da = (np.asarray(v[:, 0]) for v in jax.vmap(lambda q: frame_derivatives(jnp.asarray(cos), jnp.asarray(sin),
+                                                                                n_per, q)[:2])(jnp.asarray(z)))
+    t = da + omega * np.stack([-a[:, 1], a[:, 0], np.zeros_like(a[:, 0])], 1)
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    N = np.array([1.0, 0.0, 0.0]) - t[:, :1] * t
+    N /= np.linalg.norm(N, axis=1, keepdims=True)
+    NB_cos, NB_sin, _ = _fourier_fit(z, np.concatenate([N, np.cross(N, t)], 1), m)
+    cos[1:], sin[1:] = NB_cos.reshape(2, 3, -1), NB_sin.reshape(2, 3, -1)
+    return {"n": nfp * np.arange(m + 1), "cos": cos, "sin": sin}, rms
+
+
+def section_tilt(Phi, zetas):
+    """The angle in degrees between the tangent of the axis ``r = 0`` of the map ``Phi`` and the normal of its surface
+    ``zeta = const`` at the axis, on the planes ``zetas``. At the axis of a polar map the radial derivatives at
+    ``theta = 0`` and ``1/4`` span the tangent plane of that surface."""
+    def tilt(z):
+        D0 = jax.jacfwd(Phi)(jnp.array([0.0, 0.0, z]))
+        n = jnp.cross(D0[:, 0], jax.jacfwd(Phi)(jnp.array([0.0, 0.25, z]))[:, 0])
+        return jnp.arctan2(jnp.linalg.norm(jnp.cross(n, D0[:, 2])), jnp.abs(n @ D0[:, 2]))
+    return np.degrees(np.asarray(jax.vmap(tilt)(jnp.asarray(zetas))))
+
+
+@eqx.filter_jit
+def _cut(position, plane_map, x):
+    """``(X1, X2, f, miss)`` at the logical points ``x``: the point of ``position`` on the line ``(r, theta)`` of ``x``
+    in the plane of the frame of ``plane_map`` at ``zeta`` of ``x``, its coordinates along ``N`` and ``B`` there,
+    the shift ``f = zeta_c - zeta`` of the line's logical ``zeta_c`` at that point, and its distance from the plane.
+    ``zeta_c`` may leave ``[0, 1)``: one field period on is the point turned by ``2 pi / nfp`` about the ``z`` axis."""
+    def at(y):
+        k = jnp.floor(y[2])
+        P = position(y.at[2].add(-k))
+        a = 2.0 * jnp.pi * k / plane_map.nfp
+        return jnp.array([jnp.cos(a) * P[0] - jnp.sin(a) * P[1], jnp.sin(a) * P[0] + jnp.cos(a) * P[1], P[2]])
+
+    def one(xq):
+        o, e1, e2 = plane_map.plane(xq[2])
+        n = jnp.cross(e1, e2)
+
+        def newton(z, _):
+            P, dP = jax.jvp(lambda w: at(xq.at[2].set(w)), (z,), (jnp.ones_like(z),))
+            return z - (P - o) @ n / (dP @ n), None
+        z = jax.lax.scan(newton, xq[2], None, length=CUT_NEWTON_STEPS)[0]
+        d = at(xq.at[2].set(z)) - o
+        return jnp.stack([d @ e1, d @ e2, z - xq[2], jnp.abs(d @ n)])
+    return jax.lax.map(one, x, batch_size=4096)
+
+
+def _map_space(seq):
+    """The sequence of the map of ``seq``: ``seq`` itself, or on a graded space the same mesh with every ring's theta
+    count, on which :func:`mrx.geometry.build_sequence` builds the map."""
+    if seq.theta_counts is None:
+        return seq
+    from mrx.derham_sequence import DeRhamSequence
+
+    def knots(b):
+        # uniform angular knots are passed as None, which keeps the half-period quadrature
+        bp = np.unique(np.asarray(b.T, dtype=np.float64).clip(0.0, 1.0))
+        return None if b.type == "periodic" and np.allclose(np.diff(bp), bp[1] - bp[0]) else b.T
+    return DeRhamSequence(seq.ns, seq.p, nfp=seq.nfp, symmetry=seq.symmetry,
+                          knots=[knots(b) for b in seq.basis_0.Lambda], quad_points=seq.quad_points)
+
+
+def axis_normal_map(seq, position, T=None):
+    """``(Phi, shift, info)``: the map of ``position`` re-sectioned so that its surfaces ``zeta = const`` are the
+    planes normal to its axis, in the frame of that axis (GVEC's G-frame), and the change of the toroidal coordinate.
+
+    ``position`` is a map from the logical points of ``seq`` (one field period of ``seq.nfp``) to Cartesian points:
+    a :class:`~mrx.equilibria.FrameMap` on the 0-form splines of ``seq``, in any frame and with any ``X3``, or the
+    exact map of a file's state (:func:`mrx.equilibria.state_position`). The curve is its axis ``position(0, theta,
+    zeta)``, sampled at :data:`AXIS_SAMPLES_PER_SPLINE` angles per spline of ``zeta``, or with the temperature ``T``
+    of a flux label on the installed map of ``seq`` the label's maximum on the Greville planes of the ``zeta``
+    splines (:func:`label_maximum`), the magnetic axis. Its frame is :func:`curve_frame`, with half as many modes as
+    the map has splines of ``zeta``, what they resolve.
+
+    Every point of ``Phi`` is the point of ``position`` on the same line ``(r, theta)`` that lies in the frame's plane
+    at its ``zeta``: ``position(r, theta, zeta + f)``, with ``f`` found by Newton's method along the line. So every
+    surface ``r = const``, the wall among them, only slides along itself, and the poloidal angle stays. ``X1`` and
+    ``X2`` are the point's coordinates in the plane. They and ``f`` are interpolated at the Greville points of the
+    tensor splines and projected onto the polar 0-forms with the full theta count on every ring, the map's space
+    (:func:`mrx.equilibria.polar_projection`), on a half-period sequence also onto ``X1`` even and ``X2``, ``f``
+    odd. ``X3`` is zero: the surfaces ``zeta = const`` of ``Phi`` are the frame's planes exactly, its surfaces
+    ``r = const`` those of ``position`` to the interpolation error. The cut of a spline map is only C1 where a line
+    crosses a knot of the old map, so the exact map of a file, where there is one, is cut with a smaller error
+    (li383 (48,64,24): 0.08 mm from the exact cut against 0.24 mm, W7-X (24,48,28) 0.13 against 0.28 mm, 2026-11-20). The planes of neighbouring ``zeta``
+    meet one radius of curvature of the curve away from it, so the map folds if the domain reaches that far:
+    ``det DPhi`` at the quadrature points of ``seq`` must be positive (raises otherwise).
+
+    ``shift`` holds the tensor coefficients of ``f``: a logical point ``x`` of ``Phi`` is the point ``x + f(x)
+    e_zeta`` of ``position``. A field given in the logical coordinates of ``position`` is carried onto ``Phi`` with
+    it (:mod:`mrx.relaxation.initial_conditions` does so for a file's field). A discrete field of a map installed on
+    ``seq`` is carried by :func:`carry`.
+
+    ``info`` holds the number of frame modes and the curve's fit error (``frame_modes``, ``curve_rms``), the tilt of
+    the surfaces ``zeta = const`` against the axis before and after, in degrees (:func:`section_tilt`, the largest
+    over the Greville planes), the largest ``|f|`` in field periods, the largest distance of a cut point from its
+    plane, the symmetry defect (:func:`mrx.symmetry.stellarator_symmetry_defect`), the range of ``det DPhi`` at the
+    sample points of :func:`mrx.equilibria.build_map` and its smallest value at the quadrature points, and the wall
+    time."""
+    t0 = time.perf_counter()
+    bases = seq.basis_0.Lambda
+    g = [np.asarray(b.greville_points(), dtype=np.float64) for b in bases]
+    n_z = bases[2].n
+    if T is None:
+        zetas = np.arange(AXIS_SAMPLES_PER_SPLINE * n_z + 1) / (AXIS_SAMPLES_PER_SPLINE * n_z + 1)
+        x_a = np.stack(np.broadcast_arrays(0.0, 0.0, zetas), 1)
+    else:
+        zetas = g[2]
+        x_a = label_maximum(seq, T, zetas)
+    n_modes = min(n_z // 2, (zetas.size - 1) // 2)
+    frame, rms = curve_frame(zetas, np.asarray(jax.vmap(position)(jnp.asarray(x_a, dtype=float))), seq.nfp, n_modes)
+    zeros = jnp.zeros(seq.basis_0.shape[0], dtype=float)
+    plane_map = FrameMap(zeros, zeros, zeros, jnp.asarray(frame["cos"], dtype=float),
+                         jnp.asarray(frame["sin"], dtype=float), jnp.asarray(frame["n"] / seq.nfp, dtype=float),
+                         seq.basis_0.bases[0], seq.nfp)
+    x = np.stack(np.meshgrid(*g, indexing="ij"), -1)
+    v = np.asarray(_cut(position, plane_map, jnp.asarray(x.reshape(-1, 3), dtype=float)), dtype=np.float64)
+    v = v.reshape(*x.shape[:-1], 4)
+    inv = [np.linalg.inv(np.asarray(b.collocation_matrix(), dtype=np.float64)) for b in bases]
+    polar = polar_projection(_map_space(seq))
+    raw = [polar(np.einsum("ia,jb,kc,abc->ijk", *inv, v[..., c], optimize=True)) for c in range(3)]
+    if seq.half_period:
+        raw = [stellarator_symmetric_scalar(jnp.asarray(r), seq.basis_0, even=(c == 0)) for c, r in enumerate(raw)]
+    X1, X2, shift = (jnp.asarray(r, dtype=DTYPE) for r in raw)
+    Phi = plane_map.with_coordinates(X1, X2, jnp.zeros_like(X1))
+    J = np.asarray(frame_geometry(seq, Phi).jacobian_j)
+    planes = g[2]
+    rng = np.random.default_rng(0)
+    pts = jnp.asarray(np.column_stack([rng.uniform(0.15, 1.0, 64), rng.uniform(0.0, 1.0, 64),
+                                       rng.uniform(0.0, 1.0, 64)]))
+    d = np.asarray(jax.vmap(lambda y: det33(jax.jacfwd(Phi)(y)))(pts))
+    info = dict(frame_modes=int(frame["n"].size), curve_rms=rms,
+                tilt_before=float(section_tilt(position, planes).max()),
+                tilt_after=float(section_tilt(Phi, planes).max()), shift_max=float(np.abs(v[..., 2]).max()),
+                plane_miss=float(v[..., 3].max()), symmetry_defect=float(stellarator_symmetry_defect(Phi, pts)),
+                det_range=(float(d.min()), float(d.max())), det_quadrature_min=float(J.min()),
+                seconds=time.perf_counter() - t0)
+    if not J.min() > 0:
+        raise RuntimeError(f"det DPhi of the map cut by the planes normal to its axis in [{J.min():.3e}, "
+                           f"{J.max():.3e}]: the planes meet inside the domain")
+    return Phi, shift, info
+
+
 def write_map(path, Phi):
-    """Add the coefficients of the map ``Phi`` to the checkpoint ``path``, so a run on a moved mesh restarts and is
-    traced on it (:func:`install_checkpoint_map`)."""
+    """Add the map ``Phi``, the coefficients of ``X1``, ``X2``, ``X3`` and its frame, to the checkpoint ``path``, so a
+    run on a moved or re-sectioned mesh restarts and is traced on it (:func:`install_checkpoint_map`)."""
     with h5py.File(path, "a") as fh:
-        for name in ("raw_X1", "raw_X2", "raw_X3"):
+        for name in MAP_ARRAYS:
             fh.create_dataset(f"map_{name}", data=np.asarray(getattr(Phi, name)))
 
 
+#: The arrays of a map that a checkpoint holds (:func:`write_map`).
+MAP_ARRAYS = ("raw_X1", "raw_X2", "raw_X3", "frame_cos", "frame_sin", "frame_n")
+
+
 def checkpoint_map(path):
-    """The coefficients ``(raw_X1, raw_X2, raw_X3)`` of the map stored in the checkpoint ``path`` by
-    :func:`write_map`, or ``None`` for a checkpoint without one (written on the map of the geometry file)."""
+    """The arrays of the map stored in the checkpoint ``path`` by :func:`write_map`, a dict by the names of
+    :data:`MAP_ARRAYS`, or ``None`` for a checkpoint without one (written on the file's sections). A checkpoint written
+    before the frame was stored holds the coefficients alone, on the frame of the file."""
     with h5py.File(path, "r") as fh:
         if "map_raw_X1" not in fh:
             return None
-        return tuple(np.asarray(fh[f"map_{name}"]) for name in ("raw_X1", "raw_X2", "raw_X3"))
+        return {name: np.asarray(fh[f"map_{name}"]) for name in MAP_ARRAYS if f"map_{name}" in fh}
 
 
 def install_checkpoint_map(seq, path):
     """Install the map of the checkpoint ``path`` (:func:`checkpoint_map`) on ``seq`` and return ``True``, or return
-    ``False`` if it has none."""
-    raw = checkpoint_map(path)
-    if raw is None:
+    ``False`` if it has none. The coefficients come with the frame they belong to, unless the checkpoint predates the
+    stored frame."""
+    arrays = checkpoint_map(path)
+    if arrays is None:
         return False
-    install_map(seq, seq.map.with_coordinates(*(jnp.asarray(a, dtype=seq.map.raw_X1.dtype) for a in raw)))
+    Phi = seq.map.with_coordinates(*(jnp.asarray(arrays[k], dtype=seq.map.raw_X1.dtype)
+                                     for k in ("raw_X1", "raw_X2", "raw_X3")))
+    if "frame_cos" in arrays:
+        Phi = Phi.with_frame(*(jnp.asarray(arrays[k], dtype=seq.map.frame_cos.dtype)
+                               for k in ("frame_cos", "frame_sin", "frame_n")))
+    install_map(seq, Phi)
     return True

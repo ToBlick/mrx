@@ -4,9 +4,10 @@ Every checkpoint named on the command line (``checkpoints/state_<step>.h5``, ``b
 so on) is traced by ``mrx.diagnostics.poincare.trace_archive``, all of them in one batch. The sequence is rebuilt
 from the resolution, degree, knots, symmetry, grading and theta cells of the map stored in the checkpoint
 (:func:`mrx.relaxation.loop.checkpoint_attrs`) on the geometry file ``--geometry``, which is the run's VMEC wout,
-GVEC state or DESC output. A checkpoint of a run with a moving mesh holds its map, which is installed: the
-checkpoints of one call must share one map. The weak pressure of each field
-(``mrx.relaxation.physics.weak_pressure``, zero on the wall) is evaluated at every crossing.
+GVEC state or DESC output. A checkpoint of a run whose mesh is not on the file's sections (a moving mesh, sections
+normal to the axis) holds its map and its frame, which are installed: the checkpoints of one call must share one map.
+The weak pressure of each field (``mrx.relaxation.physics.weak_pressure``, zero on the wall) is evaluated at every
+crossing.
 
 The archive ``trace.npz`` goes into the run directory of the first checkpoint, the parent of its ``checkpoints/``
 folder. ``scripts/poincare_plot.py`` draws it and is cheap enough for the login node, so changing the figure never
@@ -52,8 +53,8 @@ class Trace:
     """The number of toroidal periods each line is followed."""
     planes: int | tuple[float, ...] = 5
     """The number of planes spread over the part of the period the symmetry leaves distinct, or the planes themselves as fractions of a period (for example 0 0.25 0.5)."""
-    sections: Literal["zeta", "phi"] = "zeta"
-    """The sections: the map's ``zeta = const`` (free, the coordinates of the map's sections), or the planes ``phi = const`` of the physical toroidal angle in cylindrical ``(R, Z)``, which differ from the map's on a G-frame state and cost a map evaluation per step there."""
+    sections: Literal["phi", "zeta"] = "phi"
+    """The sections: the planes ``phi = const`` of the physical toroidal angle in cylindrical ``(R, Z)``, or the map's ``zeta = const`` (free, the coordinates of the map's sections), which differ from the planes ``phi = const`` on a map with sections normal to its axis (the default mesh) or a G-frame state, where the planes cost a map evaluation per step."""
     seed: int = 0
     """The random seed for the poloidal start angles."""
     min_steps: int = 300
@@ -99,11 +100,12 @@ def main(cli):
     archive = cli.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(cli.checkpoints[0]))),
                                       "trace.npz")
     source = f"{os.path.basename(cli.geometry)} {attrs['ns']} p={attrs['p']}"
+    # a checkpoint without a map was written on the file's sections, one with a map gets it installed
     seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"],
-                         symmetry=attrs["symmetry"], graded=attrs["graded"], map_theta=attrs["map_theta"])
+                         symmetry=attrs["symmetry"], graded=attrs["graded"], map_theta=attrs["map_theta"], zeta="phi")
     maps = [checkpoint_map(path) for path in cli.checkpoints]
-    if any((m is None) != (maps[0] is None) or (m is not None and not all(np.array_equal(a, b) for a, b in
-                                                                          zip(m, maps[0]))) for m in maps):
+    if any((m is None) != (maps[0] is None) or (m is not None and (m.keys() != maps[0].keys() or not all(
+            np.array_equal(m[k], maps[0][k]) for k in m))) for m in maps):
         raise ValueError("the checkpoints were written on different maps (a moving mesh): trace each map in its own call")
     install_checkpoint_map(seq, cli.checkpoints[0])
     fields = {name: read_field(path, seq) for name, path in zip(field_names(cli.checkpoints), cli.checkpoints)}

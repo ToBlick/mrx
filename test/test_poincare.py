@@ -7,7 +7,8 @@ matches ``|iota(r)|`` of the file at the line's radius within a measured band, t
 field, and halving the step moves the lines by less than a measured drift, also with ``b0`` written as a free
 2-form (no flux through the wall). A closed-form field, whose lines are
 known exactly, pins the crossings forwards and backwards and the cut at the boundary. The sections ``phi = const``
-are the sections ``zeta = const`` on a cylindrical map. CI runs the suite in float64 and float32, and the
+are the sections ``zeta = const`` on a cylindrical map, and on the fixture's map, whose sections are normal to the
+axis, they are those of the same field on the file's map. CI runs the suite in float64 and float32, and the
 tolerances scale with the precision (:func:`_tol`).
 """
 import jax
@@ -21,6 +22,12 @@ from mrx.diagnostics.poincare import poincare
 IOTA_BAND = 1.33e-3
 #: 1.25x the step-halving drift of the same trace in logical radius, measured 3.23e-4.
 DRIFT_BAND = 4.1e-4
+
+
+#: The file's field on the fixture's map (sections normal to the axis) and on the file's map, traced from the same
+#: lines and cut at the planes ``phi = const``: the largest difference of a regular line's iota and the largest
+#: distance of its first ten crossings, in metres. TODO measured (2026-11-20).
+PHI_IOTA_BAND, PHI_CROSSING_BAND = 1e-2, 1e-2
 
 
 def _tol(f64, f32):
@@ -94,11 +101,15 @@ def test_crossings_of_a_closed_form_field(seq):
 
 
 def test_phi_sections_are_zeta_sections_on_a_cylindrical_map(seq, b0):
-    """On li383 the planes ``phi = const`` are the sections ``zeta = const``. The crossings that the Newton path
-    of the sections ``"phi"`` finds in the steps the batched trace kept (:func:`_refine_crossings`) are then the
-    states at the ends of steps, forwards and backwards, to round-off."""
+    """On the li383 file's own map the planes ``phi = const`` are the sections ``zeta = const``. The crossings that
+    the Newton path of the sections ``"phi"`` finds in the steps the batched trace kept (:func:`_refine_crossings`)
+    are then the states at the ends of steps, forwards and backwards, to round-off. The fixture's map has the
+    sections normal to the axis, so the file's map (:func:`mrx.equilibria.build_map`) stands in for it, with the
+    fixture's logical field."""
     from mrx.diagnostics.poincare import (_record_offsets, _reduced_trace, _refine_crossings, _step_end_crossings,
                                           logical_field, steps_for, to_uv)
+    from mrx.equilibria import build_map
+    Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
     planes, periods = (0.0, 0.25), 6
     S = steps_for(planes)
     offsets = _record_offsets(planes, S)
@@ -108,11 +119,41 @@ def test_phi_sections_are_zeta_sections_on_a_cylindrical_map(seq, b0):
     direction = jnp.array([1.0] * 3 + [-1.0] * 3)
     rec, _, _, brackets, reached = _reduced_trace(
         field, jax.tree.map(lambda a: a[None], coef), to_uv(seeds[:, 0], seeds[:, 1])[None], direction,
-        jnp.zeros((1, S, 2)), jnp.full(6, periods * S + 1), periods, S, offsets, Phi=seq.map, planes=planes,
+        jnp.zeros((1, S, 2)), jnp.full(6, periods * S + 1), periods, S, offsets, Phi=Phi, planes=planes,
         n_cross=periods - 1)
-    uv, z = _refine_crossings(field, coef, seq.map, brackets[0], reached[0], direction, S, planes)
+    uv, z = _refine_crossings(field, coef, Phi, brackets[0], reached[0], direction, S, planes)
     for lines, sign in ((slice(0, 3), 1), (slice(3, 6), -1)):
         want = _step_end_crossings(rec[0, lines], S, planes, offsets, periods - 1, sign)
         for j, plane in enumerate(planes):
             assert np.abs(np.asarray(uv[lines, j]) - np.asarray(want[plane][0])).max() < _tol(1e-10, 1e-5)
             assert np.abs(np.asarray(z[lines, j]) - np.asarray(want[plane][1])).max() < _tol(1e-12, 1e-5)
+
+
+def test_phi_sections_of_an_axis_normal_map(seq, b0):
+    """The fixture's map has its sections normal to the axis, so its planes ``zeta = const`` are not the planes
+    ``phi = const``, and the file's field on it is carried to the new coordinates
+    (:mod:`mrx.relaxation.initial_conditions`). Cut at the planes ``phi = const`` (``sections="phi"``, the default),
+    its lines are those of the same field on the file's map (:func:`mrx.equilibria.build_map`, the field without the
+    shift of ``zeta``): the same iota per line and the same crossings in cylindrical ``(R, Z)``, to the
+    discretisation error of the two fields (:data:`PHI_IOTA_BAND`, :data:`PHI_CROSSING_BAND`). The seeds lie in the
+    plane ``zeta = 0``, where a stellarator-symmetric cut leaves every point where it is, so the two traces start
+    from the same physical points."""
+    from mrx.equilibria import build_map
+    from mrx.geometry import SequenceGeometry
+    from mrx.relaxation.initial_conditions import _clebsch_potential
+    st = {k: v for k, v in seq.equilibrium.items() if k != "zeta_shift"}
+    free = seq.odd.free
+    A = free.interpolate(_clebsch_potential(st, seq.nfp, seq.basis_0.bases[0]), 1)
+    B_file = seq.restrict(free.G[1] @ A, 2)
+    Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
+    on_file = seq.with_geometry(SequenceGeometry.from_map(Phi, seq.quad.x))
+    kw = dict(lines=8, periods=40, planes=(0.0, 0.25), sections="phi")
+    a, b = poincare(seq, b0, **kw), poincare(on_file, B_file, **kw)
+    shown = np.asarray(a["shown"]) & np.asarray(b["shown"])
+    d_iota = float(np.max(np.abs(np.asarray(a["iota"]) - np.asarray(b["iota"]))[shown]))
+    d_x = max(float(np.nanmax(np.hypot(a["sections"][p]["R"][shown, :10] - b["sections"][p]["R"][shown, :10],
+                                       a["sections"][p]["Z"][shown, :10] - b["sections"][p]["Z"][shown, :10])))
+              for p in (0.0, 0.25))
+    print(f"\n  {shown.sum()} regular lines, iota apart by {d_iota:.1e}, first ten crossings by {d_x:.1e} m")
+    assert shown.sum() >= 6
+    assert d_iota < PHI_IOTA_BAND and d_x < PHI_CROSSING_BAND

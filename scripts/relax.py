@@ -108,12 +108,18 @@ def main(cfg, fit=None):
     print(f"[setup] {g.path} resolution {seq.ns} degree {g.spline_degree} tol={seq.tol:.1e}  "
           f"n2_dbc={seq.odd.n(2)}  operators+nullspaces {time.perf_counter() - t0:.1f}s", flush=True)
     # the checkpoints hold the map once it can have moved
-    carry_map = bool(cfg.mesh) or g.zeta == "harmonic"
+    carry_map = bool(cfg.mesh) or g.zeta != "phi"
     if g.zeta == "harmonic":
         params["harmonic"] = seq.equilibrium["harmonic"]
-    if cfg.output.restart and install_checkpoint_map(seq, cfg.output.restart):
-        carry_map = True
-        print(f"[restart] the moved map of {cfg.output.restart} installed", flush=True)
+    if g.zeta == "axis-normal":
+        params["axis_normal"] = seq.equilibrium["axis_normal"]
+    if cfg.output.restart:
+        if install_checkpoint_map(seq, cfg.output.restart):
+            carry_map = True
+            print(f"[restart] the map of {cfg.output.restart} installed", flush=True)
+        elif g.zeta != "phi":
+            raise ValueError(f"{cfg.output.restart} holds no map, so it was written on the file's sections: restart "
+                             "it with --geometry.zeta phi")
 
     # --- the start field: the initial condition or a restart, then the seed ---
     h_r_sq = radial_cell_sq(seq)

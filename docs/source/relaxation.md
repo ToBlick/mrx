@@ -38,9 +38,39 @@ iterations on the vacuum and 1700 to 3300 later (one H200, float64, 4.7
 minutes for the operators and 5.7 for the 257 steps, 2026-11-19).
 
 The toroidal coordinate of the first mesh is set by `--geometry.zeta`. With
-`phi`, the default, the surfaces $\zeta = $ const are the planes
-$\phi = $ const of the cylindrical angle, as in the files. With `harmonic`
-they are the level sets of the potential of the vacuum field of the domain,
+`axis-normal`, the default, the surfaces $\zeta = $ const are the planes
+normal to the axis of the file's map, as in GVEC's G-frame. With `phi` they
+are the file's own sections, the planes $\phi = $ const of the cylindrical
+angle for a VMEC or DESC file. The planes $\phi = $ const are tilted
+against the axis of a stellarator, by up to 11 degrees on li383, 18 on
+W7-X and 35 on HSX. On a tilted plane the metric couples the field along the
+axis to the components across it in the first radial cell. A field made by
+a metric projection, a vacuum field above all, then has a rotational
+transform near the axis that is off by an amount that does not fall with the
+mesh (HSX vacuum, (24,48,48): 1.000 within 5 mm of the axis against 1.042
+outside). On planes normal to the axis the coupling vanishes there, and the
+same vacuum has 1.042 down to 5 mm.
+
+The cut (`mrx.relaxation.mesh_motion.axis_normal_map`) takes the planes
+normal to the axis of the file's map, in the frame of that axis: the axis,
+the radial direction made normal to the axis, and the third direction. Every
+point of the mesh slides along its line of constant $r$ and $\theta$ into
+the plane of its $\zeta$. So every surface $r = $ const of the file, the
+wall among them, only slides along itself, and the poloidal angle stays. The
+new coordinates in the plane are interpolated by the splines of the map.
+The file's field is carried exactly: the new point $(r, \theta, \zeta)$ is
+the file's point $(r, \theta, \zeta + f)$, and with
+$\lambda'(r, \theta, \zeta) = \lambda(r, \theta, \zeta + f) - \iota(r)
+(2\pi / N_{\rm fp}) f$ the field of the potential is the file's field, not
+the field dragged along with the points. On li383 (48,64,24), W7-X
+(24,48,28) and HSX (32,64,36) the cut takes 5 to 8 s on 8 CPU cores, the
+sections at the axis are normal to it to 3e-4 degrees, the map is at most
+0.08, 0.13 and 0.02 mm from the exact cut, and the field on the cut map is
+the file's to 1.1e-3, 1.6e-3 and 6.7e-4 relative rms. Dragged with the
+points it would be off by 2.0e-2, 2.9e-2 and 3.4e-2 (2026-11-20).
+
+With `harmonic` the surfaces $\zeta = $ const are the level sets of the
+potential of the vacuum field of the domain,
 so that $\nabla \zeta$ is the harmonic 1-form $h$, the direction of the
 vacuum field, fixed by the boundary alone. The planes are not: on li383, W7-X
 and HSX $\|\nabla \zeta - h\| / \|h\|$ is 0.29, 0.35 and 0.65 on the
@@ -76,8 +106,8 @@ so the others are built once, on the final map, and the vacuum field is
 computed there. On one H200 at the resolutions of the mesh motion below the
 setup takes 35 to 55 s longer than with `phi`, which takes 240 to 285 s,
 and the relaxation is the same (2026-11-19). The harmonic choice
-needs a VMEC input namelist, whose start is the vacuum field. A file's field
-lives on the file's sections.
+needs a VMEC input namelist, whose start is the vacuum field: the harmonic
+moves start from the file's sections and do not carry a file's field.
 
 ```python
 from mrx.geometry import build_sequence
@@ -564,13 +594,14 @@ justifies the step count. `poincare_many` traces several fields at once.
 A step costs about the same for one line as for ten thousand on a GPU, so
 eight fields take about as long as one.
 
-The sections are the map's planes `zeta = const` by default. They cost
-nothing extra, and on a G-frame state their coordinates are `(X1, X2)` in
-the plane of the frame. `sections="phi"` (`--sections phi`) cuts at the
-planes of the physical toroidal angle instead, in cylindrical `(R, Z)`. On
-VMEC and DESC maps the two are the same planes. On a G-frame map every
-crossing is then found by Newton's method on a partial step, and each line
-must cross each plane once per period.
+The sections are the planes $\phi = $ const of the physical toroidal angle
+by default, in cylindrical `(R, Z)`, as people expect them. On the default
+mesh, whose sections are normal to the axis, and on a G-frame state every
+crossing is found by Newton's method on a partial step, and each line must
+cross each plane once per period. `sections="zeta"` (`--sections zeta`)
+cuts at the map's own planes `zeta = const` instead. They cost nothing
+extra, and their coordinates are `(X1, X2)` in the plane of the frame. On a
+file's map with `--geometry.zeta phi` the two are the same planes.
 
 `poincare` also takes a free 2-form (`seq.odd.free`), a field with a flux
 through the wall such as that of a free-boundary run. Its lines can leave

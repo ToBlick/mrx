@@ -109,9 +109,11 @@ def filled(seq, b0, tmp_path_factory):
     # the map at r = 1 against the boundary
     t, z = np.meshgrid(np.arange(64) / 64, np.arange(12) / 12, indexing="ij")
     x = jnp.asarray(np.stack([np.ones(t.size), t.ravel(), z.ravel()], axis=1))
-    RZ = np.asarray(jax.vmap(sq.map.section)(x))
+    # a point of the wall keeps its theta and slides along the boundary, so it lies on the boundary at its own phi
+    X = np.asarray(jax.vmap(sq.map)(x))
+    RZ = np.stack([np.hypot(X[:, 0], X[:, 1]), X[:, 2]], axis=1)
     u = 2.0 * np.pi * t.ravel() * (-1.0 if sq.equilibrium["theta_reversed"] else 1.0)
-    v = 2.0 * np.pi * z.ravel() / nfp
+    v = np.arctan2(X[:, 1], X[:, 0])
     arg = boundary[:, 0][None, :] * u[:, None] - boundary[:, 1][None, :] * v[:, None]
     R_b, Z_b = np.cos(arg) @ boundary[:, 2], np.sin(arg) @ boundary[:, 3]
     # the vacuum start: its flux through every quadrature plane, its divergence and its weak current

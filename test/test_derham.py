@@ -149,8 +149,8 @@ def test_interpolation_commutes_with_the_derivative(seq):
 
 def test_zeta_harmonic_distance(seq):
     """:func:`mrx.nullspace.zeta_harmonic_distance` is zero to round-off on an axisymmetric torus with ``zeta`` the
-    cylindrical angle, where ``grad zeta`` is harmonic: the fixture's map averaged over ``zeta``. On the fixture
-    itself (li383, ``zeta`` the cylindrical angle of the wout) it is 0.297 in the mass norm and 0.62 at worst, next to
+    cylindrical angle, where ``grad zeta`` is harmonic: the fixture's map on the file's sections averaged over ``zeta``.
+    On that map (li383, ``zeta`` the cylindrical angle of the wout) it is 0.297 in the mass norm and 0.62 at worst, next to
     the wall (2026-11-18), the poloidal part of the vacuum field, which ``grad phi`` lacks: checked against the band
     0.25 to 0.35. 30 s on four CPU cores after the fixture."""
     import dataclasses
@@ -158,9 +158,9 @@ def test_zeta_harmonic_distance(seq):
     from mrx.geometry import build_sequence
     from mrx.nullspace import zeta_harmonic_distance
     from test.conftest import GEOMETRY, NS, P
-    rel, worst, _ = zeta_harmonic_distance(seq)
-    ax = build_sequence(GEOMETRY, NS, P, symmetry="stellarator", graded=True)
-    Phi = seq.map
+    ax = build_sequence(GEOMETRY, NS, P, symmetry="stellarator", graded=True, zeta="phi")
+    rel, worst, _ = zeta_harmonic_distance(ax)
+    Phi = ax.map
 
     def avg(raw):
         return jnp.broadcast_to(jnp.mean(raw, axis=2, keepdims=True), raw.shape)

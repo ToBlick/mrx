@@ -2,10 +2,11 @@ r"""Poincare sections of a magnetic field given as a discrete 2-form.
 
 The entry point is :func:`poincare`. It starts field lines on a ray from the magnetic axis to the edge,
 follows them for many field periods, measures the rotational transform iota of each line, marks the lines
-that are chaotic, and returns their crossings with a few sections ``zeta = const`` of the map as ``(R, Z)`` points
-(for a G-frame map the coordinates ``(X1, X2)`` in the plane of the frame, under the same keys). On request the
-sections are the planes ``phi = const`` of the physical toroidal angle instead, which differ from the map's on a
-G-frame map.
+that are chaotic, and returns their crossings with a few planes ``phi = const`` of the physical toroidal angle as
+cylindrical ``(R, Z)`` points, the sections people expect. On request the sections are the map's own ``zeta =
+const`` instead, which cost nothing extra but differ from the planes ``phi = const`` on a map whose sections are
+normal to its axis (the default of :func:`mrx.geometry.build_sequence`) or on a G-frame state, and whose
+coordinates are then ``(X1, X2)`` in the plane of the frame, under the same keys.
 :func:`locked_width` reads a quick island width off that result. :func:`trace_archive` traces several fields
 into one archive with the weak pressure at every crossing, the input of
 :func:`mrx.diagnostics.plotting.plot_archive` and of ``scripts/poincare_plot.py``.
@@ -592,18 +593,19 @@ def _batch_sections(seq, sections, crossings, escape, steps_per_period, directio
 
 
 def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field", reseed=0, padding=None,
-             sections="zeta", min_steps=MIN_STEPS_PER_PERIOD):
+             sections="phi", min_steps=MIN_STEPS_PER_PERIOD):
     """The Poincare sections of the field given by the 2-form ``dof`` on ``seq``, a Dirichlet 2-form or, with a flux
     through the wall, a free one (:func:`logical_field`). The lines of a free one can leave through the wall.
 
     ``lines`` field lines (:func:`_seeds_many`) are traced for ``periods`` field periods with at least ``min_steps``
     steps per period and cut at the ``planes`` (a count or the planes themselves, see :func:`planes_for`).
-    ``sections`` chooses the planes. With ``"zeta"`` they are the map's sections ``zeta = const``, the crossings are
-    states at the ends of steps and their coordinates are ``Phi.section``'s (cylindrical ``(R, Z)``, or ``(X1,
-    X2)`` in the plane of a G-frame). With ``"phi"`` they are the planes ``phi = const`` of the physical toroidal
-    angle and the coordinates are cylindrical ``(R, Z)``. On a map in the cylindrical frame with ``X3 = 0`` (a VMEC
-    or DESC map) the two are the same planes (:func:`_on_step_ends`). On other maps a ``"phi"`` crossing is found by
-    Newton's method on a partial step of the tracer, and every line must cross every plane once per period.
+    ``sections`` chooses the planes. With ``"phi"``, the default, they are the planes ``phi = const`` of the physical
+    toroidal angle and the coordinates are cylindrical ``(R, Z)``. With ``"zeta"`` they are the map's sections ``zeta
+    = const``, the crossings are states at the ends of steps and their coordinates are ``Phi.section``'s
+    (cylindrical ``(R, Z)``, or ``(X1, X2)`` in the plane of a G-frame). On a map in the cylindrical frame with ``X3
+    = 0`` (a file's map with ``zeta="phi"``) the two are the same planes (:func:`_on_step_ends`). On other maps, the
+    default sections normal to the axis among them, a ``"phi"`` crossing is found by Newton's method on a partial
+    step of the tracer, and every line must cross every plane once per period.
 
     A line that reaches the domain boundary is not ``keep``. Its crossings up to the boundary are kept and the
     later ones are NaN. With ``reseed`` > 0, up to that many further rounds of ``lines`` lines are traced on the
@@ -633,7 +635,7 @@ def poincare(seq, dof, *, lines=160, periods=400, planes=5, seed=0, name="field"
 
 
 def poincare_many(seq, dofs, *, lines=160, periods=400, planes=5, seed=0, names=None, reseed=0, padding=None,
-                  sections="zeta", min_steps=MIN_STEPS_PER_PERIOD):
+                  sections="phi", min_steps=MIN_STEPS_PER_PERIOD):
     """:func:`poincare` of several fields on ``seq`` at once (a list of 2-forms ``dofs``): a list of results. All
     fields and all their lines go through one batched trace (:func:`_reduced_trace`), in batches of at most
     :data:`MAX_BATCH_LINES` lines, so a movie's frames cost about one frame's trace. Where the crossings fall on
@@ -789,7 +791,7 @@ def poincare_many(seq, dofs, *, lines=160, periods=400, planes=5, seed=0, names=
 
 
 def trace_archive(seq, fields, *, lines=160, periods=400, planes=5, seed=0, source="", reseed=0, padding=None,
-                  sections="zeta", min_steps=MIN_STEPS_PER_PERIOD):
+                  sections="phi", min_steps=MIN_STEPS_PER_PERIOD):
     """Trace several fields on ``seq`` into one archive and return ``(archive, results)``.
 
     ``fields`` maps a name to ``(B, step)``, with ``B`` the odd Dirichlet 2-form of the field and ``step`` the
