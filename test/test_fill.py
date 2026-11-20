@@ -1,37 +1,33 @@
 """The map from a boundary alone (:mod:`mrx.equilibria.fill`) and the vacuum start on it.
 
 The boundary is that of the tracked li383 wout, written as a VMEC input namelist with no axis, so the reader fills it
-about the axis :func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly,
-the guessed axis is a maximum of its objective and leaves the fill unfolded, the spline map built from it meets the
-boundary and has a positive Jacobian at every quadrature point, and the vacuum field has the namelist's toroidal flux
-through every cross-section, no divergence and no current.
+about the axis :func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly, and
+the guessed axis is a maximum of its objective and leaves the fill unfolded. The sequence of the fill and its vacuum
+start are checked in test_relax_run.py, whose run starts there.
 """
-import jax
-import jax.numpy as jnp
 import numpy as np
-import pytest
 from scipy.io import netcdf_file
 
 from mrx.equilibria.fill import fill_rows, guess_axis
 from mrx.equilibria.indata import read_indata
 from mrx.paths import data_file
-from mrx.precision import eps
 
 WOUT = "data/wout_li383_low_res_reference.nc"
 NS, P = (16, 32, 12), 2
 
 
-def _write_namelist(tmp_path):
-    """The boundary of :data:`WOUT` and its total toroidal flux as a namelist ``input.li383_boundary``, without an axis.
-    Returns its path and the boundary rows ``(m, n, R_mn, Z_mn)`` with ``n`` in the wout's convention (times nfp)."""
+def _write_namelist(tmp_path, profiles=("AM = 0.0",), name="input.li383_boundary"):
+    """The boundary of :data:`WOUT` and its total toroidal flux as a namelist ``name``, without an axis, with the lines
+    ``profiles``. Returns its path and the boundary rows ``(m, n, R_mn, Z_mn)`` with ``n`` in the wout's convention
+    (times nfp), nfp and PHIEDGE."""
     with netcdf_file(data_file(WOUT), "r", mmap=False) as f:
         nfp = int(f.variables["nfp"].data)
         xm, xn = f.variables["xm"].data.astype(int), f.variables["xn"].data.astype(int)
         R, Z = f.variables["rmnc"].data[-1].copy(), f.variables["zmns"].data[-1].copy()
         phiedge = float(f.variables["phi"].data[-1])
-    lines = [f"NFP = {nfp}", f"PHIEDGE = {phiedge!r}", "AM = 0.0"]
+    lines = [f"NFP = {nfp}", f"PHIEDGE = {phiedge!r}", *profiles]
     lines += [f"RBC({n // nfp},{m}) = {float(r)!r}  ZBS({n // nfp},{m}) = {float(z)!r}" for m, n, r, z in zip(xm, xn, R, Z)]
-    path = tmp_path / "input.li383_boundary"
+    path = tmp_path / name
     path.write_text("&INDATA\n" + "\n".join(lines) + "\n/\n")
     return str(path), np.stack([xm, xn, R, Z], axis=1), nfp, phiedge
 
@@ -91,61 +87,3 @@ def test_guessed_axis_is_the_best_unfolded_fill(tmp_path):
         for d in ((0.01, 0.0), (-0.01, 0.0), (0.0, 0.01), (0.0, -0.01)):
             J_d = _section_jacobian(rows, point + np.array(d), v)
             assert J_d.min() <= 0.0 or np.mean(np.log(J_d)) < best
-
-
-@pytest.fixture(scope="module")
-def filled(tmp_path_factory):
-    """The sequence of the namelist (the fill about the guessed axis) with its harmonic forms, the boundary rows, nfp
-    and PHIEDGE. Its build costs 118 s in float64 and 165 s in float32 on four CPU cores, the rest of the module
-    15 s."""
-    from mrx.geometry import build_sequence
-    from mrx.nullspace import compute_nullspaces
-
-    path, boundary, nfp, phiedge = _write_namelist(tmp_path_factory.mktemp("fill"))
-    seq = build_sequence(path, NS, P, graded=True)
-    compute_nullspaces(seq, verbose=False)
-    return seq, boundary, nfp, phiedge
-
-
-def test_filled_map_meets_the_boundary_with_positive_jacobian(filled):
-    """The spline map of the fill has a positive Jacobian at every quadrature point (smallest det DPhi 1.6e-2), and at
-    r = 1 it lies on the namelist's boundary up to the projection onto the (16, 32, 12) degree-2 splines: 6.5e-4 m at
-    most on li383 in both precisions (bound 1e-3 m, minor radius about 0.3 m)."""
-    seq, boundary, nfp, _ = filled
-    assert float(jnp.min(seq.jacobian_j)) > 0.0
-    t, z = np.meshgrid(np.arange(64) / 64, np.arange(12) / 12, indexing="ij")
-    x = jnp.asarray(np.stack([np.ones(t.size), t.ravel(), z.ravel()], axis=1))
-    RZ = np.asarray(jax.vmap(seq.map.section)(x))
-    u = 2.0 * np.pi * t.ravel() * (-1.0 if seq.equilibrium["theta_reversed"] else 1.0)
-    v = 2.0 * np.pi * z.ravel() / nfp
-    arg = boundary[:, 0][None, :] * u[:, None] - boundary[:, 1][None, :] * v[:, None]
-    R_b, Z_b = np.cos(arg) @ boundary[:, 2], np.sin(arg) @ boundary[:, 3]
-    miss = float(np.max(np.hypot(RZ[:, 0] - R_b, RZ[:, 1] - Z_b)))
-    print(f"\n  min det DPhi {float(jnp.min(seq.jacobian_j)):.3e}, max distance from the boundary at r = 1 {miss:.2e} m")
-    assert miss < 1e-3
-
-
-def test_vacuum_start_has_the_flux_and_no_divergence_or_current(filled):
-    """The start field of the namelist is the harmonic 2-form: its flux through every quadrature plane
-    ``zeta = const`` is PHIEDGE to round-off (the planes' fluxes agree because div B = 0 and B . n = 0), its divergence
-    is round-off, and its weak current ``M_1^-1 D_1^T M_2 B`` is at the solver tolerance or the round-off of the
-    precision. Measured: the planes' fluxes 1.9 eps off PHIEDGE in both precisions (bound 10 eps), ``||div B|| / ||B||``
-    11.5 eps in float64 and 1.1 eps in float32 (bound 100 eps), ``h_r ||J|| / ||B||`` 6.6e-10 in float64 (bound the
-    solve tolerance 1e-8) and 5.4e-7 = 4.5 eps in float32 (bound 100 eps)."""
-    from mrx.relaxation.initial_conditions import initial_field
-    from mrx.relaxation.loop import radial_cell_sq
-    from mrx.relaxation.physics import current
-
-    seq, _, _, phiedge = filled
-    B, info = initial_field(seq)
-    assert info["kind"] == "indata"
-    q = seq.quad
-    density = seq.odd.evaluate_at_quadrature(B, 2)[:, 2].reshape(q.shape)
-    planes = jnp.einsum("i,j,ijk->k", q.w_x, q.w_y, density)
-    flux = float(jnp.max(jnp.abs(planes - phiedge))) / abs(phiedge)
-    div = info["div"] / float(seq.odd.l2_norm(B, 2))
-    J = current(B, seq)
-    ratio = float(jnp.sqrt(radial_cell_sq(seq)) * seq.odd.l2_norm(J, 1) / seq.odd.l2_norm(B, 2))
-    print(f"\n  flux per plane {flux:.2e} off PHIEDGE ({flux / eps():.1f} eps), div {div:.2e} ({div / eps():.1f} eps), "
-          f"h_r |J| / |B| {ratio:.2e} (solve tol {seq.tol:.0e})")
-    assert flux < eps(10) and div < eps(100) and ratio < max(seq.tol, eps(100))

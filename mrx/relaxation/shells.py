@@ -277,8 +277,10 @@ def pressure_error(seq, p_w, s_q, p_q, bins):
     b = jnp.minimum((jnp.sqrt(s_q) * bins).astype(jnp.int32), bins - 1)       # s = 1 belongs to the last bin
     V = jnp.zeros(bins).at[b].add(wJ)
     pw_q = seq.even.evaluate_at_quadrature(p_w, 0)[:, 0]
-    e = (jnp.zeros(bins).at[b].add(wJ * (pw_q - p_q))) / V
-    t = (jnp.zeros(bins).at[b].add(wJ * p_q)) / V
+    # a bin the label leaves empty has no volume and no error
+    filled, V_ = V > 0, jnp.where(V > 0, V, 1.0)
+    e = jnp.where(filled, jnp.zeros(bins).at[b].add(wJ * (pw_q - p_q)) / V_, 0.0)
+    t = jnp.where(filled, jnp.zeros(bins).at[b].add(wJ * p_q) / V_, 0.0)
     C = -jnp.sum(V * e) / jnp.sum(V)                     # <p* - p_w>
     return (float(jnp.sqrt(jnp.sum(V * (e + C) ** 2) / jnp.sum(V * t ** 2))),
             float(C / jnp.max(jnp.abs(t))))
