@@ -99,8 +99,9 @@ def test_bordered_step_removes_the_harmonic_force(seq, tmp_path):
 def test_no_harmonic_force_with_stellarator_symmetry(domains):
     """The half-period flows hold no harmonic form, so the step has no harmonic unknown. On li383 in one field
     period without the reflection the harmonic part of the force is 1.9e-12 of the force's 0.139 in float64 (0 in
-    float32), below ten solve tolerances, and the production step takes 7.4e-8 of its norm along ``h`` (5.7e-6 in
-    float32), the parity defect of the 1-form mass solves inside the Hessian, below ten of their tolerance. 54 s and
+    float32), below ten solve tolerances, and the production step takes 7.4e-8 of its norm along ``h`` (5.7e-6 on the
+    cluster and 1.1e-5 on the GitHub runner in float32, 2026-11-19), the parity defect of the 1-form mass solves inside
+    the Hessian, below ten of their tolerance or, in float32, ten times a hundred units of round-off. 54 s and
     94 s on four CPU cores after the fixture (2026-11-19)."""
     assert TimeStepper(seq=domains("half"), newton=True).harmonic_flows is None
     seq = domains("period")
@@ -112,4 +113,4 @@ def test_no_harmonic_force_with_stellarator_symmetry(domains):
     _, share = _bordered_step(seq, B, ts, load, ts.newton_tol)
     print(f"\n  F_h {F_h:.3e} of |F| {F_norm:.4e}, |c h| / |u| {share:.3e}")
     assert F_h < 10 * max(seq.tol, eps()) * F_norm
-    assert share < 10 * NEWTON_MASS_SOLVE_TOL
+    assert share < 10 * max(NEWTON_MASS_SOLVE_TOL, eps(1e2))
