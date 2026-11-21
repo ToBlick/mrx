@@ -34,8 +34,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import _mass_solve
+from mrx.optimization.shape_ad import map_jacobian
+from mrx.quadrature import evaluate_at_xq
 from mrx.relaxation.physics import induction_field
 from mrx.solvers import minres
+from mrx.spline_bases import basis_derivative_table
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
 #: tolerance of the Newton solve in the norm of its preconditioner, the maximum number of MINRES iterations per
@@ -54,34 +57,51 @@ NEWTON_MAXITER = 300
 NEWTON_MASS_SOLVE_TOL = 1e-6
 
 
-def _ddx(f, x, axis, periodic):
-    """Central difference of ``f`` along ``axis`` on the grid ``x``, periodic on ``[0, 1)`` or one-sided at the
-    ends. A half-period grid covers only ``zeta`` in ``[0, 1/2]`` and is not periodic."""
-    f = jnp.moveaxis(f, axis, 0)
-    if periodic:
-        df = jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)
-        dx = (jnp.roll(x, -1) - jnp.roll(x, 1)) % 1.0
-    else:
-        df = jnp.concatenate([f[1:2] - f[0:1], f[2:] - f[:-2], f[-1:] - f[-2:-1]])
-        dx = jnp.concatenate([x[1:2] - x[0:1], x[2:] - x[:-2], x[-1:] - x[-2:-1]])
-    return jnp.moveaxis(df / dx.reshape((-1,) + (1,) * (f.ndim - 1)), 0, axis)
+def _derivatives_at_quadrature(view, dofs, k):
+    """The logical derivatives ``d_c`` of the reference components of the k-form ``dofs`` (k = 1, 2) at the
+    quadrature points, ``(n_q, 3, 3)`` with ``[q, c, i]`` the derivative of component ``i`` along ``c``: the form
+    evaluated with the derivatives of its 1-D splines on the axis ``c``, exact."""
+    form = view.basis_1 if k == 1 else view.basis_2
+    x = (view.quad.x_x, view.quad.x_y, view.quad.x_z)
+    c_dofs = view.E(k).T @ dofs
+    out = []
+    for c in range(3):
+        info = []
+        for comp in range(3):
+            deriv = form.derivative_axes(comp)
+            tables = []
+            for a in range(3):
+                if a != c:
+                    tables.append((view.d_basis_jk if a in deriv else view.basis_jk)[a])
+                else:
+                    tables.append(view.dd_basis_jk[a] if a in deriv
+                                  else basis_derivative_table(view.basis_0.Lambda[a], x[a]))
+            info.append((comp, *tables))
+        out.append(evaluate_at_xq(c_dofs, info, list(form.shape), view.quad.shape, 3))
+    return jnp.stack(out, axis=1)
 
 
 def atom_profiles(seq, field):
     """Radial profiles of a 2-form ``field``, on the radial quadrature points, used to build the preconditioner.
 
     Returns ``(prof_t, prof_z, strain)``. ``prof_t`` and ``prof_z`` are the averages over ``theta`` and ``zeta``
-    of the field's logical ``theta`` and ``zeta`` components. ``strain`` has shape ``(nq_r, 3)`` and holds, for
-    each logical direction ``c``, the angle average of ``sum_i (d_c field^i)^2``, i.e. how fast the field
-    varies along that direction.
+    of the field's logical ``theta`` and ``zeta`` components ``f = Bh / J``. ``strain`` has shape ``(nq_r, 3)`` and
+    holds, for each logical direction ``c``, the angle average of ``sum_i (d_c f^i)^2``, i.e. how fast the field
+    varies along that direction. The derivatives are exact: those of the 2-form's splines and of the map's
+    Jacobian determinant, ``d_c f = (d_c Bh - f d_c J) / J`` with ``d_c J / J = tr(DPhi^-1 d_c DPhi)``.
     """
     shape = tuple(int(v) for v in seq.quad.shape)
-    f_jk = (seq.odd.evaluate_at_quadrature(field, 2) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+    J = seq.jacobian_j
+    B_jk = seq.odd.evaluate_at_quadrature(field, 2)
+    f_jk = B_jk / J[:, None]
+    D, dD, _ = map_jacobian(seq, seq.map, second=True)
+    dlogJ = jnp.einsum("qij,qkji->qk", jnp.linalg.inv(D), dD)
+    grads = (_derivatives_at_quadrature(seq.odd, field, 2) - f_jk[:, None, :] * dlogJ[:, :, None] * J[:, None, None]
+             ) / J[:, None, None]
+    f_jk = f_jk.reshape(shape + (3,))
     prof_t = f_jk[..., 1].mean(axis=(1, 2))
     prof_z = f_jk[..., 2].mean(axis=(1, 2))
-    periodic = (False, True, not seq.half_period)
-    grads = [_ddx(f_jk, x, ax, periodic[ax]) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
-    strain = jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
+    strain = (grads ** 2).sum(axis=-1).reshape(shape + (3,)).mean(axis=(1, 2))
     return prof_t, prof_z, strain
 
 
