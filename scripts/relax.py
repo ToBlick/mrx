@@ -38,7 +38,8 @@ the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, or
 magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. Before
 every chunk the pole moves onto the axis of the field. The field keeps its coefficients: it rides with the map, and
 the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
-the slips are rebuilt and does not change the targets. With ``--mesh.bar`` the pole moves only at an equilibrium, and
+the slips are rebuilt and does not change the targets. With ``--mesh.axis-to`` the run is the coarse pass of a finer
+one's ``--mesh.axis-from``: it ends once its magnetic axis has settled and writes it. With ``--mesh.bar`` the pole moves only at an equilibrium, and
 only while every move finds the axis closer to the pole than the move before: the first move that does not is not
 made, and the pole stays where it is for the rest of the run. With ``--iota.target`` the loop takes its step at such
 an equilibrium before the move and holds its current target from a move until the field is below the bar again. The
@@ -465,6 +466,24 @@ def main(cfg, fit=None):
                          best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
                          **last))
         write()
+        if mm and mm.axis_to and res.stop == "running":
+            return axis_settled(res.state, it)
+
+    def axis_settled(state, it):
+        """With --mesh.axis-to: the end of the run once the magnetic axis moved by less than --mesh.axis-tol first
+        cells over the chunk, with the axis written to --mesh.axis-to."""
+        y, h1 = mesh_motion.axis_sections(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
+        moved_cells = float(np.max(np.linalg.norm(y - axis_last["y"], axis=1))) / h1 if "y" in axis_last else np.inf
+        axis_last["y"] = y
+        results["mesh"].setdefault("axis_moved", []).append(dict(step=it, cells=moved_cells))
+        print(f"[mesh] step {it}: the magnetic axis moved {moved_cells:.3e} first cells over the chunk", flush=True)
+        if not moved_cells < mm.axis_tol:
+            return None
+        zetas, points = mesh_motion.axis_curve(seq, state.B_n)
+        np.savez(mm.axis_to, zetas=zetas, points=points, step=it)
+        print(f"[mesh] step {it}: the axis has settled, written to {mm.axis_to}", flush=True)
+        return "axis"
+    axis_last = {}
 
     def write():
         with open(os.path.join(out, "relax.json"), "w") as fh:

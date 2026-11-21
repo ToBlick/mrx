@@ -591,7 +591,8 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
     Diagnostics are computed and printed after every chunk, the energy and helicity as changes relative to the
     start of the run. The run stops early when the mean force residual
     of a chunk falls below ``floor_tol``. ``on_chunk`` (for example a checkpoint writer) is called after every
-    chunk, the last included, with the run so far: it observes, ``rebuild`` acts. ``it0`` is the step number of
+    chunk, the last included, with the run so far: it observes, ``rebuild`` acts. ``on_chunk`` may return the
+    reason to end the run there, a string, which becomes the result's ``stop``. ``it0`` is the step number of
     ``state``, nonzero for a restart. ``steps`` must be a multiple of ``chunk``.
 
     ``rebuild(state, it)`` is called before every chunk, the first one before the start's diagnostics, with the
@@ -669,7 +670,10 @@ def relax(state: State, ts: TimeStepper, steps: int, chunk: int = 500, it0: int 
         elif n_done == steps:
             stop = "steps"
         if on_chunk is not None:
-            on_chunk(result(n_done, stop, wall))
+            reason = on_chunk(result(n_done, stop, wall))
+            if reason and stop == "running":
+                stop = reason
+                on_chunk(result(n_done, stop, wall))
         if stop != "running":
             if verbose and stop == "floor":
                 print(f"  [floor] chunk mean of the force residual {resid_now:.3e} below {floor_tol:.1e} at it={it}",

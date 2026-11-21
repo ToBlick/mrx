@@ -335,14 +335,20 @@ def install_map(seq, Phi, keep_preconditioners=False):
     compute_nullspaces(seq, verbose=False)
 
 
+def axis_sections(seq, c):
+    """``(y, h_1)``: the in-plane coordinates ``y`` ``(n_zeta, 2)`` of the axis curve ``c`` of :func:`magnetic_axis`
+    on the planes of :func:`_planes`, and the size ``h_1`` of the first radial cell (:func:`first_cell`)."""
+    Phi, zetas = seq.map, _planes(seq)
+    return np.asarray(jax.vmap(Phi.section)(jnp.asarray(axis_points(c, zetas)))), first_cell(seq, Phi, zetas)
+
+
 def axis_offset(seq, c):
     """``(d, h_1)``: the in-plane displacement ``d`` ``(n_zeta, 2)`` from the pole to the axis curve ``c`` of
-    :func:`magnetic_axis` on the planes of :func:`_planes`, and the size ``h_1`` of the first radial cell
-    (:func:`first_cell`)."""
-    Phi, zetas = seq.map, _planes(seq)
+    :func:`magnetic_axis` on the planes of :func:`_planes`, and the size ``h_1`` of the first radial cell."""
+    y, h1 = axis_sections(seq, c)
+    zetas = _planes(seq)
     ax = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, zetas[:, None]), -1).reshape(-1, 3))
-    S = jax.vmap(Phi.section)
-    return np.asarray(S(jnp.asarray(axis_points(c, zetas))) - S(ax)), first_cell(seq, Phi, zetas)
+    return y - np.asarray(jax.vmap(seq.map.section)(ax)), h1
 
 
 def _displacement(seq, d, h1):

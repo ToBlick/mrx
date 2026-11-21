@@ -238,6 +238,10 @@ class Mesh:
     """Move the pole only at a chunk boundary where the squared force residual of the field is below this, at an equilibrium: during a ramp the field's axis is not that of the equilibrium it relaxes to. A move is made only if the axis is closer to the pole than at the move before. The first time it is not, the moves stop for the rest of the run. Unset, the pole moves at every chunk boundary."""
     axis_from: Optional[str] = None
     """An npz of the magnetic axis of a coarser run's equilibrium of the same domain and targets, Cartesian points at logical zetas (mrx.relaxation.mesh_motion.axis_curve): a run from the vacuum field of a namelist starts with the pole on that curve instead of on the vacuum's axis (mrx.relaxation.mesh_motion.curve_start), so the pressure carries the field's axis onto the pole instead of off it."""
+    axis_to: Optional[str] = None
+    """Make the run the coarse pass of --mesh.axis-from: it ends at the first chunk at whose end its magnetic axis has moved by less than --mesh.axis-tol since the end of the chunk before, and writes the axis there to this npz (mrx.relaxation.mesh_motion.axis_curve)."""
+    axis_tol: float = 0.01
+    """The largest move of the magnetic axis over a chunk, in first radial cells of this mesh, at which --mesh.axis-to ends the run. 0.01 on a mesh with half the radial cells of the fine one is 0.02 of the fine mesh's first cells."""
 
     def __bool__(self):
         return self.align

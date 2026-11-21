@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.axis-from`, `--mesh.every-step` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol`, `--mesh.every-step` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -492,7 +492,10 @@ domain and targets instead: the pole goes onto that curve in rounds, the
 mesh is cut by the planes normal to it, and the vacuum is solved there
 (`mrx.relaxation.mesh_motion.curve_start`). The vacuum's axis is then off the
 pole, and the pressure carries the field's axis onto it. The curve is the
-Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz.
+Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz,
+which the coarse run writes with `--mesh.axis-to`: it ends once its axis has
+moved by less than `--mesh.axis-tol` (0.01) of its first radial cell over a
+chunk. The coarse pass needs only the axis, not the residual bar.
 
 During the pressure's rise the field's axis is not that of the
 equilibrium it relaxes to, and a move there kicks the field away from it.
