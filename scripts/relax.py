@@ -39,7 +39,8 @@ every chunk the pole moves onto the axis of the field. The field keeps its coeff
 the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
 the slips are rebuilt and does not change the targets. With ``--mesh.bar`` the pole moves only at an equilibrium, and
 only while every move finds the axis closer to the pole than the move before: the first move that does not is not
-made, and the pole stays where it is for the rest of the run. The checkpoints keep that schedule. The moves keep the
+made, and the pole stays where it is for the rest of the run. With ``--iota.target`` the loop holds its current target
+from a move until the field is below the bar again. The checkpoints keep that schedule. The moves keep the
 preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve
 exceeds ``--mesh.rebuild-factor`` times that of the first chunk after their last build, or a Newton solve stopped at
 its iteration cap.
@@ -134,8 +135,9 @@ def main(cfg, fit=None):
     ts = cfg.stepper(seq)
     if cfg.mesh:
         results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
-    # with --mesh.bar: the axis offset (first cells) at the last move, and whether the moves have stopped
-    schedule = dict(last=None, stopped=False)
+    # with --mesh.bar: the axis offset (first cells) at the last move, whether the moves have stopped, whether the iota
+    # loop holds its target since the last move, and the field's residual at this chunk boundary
+    schedule = dict(last=None, stopped=False, hold=False, resid=None)
     iota_target = None              # the iota loop's current target, set at its first chunk
     if cfg.output.restart:
         state, it0 = read_checkpoint(cfg.output.restart, ts)
@@ -143,7 +145,8 @@ def main(cfg, fit=None):
         with h5py.File(cfg.output.restart, "r") as fh:
             if cfg.mesh and "mesh_last_offset" in fh.attrs:
                 last = float(fh.attrs["mesh_last_offset"])
-                schedule.update(last=None if last < 0 else last, stopped=bool(fh.attrs["mesh_stopped"]))
+                schedule.update(last=None if last < 0 else last, stopped=bool(fh.attrs["mesh_stopped"]),
+                                hold=bool(fh.attrs["mesh_hold"]))
                 print(f"[restart] mesh schedule: {schedule}", flush=True)
             if cfg.iota and "iota_target" in fh.attrs:
                 iota_target = np.asarray(fh.attrs["iota_target"], dtype=np.float64)
@@ -186,7 +189,7 @@ def main(cfg, fit=None):
             with h5py.File(path, "a") as fh:
                 if cfg.mesh:
                     fh.attrs.update(mesh_last_offset=-1.0 if schedule["last"] is None else schedule["last"],
-                                    mesh_stopped=int(schedule["stopped"]))
+                                    mesh_stopped=int(schedule["stopped"]), mesh_hold=int(schedule["hold"]))
                 if iota_target is not None:
                     fh.attrs["iota_target"] = iota_target
     checkpoint(f"state_{it0:06d}.h5", state, it0)
@@ -308,6 +311,7 @@ def main(cfg, fit=None):
             coefficients, its force residual right before and after the move goes into the record."""
             nonlocal ts
             before = float(initial_state(state.B_n, ts).best.resid)
+            schedule["resid"] = before
             if mm.bar is not None:
                 d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
                 off = float(np.max(np.linalg.norm(d, axis=1))) / h1
@@ -331,6 +335,10 @@ def main(cfg, fit=None):
             rec = mesh_motion.axis_move(seq, state.B_n)
             ts = cfg.stepper(seq)
             rec.update(step=it, resid_before=before, resid_after=float(initial_state(state.B_n, ts).best.resid))
+            # the move transports the field ideally: the transform as a function of the toroidal flux and the
+            # equilibrium of the targets stay, only the field is kicked off it. The iota loop holds its target until
+            # the field is back at an equilibrium: read before, its residual and its Newton direction are the kick's
+            schedule.update(resid=rec["resid_after"], hold=mm.bar is not None)
             results["mesh"]["moves"].append(rec)
             print(f"[mesh] step {it}: axis {rec['axis_cells']:.3e} first cells off the pole, move {rec['move_m']:.3e} m "
                   f"(x{rec['lam']:g}), det DPhi ratio [{rec['det_ratio_min']:.4f}, {rec['det_ratio_max']:.4f}], energy "
@@ -406,8 +414,15 @@ def main(cfg, fit=None):
         if cfg.iota:
             if iota_target is None:     # the loop starts from the current the field carries
                 iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, pr.cells), dtype=np.float64)
-            slips, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
-            record_iota(it, rec, info)
+            if schedule["hold"] and not schedule["resid"] < mm.bar:
+                slips = build_slips(seq, state.B_n, T_label, jnp.asarray(iota_target, dtype=T_label.dtype))[0]
+                results["iota"].setdefault("held", []).append(it)
+                print(f"[iota] step {it}: target held since the last move, residual {schedule['resid']:.3e} above the "
+                      f"bar", flush=True)
+            else:
+                schedule["hold"] = False
+                slips, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
+                record_iota(it, rec, info)
             ts = ts.with_slips(slips)
         # the cost of the rebuild of the label, the shells and the slips, outside the steps
         results.setdefault("rebuild_wall", []).append(time.perf_counter() - t_rebuild)

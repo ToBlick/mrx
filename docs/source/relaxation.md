@@ -484,8 +484,14 @@ closer to the pole than the move before. The first time it does not, that
 move is not made and the pole stays for the rest of the run: the targets
 keep the axis that far off, and a frozen move would only kick the field. The
 step 0 of a run from the vacuum start makes no move, since the start has put
-the pole on the vacuum's axis. Every checkpoint keeps the offset of the last
-move and whether the moves have stopped, so a restart goes on with them.
+the pole on the vacuum's axis. A move transports the field ideally, so the
+transform as a function of the toroidal flux and the equilibrium of the
+targets stay, and only the field is kicked off that equilibrium. The loop of
+`--iota.target` holds its current target from a move until the field is below
+the bar again: until then its residual and the slips of its Newton direction
+are the kick's. Every checkpoint keeps the offset of the last move, whether
+the moves have stopped and whether the target is held, so a restart goes on
+with them.
 
 The `mesh` record of `relax.json` holds the rounds of the start, every move
 (the step, the axis offset in first radial cells, the axis finder's record,
