@@ -235,7 +235,7 @@ class Mesh:
     rebuild_factor: float = 1.5
     """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
     bar: Optional[float] = None
-    """Move the pole only at a chunk boundary where the squared force residual of the field is below this, at an equilibrium: during a ramp the field's axis is not that of the equilibrium it relaxes to. Unset, the pole moves at every chunk boundary."""
+    """Move the pole only at a chunk boundary where the squared force residual of the field is below this, at an equilibrium: during a ramp the field's axis is not that of the equilibrium it relaxes to. A move is made only if the axis is closer to the pole than at the move before. The first time it is not, the moves stop for the rest of the run. Unset, the pole moves at every chunk boundary."""
 
     def __bool__(self):
         return self.align

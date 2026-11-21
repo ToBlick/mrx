@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.every-step` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -476,11 +476,23 @@ chunk's mean MINRES count of the Newton solve exceeds `--mesh.rebuild-factor`
 (1.5) times that of the first chunk after their last build, or a Newton
 solve stopped at `--newton.maxiter`. RUN_NUMBERS
 
+During the pressure's rise the field's axis is not that of the
+equilibrium it relaxes to, and a move there kicks the field away from it.
+With `--mesh.bar` the pole moves only at a chunk boundary where the squared
+force residual is below the bar, and only while every move finds the axis
+closer to the pole than the move before. The first time it does not, that
+move is not made and the pole stays for the rest of the run: the targets
+keep the axis that far off, and a frozen move would only kick the field. The
+step 0 of a run from the vacuum start makes no move, since the start has put
+the pole on the vacuum's axis. Every checkpoint keeps the offset of the last
+move and whether the moves have stopped, so a restart goes on with them.
+
 The `mesh` record of `relax.json` holds the rounds of the start, every move
 (the step, the axis offset in first radial cells, the axis finder's record,
 the largest move and its backtracking factor, the range of the change of
 $\det D\Phi$, the change of the energy, and the force residual right before
-and right after the move), the chunks' mean MINRES counts against the
+and right after the move), the checks without a move and why, the step at
+which the moves stopped, the chunks' mean MINRES counts against the
 reference and the builds of the preconditioners with their reason and wall
 time. Every checkpoint of such a run holds its map, which a restart and
 `scripts/poincare_trace.py` install. `best.h5` is the best field since the
