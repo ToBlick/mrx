@@ -27,16 +27,18 @@ next to the magnetic axis, where ``s`` goes as the squared distance, it is a smo
 cones at the axis.) ``F(1)`` is free, so the total current is a target. The current itself has no gauge, it vanishes
 on the axis.
 
-A target transform is not a control of ``W``. It sets the current target in an outer loop: before every chunk of
-Newton steps :func:`iota_current` measures the field's poloidal flux on its label, asks for the slips that close the
-miss and takes as the current target the current the field carries once it has followed them. The chunk then runs
-with the slips of that target (:func:`build_slips`), as with any other.
+A target transform is not a control of ``W``. It sets the current target in an outer loop: :func:`iota_newton`
+measures the transform's weak residual on the profile space (:func:`iota_residual`) and takes a Newton step on the
+current target's moments, with the derivative of the equilibrium along the target from the implicit function theorem
+and the slips the only part of a step that changes the transform at fixed toroidal flux (:func:`slip_transform`).
+The step is taken before every chunk of Newton steps. The chunk then runs with the slips of that target
+(:func:`build_slips`), as with any other.
 
 - :func:`build_slips`, :func:`slip_table`, :func:`slip_maps` and :func:`current_moments` are the move as Newton
   unknowns, :func:`current_on_label` the moments of a field, :func:`current_target` those of a target and
   :func:`current_error` the current's error against them.
-- :func:`iota_current` is the outer loop's update of the current target from a target transform,
-  :func:`slip_request` its request.
+- :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
+  its change along the slips and :func:`iota_newton` the outer Newton step with them.
 - :func:`iota_fit` and :func:`enclosed_current` measure the transform and the current on the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
@@ -127,14 +129,10 @@ def label_axis(seq, T, n_r=48, n_t=64, newton_steps=8, h=2e-3):
     return p[:, 0], p[:, 1], dp[:, 0], dp[:, 1]
 
 
-def poloidal_density(seq, B, T):
-    """The density of the poloidal flux at the quadrature points: ``J B . grad theta_a`` with ``theta_a`` the angle
-    about the label's own axis (:func:`label_axis`), from the 2-form's components. Summed over the region inside a
-    level set of the label it is the poloidal flux enclosed by that surface, for any position of the logical axis.
-    The logical ``theta`` would not do: its cut ends on the logical axis, so it counts no flux inside a surface that
-    does not enclose the logical axis and misses the flux between the two axes in every other. Where the magnetic axis
-    is the logical one ``theta_a = theta``."""
-    Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2))
+def _axis_angle_gradient(seq, T):
+    """``(d_r, d_t, d_z)`` at the quadrature points: the logical components of ``grad theta_a``, ``theta_a`` the
+    angle about the label's own axis (:func:`label_axis`) over 2 pi, so that ``J B . grad theta_a`` is
+    ``B^r d_r + B^theta d_t + B^zeta d_z`` in the 2-form's components."""
     xq = np.asarray(seq.quad.x)
     r, th = xq[:, 0], 2 * np.pi * xq[:, 1]
     xa, ya, dxa, dya = label_axis(seq, T)
@@ -145,6 +143,18 @@ def poloidal_density(seq, B, T):
     d_r = (u * np.sin(th) - v * np.cos(th)) / (2 * np.pi * rho2)
     d_t = r * (u * np.cos(th) + v * np.sin(th)) / rho2
     d_z = (-u * dya[k] + v * dxa[k]) / (2 * np.pi * rho2)
+    return d_r, d_t, d_z
+
+
+def poloidal_density(seq, B, T):
+    """The density of the poloidal flux at the quadrature points: ``J B . grad theta_a`` with ``theta_a`` the angle
+    about the label's own axis (:func:`label_axis`), from the 2-form's components. Summed over the region inside a
+    level set of the label it is the poloidal flux enclosed by that surface, for any position of the logical axis.
+    The logical ``theta`` would not do: its cut ends on the logical axis, so it counts no flux inside a surface that
+    does not enclose the logical axis and misses the flux between the two axes in every other. Where the magnetic axis
+    is the logical one ``theta_a = theta``."""
+    Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2))
+    d_r, d_t, d_z = _axis_angle_gradient(seq, T)
     return Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z, Bq
 
 
@@ -294,85 +304,124 @@ def build_slips(seq, B, T, mu_star):
     return Slips(values, indices, S, g, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), mu
 
 
-def slip_request(seq, B, T, s_q, iota, cells=PROFILE_CELLS, degree=6, samples=FIT_SAMPLES):
-    """``(d, fit)``: the slips whose twist, with the rest of the field frozen, takes the poloidal flux of ``B`` inside
-    the level sets of the label ``s_q`` (temperature ``T``) to that of the target transform ``iota(s)`` (per full turn,
-    its magnitude taken with the sign of the field's transform), and the field's transform ``fit`` (:func:`iota_fit`).
+def iota_residual(seq, T, s_q, iota, n_mu):
+    """The weak residual of the target transform ``iota(s)`` (per full turn, its magnitude taken with the sign of the
+    field's transform) on the label of the temperature ``T``, ``s_q`` at the quadrature points: the function
+    ``B -> (r, Phi)`` of a 2-form ``B`` with
 
-    The poloidal and toroidal fluxes per unit ``zeta`` inside the level sets, ``psi(s)`` and ``Phi s``, are the
-    cumulative volume sums of the poloidal flux density about the label's axis (:func:`poloidal_density`) and of the
-    2-form's ``zeta`` density over the points sorted by ``s``, as in :func:`iota_fit`, at ``samples`` points: functions
-    of ``s`` alone. The target's is ``psi*(s) = Phi / nfp int_0^s iota*``. The twist ``F`` adds ``-F(s)`` to ``psi``,
-    so ``d`` is the least-squares fit of ``F = sum_j d_j F_j`` to ``psi - psi*`` at the samples, relative to ``s``: the
-    miss of the mean transform inside each surface. The fluxes themselves, not the derivative of the transform, set
-    ``d``: the slip at the wall moves only the flux next to the wall and the total, which a fit of the transform, or a
-    polynomial fit of the miss, does not see."""
-    dens, Bq = poloidal_density(seq, B, T)
-    w = np.asarray(seq.quad.w) / np.sum(np.asarray(seq.quad.w_z))
-    order = np.argsort(np.asarray(s_q))
-    psi = np.cumsum((w * dens)[order])
-    phi = np.cumsum((w * Bq[:, 2])[order])
-    pick = np.linspace(0, psi.size - 1, samples).astype(int)
-    s = phi[pick] / phi[-1]
-    fit = iota_fit(seq, B, T, s_q, degree)
-    sign = float(np.sign(psi[-1] / phi[-1]))
-    s_fine = np.linspace(0.0, 1.0, 4001)
-    i_fine = sign * np.abs(np.asarray(iota(s_fine)))
-    psi_star = phi[-1] / seq.nfp * np.concatenate([[0.0], np.cumsum(0.5 * (i_fine[1:] + i_fine[:-1]) * np.diff(s_fine))])
-    miss = psi[pick] - np.interp(s, s_fine, psi_star)
-    K = cells + PROFILE_DEGREE
-    A = np.asarray(basis_table(profile_basis(K), jnp.asarray(s))).T @ np.asarray(_steps(K, Bq.dtype))
-    # each row divided by s: the samples equal in volume, the flux next to the axis goes as s
-    return np.linalg.lstsq(A / s[:, None], miss / s, rcond=None)[0], fit
+        r_j = int_0^1 (iota_B - iota*) M_j ds = int M_j(s) (nfp B . grad theta_a - iota*(s) B . grad zeta) dV / (Z Phi),
+
+    ``M_j`` the ``n_mu`` unit-integral derivative splines of the profile space, ``theta_a`` the angle about the
+    label's own axis (:func:`poloidal_density`), ``Phi`` the toroidal flux per unit ``zeta`` inside the label's
+    outermost level set and ``Z`` the ``zeta`` extent of the integrals.
+
+    ``r_j`` is the local mean of the transform's miss over the support of ``M_j``. The ``M_j`` span the changes of
+    the transform that the slips make (a twist ``F`` changes it by ``-nfp F'(s) / Phi``, :func:`slip_transform`), so
+    ``r = 0`` is the Galerkin condition: the target's transform projected in L2 in ``s`` onto what the slips reach.
+    By the coarea formula the volume integral is the integral of ``M_j`` against ``nfp dpsi - iota* dPhi`` over the
+    level sets of the label: it needs neither the points sorted by ``s`` nor a derivative of the sampled flux nor a
+    division by ``s``. ``B`` enters linearly through the fluxes, ``1 / Phi`` aside, and the label and the axis are
+    those of ``T``, held, so a derivative in ``B`` is the change of the fluxes through the label's level sets. In an
+    island band those level sets cross the islands: the residual there is that of the flux through them."""
+    s = jnp.asarray(s_q)
+    d_r, d_t, d_z = (jnp.asarray(c) for c in _axis_angle_gradient(seq, T))
+    M = jnp.asarray(basis_table(_derivatives(n_mu), s))
+    i_star = jnp.asarray(np.abs(np.asarray(iota(np.asarray(s_q)), dtype=float)))
+    w = jnp.asarray(np.asarray(seq.quad.w) / np.sum(np.asarray(seq.quad.w_z)))
+
+    def residual(B):
+        Bq = seq.odd.evaluate_at_quadrature(B, 2)
+        dpsi = w * (Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z)
+        dphi = w * Bq[:, 2]
+        phi = jnp.sum(dphi)
+        sign = jax.lax.stop_gradient(jnp.sign(jnp.sum(dpsi) / phi))
+        return M @ (seq.nfp * dpsi - sign * i_star * dphi) / phi, phi
+    return residual
+
+
+def slip_transform(residual, B, change, n):
+    """``R`` ``(n, n)``: the change of the weak residual along the slips with the rest of the field frozen, the
+    derivatives of ``residual`` (the function of :func:`iota_residual`, label held) at the field ``B`` along the field
+    changes ``change(e_j)`` of the ``n`` slips. An ideal move and a move of the mesh at fixed DoFs keep the poloidal
+    flux of every flux surface as a function of its toroidal flux, so in an equilibrium's response the slips alone
+    change the residual.
+
+    An exact twist ``F = sum_k d_k F_k`` changes the transform by ``-nfp F'(s) / Phi``, so ``R`` would be
+    ``-nfp / Phi int M_j M_k ds``. The discrete twist is the histopolation of ``F`` on the mesh, which resolves the
+    innermost steps poorly: on W7-X 25 kA (33, 64, 36) the derivative of the first two slips is 48 % and 51 % off the
+    exact one, of the others 1.3 to 3 %. So ``R`` is taken from the discrete twists, ``n`` derivatives in ``B``."""
+    eye = jnp.eye(n, dtype=B.dtype)
+    return np.stack([np.asarray(jax.jvp(residual, (B,), (change(eye[j]),))[1][0], dtype=np.float64)
+                     for j in range(n)], 1)
 
 
 @eqx.filter_jit
-def _relaxed_moments(ts, B, values, indices, S, d):
-    """The moments of ``B + T d + Q u``, ``u`` the Newton velocity (with the harmonic flow and the shells of ``ts``) of
-    the step with the slips held at ``d``: the current the field carries once the ideal part has followed the slips, to first order. Also
-    returns the signed MINRES count of that solve."""
-    from mrx.relaxation.newton import gauss_newton_parts, target_direction
+def _slip_responses(ts, B, slips):
+    """``(d, C, info)``: the slips ``d`` of the Gauss-Newton direction of the stepper ``ts`` (its harmonic flows,
+    shells and Newton settings) with the ``slips`` at the field ``B``, and ``C`` ``(L, L)``, the slips of its
+    derivatives along the target's moments, with the signed MINRES counts. The target enters only the slip rows'
+    right-hand side ``g - T_t M B``, ``g = -Z mu*``, so the column ``j`` is the solution for the right-hand side
+    ``-Z e_j`` in the slip rows and zero elsewhere."""
+    from mrx.relaxation.newton import target_direction
     seq = ts.seq
-    move, move_t = slip_maps(seq, values, indices, S)
-    dB = move(d.astype(S.dtype))
-    change, change_t, _ = gauss_newton_parts(seq, B, None, ts.newton_mass_solve_tol)
     _, load = ts._lorentz(B, None)
-    # the slip column moved to the right-hand side: the ideal, harmonic and shell rows of target_direction's system
-    u, _, info, _, _, _, _ = target_direction(seq, B, load - change_t(dB), jnp.zeros(seq.even.n(1)),
-                                              ts.harmonic_flows, ts.shells, None, ts.newton_penalty, ts.newton_tol,
-                                              ts.newton_maxiter, ts.newton_mass_solve_tol)
-    return current_moments(seq, B + dB + change(seq.even.evaluate_at_quadrature(u, 2)), move_t), info
+    a0 = jnp.zeros(seq.even.n(1), B.dtype)
+
+    def solve(load_, shells, sl):
+        out = target_direction(seq, B, load_, a0, ts.harmonic_flows, shells, sl, ts.newton_penalty, ts.newton_tol,
+                               ts.newton_maxiter, ts.newton_mass_solve_tol)
+        return out[5], out[2]
+    d, info = solve(load, ts.shells, slips)
+    shells0 = None if ts.shells is None else eqx.tree_at(lambda x: x.g_p, ts.shells, jnp.zeros_like(ts.shells.g_p))
+    TtMB = slips.maps(seq)[1](seq.odd.M[2] @ B)
+    Z = jnp.sum(seq.quad.w_z)
+
+    def column(e):
+        return solve(jnp.zeros_like(load), shells0, eqx.tree_at(lambda x: x.g, slips, TtMB - Z * e))
+    C, infos = jax.lax.map(column, jnp.eye(slips.g.size, dtype=B.dtype))
+    return d, C.T, jnp.concatenate([info[None], infos])
 
 
-def iota_current(seq, B, T, s_q, iota, ts, cells=PROFILE_CELLS, degree=6):
-    """``(lam, record)``: the current target ``lambda`` (moments as those of :func:`current_target`, T m) that is the
-    multiplier of the target transform ``iota(s)`` at the field ``B`` (label temperature ``T``, label ``s_q`` at the
-    quadrature points), for the stepper ``ts`` (its Newton settings and shells), on the profile space of ``cells``
-    cells. The chunk runs with ``build_slips(seq, B, T, lam)``.
+def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
+    """``(slips, mu_new, record)``: the outer loop's Newton step on the current target's moments ``mu_star`` for the
+    target transform ``iota(s)`` at the field ``B`` (label temperature ``T``, label ``s_q`` at the quadrature points),
+    for the stepper ``ts`` (its Newton settings and shells), and the slips of the new target for the next chunk
+    (:func:`build_slips`).
 
-    The energy is ``W = int B^2/2 dV - int p* dV - int lambda dpsi_pol``, the work of the unknown current on the
-    slipped flux. Its stationary points in the slips have the moments ``mu = lambda``. ``lambda`` is set from the field
-    as it is, nothing is carried over: ``d_req`` are the slips that close the miss of the poloidal flux with the rest
-    frozen (:func:`slip_request`), and ``lambda`` the moments of the Newton step with the slips held at ``d_req``
-    (:func:`_relaxed_moments`), the current the field carries once the ideal part and the shells have followed the
-    slips. The first Newton step at this ``lambda`` slips by ``d_req``. The slip block ``H`` alone,
-    ``lambda = mu - H d_req / Z``, overshoots: the response with the ideal part relaxed is ``S`` with
-    ``(d, S d) / (d, H d)`` 0.6 to 0.9 along the request on li383, and the update then oscillates.
+    The miss is the weak residual ``r`` on the profile space (:func:`iota_residual`). The target enters only the slip
+    rows, so the derivative of the state along the target is ``-A^-1`` times the slip rows' derivative ``Z e_j``,
+    ``A`` the Gauss-Newton matrix of the step (:func:`_slip_responses`, one MINRES solve per moment, ``C`` their
+    slips). Ideal moves keep the poloidal flux of every flux surface as a function of its toroidal flux, so only the
+    slips change ``r``, by ``R d`` (:func:`slip_transform`). Before every chunk the field is still on its way to the
+    equilibrium of the old target, hence the Newton direction's slips in the step. The step is the joint Newton step
+    on the field and the target, ``R C delta = -(r + R d_N)``, ``d_N`` the slips of the Newton direction at
+    ``mu_star``: a square system on the profile space, with no least-squares fit and nothing carried from one chunk to
+    the next but the target. The Gauss-Newton matrix leaves out the second variation's terms in the current, so near a
+    current-carrying equilibrium the step is a quasi-Newton step.
 
-    ``record`` holds ``mu`` (the moments of ``B``), ``lambda``, ``d_req``, its norm ``|d_req|_H``, the signed MINRES
-    count of the Newton solve and the miss of the transform (:func:`iota_fit`) on ``s = 0.05 .. 0.95`` and at
+    ``record`` holds ``r`` (local means of ``iota - iota*`` with the field's sign), its largest magnitude and rms in
+    ``s``, ``mu`` (the moments of ``B``), ``lam`` (the new target), ``delta``, ``r_eq = r + R d_N``, the MINRES
+    counts and the miss of the label's fit of the transform (:func:`iota_fit`) on ``s = 0.05 .. 0.95`` and at
     ``s = 0.01``."""
-    values, indices, S, mu, D = _slip_parts(seq, B, T, cells)
-    d, fit = slip_request(seq, B, T, s_q, iota, cells, degree)
-    D = np.asarray(D, dtype=np.float64)
-    lam, info = _relaxed_moments(ts, B, values, indices, S, jnp.asarray(d))
-    lam = np.asarray(lam, dtype=np.float64)
+    mu_star = jnp.asarray(mu_star, dtype=T.dtype)
+    L = int(mu_star.size)
+    slips, mu = build_slips(seq, B, T, mu_star)
+    residual = iota_residual(seq, T, s_q, iota, L)
+    r = np.asarray(residual(B)[0], dtype=np.float64)
+    R = slip_transform(residual, B, slips.maps(seq)[0], L)
+    d_N, C, info = (np.asarray(v) for v in _slip_responses(ts, B, slips))
+    r_eq = r + R @ d_N.astype(np.float64)
+    delta = np.linalg.solve(R @ C.astype(np.float64), -r_eq)
+    lam = np.asarray(mu_star, dtype=np.float64) + delta
+    fit = iota_fit(seq, B, T, s_q, 6)
     s = np.linspace(0.05, 0.95, 19)
     miss = np.abs(np.abs(fit(s)) - np.abs(np.asarray(iota(s))))
-    rec = dict(mu=np.asarray(mu).tolist(), lam=lam.tolist(), d_req=d.tolist(), d_req_H=float(np.sqrt(d @ D @ d)),
-               response_it=int(info), miss_max=float(miss.max()), miss_median=float(np.median(miss)),
+    w = moment_widths(L)
+    rec = dict(r=r.tolist(), r_max=float(np.abs(r).max()), r_rms=float(np.sqrt(np.sum(w * r ** 2) / np.sum(w))),
+               mu=np.asarray(mu).tolist(), lam=lam.tolist(), delta=delta.tolist(), r_eq=r_eq.tolist(),
+               minres=info.tolist(), miss_max=float(miss.max()), miss_median=float(np.median(miss)),
                miss_axis=float(abs(abs(fit(0.01)) - abs(float(iota(0.01))))))
-    return jnp.asarray(lam, dtype=T.dtype), rec
+    return build_slips(seq, B, T, jnp.asarray(lam, dtype=T.dtype))[0], lam, rec
 
 
 @eqx.filter_jit
@@ -400,14 +449,21 @@ def current_target(current, cells=PROFILE_CELLS, samples=20001):
     return jnp.asarray(M @ (w * np.asarray(current(x ** 2), dtype=float)))
 
 
+def moment_widths(n_mu):
+    """The widths in ``s`` of the supports of the ``n_mu`` splines ``M_j``: the weights of the L2 norm in ``s`` of the
+    moments, which are local means of ``mu0 I(s)``."""
+    d = _derivatives(n_mu)
+    knots = np.asarray(d.T)
+    return knots[d.p + 1:d.p + 1 + d.n] - knots[:d.n]
+
+
 def current_error(mu, mu_star):
     """The error of the current's moments ``mu`` against the target's ``mu_star``, each weighted by the width in ``s``
-    of the support of its spline ``M_j``: an L2 norm in ``s`` of the local means, relative to the target's. A zero
-    target (no net current on any surface) has no size to compare with: its error is the absolute one, the weighted
-    root mean square of ``mu`` in T m. The current vanishes on the axis, so there is no constant to fix."""
-    d = _derivatives(len(mu_star))
-    knots = np.asarray(d.T)
-    w = knots[d.p + 1:d.p + 1 + d.n] - knots[:d.n]
+    of the support of its spline ``M_j`` (:func:`moment_widths`): an L2 norm in ``s`` of the local means, relative to
+    the target's. A zero target (no net current on any surface) has no size to compare with: its error is the absolute
+    one, the weighted root mean square of ``mu`` in T m. The current vanishes on the axis, so there is no constant to
+    fix."""
+    w = moment_widths(len(mu_star))
     mu_star = np.asarray(mu_star, dtype=float)
     e = np.asarray(mu, dtype=float) - mu_star
     size = np.sum(w * mu_star ** 2)

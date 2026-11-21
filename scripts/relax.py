@@ -26,11 +26,12 @@ on the flux label before every chunk, the one label of both targets. Such a run 
 
 With ``--iota.target`` the relaxation ends at the rotational transform of a wout or of a VMEC input namelist with
 NCURR = 0. The transform is no control of the energy: it sets the target of the prescribed current in an outer loop.
-Before every chunk the field's poloidal flux on its label is measured, the slips that close the miss are asked for and
-the current target is the current the field carries once it has followed them (:func:`mrx.relaxation.twist.iota_current`).
-Nothing is stored between chunks, so a restart recomputes it. A current target and ``--iota.target`` exclude each
-other. With ``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which the
-transform misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
+Before every chunk the transform's weak residual on the flux label is measured and the current target takes a Newton
+step, with its matrix from the Gauss-Newton step's response to the target (:func:`mrx.relaxation.twist.iota_newton`).
+The loop starts from the current the field carries. The target is kept in every checkpoint (attribute
+``iota_target``), so a restart goes on from it. A current target and ``--iota.target`` exclude each other. With
+``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which the transform
+misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
 the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with the vacuum solved on it. Before
@@ -48,7 +49,7 @@ its iteration cap.
 
 Output (in ``--output.out``):
     relax.json                   The configuration (flat, plus facts of the run) under ``params``, then ``ic``,
-                                 ``iota`` (the target and before every chunk the transform's miss, the moments and the current target), ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
+                                 ``iota`` (the target and before every chunk the transform's weak residual, its miss, the step and the current target), ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
                                  and at the end the pressure's error against it and the target's beta), ``current``
                                  (the target's moments and before every chunk and at the end the current's), ``mesh``
                                  (the moves of the start, every move of the axis, the chunks' MINRES counts and the
@@ -66,6 +67,8 @@ import argparse
 import json
 import os
 import time
+
+import h5py
 
 
 def main(cfg, fit=None):
@@ -89,7 +92,7 @@ def main(cfg, fit=None):
     from mrx.relaxation.shells import (ERROR_BINS, build_shells, flattened, label, load_target, plateau_intervals,
                                        pressure_error, target_beta)
     from mrx.relaxation.seeding import energy_seed
-    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_current, iota_fit,
+    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_fit, iota_newton,
                                       load_current_target, load_iota_target, spline_centres)
     from mrx.flux_label import ANISOTROPY
 
@@ -129,9 +132,14 @@ def main(cfg, fit=None):
     ts = cfg.stepper(seq)
     if cfg.mesh:
         results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
+    iota_target = None              # the iota loop's current target, set at its first chunk
     if cfg.output.restart:
         state, it0 = read_checkpoint(cfg.output.restart, ts)
         print(f"[restart] {cfg.output.restart}: descent state at step {it0}", flush=True)
+        with h5py.File(cfg.output.restart, "r") as fh:
+            if cfg.iota and "iota_target" in fh.attrs:
+                iota_target = np.asarray(fh.attrs["iota_target"], dtype=np.float64)
+                print(f"[restart] the iota loop's current target, near the wall {iota_target[-1]:+.4e} T m", flush=True)
     else:
         t1 = time.perf_counter()
         if cfg.mesh and seq.equilibrium["kind"] == "indata":
@@ -166,6 +174,9 @@ def main(cfg, fit=None):
         write_checkpoint(path, state, step, seq)
         if carry_map:
             write_map(path, seq.map)
+        if iota_target is not None:
+            with h5py.File(path, "a") as fh:
+                fh.attrs["iota_target"] = iota_target
     checkpoint(f"state_{it0:06d}.h5", state, it0)
 
     # --- the drive: resistive steps towards the reference current ---------
@@ -240,17 +251,18 @@ def main(cfg, fit=None):
             print(f"[current] step {it}: {what} {err:.3e} over the spline means of mu0 I, near the wall "
                   f"{float(mu[-1]):+.4e} T m (target {float(mu_star[-1]):+.4e}), label CG {info}", flush=True)
     if cfg.iota:
-        # the target transform: the slips at the current target the transform asks for, set before
-        # every chunk from the field as it is then, nothing carried between chunks
+        # the target transform: the current target takes a Newton step on the transform's weak residual before every
+        # chunk, from the current the field carries at the first
         iota_star = load_iota_target(cfg.iota.target)
         results["iota"] = dict(target=cfg.iota.target, x=spline_centres(pr.cells + 2).tolist(), rebuilds=[])
 
         def record_iota(it, rec, info):
             results["iota"]["rebuilds"].append(dict(step=it, label_it=info, **rec))
-            print(f"[iota] step {it}: label iota miss max {rec['miss_max']:.3e} median {rec['miss_median']:.3e} "
-                  f"(s 0.05..0.95), at s 0.01 {rec['miss_axis']:.3e}, |d_req|_H {rec['d_req_H']:.3e}, "
-                  f"lambda near the wall {rec['lam'][-1]:+.4e} T m (mu {rec['mu'][-1]:+.4e}), label CG {info}",
-                  flush=True)
+            print(f"[iota] step {it}: weak residual max {rec['r_max']:.3e} rms {rec['r_rms']:.3e}, of the equilibrium "
+                  f"{np.abs(rec['r_eq']).max():.3e}, label iota miss max {rec['miss_max']:.3e} median "
+                  f"{rec['miss_median']:.3e} (s 0.05..0.95), at s 0.01 {rec['miss_axis']:.3e}, target near the wall "
+                  f"{rec['lam'][-1]:+.4e} T m (mu {rec['mu'][-1]:+.4e}), MINRES {rec['minres'][0]} / "
+                  f"{min(rec['minres'][1:])} .. {max(rec['minres'][1:])}, label CG {info}", flush=True)
         iota_max = float(np.abs(np.asarray(iota_star(np.linspace(0.05, 0.95, 19)))).max())
 
         def seed_converged(state, it, s_q):
@@ -343,7 +355,7 @@ def main(cfg, fit=None):
     # the slips are rebuilt on the field (mrx.relaxation.loop.relax's rebuild)
     def rebuild(state, it):
         """The state and the stepper of the chunk from step ``it``."""
-        nonlocal ts, seed_pending
+        nonlocal ts, seed_pending, iota_target
         if mm:
             state = align_axis(state, it)
             precondition(it)
@@ -368,9 +380,11 @@ def main(cfg, fit=None):
             record_current(it, mu, info)
             ts = ts.with_slips(slips)
         if cfg.iota:
-            lam, rec = iota_current(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)
+            if iota_target is None:     # the loop starts from the current the field carries
+                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, pr.cells), dtype=np.float64)
+            slips, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
             record_iota(it, rec, info)
-            ts = ts.with_slips(build_slips(seq, state.B_n, T_label, lam)[0])
+            ts = ts.with_slips(slips)
         # the cost of the rebuild of the label, the shells and the slips, outside the steps
         results.setdefault("rebuild_wall", []).append(time.perf_counter() - t_rebuild)
         return state, ts
@@ -414,7 +428,8 @@ def main(cfg, fit=None):
             record_current(it, current_on_label(seq, state.B_n, T_label, pr.cells), info)
             results["summary"].update(current_error=results["current"]["rebuilds"][-1]["error"])
         if cfg.iota:
-            record_iota(it, iota_current(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)[1], info)
+            mu_end = iota_target if iota_target is not None else current_on_label(seq, state.B_n, T_label, pr.cells)
+            record_iota(it, iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, mu_end)[2], info)
             results["summary"].update(iota_miss_max=results["iota"]["rebuilds"][-1]["miss_max"])
         write()
     checkpoint("best.h5", initial_state(res.state.best.B, ts, step=int(res.state.best.step)),

@@ -333,34 +333,44 @@ rotational transform of the start field. With `--iota.target <file>` it ends
 at the transform of a wout or of a VMEC input namelist with `NCURR = 0`. The
 transform is no control of the energy, the current is. So the transform sets
 the target of the prescribed current in an outer loop, before every chunk
-({func}`mrx.relaxation.twist.iota_current`):
+({func}`mrx.relaxation.twist.iota_newton`):
 
-1. the poloidal flux $\psi(s)$ inside the flux label's level sets is measured
-   and compared with the target's, $\psi^*(s) = \Phi/n_{fp} \int_0^s \iota^*$.
-   It is the volume integral of $B \cdot \nabla\theta_a$ over the region inside
-   each level set, with $\theta_a$ an angle about the label's own axis, so it
-   depends on $s$ alone, wherever the magnetic axis sits on the mesh,
-2. the slips that close the miss with the rest of the field frozen are a
-   least-squares fit to it, in the mean transform inside each surface,
-3. one Newton solve with the slips held there lets the ideal part and the
-   shells follow, and the current the field then carries is the current
-   target of the chunk.
+1. the miss is the weak residual on the profile space,
+   $r_j = \int_0^1 (\iota - \iota^*) M_j \, ds$, with $M_j$ the derivative
+   splines of the profile space, the local mean of the miss over each spline
+   ({func}`mrx.relaxation.twist.iota_residual`). By the coarea formula it is
+   the volume integral of $M_j(s)$ against the poloidal flux density
+   $n_{fp} B \cdot \nabla\theta_a$ less $\iota^*$ times the toroidal one, with
+   $\theta_a$ an angle about the label's own axis. It needs no sorting by
+   $s$, no derivative of a sampled flux and no division by $s$,
+2. the target enters only the slip rows, so the derivative of the state along
+   the target's moments is the Gauss-Newton step's solution for the slip rows'
+   derivative, one MINRES solve per moment,
+3. ideal moves keep the poloidal flux of every flux surface as a function of
+   its toroidal flux, so only the slips change $r$. A twist $F$ changes the
+   transform by $-n_{fp} F'(s)/\Phi$, and the change is taken from the
+   discrete twists, which resolve the innermost steps poorly
+   ({func}`mrx.relaxation.twist.slip_transform`),
+4. the target takes the joint Newton step on the field and the target, a
+   square system on the profile space that includes the slips of the Newton
+   direction at the old target.
 
-The current's response to a slip with the ideal part relaxed is 0.6 to 0.9
-times the slip block's, so the slip block alone would overshoot and the
-update would oscillate. Nothing is carried from one chunk to the next, so a
-restart recomputes the target from the field. With `--seed` the seed is applied at the first chunk boundary at which
+The loop starts from the current the field carries, and every checkpoint
+keeps the target, so a restart goes on from it. With `--seed` the seed is applied at the first chunk boundary at which
 the transform misses its target by less than 1 % of its largest value, since
 the seed resonates with the field's own transform. The `iota` record has,
-before every chunk, the transform's miss, the slips asked for and the current
-target.
+before every chunk, the weak residual, the transform's miss, the step and the
+current target.
 
 On li383 (48,64,24), graded, with 0.95 times the file's transform from the
-file's field, the label's transform misses by 3.3e-2 at the start, 7.9e-4
-after 10 Newton steps and 4.1e-4 after 200, the floor of the label's fit. `dW`
-is negative on every step and the force residual reaches 1.4e-10 after 200
-steps. A step costs what a step without targets costs, the update 1.6 s per
-chunk, about one Newton step (one H200, 2026-11-18).
+file's aligned field at step 80, the largest weak residual falls from 0.18 to
+1.5e-2 after the first update, 1.3e-3 after the third and 2.7e-5 at step 300,
+the target near the wall settles within three updates and the force residual
+reaches 1.1e-9. The 19 MINRES solves cost 256 s over the 22 updates (one H200,
+2026-11-20). The transform keeps an oscillation at the scale of the profile
+cells, 1.5e-3 at most, which the current-prescribed relaxation has too
+(4.4e-3): it is orthogonal to the $M_j$, so no target reaches it.
+IOTA_W7X_NUMBERS
 
 ## Outer loops
 

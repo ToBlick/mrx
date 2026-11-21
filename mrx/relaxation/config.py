@@ -97,7 +97,7 @@ class Geometry:
 
 @dataclass(frozen=True)
 class Iota:
-    """Target rotational transform: an outer loop sets the current of the prescribed current (mrx.relaxation.twist.iota_current) before every chunk, from the transform the field has on its flux label. With --mesh.align the loop starts once the mesh is aligned or out of moves. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
+    """Target rotational transform: an outer loop updates the target of the prescribed current by a Newton step on the transform's weak residual (mrx.relaxation.twist.iota_newton) before every chunk, from the transform the field has on its flux label. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
     target: Optional[str] = None
     """A wout or a VMEC input namelist with NCURR = 0 whose transform the relaxation ends at. A namelist with NCURR = 1 prescribes the current, see --current.target. Unset, the run keeps the start's poloidal fluxes."""
 
