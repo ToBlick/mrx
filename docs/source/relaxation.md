@@ -453,9 +453,16 @@ The magnetic axis is the field line that closes after one field period
 (`mrx.relaxation.mesh_motion.magnetic_axis`). Its point in the chart
 $(r \cos 2\pi\theta, r \sin 2\pi\theta)$ of each logical plane is a
 Fourier series in $\zeta$, one mode per spline of $\zeta$, whose Galerkin
-residual of the field-line equation vanishes: the residual is integrated
+residual of the field-line equation vanishes. The equation is written with
+the field's density in that chart, $\tilde B^\zeta\, y' = (\tilde B^u,
+\tilde B^v)$, which is finite and nonzero on the pole, so no value of the
+field is divided by. The residual is integrated
 against every function of the series, so it is weak in $\zeta$, and the
-whole curve is found at once by Newton's method. On W7-X graded (32,64,36)
+whole curve is found at once by Newton's method. Written with the logical
+components $\hat B$ instead, the equation would have the pole as a root of its
+own, since $\hat B$ vanishes there with $J$: from four first cells off the
+axis Newton then stalls between the two (W7-X, Solov'ev, 2026-11-21). On
+W7-X graded (32,64,36)
 at p = 2 it takes four or five Newton steps and 0.01 s after compilation,
 and it agrees with the fixed point of the one-period field-line map (Newton
 on 1152 Runge-Kutta steps per period, 45 s) to 4e-6 first radial cells on
@@ -465,7 +472,8 @@ surfaces (32,48,32) both put the discrete axis 7e-4 first cells off the exact
 one, the pole (one H200, 2026-11-21).
 
 A move shifts every plane by the in-plane distance $d(\zeta)$ of the axis
-from the pole, carried to the wall by $1 - r^2$: every point moves within its
+from the pole, projected in L2 onto the splines of $\zeta$, carried to the
+wall by $1 - r^2$: every point moves within its
 surface $\zeta = $ const and the wall stays. The move is halved until no
 cell loses more than half its volume. The field keeps its coefficients: it
 rides with the map, the exact ideal transport of the field by the move, which

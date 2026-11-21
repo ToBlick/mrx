@@ -15,8 +15,9 @@ current map:
 1. The magnetic axis (:func:`magnetic_axis`), the field line that closes after one field period, as a whole curve: a
    Fourier series in ``zeta`` of its point in the chart ``(r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane,
    whose Galerkin residual of the field-line equation vanishes.
-2. Its in-plane distance ``d(zeta)`` from the pole on the Greville planes of the ``zeta`` splines (:func:`axis_offset`)
-   moves every point by ``d(zeta) (1 - r^2)`` (:func:`axis_step`): the pole goes onto the magnetic axis, the wall
+2. Its in-plane distance ``d(zeta)`` from the pole, projected in L2 onto the ``zeta`` splines
+   (:func:`axis_coefficients`), moves every point by ``d(zeta) (1 - r^2)`` (:func:`axis_step`): the pole goes onto the
+   magnetic axis, the wall
    stays. The move is halved until no cell loses more than half its volume (:data:`MIN_DET_RATIO` of ``det DPhi``).
 3. The field keeps its coefficients: it rides with the map, the exact ideal transport of the field by the move, which
    keeps ``div B = 0``, ``B . n = 0`` and every flux through every face of the mesh, and nothing is projected. Its
@@ -58,7 +59,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.diagnostics.poincare import cross_section_rhs, logical_field
+from mrx.diagnostics.poincare import logical_field, to_polar
 from mrx.differential_forms import det33
 from mrx.equilibria import FrameMap, frame_derivatives, polar_projection
 from mrx.nullspace import compute_nullspaces
@@ -116,7 +117,7 @@ def locate(Phi, X, x):
 
 
 def _planes(seq):
-    """The Greville points of the ``zeta`` splines, on which the axis step is interpolated."""
+    """The Greville points of the ``zeta`` splines, the planes on which the axis offset is recorded."""
     return np.asarray(seq.basis_0.Lambda[2].greville_points(), dtype=np.float64)
 
 
@@ -174,12 +175,19 @@ def _axis_free(seq, modes):
 
 def _axis_residual(field, coef, x, idx, tidx, z, w, V, dV):
     """The Galerkin residual of :func:`magnetic_axis` at the free coefficients ``x`` (flat indices ``idx``), tested
-    with the functions of the flat indices ``tidx``."""
-    rhs = cross_section_rhs(field)
+    with the functions of the flat indices ``tidx``. The integrand is ``Bt^zeta y' - (Bt^u, Bt^v)``, ``Bt`` the
+    field's density in the chart ``(u, v, zeta)``: the 2-form's logical components ``Bh`` carried to the chart and
+    divided by its Jacobian ``2 pi r``, finite and nonzero on the pole, where ``Bh`` vanishes with ``J``."""
     c = jnp.zeros(2 * V.shape[1] * V.shape[2], dtype=x.dtype).at[idx].set(x).reshape(2, V.shape[1], V.shape[2])
     y, dy = jnp.einsum("ckn,qkn->qc", c, V), jnp.einsum("ckn,qkn->qc", c, dV)
-    f = jax.vmap(lambda zq, yq: rhs(zq, yq, coef))(z, y)
-    return jnp.einsum("q,qkn,qc->ckn", w, V, dy - f).reshape(-1)[tidx]
+
+    def density(zq, yq, dyq):
+        r, theta = to_polar(yq)
+        b = field.at(jnp.array([r, theta, zq % 1.0]), coef)
+        cs, sn = jnp.cos(2.0 * jnp.pi * theta), jnp.sin(2.0 * jnp.pi * theta)
+        uv = jnp.array([cs * b[0] - 2.0 * jnp.pi * r * sn * b[1], sn * b[0] + 2.0 * jnp.pi * r * cs * b[1]])
+        return (b[2] * dyq - uv) / (2.0 * jnp.pi * r)
+    return jnp.einsum("q,qkn,qc->ckn", w, V, jax.vmap(density)(z, y, dy)).reshape(-1)[tidx]
 
 
 @partial(jax.jit, static_argnames=("field",))
@@ -203,9 +211,9 @@ def magnetic_axis(seq, B, modes=None):
     in the chart ``y = (r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane ``zeta``, which is smooth at the
     pole (``modes`` :data:`AXIS_MODES_PER_SPLINE` per spline of ``zeta`` unless given). On a stellarator-symmetric
     sequence its first component is a cosine series, its second a sine series. The field line satisfies
-    ``dy/dzeta = f(zeta, y)``, ``f`` the in-plane logical field over ``B^zeta`` in the chart
-    (:func:`mrx.diagnostics.poincare.cross_section_rhs`). ``c`` makes the Galerkin residual
-    ``int_0^1 phi(zeta) (dy/dzeta - f(zeta, y(zeta))) dzeta`` vanish for every ``phi`` of the series (on a symmetric
+    ``Bt^zeta dy/dzeta = (Bt^u, Bt^v)``, ``Bt`` the field's density in the chart (:func:`_axis_residual`), with no
+    division by the field's values and no bound on ``r``. ``c`` makes the Galerkin residual
+    ``int_0^1 phi(zeta) (Bt^zeta dy/dzeta - (Bt^u, Bt^v))(zeta, y(zeta)) dzeta`` vanish for every ``phi`` of the series (on a symmetric
     sequence those of the residual's parity, the other way round from the curve's), integrated by Gauss points on the cells of the ``zeta`` splines: the residual is weak in ``zeta``, and the whole
     curve is found at once. Newton's method with the exact Jacobian, from the curve half a first radial cell off the
     pole (the chart's derivatives do not exist at the pole itself), each step halved until it lowers the norm of the
@@ -260,19 +268,30 @@ def _axis_profile(seq):
     return np.linalg.solve(np.asarray(br.collocation_matrix(), dtype=np.float64), 1.0 - gr ** 2)
 
 
-def axis_step(seq, d):
+def axis_step(seq, dz):
     """The coefficients ``(2, n_r, n_theta, n_zeta)`` of ``X1``, ``X2`` that move every point by ``d(zeta) (1 - r^2)``,
-    ``d`` given on the planes of :func:`_planes` and interpolated by the ``zeta`` splines. Constant in ``theta``, so
-    polar-regular. On a stellarator-symmetric sequence ``X1``'s part is projected on the even, ``X2``'s on the odd
+    ``d`` the in-plane displacement with the ``zeta`` spline coefficients ``dz`` ``(n_z, 2)``. Constant in ``theta``,
+    so polar-regular. On a stellarator-symmetric sequence ``X1``'s part is projected on the even, ``X2``'s on the odd
     functions."""
-    bz = seq.basis_0.Lambda[2]
-    dz = np.linalg.solve(np.asarray(bz.collocation_matrix(), dtype=np.float64), d)               # (n_z, 2)
     n_t = seq.basis_0.Lambda[1].n
     raw = jnp.asarray(np.einsum("i,j,kc->cijk", _axis_profile(seq), np.ones(n_t), dz), dtype=seq.map.raw_X1.dtype)
     if seq.symmetry == "stellarator":
         raw = jnp.stack([stellarator_symmetric_scalar(raw[0], seq.basis_0, even=True),
                          stellarator_symmetric_scalar(raw[1], seq.basis_0, even=False)])
     return raw
+
+
+def axis_coefficients(seq, c):
+    """The ``zeta`` spline coefficients ``(n_z, 2)`` of the in-plane displacement from the pole to the axis curve
+    ``c`` of :func:`magnetic_axis`: its L2 projection onto the ``zeta`` splines, one mass solve of the splines with the
+    displacement at Gauss points of their cells."""
+    bz = seq.basis_0.Lambda[2]
+    z, w = _zeta_quadrature(seq, c.shape[2] - 1)
+    N = np.asarray(bz.collocation_matrix(jnp.asarray(z)), dtype=np.float64)              # (n_q, n_z)
+    S = jax.vmap(seq.map.section)
+    pole = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, z[:, None]), -1).reshape(-1, 3))
+    d = np.asarray(S(jnp.asarray(axis_points(c, z))) - S(pole), dtype=np.float64)
+    return np.linalg.solve((N * w[:, None]).T @ N, (N * w[:, None]).T @ d)
 
 
 def moved(Phi, delta):
@@ -351,12 +370,13 @@ def axis_offset(seq, c):
     return y - np.asarray(jax.vmap(seq.map.section)(ax)), h1
 
 
-def _displacement(seq, d, h1):
-    """``(Phi_new, record)``: the map of the move of the pole of ``seq`` by the in-plane offsets ``d`` on the planes of
-    :func:`_planes` (step 2 of the module docstring), halved against folds. ``record`` holds the largest offset
-    (``axis_m`` in metres, ``axis_cells`` in first radial cells of size ``h1``), the backtracking factor ``lam``, the
-    largest move in metres and the range of the ratio of ``det DPhi`` after and before."""
-    delta = tangent(seq, axis_step(seq, d))
+def _displacement(seq, dz, d, h1):
+    """``(Phi_new, record)``: the map of the move of the pole of ``seq`` by the in-plane displacement with the ``zeta``
+    spline coefficients ``dz`` (step 2 of the module docstring), halved against folds. ``d`` are the offsets on the
+    planes of :func:`_planes`. ``record`` holds their largest (``axis_m`` in metres, ``axis_cells`` in first radial
+    cells of size ``h1``), the backtracking factor ``lam``, the largest move in metres and the range of the ratio of
+    ``det DPhi`` after and before."""
+    delta = tangent(seq, axis_step(seq, dz))
     lam, ratio = _backtrack(seq, jnp.zeros_like(delta), delta)
     off = float(np.max(np.linalg.norm(d, axis=1)))
     return moved(seq.map, lam * delta), dict(
@@ -370,7 +390,7 @@ def axis_displacement(seq, B):
     of the module docstring. ``seq`` is not changed. ``record`` is that of :func:`_displacement` with the axis
     finder's record (``axis``)."""
     c, found = magnetic_axis(seq, B)
-    Phi, record = _displacement(seq, *axis_offset(seq, c))
+    Phi, record = _displacement(seq, axis_coefficients(seq, c), *axis_offset(seq, c))
     record.update(axis=found)
     return Phi, record
 
@@ -441,8 +461,8 @@ def _start(seq, offset, recut):
     t0 = time.perf_counter()
     rounds = []
     while True:
-        d, h1, info = offset(seq)
-        Phi, rec = _displacement(seq, d, h1)
+        dz, d, h1, info = offset(seq)
+        Phi, rec = _displacement(seq, dz, d, h1)
         rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=info))
         print(f"[mesh] start round {len(rounds)}: axis {rec['axis_cells']:.3e} first cells off the pole, "
               f"move {rec['move_m']:.3e} m x{rec['lam']:g}, {info}", flush=True)
@@ -454,7 +474,7 @@ def _start(seq, offset, recut):
         Phi, _, record["cut"] = axis_normal_map(seq, seq.map)
         install_map(seq, Phi, keep_preconditioners=True)
     install_map(seq, seq.map)
-    d, h1, _ = offset(seq)
+    _, d, h1, _ = offset(seq)
     record.update(axis_cells=float(np.max(np.linalg.norm(d, axis=1))) / h1, seconds=time.perf_counter() - t0)
     return record
 
@@ -465,7 +485,7 @@ def vacuum_start(seq, vacuum, recut):
     (:func:`magnetic_axis`) on the map the round before made, with the vacuum field solved again there."""
     def offset(sq):
         c, found = magnetic_axis(sq, vacuum(sq))
-        return (*axis_offset(sq, c), found)
+        return (axis_coefficients(sq, c), *axis_offset(sq, c), found)
     return _start(seq, offset, recut)
 
 
@@ -476,7 +496,11 @@ def curve_start(seq, zetas, points, recut):
     of every round's map (:func:`curve_offset`). The field of the run is solved on the final map afterwards. Its
     vacuum axis is then off the pole by the shift the pressure makes, which the relaxation carries the field's axis
     across."""
-    return _start(seq, lambda sq: (*curve_offset(sq, zetas, points), "curve"), recut)
+    def offset(sq):
+        d, h1 = curve_offset(sq, zetas, points)
+        bz = sq.basis_0.Lambda[2]
+        return np.linalg.solve(np.asarray(bz.collocation_matrix(), dtype=np.float64), d), d, h1, "curve"
+    return _start(seq, offset, recut)
 
 
 def _angle_space(seq):
@@ -769,4 +793,3 @@ def install_checkpoint_map(seq, path):
                                for k in ("frame_cos", "frame_sin", "frame_n")))
     install_map(seq, Phi)
     return True
-
