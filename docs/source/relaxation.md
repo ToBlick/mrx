@@ -433,27 +433,30 @@ $(r \cos 2\pi\theta, r \sin 2\pi\theta)$ of each logical plane is a
 Fourier series in $\zeta$, one mode per spline of $\zeta$, whose Galerkin
 residual of the field-line equation vanishes: the residual is integrated
 against every function of the series, so it is weak in $\zeta$, and the
-whole curve is found at once by Newton's method. AXIS_FINDER_NUMBERS
+whole curve is found at once by Newton's method. On W7-X graded (32,64,36)
+at p = 2 it takes four or five Newton steps and 0.01 s after compilation,
+and it agrees with the fixed point of the one-period field-line map (Newton
+on 1152 Runge-Kutta steps per period, 45 s) to 4e-6 first radial cells on
+the relaxed states, where the maximum of the flux label is 4e-2 to 5e-2 cells
+off. On the projection of Landreman's exact shearedE equilibrium onto its own
+surfaces (32,48,32) both put the discrete axis 7e-4 first cells off the exact
+one, the pole (one H200, 2026-11-21).
 
 A move shifts every plane by the in-plane distance $d(\zeta)$ of the axis
 from the pole, carried to the wall by $1 - r^2$: every point moves within its
 surface $\zeta = $ const and the wall stays. The move is halved until no
-cell loses more than half its volume. The field keeps its coefficients, which
-moves the physical field with the mesh and keeps every flux through every
-face of the mesh. The drag is then undone by the relaxation's ideal update
-with the mesh's velocity in place of the flow's, on the maps between the old
-and the new one, in SSP-RK3 substeps that cross at most half a cell, the
-relaxation's own substep, the cheapest explicit method that is stable for
-this advection, which nothing corrects afterwards
-(`mrx.relaxation.mesh_motion.undrag`). $\nabla \cdot B = 0$, $B \cdot n = 0$ and
-the toroidal flux hold exactly. The fluxes inside the other surfaces and the
-topology are kept to the accuracy of the transport. Without the transport
-the field's axis would move with the pole and stay off it.
+cell loses more than half its volume. The field keeps its coefficients: it
+rides with the map, the exact ideal transport of the field by the move, which
+keeps $\nabla \cdot B = 0$, $B \cdot n = 0$ and every flux through every face
+of the mesh, and nothing is projected. Its axis keeps its logical place, so
+right after a move it is off the new pole again, but the equilibrium it was
+moved from has its axis on the pole, and the relaxation steps bring the field
+back there.
 
 From the vacuum field of a namelist the first move is made before the run:
 the pole goes onto the vacuum's axis and the vacuum is solved again on the
 moved mesh, in rounds while the distance falls by half, so the first move,
-the largest, needs no transport
+the largest, perturbs no field
 (`mrx.relaxation.mesh_motion.vacuum_start`). The moved map is cut again by
 the planes normal to its axis. Then the pole moves onto the field's axis
 before every chunk, before the shells and the slips are rebuilt. The new map
@@ -464,11 +467,10 @@ chunk's mean MINRES count of the Newton solve exceeds `--mesh.rebuild-factor`
 solve stopped at `--newton.maxiter`. RUN_NUMBERS
 
 The `mesh` record of `relax.json` holds the rounds of the start, every move
-(the step, the axis offset in first radial cells before and after, the axis
-finder's Newton steps, the largest move, the range of the change of
-$\det D\Phi$, the change of the physical field at fixed physical points in
-the bulk and in the first three radial cells, of the energy, and the
-substeps of the transport), the chunks' mean MINRES counts against the
+(the step, the axis offset in first radial cells, the axis finder's record,
+the largest move and its backtracking factor, the range of the change of
+$\det D\Phi$, the change of the energy, and the force residual right before
+and right after the move), the chunks' mean MINRES counts against the
 reference and the builds of the preconditioners with their reason and wall
 time. Every checkpoint of such a run holds its map, which a restart and
 `scripts/poincare_trace.py` install. `best.h5` is the best field since the
