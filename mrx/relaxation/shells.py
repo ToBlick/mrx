@@ -243,17 +243,14 @@ def point_labels(seq, B, T, x):
 def load_target(seq, spec, scale=1.0):
     """The target profile ``p*(s)`` of ``spec``, mu0 p in T^2 as a function of the normalised toroidal flux times
     ``scale``: ``"file"`` (the geometry file's pressure) or a VMEC input namelist (its pressure profile,
-    :meth:`mrx.equilibria.indata.Indata.pressure`). The constant of a profile is removed so that it vanishes on the wall
-    (a uniform pressure does no work on a fixed wall)."""
+    :meth:`mrx.equilibria.indata.Indata.pressure`), evaluated at the labels it is given. The constant of a profile is
+    removed so that it vanishes on the wall (a uniform pressure does no work on a fixed wall)."""
     from mrx.equilibria.indata import read_indata
-    s = np.linspace(0.0, 1.0, 2001)
     if spec == "file":
         p_r = seq.equilibrium["profiles"]["pressure"]               # Pa, a function of r = sqrt(s)
-        values = jnp.asarray(scale * 4e-7 * np.pi * (p_r(np.sqrt(s)) - float(p_r(1.0))))
-    else:
-        indata = read_indata(spec)                                  # mu0 p in T^2
-        values = jnp.asarray(scale * (indata.pressure(s) - indata.pressure(1.0)))
-    return lambda x: jnp.interp(x, jnp.asarray(s), values)
+        return lambda s: jnp.asarray(scale * 4e-7 * np.pi * (p_r(np.sqrt(np.asarray(s))) - float(p_r(1.0))))
+    indata = read_indata(spec)                                      # mu0 p in T^2
+    return lambda s: jnp.asarray(scale * (indata.pressure(np.asarray(s)) - indata.pressure(1.0)))
 
 
 def target_beta(seq, B, p_q):
