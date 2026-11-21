@@ -34,7 +34,7 @@ and the slips the only part of a step that changes the transform at fixed toroid
 The step is taken before every chunk of Newton steps. The chunk then runs with the slips of that target
 (:func:`build_slips`), as with any other.
 
-- :func:`build_slips`, :func:`slip_table`, :func:`slip_maps` and :func:`current_moments` are the move as Newton
+- :func:`build_slips`, :func:`slip_changes` and :func:`current_moments` are the move as Newton
   unknowns, :func:`current_on_label` the moments of a field, :func:`current_target` those of a target and
   :func:`current_error` the current's error against them.
 - :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
@@ -43,9 +43,10 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
 
-The potential ``f dzeta`` lives in the free 1-forms. On the wall ``T = 0`` and ``f = F(1)``, so its trace there is
-the closed form ``F(1) dzeta`` and ``dB`` has no flux through the wall. ``F(1) != 0`` changes the poloidal flux inside
-the wall and with it the net toroidal current.
+The potential is ``F(1) dzeta + a``, ``a`` the L2 projection of ``(F(s) - F(1)) dzeta`` onto the 1-forms ``a dzeta``
+with zero tangential trace (:func:`slip_changes`). ``dzeta`` is closed, so the field change is ``curl a``, that of ``F dzeta``,
+with no flux through the wall. ``F(1) != 0`` changes the poloidal flux inside the wall and with it the net toroidal
+current.
 """
 from __future__ import annotations
 
@@ -56,9 +57,12 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DiscreteFunction
-from mrx.flux_label import ANISOTROPY, enclosed_flux_map, flux_label
+from mrx.flux_label import ANISOTROPY, enclosed_flux, flux_label
+from mrx.operators import _mass, _mass_model
+from mrx.precision import DTYPE, to_working
 from mrx.relaxation.physics import current as weak_current
 from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS, PROFILE_DEGREE, profile_basis
+from mrx.solvers import solve_singular_cg
 from mrx.spline_bases import DerivativeSpline, basis_table
 
 #: The cumulative sums :func:`iota_fit` fits, sampled at this many points.
@@ -200,72 +204,61 @@ def load_iota_target(path):
 
 
 class Slips(eqx.Module):
-    """The frozen part of the slip Newton step: the splines of the profile space at the points of the histopolation of
-    the twist's potential (``values``, ``indices`` of :func:`slip_table`, on the label of one field), the steps ``S``
-    ``(K, K - 1)`` with ``F_j = sum_k S_kj phi_k``, the target's part ``g`` of the right-hand side and ``D_inv``, the
-    inverse of the slip block ``(T_i, T_j)_M``. Nothing in it holds a vector per slip, so it grows as the mesh does.
-    Arrays only, so a rebuild does not recompile the step."""
-    values: jnp.ndarray
-    indices: jnp.ndarray
-    S: jnp.ndarray
+    """The frozen part of the slip Newton step: the field changes ``T`` ``(K - 1, n_2)`` of the twists ``F_j`` on the
+    label of one field (:func:`slip_changes`, 2-forms of ``seq.odd``, one row per slip, as the shells hold their
+    velocities), the target's part ``g`` of the right-hand side and ``D_inv``, the inverse of the slip block
+    ``(T_i, T_j)_M``. Arrays only, so a rebuild does not recompile the step."""
+    T: jnp.ndarray
     g: jnp.ndarray
     D_inv: jnp.ndarray
 
     def maps(self, seq):
-        """The maps of :func:`slip_maps` of these slips."""
-        return slip_maps(seq, self.values, self.indices, self.S)
+        """``(move, move_t)``: the map ``d -> T d`` to the field change of the twist ``F = sum_j d_j F_j`` and its
+        transpose. MINRES calls the step's operator in float32, the products are taken in the dtype of ``T``."""
+        return (lambda d: d.astype(self.T.dtype) @ self.T), (lambda y: self.T @ y.astype(self.T.dtype))
 
 
-def _zeta_rule(seq):
-    """``(x, w)``: the points ``(n_r, n_theta, n_zeta, q, 3)`` and the zeta weights ``(n_zeta, q)`` at which
-    :func:`mrx.projectors.interpolate` histopolates the ``zeta`` part of a 1-form: the Greville points in ``r`` and
-    ``theta`` and a Gauss rule on each Greville cell in ``zeta``, periodic coordinates wrapped into ``[0, 1)``."""
-    from mrx.projectors import _wrap_periodic_point
-    axes = seq.greville
-    x_r, x_t = axes[0].point_rule[0][:, 0], axes[1].point_rule[0][:, 0]
-    xz, wz = axes[2].span_rule
-    x = jnp.stack(jnp.meshgrid(x_r, x_t, xz.ravel(), indexing="ij"), axis=-1)
-    x = jax.vmap(lambda y: _wrap_periodic_point(seq, y))(x.reshape(-1, 3))
-    return x.reshape(x_r.size, x_t.size, xz.shape[0], xz.shape[1], 3), wz
+def _label_of(seq, B, T):
+    """The label ``s`` at the quadrature points of the field ``B`` with the label temperature ``T``."""
+    return enclosed_flux(seq, T, seq.odd.evaluate_at_quadrature(B, 2))
 
 
-def slip_table(seq, T, B_jk, n):
-    """``(values, indices)``, each ``(n_x, 4)``: the ``n`` splines of the profile space that can be nonzero at the
-    label ``s`` on the points of :func:`_zeta_rule`, ``s`` that of the temperature ``T`` for the field with the values
-    ``B_jk`` at the quadrature points (:func:`mrx.flux_label.enclosed_flux_map`)."""
-    import mrx
-    x, _ = _zeta_rule(seq)
-    T_fn = DiscreteFunction(T, seq.basis_0, seq.even.E(0))
-    s_of = enclosed_flux_map(seq, T, B_jk)
-    basis = profile_basis(n)
-    return jax.lax.map(lambda y: basis.evaluate_local(s_of(T_fn(y)[0])), x.reshape(-1, 3),
-                       batch_size=mrx.MAP_BATCH_SIZE_INNER)
+def _zeta_dofs(odd):
+    """The 1-form DoFs of ``odd`` whose tensor-product coefficients are all in the ``zeta`` component, a 0/1 vector:
+    the space of ``a_zeta dzeta``. The polar extraction keeps that component apart (its axis rows combine rings of the
+    ``zeta`` component alone), so a DoF with any ``r`` or ``theta`` coefficient is found by one product of ``E`` with
+    a vector that is generic on those components and zero on ``zeta``."""
+    sizes = [int(np.prod(sh)) for sh in odd.basis_1.shape]
+    generic = np.random.default_rng(0).uniform(1.0, 2.0, sizes[0] + sizes[1])
+    probe = jnp.asarray(np.concatenate([generic, np.zeros(sizes[2])]), dtype=DTYPE)
+    return (odd.E(1) @ probe == 0.0).astype(DTYPE)
 
 
-def slip_maps(seq, values, indices, S):
-    """``(move, move_t)``: the map ``d -> T d`` to the field change (a 2-form of ``seq.odd``) of the twist
-    ``F = sum_j d_j F_j``, ``F_j = sum_k S_kj phi_k(s)``, and its transpose. ``move`` is the twist ``curl(F grad zeta)``
-    with the label's splines at the histopolation points taken from :func:`slip_table`: the values of ``F`` there,
-    their zeta integrals over the Greville cells, the three 1-D histopolation and collocation solves, the restriction
-    to the polar space and the curl. All of it is linear in ``d`` and explicit, and jax transposes it."""
-    from mrx.projectors import _restrict, _solve_tensor_collocation_axis
-    free = seq.odd.free
-    axes = seq.greville
-    _, wz = _zeta_rule(seq)
-    n_r, n_t = axes[0].point_rule[0].shape[0], axes[1].point_rule[0].shape[0]
-    zeros = jnp.zeros(sum(int(np.prod(sh)) for sh in seq.basis_1.shape[:2]), values.dtype)
+@eqx.filter_jit
+def slip_changes(seq, s_q, n):
+    """``T`` ``(n - 1, n_2)``: the field changes of the ``n - 1`` twists ``F_j = sum_{k > j} phi_k(s)`` (:func:`_steps`)
+    on the label ``s_q`` at the quadrature points, 2-forms of ``seq.odd``. The twist is ``curl(F_j dzeta)``. ``dzeta``
+    is a closed 1-form of the space, so ``F_j(1) dzeta`` adds no field and the move is ``curl a_j``, ``a_j`` the L2
+    projection of ``(F_j(s) - F_j(1)) dzeta`` onto the 1-forms ``a dzeta`` with zero tangential trace
+    (:func:`_zeta_dofs`): one mass solve of that block with the load of its quadrature values, no point value off the
+    quadrature and no interpolation of the label. ``curl(a dzeta)`` has no ``zeta`` component, so the twist keeps the
+    toroidal flux of every flux surface exactly. The projection onto all the 1-forms would not: the mass couples the
+    components, and its ``r`` and ``theta`` parts give the curl a ``zeta`` component (1e-3 of the largest on W7-X,
+    2026-11-21). ``F_j(1) = 1`` for every ``j``. The field change has no flux through the wall."""
+    odd = seq.odd
+    values, indices = jax.vmap(profile_basis(n).evaluate_local)(s_q)
+    S = _steps(n, values.dtype)
+    zeros = jnp.zeros((s_q.size, 2), values.dtype)
+    m = _zeta_dofs(odd)
+    model = _mass_model(odd, 1)
 
-    def move(d):
-        f = jnp.sum(values * (S @ d.astype(S.dtype))[indices], axis=1).reshape((n_r, n_t) + wz.shape)
-        m = jnp.einsum("ijlq,lq->ijl", f, wz)
-        for j, matrix in enumerate((axes[0].coll, axes[1].coll, axes[2].hist)):
-            m = _solve_tensor_collocation_axis(matrix, m, axis=j)
-        return seq.odd.restrict(free.G[1] @ _restrict(free, jnp.concatenate([zeros, m.ravel()]), 1), 2)
-    zero = jnp.zeros(S.shape[1], S.dtype)
-    # through the linearisation: the scatter of the polar restriction has a transpose only in its JVP form
-    move_t = jax.linear_transpose(jax.linearize(move, zero)[1], zero)
-    # MINRES calls the step's operator in float32, the transpose takes only the dtype it was built for
-    return move, lambda y: move_t(y.astype(values.dtype))[0]
+    def one(column):
+        f = jnp.sum(values * column[indices], axis=1) - 1.0
+        load = odd.vector_load_values(jnp.concatenate([zeros, f[:, None]], axis=1), 1, 1)
+        a, _ = solve_singular_cg(lambda x: _mass(odd, x * m, 1) * m, load * m, jnp.zeros((0, load.size)),
+                                 precond_matvec=lambda r: model.apply(r * m) * m, tol=odd.tol, maxiter=odd.maxiter)
+        return to_working(odd.G[1] @ to_working(a))
+    return jax.lax.map(one, S.T)
 
 
 def _steps(K, dtype):
@@ -278,30 +271,27 @@ def _steps(K, dtype):
 def current_moments(seq, B, move_t):
     """``mu_j = -(B, T_j)_M / Z``, the local means ``int M_j(s) mu0 I(s) ds`` of the net toroidal current of ``B``
     inside the label's surfaces (T m, along ``+zeta``), with ``move_t`` the transpose of the slips' field change
-    (:func:`slip_maps`) and ``Z`` the ``zeta`` extent of the integrals."""
+    (:meth:`Slips.maps`) and ``Z`` the ``zeta`` extent of the integrals."""
     return -move_t(seq.odd.M[2] @ B) / jnp.sum(seq.quad.w_z)
 
 
 @eqx.filter_jit
-def _slip_parts(seq, B, T, cells):
-    K = cells + PROFILE_DEGREE
-    values, indices = slip_table(seq, T, seq.odd.evaluate_at_quadrature(B, 2), K)
-    S = _steps(K, T.dtype)
-    move, move_t = slip_maps(seq, values, indices, S)
-    M2 = seq.odd.M[2]
-    D = jax.lax.map(lambda e: move_t(M2 @ move(e)), jnp.eye(S.shape[1], dtype=S.dtype))
-    return values, indices, S, current_moments(seq, B, move_t), 0.5 * (D + D.T)
+def _slip_parts(seq, B, T_slip):
+    M2T = jax.lax.map(lambda t: seq.odd.M[2] @ t, T_slip)
+    D = T_slip @ M2T.T
+    return -(T_slip @ (seq.odd.M[2] @ B)) / jnp.sum(seq.quad.w_z), 0.5 * (D + D.T)
 
 
 def build_slips(seq, B, T, mu_star):
     """``(slips, mu)``: the :class:`Slips` at the field ``B`` with the label temperature ``T`` and the target moments
     ``mu_star`` (:func:`current_target`, one per slip, on the profile space of ``mu_star.size - 2`` cells), and the
-    moments ``mu`` of ``B`` (:func:`current_moments`). The block costs two applies of the field change per slip,
-    without a solve. The target's part is ``g = -Z mu_star``."""
-    values, indices, S, mu, D = _slip_parts(seq, B, T, int(mu_star.size) + 1 - PROFILE_DEGREE)
+    moments ``mu`` of ``B`` (:func:`current_moments`). The field changes cost
+    one mass solve per slip (:func:`slip_changes`). The target's part is ``g = -Z mu_star``."""
+    T_slip = slip_changes(seq, _label_of(seq, B, T), int(mu_star.size) + 1)
+    mu, D = _slip_parts(seq, B, T_slip)
     g = -jnp.sum(seq.quad.w_z) * mu_star
     # inverted on the host in float64, as the shell block is
-    return Slips(values, indices, S, g, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), mu
+    return Slips(T_slip, g, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), mu
 
 
 def iota_residual(seq, T, s_q, iota, n_mu):
@@ -347,9 +337,9 @@ def slip_transform(residual, B, change, n):
     change the residual.
 
     An exact twist ``F = sum_k d_k F_k`` changes the transform by ``-nfp F'(s) / Phi``, so ``R`` would be
-    ``-nfp / Phi int M_j M_k ds``. The discrete twist is the histopolation of ``F`` on the mesh, which resolves the
-    innermost steps poorly: on W7-X 25 kA (33, 64, 36) the derivative of the first two slips is 48 % and 51 % off the
-    exact one, of the others 1.3 to 3 %. So ``R`` is taken from the discrete twists, ``n`` derivatives in ``B``."""
+    ``-nfp / Phi int M_j M_k ds``. The discrete twist is the projection of ``F`` on the mesh, which resolves the
+    innermost steps poorly: on W7-X 25 kA (33, 64, 36) the derivative of the first two slips of the histopolated twist
+    was 48 % and 51 % off the exact one, of the others 1.3 to 3 %. So ``R`` is taken from the discrete twists, ``n`` derivatives in ``B``."""
     eye = jnp.eye(n, dtype=B.dtype)
     return np.stack([np.asarray(jax.jvp(residual, (B,), (change(eye[j]),))[1][0], dtype=np.float64)
                      for j in range(n)], 1)
@@ -428,9 +418,7 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
 def current_on_label(seq, B, T, cells=PROFILE_CELLS):
     """The moments ``mu`` (:func:`current_moments`) of the field ``B`` on the label of the temperature ``T``, on the
     profile space of ``cells`` cells."""
-    K = cells + PROFILE_DEGREE
-    values, indices = slip_table(seq, T, seq.odd.evaluate_at_quadrature(B, 2), K)
-    return current_moments(seq, B, slip_maps(seq, values, indices, _steps(K, T.dtype))[1])
+    return _slip_parts(seq, B, slip_changes(seq, _label_of(seq, B, T), cells + PROFILE_DEGREE))[0]
 
 
 def _derivatives(n_mu):
