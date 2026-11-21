@@ -40,8 +40,8 @@ The target is a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a VME
 :func:`load_target`), evaluated at the labels of the quadrature points. An island chain wider than the label's
 flattening width is one level set of the label, so the target has one value on it. A
 profile that an outer loop sets from the field, such as a fit of pressure data (``scripts/pressure_fit.py``), takes
-its place between chunks (:func:`mrx.relaxation.loop.relax`). The labels of points in space on a field are
-:func:`point_labels`, after :func:`logical_points` once.
+its place between chunks (:func:`mrx.relaxation.loop.relax`). :func:`logical_points` locates points in space on the
+map.
 """
 
 import equinox as eqx
@@ -49,8 +49,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction
-from mrx.flux_label import enclosed_flux, enclosed_flux_map, flux_label
+from mrx.flux_label import enclosed_flux, flux_label
 from mrx.operators import _hodge_split
 from mrx.precision import to_working
 from mrx.relaxation.newton import atom_profiles, parallel_penalty_profile, second_variation
@@ -200,15 +199,6 @@ def logical_points(seq, X, newton_steps=8):
         y = chart(p)
         return y, jnp.linalg.norm(seq.map(y) - Xi)
     return jax.vmap(invert)(x0, X)
-
-
-def point_labels(seq, B, T, x):
-    """The flux labels ``s`` at the logical points ``x`` (``(n, 3)``, from :func:`logical_points`) for the field
-    ``B`` with the label temperature ``T`` (:func:`label`): the toroidal flux fraction inside the level set of ``T``
-    through each point. The points stay, the labels move with the surfaces."""
-    B_jk = seq.odd.evaluate_at_quadrature(B, 2)
-    T_x = jax.vmap(DiscreteFunction(T, seq.basis_0, seq.even.E(0)))(x)[:, 0]
-    return enclosed_flux_map(seq, T, B_jk)(T_x)
 
 
 def load_target(seq, spec, scale=1.0):

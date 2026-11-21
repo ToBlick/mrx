@@ -401,9 +401,7 @@ res = relax(initial_state(B0, ts), ts, steps, chunk, rebuild=rebuild)
 ```
 
 What the loop can read on the label: the label $s$ at the quadrature points
-and its temperature `T` ({func}`mrx.relaxation.shells.label`), the label at
-points in space ({func}`mrx.relaxation.shells.logical_points` once, then
-{func}`mrx.relaxation.shells.point_labels`), the current's moments
+and its temperature `T` ({func}`mrx.relaxation.shells.label`), the current's moments
 ({func}`mrx.relaxation.twist.current_on_label`), the transform
 ({func}`mrx.relaxation.twist.iota_fit`) and the pressure, the weak pressure
 ({func}`mrx.relaxation.physics.weak_pressure`) against $s$ at the quadrature
@@ -416,9 +414,15 @@ them). The shells and the slips hold the label of one field, so they are
 rebuilt every chunk whether the targets change or not.
 
 `scripts/pressure_fit.py` is a loop written outside the library. It fits a
-pressure profile to measured data, at points in space or on flux surfaces, as
-a Bayesian posterior whose prior weight the evidence sets, refits data at
-points on their labels before every chunk and writes the posterior's band. It
+pressure profile to measured data, in volumes about points in space or on flux
+surfaces, as a Bayesian posterior whose prior weight the evidence sets. A
+datum at a point is the mean of the pressure over its instrument kernel, a
+Gaussian about the point, narrow across the flux surfaces and wide along
+them, so its observation is a weak functional of the profile on the label,
+integrated at the volume quadrature points. The pressure is a function of the
+label, so such a kernel observes what a small instrument volume does, and the
+quadrature resolves it. It is
+refitted before every chunk, and the script writes the posterior's band. It
 runs `scripts/relax.py` with its fit as the pressure target (relax.py's `main`
 takes it as `fit`), so it takes every flag of relax.py, with the data file as
 `--pressure.target`. Its docstring states the model.
@@ -428,7 +432,8 @@ python -u scripts/pressure_fit.py --geometry.path data/wout_li383_1.4m.nc --geom
     --geometry.graded --budget.steps 300 --pressure.target data.json
 ```
 
-with `data.json` = `{"points": [[R, Z, phi_deg], ...], "p_pa": [...], "sigma_pa": ...}`
+with `data.json` = `{"points": [[R, Z, phi_deg], ...], "kernel_m": [w_across, w_along], "p_pa": [...], "sigma_pa": ...}`
+(the kernel's standard deviations across the flux surfaces and along them, one pair or one per point)
 or `{"rho": [...], "p_pa": [...], "sigma_pa": ...}` (`"sigma_pa"` optional).
 
 ## Mesh motion
