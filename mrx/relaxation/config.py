@@ -198,8 +198,6 @@ class Pressure:
     """Multiply the target by this factor."""
     beta: Optional[float] = None
     """Instead of --pressure.scale, scale the target's profile to this volume beta, int p* dV / int B^2/2 dV, on the field of every rebuild. It is the beta of the run's pressure in the gauge <p> = <p*>. beta_vol, of the weak pressure that vanishes on the wall, differs from it by the pressure's constant."""
-    plateau_margin: float = 1.0
-    """With --seed, the target is made constant across each seeded chain, sqrt(s) in r +- margin w / 2 from the seeding's estimate of its radius r and width w: a pressure that falls across an island cannot be met. 0 leaves the target as it is."""
     anisotropy: float = ANISOTROPY
     """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
     label_tol: float = LABEL_TOL

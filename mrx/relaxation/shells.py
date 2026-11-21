@@ -37,7 +37,8 @@ pressure cannot move a fixed wall. The pressure's constant, which no move change
 (:func:`pressure_error`): with it all ``K`` moments of ``p - p*`` vanish at an equilibrium.
 
 The target is a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a VMEC input namelist,
-:func:`load_target`), made constant across seeded island chains (:func:`plateau_intervals`, :func:`flattened`). A
+:func:`load_target`), evaluated at the labels of the quadrature points. An island chain wider than the label's
+flattening width is one level set of the label, so the target has one value on it. A
 profile that an outer loop sets from the field, such as a fit of pressure data (``scripts/pressure_fit.py``), takes
 its place between chunks (:func:`mrx.relaxation.loop.relax`). The labels of points in space on a field are
 :func:`point_labels`, after :func:`logical_points` once.
@@ -176,36 +177,6 @@ def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
     # inverted on the host in float64, as the polar Gram blocks are: the block's condition (2e6 on li383 graded
     # (16,32,12)) is beyond a float32 inverse, which came out indefinite and stopped MINRES on nonpositive curvature
     return Shells(Xi, g_p, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), info
-
-
-def plateau_intervals(rows, margin=1.0):
-    """The intervals of ``s`` that seeded island chains occupy, from the seeding's estimate (the rows of
-    :func:`mrx.relaxation.seeding.energy_seed`: the resonant surface ``x = sqrt(s)`` and the estimated full width
-    ``w`` in ``x``): ``sqrt(s)`` in ``x +- margin w / 2``, overlapping intervals merged. Ideal moves keep the toroidal
-    flux of every surface, so the intervals stay where the chains are."""
-    iv = sorted((max(row["x"] - 0.5 * margin * row["w"], 0.0) ** 2, min(row["x"] + 0.5 * margin * row["w"], 1.0) ** 2)
-                for row in rows)
-    merged = []
-    for lo, hi in iv:
-        if merged and lo <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
-        else:
-            merged.append((lo, hi))
-    return merged
-
-
-def flattened(profile, intervals):
-    """The profile ``profile(s)`` made constant on each interval of ``s``: ``profile(sigma(s))`` with ``sigma`` the
-    label that counts only the flux outside the intervals. The values at the axis and the wall stay, the profile is
-    constant and continuous across each interval, and the rest of it gets steeper. The two branches of an island's
-    separatrix are one surface with one pressure, so a target that falls across an island cannot be met: the
-    relaxation then keeps a pressure that varies along the island's field lines and a residual that does not fall."""
-    s = np.linspace(0.0, 1.0, 4001)
-    inside = sum(np.clip(s, lo, hi) - lo for lo, hi in intervals)
-    total = sum(hi - lo for lo, hi in intervals)
-    values = jnp.asarray(profile(jnp.asarray((s - inside) / (1.0 - total))))
-    s = jnp.asarray(s)
-    return lambda x: jnp.interp(x, s, values)
 
 
 def logical_points(seq, X, newton_steps=8):

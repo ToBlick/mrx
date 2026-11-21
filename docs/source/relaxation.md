@@ -147,7 +147,7 @@ the pair `--seed` / `--no-seed`:
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
-| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
+| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
 | mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol`, `--mesh.every-step` |
 | output | `--output.out`, `--output.restart` |
@@ -219,11 +219,10 @@ fixed wall, so no move changes the pressure's constant. It is fixed by the
 gauge $\langle p \rangle = \langle p^* \rangle$ of the volume means: the
 run's pressure is $p_w + C$, with $p_w$ the weak pressure, which vanishes on
 the wall, and $C = \langle p^* - p_w \rangle$. A target is set to zero on the
-wall. And a pressure that falls across an island chain cannot be met, since
-the two branches of its separatrix are one surface. With `--seed` the target
-is made constant across each seeded chain, over $\sqrt{s} \in x \pm m\, w/2$
-from the seeding's estimate of its resonant surface $x = \sqrt{s}$ and width $w$
-(`--pressure.plateau-margin` $m$).
+wall. The target is evaluated at the label of every quadrature point. An
+island chain wider than the label's flattening width is one level set of the
+label, so the target has one value on it, as the two branches of the
+separatrix are one surface.
 
 The `pressure` record has the error of $p_w + C$ against the target, $C$ and
 `beta`, the volume beta of the target and so of $p_w + C$. `beta_vol` is that
@@ -550,7 +549,7 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 

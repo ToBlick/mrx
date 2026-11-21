@@ -15,8 +15,7 @@ With ``--pressure.target`` the volumes of the flux shells are unknowns of every 
 at the target pressure, a profile (the file's or a VMEC input namelist's, scaled by ``--pressure.scale`` or to
 ``--pressure.beta``, :mod:`mrx.relaxation.shells`). Measured pressure is fitted by ``scripts/pressure_fit.py``, which
 runs this script with its fit as the target. The shells and the target are rebuilt on the flux label of the field
-before every chunk. With ``--seed`` the target is
-made constant across the seeded chains (``--pressure.plateau-margin``). Such a run takes all of ``--budget.steps``:
+before every chunk. Such a run takes all of ``--budget.steps``:
 the force residual does not see the shells, so ``--budget.floor-tol`` does not end it.
 
 With ``--current.target`` the poloidal flux slips between the flux surfaces are unknowns of every Newton step, so the
@@ -53,7 +52,7 @@ after their last build, or a Newton solve stopped at its iteration cap.
 
 Output (in ``--output.out``):
     relax.json                   The configuration (flat, plus facts of the run) under ``params``, then ``ic``,
-                                 ``iota`` (the target and before every chunk the transform's weak residual, its miss, the step and the current target), ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
+                                 ``iota`` (the target and before every chunk the transform's weak residual, its miss, the step and the current target), ``seed``, ``drive``, ``pressure`` (the target and before every chunk
                                  and at the end the pressure's error against it and the target's beta), ``current``
                                  (the target's moments and before every chunk and at the end the current's), ``mesh``
                                  (the moves of the start, every move of the axis, the chunks' MINRES counts and the
@@ -93,8 +92,7 @@ def main(cfg, fit=None):
     from mrx.relaxation import mesh_motion
     from mrx.relaxation.mesh_motion import install_checkpoint_map, write_map
     from mrx.relaxation.physics import current, resistive_step, weak_pressure
-    from mrx.relaxation.shells import (ERROR_BINS, build_shells, flattened, label, load_target, plateau_intervals,
-                                       pressure_error, target_beta)
+    from mrx.relaxation.shells import ERROR_BINS, build_shells, label, load_target, pressure_error, target_beta
     from mrx.relaxation.seeding import energy_seed
     from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_fit, iota_newton,
                                       load_current_target, load_iota_target, spline_centres)
@@ -226,17 +224,14 @@ def main(cfg, fit=None):
         if fit is None and pr.target.endswith(".json"):
             raise ValueError(f"--pressure.target {pr.target}: measured pressure is fitted by scripts/pressure_fit.py")
         target = load_target(seq, pr.target, pr.scale) if fit is None else None
-        plateaus = (plateau_intervals(results["seed"], pr.plateau_margin)
-                    if "seed" in results and pr.plateau_margin else [])
-        results["pressure"] = dict(target=pr.target, plateaus=plateaus, rebuilds=[])
-        print(f"[pressure] target {pr.target}" + (f", constant on s in {plateaus}" if plateaus else "")
-              + (f", scaled to beta {pr.beta:g}" if pr.beta is not None else ""), flush=True)
+        results["pressure"] = dict(target=pr.target, rebuilds=[])
+        print(f"[pressure] target {pr.target}" + (f", scaled to beta {pr.beta:g}" if pr.beta is not None else ""), flush=True)
 
         def measure(state, it, s_q, info):
             """``p_q``: the target on the label ``s_q`` of the field of ``state``, at the quadrature points. The
             pressure's error against the target and the target's beta go into the record."""
             profile, record = (target, {}) if fit is None else fit(seq, state.B_n, T_label)
-            p_q = (flattened(profile, plateaus) if plateaus else profile)(s_q)
+            p_q = profile(s_q)
             beta, scale = target_beta(seq, state.B_n, p_q), {}
             if pr.beta is not None:
                 # scaled on this field: the shells change their volumes along the run, and with them the volume
@@ -288,9 +283,8 @@ def main(cfg, fit=None):
         def seed_converged(state, it, s_q):
             """With a target transform the seed waits for it: it resonates with the field's own transform,
             which the first chunks still move. The field is seeded at the first chunk boundary at which the label
-            fit misses the target by less than AT_TARGET of its largest value, and the
-            pressure target is flattened across the seeded chains then. Returns the state and whether it seeded."""
-            nonlocal plateaus
+            fit misses the target by less than AT_TARGET of its largest value. Returns the state and whether it
+            seeded."""
             s = np.linspace(0.05, 0.95, 19)
             miss = float(np.abs(np.abs(iota_fit(seq, state.B_n, T_label, np.asarray(s_q), 6)(s))
                                 - np.abs(np.asarray(iota_star(s)))).max())
@@ -302,9 +296,6 @@ def main(cfg, fit=None):
             results["iota"]["seed_step"] = it
             print(f"[seed] step {it}: the transform misses by {miss:.2e} < {AT_TARGET:g} of its largest value, "
                   f"seeded", flush=True)
-            if pr and pr.plateau_margin and rows:
-                plateaus = plateau_intervals(rows, pr.plateau_margin)
-                results["pressure"]["plateaus"] = plateaus
             return initial_state(B_seeded, ts, step=it), True
     # --- the pole on the magnetic axis before every chunk, the preconditioners built again on need ---
     mm = cfg.mesh
