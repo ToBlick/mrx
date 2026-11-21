@@ -370,7 +370,15 @@ reaches 1.1e-9. The 19 MINRES solves cost 256 s over the 22 updates (one H200,
 2026-11-20). The transform keeps an oscillation at the scale of the profile
 cells, 1.5e-3 at most, which the current-prescribed relaxation has too
 (4.4e-3): it is orthogonal to the $M_j$, so no target reaches it.
-IOTA_W7X_NUMBERS
+On W7-X standard (32,64,36), graded, p = 2, with the polynomial transform and
+pressure of a namelist, from a state at the residual bar with the axis 0.19
+first cells off the pole (`--mesh.align --mesh.bar 1e-8`), the largest weak
+residual is 3.3e-5 after 120 steps, against 8.2e-3 and 3.8e-2 with the fit of
+the transform this loop replaced. The current target is smooth: the first four
+moments are 0.03e-3 T m at most, against an alternation up to 0.46e-3 T m, and
+the net current is 1.1 kA against 7.5 to 8.0 kA, the answer of the fit to its own
+error near the wall. The traced transform within 63 mm of the axis is within
+0.021 of the target, against 0.036 and 0.12 (one H200, 2026-11-21).
 
 ## Outer loops
 
