@@ -2,7 +2,7 @@
 
 The incompressible flows tangent to the wall are ``curl a + c h``, with ``h`` the harmonic 2-form of the domain. The
 curls are ``M``-orthogonal to ``h``, so a step ``curl a`` cannot move the field along ``h``, and the derivative of the
-energy along it, ``h . load(J x B)``, is the harmonic part of the force. With stellarator symmetry ``h`` is odd and the
+energy along it, ``h . load(J x h)``, is the harmonic part of the force. With stellarator symmetry ``h`` is odd and the
 force even, so that part vanishes, and the even flows of a half-period sequence hold no ``h``. Without the symmetry
 the Newton step has the amplitude ``c`` as one more unknown (:func:`mrx.relaxation.newton.target_direction`).
 

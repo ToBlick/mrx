@@ -1,12 +1,12 @@
 """The Newton direction is the second-order model of the energy along the ideal flow, and it descends.
 
 For a fixed divergence-free velocity ``u`` (an even 2-form) the ideal flow of the relaxation is
-``dB/dt = A_u B`` with ``A_u B = G_1 M_1^{-1} load(u x B)``, the increment of the time step. It is linear in
-``B``, so ``B(t) = sum_n t^n A_u^n B / n!`` and the energy ``E(t) = ||B(t)||^2_M / 2`` has
+``dB/dt = A_u B`` with ``A_u B = G_1 M_1^{-1} load(u x h)``, ``h = Pi_1 B`` the L2 projection onto the free 1-forms,
+the increment of the time step. It is linear in ``B``, so ``B(t) = sum_n t^n A_u^n B / n!`` and the energy ``E(t) = ||B(t)||^2_M / 2`` has
 
     E'(0) = (B, A_u B)_M,        E''(0) = ||A_u B||^2_M + (B, A_u^2 B)_M.
 
-The force pairing ``-(u, J x B)_M`` must equal ``E'(0)``, and the second variation ``H`` of
+The force pairing ``-(u, J x h)_M`` must equal ``E'(0)``, and the second variation ``H`` of
 :func:`mrx.relaxation.newton.second_variation` must reproduce ``E''(0) = (u, H u)`` for every ``u``. Both sides
 are computed from different code: the left from the stepper's ``A_u`` alone, the right from the current and the
 product loads. By polarisation the bilinear form is checked too, ``(u, H v) = (q(u + v) - q(u) - q(v)) / 2``
@@ -52,11 +52,16 @@ def _divergence_free(seq, key):
 
 
 def _flow(seq, u):
-    """``X -> A_u X = G_1 M_1^{-1} load(u x X)`` for odd 2-forms ``X``, the increment of the ideal step."""
+    """``X -> A_u X = G_1 M_1^{-1} load(u x Pi_1 X)`` for odd 2-forms ``X``, the increment of the ideal step, with
+    ``Pi_1 X`` the L2 projection onto the free 1-forms formed here from the mass matrix alone."""
     odd, even = seq.odd, seq.even
+    free = odd.free
     u_q = even.evaluate_at_quadrature(u, 2)
-    return lambda X: odd.G[1] @ odd.M[1].solve(odd.cross_product_load_values(u_q, odd.evaluate_at_quadrature(X, 2),
-                                                                           1, 2, 2))
+
+    def A(X):
+        h = free.M[1].solve(free.vector_load_values(odd.evaluate_at_quadrature(X, 2), 2, 1))
+        return odd.G[1] @ odd.M[1].solve(odd.cross_product_load_values(u_q, free.evaluate_at_quadrature(h, 1), 1, 2, 1))
+    return A
 
 
 def _energy_derivatives(seq, B, u):
@@ -68,7 +73,7 @@ def _energy_derivatives(seq, B, u):
 
 
 def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
-    """``E'(0) = -(u, J x B)``, ``E''(0) = (u, H u)`` and the polarised ``(u, H v)``, for random ``u``, ``v``."""
+    """``E'(0) = -(u, J x h)``, ``E''(0) = (u, H u)`` and the polarised ``(u, H v)``, for random ``u``, ``v``."""
     even = seq.even
     _, _, J, JxB = compute_force(b0, seq)
     H = second_variation(seq, b0, J)
@@ -81,7 +86,7 @@ def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
     uHu, uHv = float(u @ H(u)), float(u @ H(v))
     polar = 0.5 * (quv - qu - qv)
     band = 1e3 * max(seq.tol, eps())
-    print(f"\n  E'(0) {d1u:+.6e} vs -(u, J x B) {force:+.6e},  E''(0) {qu:+.6e} vs (u, H u) {uHu:+.6e},  "
+    print(f"\n  E'(0) {d1u:+.6e} vs -(u, J x h) {force:+.6e},  E''(0) {qu:+.6e} vs (u, H u) {uHu:+.6e},  "
           f"polarised {polar:+.6e} vs (u, H v) {uHv:+.6e}")
     # (B, A_u B) is a cancelling dot product: the solve error of A_u B is tol |A_u B|, so the identity holds to
     # tol |B| |A_u B|, not to tol |E'(0)|.
