@@ -40,8 +40,7 @@ every chunk the pole moves onto the axis of the field. The field keeps its coeff
 the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
 the slips are rebuilt and does not change the targets. With ``--mesh.axis-to`` the run is the coarse pass of a finer
 one's ``--mesh.axis-from``: it ends once its magnetic axis has settled and writes it. With ``--mesh.bar`` the pole moves only at an equilibrium, and
-only while every move finds the axis closer to the pole than the move before: the first move that does not is not
-made, and the pole stays where it is for the rest of the run. With ``--iota.target`` the loop takes its step at such
+only when the axis is more than ``--mesh.move-tol`` first radial cells off it. With ``--iota.target`` the loop takes its step at such
 an equilibrium before the move and holds its current target from a move until the field is below the bar again. The
 checkpoints keep that schedule. The moves keep the preconditioners, which are built again on the installed map when
 the chunk's mean MINRES count of the Newton solve exceeds ``--mesh.rebuild-factor`` times that of the first chunk
@@ -137,18 +136,16 @@ def main(cfg, fit=None):
     ts = cfg.stepper(seq)
     if cfg.mesh:
         results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
-    # with --mesh.bar: the axis offset (first cells) at the last move, whether the moves have stopped, whether the iota
-    # loop holds its target since the last move, and the field's residual at this chunk boundary
-    schedule = dict(last=None, stopped=False, hold=False, resid=None)
+    # with --mesh.bar: whether the iota loop holds its target since the last move, and the field's residual at this
+    # chunk boundary
+    schedule = dict(hold=False, resid=None)
     iota_target = None              # the iota loop's current target, set at its first chunk
     if cfg.output.restart:
         state, it0 = read_checkpoint(cfg.output.restart, ts)
         print(f"[restart] {cfg.output.restart}: descent state at step {it0}", flush=True)
         with h5py.File(cfg.output.restart, "r") as fh:
-            if cfg.mesh and "mesh_last_offset" in fh.attrs:
-                last = float(fh.attrs["mesh_last_offset"])
-                schedule.update(last=None if last < 0 else last, stopped=bool(fh.attrs["mesh_stopped"]),
-                                hold=bool(fh.attrs["mesh_hold"]))
+            if cfg.mesh and "mesh_hold" in fh.attrs:
+                schedule.update(hold=bool(fh.attrs["mesh_hold"]))
                 print(f"[restart] mesh schedule: {schedule}", flush=True)
             if cfg.iota and "iota_target" in fh.attrs:
                 iota_target = np.asarray(fh.attrs["iota_target"], dtype=np.float64)
@@ -197,8 +194,7 @@ def main(cfg, fit=None):
         if cfg.mesh or iota_target is not None:
             with h5py.File(path, "a") as fh:
                 if cfg.mesh:
-                    fh.attrs.update(mesh_last_offset=-1.0 if schedule["last"] is None else schedule["last"],
-                                    mesh_stopped=int(schedule["stopped"]), mesh_hold=int(schedule["hold"]))
+                    fh.attrs.update(mesh_hold=int(schedule["hold"]))
                 if iota_target is not None:
                     fh.attrs["iota_target"] = iota_target
     checkpoint(f"state_{it0:06d}.h5", state, it0)
@@ -324,23 +320,15 @@ def main(cfg, fit=None):
             if mm.bar is not None:
                 d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
                 off = float(np.max(np.linalg.norm(d, axis=1))) / h1
-                # not an equilibrium: its axis is not that of the field it relaxes to. At an equilibrium a move that
-                # would not find the axis closer to the pole than the last move did ends the moves for good: the
-                # targets keep the axis that far off, a frozen move only kicks the field
-                why = ("moves stopped" if schedule["stopped"] else
-                       "above the bar" if not before < mm.bar else
-                       "the vacuum start's axis" if it == 0 and "start" in results["mesh"] else
-                       "no closer than at the last move" if schedule["last"] is not None and off >= schedule["last"]
-                       else None)
+                # not an equilibrium: its axis is not that of the field it relaxes to. At an equilibrium the pole
+                # moves only when the axis is more than --mesh.move-tol first cells off it
+                why = ("above the bar" if not before < mm.bar else
+                       f"within {mm.move_tol:g} first cells" if not off > mm.move_tol else None)
                 if why is not None:
-                    if why == "no closer than at the last move":
-                        schedule["stopped"] = True
-                        results["mesh"]["stopped"] = dict(step=it, axis_cells=off, last=schedule["last"])
                     results["mesh"]["checks"].append(dict(step=it, axis_cells=off, resid=before, why=why))
                     print(f"[mesh] step {it}: residual {before:.3e}, axis {off:.3e} first cells off the pole, no move "
                           f"({why})", flush=True)
                     return state
-                schedule["last"] = off
             rec = mesh_motion.axis_move(seq, state.B_n)
             ts = cfg.stepper(seq)
             rec.update(step=it, resid_before=before, resid_after=float(initial_state(state.B_n, ts).best.resid))
