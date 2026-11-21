@@ -10,7 +10,8 @@ with the parallel conductivity 1 and the perpendicular one ``kperp``, the ``anis
 temperature becomes constant along the field lines wherever they cover a surface, so on nested surfaces it is a
 function of the enclosed flux: on the li383 VMEC field its spread around a radial layer is 1.1e-3 of its maximum at
 ``kperp = 1e-5`` and 1.2e-4 at ``1e-6``. :func:`enclosed_flux` turns it into the label ``s``, the toroidal flux inside
-the level set of ``T`` over the total flux. On a VMEC field this is VMEC's ``s``.
+the level set of ``T`` over the total flux, a spline in ``T`` fixed by weak moments (:func:`label_spline`). On a VMEC
+field this is VMEC's ``s``.
 
 Across an island ``T`` stays smooth and falls through it as across nested surfaces, so ``s`` there is about the flux
 of the surfaces around it. It is not flat: an island flattens only when it is wider than about
@@ -22,6 +23,8 @@ and 1 % at ``1e-8``. The uniform source does not give such an island a maximum o
 The field enters only through its values at the quadrature points. On a stellarator-symmetric sequence ``T`` is
 even and lives on ``seq.even``. All functions trace, so they can run inside a compiled relaxation step.
 """
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,6 +32,7 @@ import numpy as np
 from mrx.mass import sumfact_apply
 from mrx.precision import to_working
 from mrx.solvers import preconditioned_cg
+from mrx.spline_bases import DerivativeSpline, SplineBasis, basis_table
 
 #: The default ``kperp``: ten times better aligned with the surfaces than 1e-5 at about 1.8 times the CG iterations
 #: (li383 (16,32,32)), far from the spurious maxima below about 1e-9.
@@ -145,50 +149,68 @@ def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=M
     return to_working(T), info
 
 
-def label_knots(seq, T, B_jk):
-    """``(T_knots, s_knots)``: the label ``s(T)`` as a piecewise linear function, ``T_knots`` ascending from
-    ``T = 0`` on the wall (``s = 1``) to the hottest quadrature point (``s = 0``).
+def label_spline(seq, T, B_jk, cells=None):
+    """``(a, b, e)``: the label ``s = sigma(T)`` as a cubic spline in ``T`` on ``[a, b]``, ``a`` and ``b`` the smallest
+    and the largest tensor coefficient of ``T`` (bounds of its values, ``a <= 0`` since ``T`` vanishes on the wall),
+    ``e`` the coefficients of ``sigma`` in the clamped cubic splines of ``u = (T - a) / (b - a)`` on ``cells`` uniform
+    cells (the number of radial cells of ``seq`` unless given).
 
-    The flux through a ``zeta = const`` plane is ``int Bh^zeta dr dtheta``, and its average over ``zeta`` is the
-    quadrature sum of ``Bh^zeta`` (exact on a half-period quadrature too). Each quadrature point carries its share
-    ``w_q Bh^zeta_q`` of the flux. Sorted by falling ``T``, the flux of all hotter points gives ``s`` at the
-    samples, but only to one radial layer of samples, whose points have nearly the same ``T``. So the sorted
-    samples are cut into as many groups as there are radial quadrature layers, and the knots are the group means
-    of ``T`` and ``s``. Points of equal ``T`` have equal ``s``, and a layer's points get about the flux at its
-    middle.
-    """
+    ``sigma(t)`` is the toroidal flux inside the level set ``T = t`` over the total flux. The flux through a plane
+    ``zeta = const`` is ``int Bh^zeta dr dtheta``, its mean over ``zeta`` the volume integral of ``Bh^zeta`` over
+    the logical cube over the ``zeta`` extent ``Z``. By the coarea formula the derivative of ``sigma`` has the moments
+
+        int sigma'(u) M_k(u) du = -(1 / (Z Phi)) int M_k(u(T)) Bh^zeta dx
+
+    against every derivative spline ``M_k`` (:class:`~mrx.spline_bases.DerivativeSpline`, quadratic): a volume
+    integral of the field's own component and of the 0-form ``T`` at the quadrature points. ``sigma'`` is their L2
+    projection onto the ``M_k`` (one Gram solve of the quadratic splines) and ``sigma`` its integral with
+    ``sigma(b) = 0``. The constants lie in the span of the ``M_k``, so ``sigma(a) = 1`` exactly. Nothing is sorted,
+    binned or read off at a point. Points of equal ``T`` have equal ``s``. The projection resolves the distribution
+    of the flux over ``T`` on the cells: where the level sets meet the hottest value (the magnetic axis) the
+    distribution ends with a jump inside the last cell, and there the projection is accurate to about a cell's share
+    of the flux."""
+    nc = (seq.basis_0.Lambda[0].n - seq.p) if cells is None else int(cells)
+    basis = SplineBasis(nc + 3, 3, "clamped")
+    d = DerivativeSpline(basis)
+    c = seq.even.E(0).T @ T
+    a, b = jnp.min(c), jnp.max(c)
     T_q = seq.even.evaluate_at_quadrature(T, 0)[:, 0]
-    zero, one = jnp.zeros(1, T_q.dtype), jnp.ones(1, T_q.dtype)
-    layers = int(seq.quad.shape[0])
     f = seq.quad.w * jnp.asarray(B_jk)[:, 2]
-    order = jnp.argsort(-T_q)                                                    # descending T
-    s_sorted = (jnp.cumsum(f[order]) - 0.5 * f[order]) / f.sum()
-    group = jnp.arange(T_q.size) * layers // T_q.size
-    count = jax.ops.segment_sum(jnp.ones_like(T_q), group, layers)
-    T_mean = jax.ops.segment_sum(T_q[order], group, layers) / count
-    s_mean = jax.ops.segment_sum(s_sorted, group, layers) / count
-    T_knots = jnp.concatenate([T_q[order][:1], T_mean, zero])[::-1]                           # ascending
-    s_knots = jnp.concatenate([zero, s_mean, one])[::-1]
-    return T_knots, s_knots
+    values, indices = jax.vmap(d.evaluate_local)((T_q - a) / (b - a))
+    m = -jnp.zeros(d.n, f.dtype).at[indices].add(values * f[:, None]) / jnp.sum(f)
+    slope = jnp.asarray(_gram_inverse(nc), dtype=f.dtype) @ m
+    e = -jnp.concatenate([jnp.cumsum(slope[::-1])[::-1], jnp.zeros(1, f.dtype)])
+    return a, b, e
+
+
+@functools.cache
+def _gram_inverse(cells):
+    """The inverse of the Gram matrix of the derivative splines of the clamped cubic splines on ``cells`` uniform
+    cells of ``[0, 1]`` (quadratic, unit integral), by three Gauss points per cell, float64."""
+    x, w = np.polynomial.legendre.leggauss(3)
+    edges = np.linspace(0.0, 1.0, cells + 1)
+    xq = (0.5 * (edges[1:] - edges[:-1])[:, None] * (x + 1.0) + edges[:-1, None]).ravel()
+    wq = (0.5 * (edges[1:] - edges[:-1])[:, None] * w).ravel()
+    with jax.ensure_compile_time_eval():          # called inside the compiled label
+        M = np.asarray(basis_table(DerivativeSpline(SplineBasis(cells + 3, 3, "clamped")), jnp.asarray(xq)),
+                       dtype=np.float64)
+    return np.linalg.inv((M * wq) @ M.T)
 
 
 def enclosed_flux(seq, T, B_jk):
     """The label ``s`` at the quadrature points: the toroidal flux inside the level set of ``T`` through each
-    quadrature point, over the total toroidal flux."""
+    quadrature point, over the total toroidal flux (:func:`label_spline`)."""
     return enclosed_flux_map(seq, T, B_jk)(seq.even.evaluate_at_quadrature(T, 0)[:, 0])
 
 
 def enclosed_flux_map(seq, T, B_jk):
     """The map ``T0 -> s`` of :func:`enclosed_flux` as a function, which also takes values of ``T`` off the
-    quadrature points (a field line's, for example). It is monotone, 0 at the hottest point and 1 at ``T = 0``."""
-    T_knots, s_knots = label_knots(seq, T, B_jk)
-    return lambda T0: jnp.interp(T0, T_knots, s_knots)
+    quadrature points (a field line's, for example): the spline :func:`label_spline`, 1 at the smallest coefficient
+    of ``T`` and 0 at the largest."""
+    a, b, e = label_spline(seq, T, B_jk)
+    basis = SplineBasis(e.size, 3, "clamped")
 
-
-def label_axis(seq, T):
-    """The logical point of the largest ``T`` on each zeta plane of the quadrature, ``(n_zeta_q, 3)``: where the
-    flux label puts the magnetic axis."""
-    nx, ny, nz = (int(v) for v in seq.quad.shape)
-    T_q = seq.even.evaluate_at_quadrature(T, 0)[:, 0].reshape(nx * ny, nz)
-    x = seq.quad.x.reshape(nx * ny, nz, 3)
-    return x[jnp.argmax(T_q, axis=0), jnp.arange(nz)]
+    def sigma(T0):
+        values, indices = jax.vmap(basis.evaluate_local)(jnp.ravel((T0 - a) / (b - a)))
+        return jnp.sum(values * e[indices], axis=1).reshape(jnp.shape(T0))
+    return sigma
