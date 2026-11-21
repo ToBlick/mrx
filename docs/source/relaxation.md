@@ -487,9 +487,10 @@ step 0 of a run from the vacuum start makes no move, since the start has put
 the pole on the vacuum's axis. A move transports the field ideally, so the
 transform as a function of the toroidal flux and the equilibrium of the
 targets stay, and only the field is kicked off that equilibrium. The loop of
-`--iota.target` holds its current target from a move until the field is below
-the bar again: until then its residual and the slips of its Newton direction
-are the kick's. Every checkpoint keeps the offset of the last move, whether
+`--iota.target` takes its step at a chunk boundary below the bar before the
+move, on the equilibrium, and holds its current target from a move until the
+field is below the bar again: until then its residual and the slips of its
+Newton direction are the kick's. Every checkpoint keeps the offset of the last move, whether
 the moves have stopped and whether the target is held, so a restart goes on
 with them.
 
