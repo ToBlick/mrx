@@ -3,11 +3,11 @@
 A VMEC input namelist holds the li383 wout's boundary, its toroidal flux, its pressure and the net toroidal current
 inside every surface of the wout's field (``NCURR = 1``). Its map, the boundary filled about the guessed axis, meets
 the boundary with a positive Jacobian, and its start, the vacuum field, has the namelist's flux, no divergence and no
-current. Run A is the user's run from that namelist alone: the vacuum start, the mesh moved towards the flux surfaces
-and the pressure and the current as targets (``--mesh.align --pressure.target --current.target``). Run B has the same
-targets on the wout's mesh from the wout's field, without motion. Both take positive steps and lower ``W`` at every
-step, both end at the targets, A's moves keep ``div B`` and the toroidal flux and put the magnetic axis on the mesh
-axis, and the two runs end at the same field at common physical points and with the same transform on their own
+current. Run A is the user's run from that namelist alone: the vacuum start on the mesh moved onto the vacuum's axis,
+the pole kept on the magnetic axis and the pressure and the current as targets (``--mesh.align --pressure.target
+--current.target``). Run B has the same targets on the wout's mesh from the wout's field, without motion. Both take
+positive steps and lower ``W`` at every step, both end at the targets, A's moves keep ``div B`` and the toroidal flux
+and put the magnetic axis on the pole, and the two runs end at the same field at common physical points and with the same transform on their own
 labels: the controls are functions of the label alone, so the end state does not depend on the mesh or on the start.
 
 ``scripts/relax.py`` is loaded from its path. Its sequences are those of the fixtures (``Geometry.build`` returns
@@ -27,7 +27,6 @@ from mrx.flux_label import ANISOTROPY
 from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces
 from mrx.precision import DTYPE, eps
-from mrx.relaxation import mesh_motion as mm
 from mrx.relaxation.loop import read_field
 from mrx.relaxation.shells import label, logical_points
 from mrx.relaxation.twist import enclosed_current, iota_fit
@@ -40,11 +39,12 @@ _spec = importlib.util.spec_from_file_location(
 relax_script = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(relax_script)
 
-#: The Newton steps of both runs, in chunks with the mesh moved (A) and the label, the shells and the slips rebuilt
+#: The Newton steps of both runs, in chunks with the pole moved (A) and the label, the shells and the slips rebuilt
 #: before each, and A's moves, one before each chunk.
-STEPS, CHUNK, MOVES = 20, 10, 2
-#: The change of the physical field by a move at fixed physical points: 5.1e-3 and 3.9e-3 measured (2026-11-19).
-DB_PHYS = 1.5e-2
+STEPS, CHUNK = 20, 10
+MOVES = STEPS // CHUNK
+#: The distance of the magnetic axis from the pole in first radial cells on the start's final map.
+AXIS_START = 1e-2
 #: The interior of the labels where the transforms are compared.
 S_TEST = np.linspace(0.05, 0.95, 19)
 #: The pressure's and the current's error at the end of each run: 3.3e-3 and 3.8e-3 for A, 3.8e-3 and 6.8e-4 for B
@@ -164,8 +164,7 @@ def runs(filled, seq):
     seq_a, namelist, _ = filled
     d = pathlib.Path(namelist).parent
     out = {"A": (seq_a, *_run(seq_a, namelist, namelist, d / "A",
-                                 ("--mesh.align", "--mesh.start", "0", "--mesh.every", str(CHUNK),
-                                  "--mesh.moves", str(MOVES)))),
+                                 ("--mesh.align",))),
            "B": (seq, *_run(seq, seq.equilibrium["path"], namelist, d / "B"))}
     for k, (_, rec, _) in out.items():
         sm = rec["summary"]
@@ -195,24 +194,20 @@ def test_both_runs_meet_the_targets(runs):
         assert sm["current_error"] < CURRENT_ERROR, k
 
 
-def test_the_mesh_moves_onto_the_field(runs):
-    """Run A moves its mesh before each chunk: every move lowers the misalignment ``|s - S(r)|``, keeps
-    ``||div B|| / ||B||`` and the toroidal flux to round-off and the physical field at fixed physical points within
-    DB_PHYS, the magnetic axis ends on the mesh axis to :data:`~mrx.relaxation.mesh_motion.AXIS_TOL` of the first
-    radial cell, and the final map's preconditioners are built once, at the last move."""
+def test_the_pole_follows_the_axis(runs):
+    """Run A starts on the mesh moved onto the vacuum's axis, which ends within :data:`AXIS_START` first radial cells of
+    the pole, so the move before the first chunk is that small too, and moves its pole onto the field's axis before
+    each chunk without a fold."""
     mesh = runs["A"][1]["mesh"]
+    print("\n  start: axis " + " -> ".join(f"{r['axis_cells']:.2e}" for r in mesh["start"]["rounds"])
+          + f" first cells, {mesh['start']['axis_cells']:.2e} on the final map")
+    assert mesh["start"]["axis_cells"] < AXIS_START
     for m in mesh["moves"]:
-        print(f"\n  step {m['step']}: axis {m['axis_cells']:.2f} -> {m['axis_cells_after']:.3f} cells, |s - S(r)| rms "
-              f"{m['e_rms']:.2e} -> {m['e_rms_after']:.2e}, div {m['div_rel']:.1e}, flux {m['flux_rel']:+.1e}, "
-              f"physical field {m['dB_phys']:.2e}")
-        assert m["e_rms_after"] < m["e_rms"]
-        assert m["div_rel"] < 1e2 * eps()
-        assert abs(m["flux_rel"]) < 1e2 * eps()
-        assert m["dB_phys"] < DB_PHYS
-    print(f"  preconditioners {mesh['preconditioners']}")
+        print(f"  step {m['step']}: axis {m['axis_cells']:.2e} cells off the pole, move x{m['lam']:g}, residual "
+              f"{m['resid_before']:.2e} -> {m['resid_after']:.2e}")
+        assert m["lam"] == 1.0
+    assert mesh["moves"][0]["axis_cells"] < AXIS_START
     assert len(mesh["moves"]) == MOVES
-    assert mesh["moves"][-1]["axis_cells_after"] < mm.AXIS_TOL
-    assert mesh["preconditioners"]["step"] == mesh["moves"][-1]["step"]
 
 
 def test_the_two_runs_end_at_the_same_state(runs):

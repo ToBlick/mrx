@@ -32,13 +32,14 @@ Nothing is stored between chunks, so a restart recomputes it. A current target a
 other. With ``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which the
 transform misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
 
-With ``--mesh.align`` the mesh moves towards the flux surfaces of the field between chunks, from step ``--mesh.start``
-on and every ``--mesh.every`` steps, until the flux label is a function of the logical radius to ``--mesh.tol`` and
-the magnetic axis sits on the mesh axis (:mod:`mrx.relaxation.mesh_motion`). The field is carried so that the physical
-field stays. A move happens before the shells and the slips are rebuilt and does not change the targets.
-
-The moves keep the preconditioners of the start map. Once the mesh is aligned or out of moves those of the final map
-are built.
+With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
+the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with the vacuum solved on it. Before
+every chunk the pole moves onto the axis of the field. The field keeps its coefficients: it rides with the map, and
+the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
+the slips are rebuilt and does not change the targets. The moves keep the
+preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve
+exceeds ``--mesh.rebuild-factor`` times that of the first chunk after their last build, or a Newton solve stopped at
+its iteration cap.
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 
@@ -50,15 +51,14 @@ Output (in ``--output.out``):
                                  ``iota`` (the target and before every chunk the transform's miss, the moments and the current target), ``seed``, ``drive``, ``pressure`` (the target, its plateaus and before every chunk
                                  and at the end the pressure's error against it and the target's beta), ``current``
                                  (the target's moments and before every chunk and at the end the current's), ``mesh``
-                                 (every move of the mesh, the step it was aligned at and the build of the final
-                                 map's preconditioners), the per-step
+                                 (the moves of the start, every move of the axis, the chunks' MINRES counts and the
+                                 builds of the preconditioners), the per-step
                                  ``trace``, the per-chunk ``qoi`` and the ``summary``. The file is rewritten after every chunk.
     checkpoints/state_<step>.h5  The descent state at the start and after every chunk
                                  (:func:`mrx.relaxation.loop.write_checkpoint`). ``best.h5`` holds the field with
                                  the lowest residual, since the last move of the mesh. With ``--mesh.align`` every
                                  checkpoint also holds its map (:func:`mrx.relaxation.mesh_motion.write_map`), which a
-                                 restart and ``scripts/poincare_trace.py`` install, and the state of the
-                                 mesh's schedule (attributes mesh_moves, mesh_last, mesh_aligned, -1 for none).
+                                 restart and ``scripts/poincare_trace.py`` install.
 """
 from __future__ import annotations
 
@@ -67,21 +67,23 @@ import json
 import os
 import time
 
-import h5py
 
 def main(cfg, fit=None):
     """Run the relaxation of ``cfg`` and return its output directory. ``fit(seq, B, T)`` is an outer loop's pressure
     target in place of the profile of ``--pressure.target``: called before every chunk with the field ``B`` and its
     label temperature ``T``, it returns the profile ``p*(s)`` (mu0 p in T^2) and a dict for the record
     (``scripts/pressure_fit.py``)."""
+    import equinox as eqx
+    import jax.numpy as jnp
     import numpy as np
 
     import mrx
     from mrx.relaxation.initial_conditions import initial_field
     from mrx.nullspace import compute_nullspaces
     from mrx.paths import data_file, runs_root
-    from mrx.relaxation.loop import initial_state, radial_cell_sq, read_checkpoint, read_field, relax, write_checkpoint
-    from mrx.nullspace import zeta_harmonic_distance
+    from mrx.relaxation.loop import (BestState, initial_state, radial_cell_sq, read_checkpoint, read_field, relax,
+                                     write_checkpoint)
+    from mrx.relaxation import mesh_motion
     from mrx.relaxation.mesh_motion import install_checkpoint_map, write_map
     from mrx.relaxation.physics import current, resistive_step, weak_pressure
     from mrx.relaxation.shells import (ERROR_BINS, build_shells, flattened, label, load_target, plateau_intervals,
@@ -125,20 +127,22 @@ def main(cfg, fit=None):
     h_r_sq = radial_cell_sq(seq)
     params["h_r_sq"] = float(h_r_sq)
     ts = cfg.stepper(seq)
-    # the mesh's schedule: the moves made, the step of the last one and the step it was aligned at, kept in every
-    # checkpoint so that a restart moves on the steps the run would have moved on
-    motion = dict(moves=0, last=None, aligned=None)
+    if cfg.mesh:
+        results["mesh"] = dict(moves=[], chunks=[], builds=[])
     if cfg.output.restart:
         state, it0 = read_checkpoint(cfg.output.restart, ts)
         print(f"[restart] {cfg.output.restart}: descent state at step {it0}", flush=True)
-        with h5py.File(cfg.output.restart, "r") as fh:
-            if cfg.mesh and "mesh_moves" in fh.attrs:
-                motion.update({k: None if v < 0 else int(v) for k, v in
-                               (("moves", fh.attrs["mesh_moves"]), ("last", fh.attrs["mesh_last"]),
-                                ("aligned", fh.attrs["mesh_aligned"]))})
-                print(f"[restart] mesh schedule: {motion}", flush=True)
     else:
         t1 = time.perf_counter()
+        if cfg.mesh and seq.equilibrium["kind"] == "indata":
+            # the first move needs no transport: the pole goes onto the vacuum's axis, the vacuum is solved there
+            start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut=g.zeta == "axis-normal")
+            results["mesh"]["start"] = start
+            ts = cfg.stepper(seq)
+            print(f"[mesh] start: the pole onto the vacuum's axis in {len(start['rounds'])} rounds, axis "
+                  + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
+                  + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
+                  + f"), {start['axis_cells']:.2e} cells on the final map, {start['seconds']:.0f} s", flush=True)
         B0, ic = initial_field(seq)
         results["ic"] = ic
         print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
@@ -162,9 +166,6 @@ def main(cfg, fit=None):
         write_checkpoint(path, state, step, seq)
         if carry_map:
             write_map(path, seq.map)
-        if cfg.mesh:
-            with h5py.File(path, "a") as fh:
-                fh.attrs.update({f"mesh_{k}": -1 if v is None else v for k, v in motion.items()})
     checkpoint(f"state_{it0:06d}.h5", state, it0)
 
     # --- the drive: resistive steps towards the reference current ---------
@@ -273,65 +274,50 @@ def main(cfg, fit=None):
                 plateaus = plateau_intervals(rows, pr.plateau_margin)
                 results["pressure"]["plateaus"] = plateaus
             return initial_state(B_seeded, ts, step=it), True
-    # --- the motion of the mesh towards the flux surfaces, between chunks ---
+    # --- the pole on the magnetic axis before every chunk, the preconditioners built again on need ---
     mm = cfg.mesh
     if mm:
-        from mrx.relaxation import mesh_motion
-        results["mesh"] = dict(moves=[], aligned=None)
+        built = dict(ref=None, last=None, cap=False)
 
-        def final_map(it):
-            """Build the preconditioners and the harmonic forms of the final map, in place of those of the start
-            map that the moves kept."""
+        def align_axis(state, it):
+            """The state at step ``it`` after the move of the pole onto the field's magnetic axis. The field keeps its
+            coefficients, its force residual right before and after the move goes into the record."""
             nonlocal ts
+            before = float(initial_state(state.B_n, ts).best.resid)
+            rec = mesh_motion.axis_move(seq, state.B_n)
+            ts = cfg.stepper(seq)
+            rec.update(step=it, resid_before=before, resid_after=float(initial_state(state.B_n, ts).best.resid))
+            results["mesh"]["moves"].append(rec)
+            print(f"[mesh] step {it}: axis {rec['axis_cells']:.3e} first cells off the pole, move {rec['move_m']:.3e} m "
+                  f"(x{rec['lam']:g}), det DPhi ratio [{rec['det_ratio_min']:.4f}, {rec['det_ratio_max']:.4f}], energy "
+                  f"{rec['dE_rel']:+.2e}, residual {before:.3e} -> {rec['resid_after']:.3e}, axis Newton "
+                  f"{rec['axis']['newton']}, {rec['wall']:.1f}s", flush=True)
+            # the warm starts stay, the best field is the best since this move: an older one lives on an older map
+            best = BestState(B=state.B_n, resid=jnp.full_like(state.best.resid, jnp.inf), step=jnp.int32(it))
+            return eqx.tree_at(lambda s_: s_.best, state, best)
+
+        def precondition(it):
+            """Build the preconditioners on the installed map if the last chunk's mean MINRES count exceeds
+            --mesh.rebuild-factor times that of the first chunk after their last build, or a solve hit its cap."""
+            nonlocal ts
+            if built["last"] is None:
+                return
+            if built["ref"] is None:
+                built["ref"] = built["last"]
+            reason = ("a Newton solve at its cap" if built["cap"] else
+                      f"MINRES {built['last']:.0f} > {mm.rebuild_factor:g} x {built['ref']:.0f}"
+                      if built["last"] > mm.rebuild_factor * built["ref"] else None)
+            results["mesh"]["chunks"].append(dict(step=it, minres=built["last"], ref=built["ref"], cap=built["cap"]))
+            if reason is None:
+                return
             t = time.perf_counter()
             seq.build_preconditioners()
             compute_nullspaces(seq, verbose=False)
             ts = cfg.stepper(seq)
-            results["mesh"]["preconditioners"] = dict(step=it, wall=time.perf_counter() - t)
-            print(f"[mesh] step {it}: preconditioners of the final map, {time.perf_counter() - t:.0f}s", flush=True)
-
-        def align_mesh(state, it):
-            """The state at step ``it`` after a move of the mesh, or ``state`` when no move is due. The label is
-            solved on the current mesh, and again on the new one after a move."""
-            nonlocal T_label, ts
-            if (motion["aligned"] is not None or motion["moves"] >= mm.moves or it < mm.start
-                    or (motion["last"] is not None and it - motion["last"] < mm.every)):
-                return state
-            s_q, T_label, info = label(seq, state.B_n, pr.anisotropy, T_label, pr.label_tol)
-            _, e_rms, _ = mesh_motion.alignment(seq, s_q)
-            d, h1 = mesh_motion.axis_offset(seq, T_label)
-            axis_cells = float(np.max(np.linalg.norm(d, axis=1)) / h1)
-            if mesh_motion.aligned(e_rms, d, h1, np.inf if mm.axis_only else mm.tol):
-                results["mesh"]["aligned"] = dict(step=it, e_rms=e_rms, axis_cells=axis_cells, label_cg=int(info))
-                motion["aligned"] = it
-                print(f"[mesh] step {it}: aligned, |s - S(r)| rms {e_rms:.3e}, axis {axis_cells:.3f} cells off, "
-                      f"no more moves", flush=True)
-                if motion["last"] is not None and motion["last"] >= it0:
-                    # moved in this run: a restart installs its checkpoint's map with that map's preconditioners
-                    final_map(it)
-                return state
-            B, rec = mesh_motion.move(seq, state.B_n, T_label, velocity=not mm.axis_only)
-            # the temperature of the old mesh's logical points warm-starts the label of the new mesh
-            s_q, T_label, info_after = label(seq, B, pr.anisotropy, T_label, pr.label_tol)
-            _, e_after, e_max_after = mesh_motion.alignment(seq, s_q)
-            d, h1 = mesh_motion.axis_offset(seq, T_label)
-            rec.update(step=it, label_cg=int(info), label_cg_after=int(info_after), e_rms_after=e_after,
-                       zeta_drift=zeta_harmonic_distance(seq)[0],
-                       e_max_after=e_max_after, axis_cells_after=float(np.max(np.linalg.norm(d, axis=1)) / h1))
-            results["mesh"]["moves"].append(rec)
-            motion.update(moves=motion["moves"] + 1, last=it)
-            print(f"[mesh] step {it}: move {motion['moves']}, |s - S(r)| rms {rec['e_rms']:.3e} -> {e_after:.3e}, axis "
-                  f"{rec['axis_cells']:.2f} -> {rec['axis_cells_after']:.2f} cells, largest move {rec['move_m']:.3e} m "
-                  f"(axis step x{rec['lam_axis']:g}, velocity x{rec['lam_v']:g}), det DPhi ratio "
-                  f"[{rec['det_ratio_min']:.3f}, {rec['det_ratio_max']:.3f}], physical B changed by "
-                  f"{rec['dB_phys']:.2e}, energy by {rec['dE_rel']:+.2e}, |grad zeta - h| / |h| {rec['zeta_drift']:.2e}, "
-                  f"label CG {info} / {info_after}, "
-                  f"{rec['wall']:.0f}s", flush=True)
-            if motion["moves"] < mm.moves:
-                ts = cfg.stepper(seq)
-            else:
-                final_map(it)
-            return initial_state(B, ts, step=it)
+            built.update(ref=None, last=None)
+            results["mesh"]["builds"].append(dict(step=it, reason=reason, wall=time.perf_counter() - t))
+            print(f"[mesh] step {it}: preconditioners built on the installed map ({reason}), "
+                  f"{time.perf_counter() - t:.0f}s", flush=True)
     params["start_step"] = it0
     kwargs = cfg.relax_kwargs()
     if targets:
@@ -351,7 +337,8 @@ def main(cfg, fit=None):
         """The state and the stepper of the chunk from step ``it``."""
         nonlocal ts, seed_pending
         if mm:
-            state = align_mesh(state, it)
+            state = align_axis(state, it)
+            precondition(it)
         if not targets:
             return state, ts
         t_rebuild = time.perf_counter()
@@ -372,9 +359,7 @@ def main(cfg, fit=None):
             slips, mu = build_slips(seq, state.B_n, T_label, mu_star)
             record_current(it, mu, info)
             ts = ts.with_slips(slips)
-        if cfg.iota and (not mm or motion["aligned"] is not None or motion["moves"] >= mm.moves):
-            # with --mesh.align the loop waits for the mesh: its first slips are next to the magnetic axis, which
-            # only a mesh whose axis is there resolves
+        if cfg.iota:
             lam, rec = iota_current(seq, state.B_n, T_label, s_q, iota_star, ts, pr.cells)
             record_iota(it, rec, info)
             ts = ts.with_slips(build_slips(seq, state.B_n, T_label, lam)[0])
@@ -387,6 +372,9 @@ def main(cfg, fit=None):
         it = it0 + res.steps
         checkpoint(f"state_{it:06d}.h5", res.state, it)
         trace, qoi = res.trace, res.qoi
+        if mm and d.newton:
+            nit = np.abs(np.asarray(trace["newton_it"][-res.chunk:]))
+            built.update(last=float(nit.mean()), cap=bool(nit.max() >= n.maxiter))
         last = {k: v[-1] for k, v in qoi.items() if k not in ("it", "wall")}
         results.update(
             trace=trace, qoi=qoi,

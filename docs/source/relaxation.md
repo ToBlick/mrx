@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.axis-only`, `--mesh.tol`, `--mesh.moves`, `--mesh.start`, `--mesh.every` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -351,10 +351,7 @@ times the slip block's, so the slip block alone would overshoot and the
 update would oscillate. Nothing is carried from one chunk to the next, so a
 restart recomputes the target from the field. With `--seed` the seed is applied at the first chunk boundary at which
 the transform misses its target by less than 1 % of its largest value, since
-the seed resonates with the field's own transform. With `--mesh.align` the
-loop starts at the first chunk after the mesh is aligned or out of moves:
-its first slips sit next to the magnetic axis, which a mesh resolves only
-once its axis is there. The `iota` record has,
+the seed resonates with the field's own transform. The `iota` record has,
 before every chunk, the transform's miss, the slips asked for and the current
 target.
 
@@ -419,89 +416,63 @@ or `{"rho": [...], "p_pa": [...], "sigma_pa": ...}` (`"sigma_pa"` optional).
 
 ## Mesh motion
 
-A mesh filled from the boundary alone (`--geometry.path input.<name>`) is
-not aligned with the flux surfaces of the field, and its axis is where the
-fill's guess puts it, not on the magnetic axis. The relaxation
-converges more slowly on it. With `--mesh.align` the mesh moves towards the
-flux surfaces between chunks (`mrx.relaxation.mesh_motion`). A move is a
-property of the mesh only. The physical field stays, and the pressure and
-current targets, functions of the flux label, do not see it.
+A mesh filled from the boundary alone (`--geometry.path input.<name>`) has
+its pole, the axis $r = 0$, where the fill's guess puts it, and the
+relaxation moves the magnetic axis further, by the Shafranov shift of the
+pressure among others. The field next to an axis off the pole is resolved
+poorly: the transform of the polar core drifts from step to step. With
+`--mesh.align` the pole stays on the magnetic axis
+(`mrx.relaxation.mesh_motion`). The surfaces $r = $ const between the axis
+and the wall are not moved towards the flux surfaces. A move is a property
+of the mesh only. The physical field stays, and the pressure and current
+targets, functions of the flux label, do not see it.
 
-Every point moves within its surface $\zeta = $ const and the wall stays, so
-a harmonic $\zeta$ stays harmonic: $\|\nabla \zeta - h\| / \|h\|$ is
-recorded after every move. A
-move first puts the mesh axis on the magnetic axis, the maximum of the flux
-label's temperature in each plane, by the shift with which the fill places
-its axis, $d(\zeta)(1 - r^2)$. Then it moves the points so that the label
-$s$ comes closer to its volume mean $S(r)$ on each logical surface, by a
-velocity from one weighted Helmholtz solve per component of the plane,
-smoothed over two radial cells. Both parts are halved until no cell loses
-more than half its volume. With `--mesh.axis-only` a move is the axis step
-alone, and the mesh counts as aligned once its axis is on the magnetic axis.
+The magnetic axis is the field line that closes after one field period
+(`mrx.relaxation.mesh_motion.magnetic_axis`). Its point in the chart
+$(r \cos 2\pi\theta, r \sin 2\pi\theta)$ of each logical plane is a
+Fourier series in $\zeta$, one mode per spline of $\zeta$, whose Galerkin
+residual of the field-line equation vanishes: the residual is integrated
+against every function of the series, so it is weak in $\zeta$, and the
+whole curve is found at once by Newton's method. AXIS_FINDER_NUMBERS
 
-The field keeps its coefficients, which moves the physical field with the
-mesh and keeps every flux through every face of the mesh. The drag is then
-undone by the relaxation's ideal update with the mesh's velocity in place of
-the flow's, on the maps between the old and the new one, in SSP-RK3 substeps
-that cross at most half a cell, the relaxation's own substep, the cheapest
-explicit method that is stable for this advection, which nothing corrects
-afterwards
+A move shifts every plane by the in-plane distance $d(\zeta)$ of the axis
+from the pole, carried to the wall by $1 - r^2$: every point moves within its
+surface $\zeta = $ const and the wall stays. The move is halved until no
+cell loses more than half its volume. The field keeps its coefficients, which
+moves the physical field with the mesh and keeps every flux through every
+face of the mesh. The drag is then undone by the relaxation's ideal update
+with the mesh's velocity in place of the flow's, on the maps between the old
+and the new one, in SSP-RK3 substeps that cross at most half a cell, the
+relaxation's own substep, the cheapest explicit method that is stable for
+this advection, which nothing corrects afterwards
 (`mrx.relaxation.mesh_motion.undrag`). $\nabla \cdot B = 0$, $B \cdot n = 0$ and
 the toroidal flux hold exactly. The fluxes inside the other surfaces and the
-topology are kept to the accuracy of the transport. One move changes the
-physical field by the transport's spatial error, 2.6e-3 for the 9.9 cm first
-move on W7-X graded (24,48,28), in 27 substeps and 2 s on one H200. Twelve
-moves there and back return the field to 2.5e-5, and a seeded island chain
-on li383 keeps its width (2026-11-18). The new map is data of the sequence:
-the compiled relaxation is reused and the preconditioners of the start map
-are kept. Once the mesh is aligned or out of moves the preconditioners of
-the final map are built, in about a minute of host assembly at the sizes
-above. The kept ones precondition the moved operators with the same Newton
-and label counts, but the mass solves inside every step take more
-iterations, which made the steps on the moved meshes of li383, W7-X and HSX
-12 to 26 % slower (2026-11-19).
+topology are kept to the accuracy of the transport. Without the transport
+the field's axis would move with the pole and stay off it.
 
-A move happens before the shells and the slips are rebuilt, from step
-`--mesh.start` on and every `--mesh.every` steps, at most `--mesh.moves`
-times. The motion stops for good once the volume rms of $s - S(r)$ is below
-`--mesh.tol` and the label's maximum is within a quarter of the first radial
-cell of the mesh axis. Every move kicks the force residual up by the error
-of the carried field, so a few moves while the field is far from its
-equilibrium cost little and moves late in a run delay it.
+From the vacuum field of a namelist the first move is made before the run:
+the pole goes onto the vacuum's axis and the vacuum is solved again on the
+moved mesh, in rounds while the distance falls by half, so the first move,
+the largest, needs no transport
+(`mrx.relaxation.mesh_motion.vacuum_start`). The moved map is cut again by
+the planes normal to its axis. Then the pole moves onto the field's axis
+before every chunk, before the shells and the slips are rebuilt. The new map
+is data of the sequence, so the compiled relaxation is reused, and the
+preconditioners are kept. They are built again on the installed map when the
+chunk's mean MINRES count of the Newton solve exceeds `--mesh.rebuild-factor`
+(1.5) times that of the first chunk after their last build, or a Newton
+solve stopped at `--newton.maxiter`. RUN_NUMBERS
 
-    python -u scripts/relax.py --geometry.path input.li383 --geometry.graded --geometry.resolution 48 64 24 \
-        --budget.steps 400 --pressure.target input.li383 --mesh.align
-
-From the vacuum on li383's fill with the namelist's pressure, as above, four
-moves at steps 20 to 80 align the mesh. The rms of $s - S(r)$ falls from
-5.0e-2 to 8.5e-3, and the mesh axis, 5.5 radial cells off at first, ends on
-the magnetic axis. The squared force residual stays below 1e-8 from step 90
-on, against step 257 without the motion. A move costs 5 to 8 s after the
-first, which compiles (106 s). The steps on the moved mesh cost more, 10 s per
-chunk of ten against 6 s, so both runs reach a residual of 1e-8 in about ten
-minutes with the build of the operators (one H200, float64, 2026-11-19).
-
-    python -u scripts/relax.py --geometry.path input.w7x --geometry.graded --geometry.resolution 24 48 28 \
-        --budget.steps 200 --pressure.target input.w7x --current.target input.w7x --mesh.align
-
-From the fill and the vacuum with both targets of one namelist, the squared
-force residual stays below 1e-8 from step 63 on W7-X graded (24,48,28) (14
-on the nested solver's mesh), from step 64 on li383 graded (48,64,24) against
-239 without the motion (40), and from step 24 on HSX graded (32,64,36) (8),
-after three, three and one moves (one H200, 2026-11-19). A tighter `--mesh.tol`
-costs steps, since every move after the residual is low delays it.
-
-The `mesh` record of `relax.json` holds every move: the step, the alignment
-error before and after it, the axis offset in first radial cells, the
-largest move, the range of the change of $\det D\Phi$, the change of the
-physical field at fixed physical points and of the energy, the substeps of
-the transport and the label's
-CG counts, and `preconditioners`, the step and the wall time of the build on
-the final map. Every checkpoint of such a run holds its map, which a restart and
-`scripts/poincare_trace.py` install. It also holds the state of the schedule
-(the moves made, the step of the last move and the step the mesh was aligned
-at), so a restart moves on the steps the run would have moved on. `best.h5` is
-the best field since the last move.
+The `mesh` record of `relax.json` holds the rounds of the start, every move
+(the step, the axis offset in first radial cells before and after, the axis
+finder's Newton steps, the largest move, the range of the change of
+$\det D\Phi$, the change of the physical field at fixed physical points in
+the bulk and in the first three radial cells, of the energy, and the
+substeps of the transport), the chunks' mean MINRES counts against the
+reference and the builds of the preconditioners with their reason and wall
+time. Every checkpoint of such a run holds its map, which a restart and
+`scripts/poincare_trace.py` install. `best.h5` is the best field since the
+last move.
 
 ## Stopping
 

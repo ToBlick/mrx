@@ -1,70 +1,56 @@
-"""Motion of the mesh towards the flux surfaces of the field it carries.
+"""Motion of the mesh: its axis onto the magnetic axis, and its toroidal coordinate.
 
-A mesh filled from the boundary alone (:mod:`mrx.equilibria.fill`) has its logical surfaces ``r = const`` where the
-fill puts them, not on the flux surfaces of the field, and its axis ``r = 0`` where the fill's quality guess puts it,
-not on the magnetic axis. The relaxation converges more slowly on such a mesh. A move changes the map ``Phi`` so that
-the flux label ``s`` of the field (:mod:`mrx.flux_label`) becomes closer to a function of ``r`` alone. It is a
-property of the mesh only: the field is carried so that the physical field stays what it is, and the profile control,
-a function of the flux label, does not see it.
+A mesh filled from the boundary alone (:mod:`mrx.equilibria.fill`) or read from a file has its axis ``r = 0``, the
+pole, where the fill's quality guess or the file put it, not on the magnetic axis of the field it carries, and the
+relaxation moves the magnetic axis further, by the Shafranov shift of the pressure among others. The field next to an
+axis off the pole is resolved poorly: the polar core's transform drifts step by step. So the pole is kept on the
+magnetic axis. The surfaces ``r = const`` between the axis and the wall are not moved towards the flux surfaces. The
+wall stays where it is.
 
-Every point moves within its surface ``zeta = const``: the move is given by the change of ``X1``, ``X2`` of the
+Every point moves within its surface ``zeta = const``: a move is a change of ``X1``, ``X2`` of the
 :class:`~mrx.equilibria.FrameMap` (``R`` and ``Z`` in the cylindrical frame), and ``X3`` follows the surface to first
-order (:func:`tangent`, zero on planar sections). So a harmonic ``zeta`` (:func:`harmonic_build`) stays harmonic
-while the wall is fixed, which :func:`mrx.nullspace.zeta_harmonic_distance` measures. The wall stays where it is. One move
-(:func:`move`) from the field ``B`` and the temperature ``T`` of its flux label on the current map:
+order (:func:`tangent`, zero on planar sections). One move of the axis (:func:`axis_move`) of the field ``B`` on the
+current map:
 
-1. The axis step. In each plane the magnetic axis is the maximum of ``T`` (:func:`label_maximum`). Its distance
-   ``d(zeta)`` from the mesh axis moves every point by ``d(zeta) (1 - r^2)``, the shift with which the fill moves the
-   centre of its boundary onto its axis. The alignment below cannot move the axis: its source vanishes where the
-   label has its maximum.
-2. The alignment error. At every quadrature point of the map moved by the axis step, the label ``s`` and its
-   gradient ``g`` in the plane, at the old logical point of the moved point (:func:`locate`). The target of the
-   logical surface ``r`` is ``S(r)``, the volume mean of ``s`` on the quadrature layer ``r``, the target that moves
-   the mesh least. The error is ``e = s - S(r)``.
-3. The velocity ``v`` in the plane minimises ``int |g|^2 |v + kappa e g / |g|^2|^2 + alpha |grad v|^2 dV``, one
-   weighted Helmholtz solve ``(M_{|g|^2} + alpha S_0) v_c = -kappa L(e g_c)`` per component ``c``. ``v_1`` is an even,
-   ``v_2`` an odd Dirichlet 0-form of the sequence, so the wall stays and the map stays polar-regular and
-   stellarator-symmetric. ``kappa`` is :data:`GAIN`, ``alpha = SMOOTHING_CELLS^2 h_r^2 <|g|^2>`` with ``h_r`` the
-   radial cell size (:func:`mrx.relaxation.loop.radial_cell_sq`), a smoothing over a fixed number of radial cells.
-   Where the label is flat (the axis, an island) the source vanishes and the smoothing carries the mesh. The
-   smoothing also moves the axis, so ``v`` less its axis value carried out by ``1 - r^2`` is taken (:func:`pinned`),
-   and the axis goes where the axis step puts it.
-4. Folds. The axis step and then the velocity are halved until no cell loses more than half its volume
-   (:data:`MIN_DET_RATIO` of ``det DPhi``).
-5. The field (:func:`undrag`). The coefficients are kept, which drags the physical field with the mesh and keeps
-   every flux through every face of the mesh, and the drag is undone by the relaxation's ideal update with the
-   mesh's velocity, in SSP-RK3 substeps of at most the relaxation's substep of CFL cells. ``div B = 0``, ``B . n = 0`` and the
-   toroidal flux hold exactly. One move changes the physical field by the spatial error of the transport (2.6e-3 on
-   W7-X graded (24,48,28) for a 9.9 cm move). Moves there and back return the field to the time error (2.5e-5 after
-   twelve on W7-X), and a seeded island chain on li383 keeps its width (2026-11-18).
-6. The geometry and the harmonic forms of the new map are installed (:func:`install_map`), the preconditioners of
-   the old map are kept. The map is data of the sequence, so the compiled relaxation is reused. Steps 5 and 6 are
-   :func:`carry`.
+1. The magnetic axis (:func:`magnetic_axis`), the field line that closes after one field period, as a whole curve: a
+   Fourier series in ``zeta`` of its point in the chart ``(r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane,
+   whose Galerkin residual of the field-line equation vanishes.
+2. Its in-plane distance ``d(zeta)`` from the pole on the Greville planes of the ``zeta`` splines (:func:`axis_offset`)
+   moves every point by ``d(zeta) (1 - r^2)`` (:func:`axis_step`): the pole goes onto the magnetic axis, the wall
+   stays. The move is halved until no cell loses more than half its volume (:data:`MIN_DET_RATIO` of ``det DPhi``).
+3. The field keeps its coefficients: it rides with the map, the exact ideal transport of the field by the move, which
+   keeps ``div B = 0``, ``B . n = 0`` and every flux through every face of the mesh, and nothing is projected. Its
+   axis keeps its logical place, so right after the move it is off the new pole by about the old distance, but the
+   equilibrium it is transported from has its axis on the pole now, and the relaxation steps bring the field back
+   there.
+4. The geometry and the harmonic forms of the new map are installed (:func:`install_map`), the preconditioners of
+   the old map are kept. The map is data of the sequence, so the compiled relaxation is reused.
 
-The relaxation removes the error of the carried field. So a few moves with relaxation between them, until the
-alignment error is below a tolerance in ``s`` and the axis within :data:`AXIS_TOL` of a radial cell of the label's
-maximum (:func:`aligned`), then the run only relaxes. ``scripts/relax.py --mesh.align`` does this between its chunks.
-A moved map goes into the checkpoints (:func:`write_map`, :func:`install_checkpoint_map`).
+``scripts/relax.py --mesh.align`` moves the axis so before every chunk and builds the preconditioners again when the
+Newton solve says that those of an older map no longer fit. A run from the vacuum field of a namelist starts on a
+mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`): there the mesh moves first and the vacuum field
+is solved on it, so the first move, the largest, perturbs nothing. A moved map goes into the checkpoints
+(:func:`write_map`, :func:`install_checkpoint_map`).
 
-The toroidal coordinate is moved the same way, from a second misfit: ``q``, with ``zeta + q`` the harmonic angle of the
-map, the potential of its vacuum field (:func:`mrx.nullspace.harmonic_angle`). Every point slides along its line of
-constant ``r`` and ``theta`` by the Newton step of ``q = 0`` (:func:`harmonic_displacement`), and the moves repeat on
-the moved map until ``zeta`` is harmonic (:func:`harmonic_build`). ``--geometry.zeta harmonic`` does this to the first
-map, before the field exists, so a move is only a change of the map. A move of a field ends in :func:`carry` whichever
-misfit gave it.
+The toroidal coordinate is moved from another misfit: ``q``, with ``zeta + q`` the harmonic angle of the map, the
+potential of its vacuum field (:func:`mrx.nullspace.harmonic_angle`). Every point slides along its line of constant
+``r`` and ``theta`` by the Newton step of ``q = 0`` (:func:`harmonic_displacement`), and the moves repeat on the moved
+map until ``zeta`` is harmonic (:func:`harmonic_build`). ``--geometry.zeta harmonic`` does this to the first map,
+before the field exists, so a move is only a change of the map.
 
 A third choice of the toroidal coordinate is a cut, not a move: the planes normal to the axis of the map
 (:func:`axis_normal_map`), in the frame of the axis, GVEC's G-frame, the default of
 :func:`mrx.geometry.build_sequence` for every file. Every point slides along its line of constant ``r`` and
 ``theta`` into the plane of its ``zeta`` at once, by Newton's method along the line, and the map is in the new frame
-with ``X3 = 0``. With the temperature of a flux label the planes are those normal to the magnetic axis instead. The
-shift of ``zeta`` the cut returns carries a field given in the old logical coordinates, a file's field above all.
+with ``X3 = 0``. The shift of ``zeta`` the cut returns carries a field given in the old logical coordinates, a file's
+field above all.
 
-The moves of either misfit keep the preconditioners of the map they start from (:func:`install_map`), and those of the
-final map are built once: by :func:`mrx.geometry.build_sequence` after the harmonic moves, by ``scripts/relax.py``
-once the mesh is aligned or out of moves.
+The moves keep the preconditioners of the map they start from (:func:`install_map`). Those of the final map are built
+by :func:`mrx.geometry.build_sequence` after the harmonic moves, by :func:`vacuum_start` after its moves, and by
+``scripts/relax.py`` when the Newton solve asks for them.
 """
 import time
+from functools import partial
 
 import equinox as eqx
 import h5py
@@ -72,31 +58,21 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction, Pushforward, det33, inv33
+from mrx.diagnostics.poincare import cross_section_rhs, logical_field
+from mrx.differential_forms import det33
 from mrx.equilibria import FrameMap, frame_derivatives, polar_projection
-from mrx.flux_label import enclosed_flux_map
-from mrx.geometry import SequenceGeometry, map_jacobian_at
 from mrx.nullspace import compute_nullspaces
 from mrx.optimization.shape_ad import frame_geometry
-from mrx.precision import DTYPE, lift, to_working
-from mrx.relaxation.initial_conditions import toroidal_flux
-from mrx.relaxation.loop import CFL, logical_cfl_weights, radial_cell_sq
-from mrx.relaxation.physics import compute_divergence_norm
-from mrx.solvers import preconditioned_cg
+from mrx.precision import DTYPE, to_working
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 
-#: The fraction ``kappa`` of the linearised alignment error a move removes.
-GAIN = 1.0
-#: The smoothing length of the velocity in radial cells: ``alpha = SMOOTHING_CELLS^2 h_r^2 <|g|^2>``. On W7-X graded
-#: (24,48,28) from the plain fill the rms of ``s - S(r)`` fell 6.3 % -> 1.9 -> 1.1 -> 0.83 % in three moves with 2 cells,
-#: 6.3 % -> 2.8 -> 2.0 -> 1.6 % with 4 (2026-11-18).
-SMOOTHING_CELLS = 2.0
 #: The smallest ratio of ``det DPhi`` after and before a move at any quadrature point.
 MIN_DET_RATIO = 0.5
-#: The distance of the mesh axis from the label's maximum, in first radial cells, below which the axis is aligned.
-AXIS_TOL = 0.25
-#: The relative tolerance of the two Helmholtz solves of the velocity.
-VELOCITY_TOL = 1e-6
+#: The Fourier modes per spline of ``zeta`` of the axis curve of :func:`magnetic_axis`.
+AXIS_MODES_PER_SPLINE = 1
+#: The largest number of Newton steps of :func:`magnetic_axis`, and the size of a Newton step, in first radial cells
+#: of the logical chart, below which it stops.
+AXIS_NEWTON_STEPS, AXIS_NEWTON_TOL = 20, 1e-10
 #: The distance |grad zeta - h| / |h| (:func:`mrx.nullspace.zeta_harmonic_distance`) below which the moves of
 #: :func:`harmonic_build` stop. From the planes phi = const of the boundary meshes it fell 0.29 -> 1.6e-2 -> 1.6e-5 ->
 #: 2.5e-7 (li383 (48,64,24)), 0.35 -> 3.1e-2 -> 9.5e-5 -> 2.3e-7 (W7-X (24,48,28)), 0.65 -> 9.3e-2 -> 2.4e-3 -> 5.3e-6
@@ -138,41 +114,6 @@ def locate(Phi, X, x):
     return jax.vmap(one)(x, X)
 
 
-@eqx.filter_jit
-def _temperature(seq, T, x):
-    """``T`` at the logical points ``x`` and its derivatives in ``r``, ``theta``, ``zeta``."""
-    f = DiscreteFunction(T, seq.basis_0, seq.even.E(0))
-    return jax.vmap(jax.value_and_grad(lambda y: f(y)[0]))(x)
-
-
-def label_maximum(seq, T, zetas):
-    """The logical points ``(len(zetas), 3)`` of the maximum of the label's temperature ``T`` on the planes
-    ``zetas``: where the label puts the magnetic axis. The largest value on a polar grid of each plane, then three
-    rounds of the stationary point of a quadratic fitted to ``T`` on a 7 x 7 grid about the last point in the chart
-    ``(r cos 2 pi theta, r sin 2 pi theta)``, the grid four times finer each round."""
-    zetas = np.asarray(zetas, dtype=np.float64)
-    nz = zetas.size
-    r, th = np.meshgrid(np.linspace(0.0, 0.9, 37), np.arange(48) / 48, indexing="ij")
-    pr = np.stack([(r * np.cos(2 * np.pi * th)).ravel(), (r * np.sin(2 * np.pi * th)).ravel()], 1)
-
-    def values(p, z):
-        x = jax.vmap(_chart)(jnp.asarray(p), jnp.asarray(z))
-        return np.asarray(_temperature(seq, T, x)[0])
-    v = values(np.tile(pr, (nz, 1)), np.repeat(zetas, len(pr))).reshape(nz, -1)
-    c = pr[np.argmax(v, axis=1)]
-    a = np.linspace(-3.0, 3.0, 7)
-    du, dw = (q.ravel() for q in np.meshgrid(a, a, indexing="ij"))
-    h = 0.025
-    for _ in range(3):
-        p = c[:, None, :] + h * np.stack([du, dw], 1)[None]
-        v = values(p.reshape(-1, 2), np.repeat(zetas, du.size)).reshape(nz, -1)
-        A = np.stack([np.ones_like(du), du, dw, du * du, du * dw, dw * dw], 1)
-        k = np.linalg.lstsq(A, v.T, rcond=None)[0]                              # (6, nz)
-        H = np.stack([np.stack([2 * k[3], k[4]], -1), np.stack([k[4], 2 * k[5]], -1)], -2)
-        c = c + h * np.linalg.solve(H, -np.stack([k[1], k[2]], -1)[..., None])[..., 0]
-        h /= 4.0
-    return np.asarray(jax.vmap(_chart)(jnp.asarray(c), jnp.asarray(zetas)))
-
 
 def _planes(seq):
     """The Greville points of the ``zeta`` splines, on which the axis step is interpolated."""
@@ -191,14 +132,125 @@ def first_cell(seq, Phi, zetas):
     return float(jnp.mean(jnp.linalg.norm(S(x).reshape(len(zetas), 16, 2) - S(ax).reshape(len(zetas), 1, 2), axis=-1)))
 
 
-def axis_offset(seq, T):
-    """``(d, h_1)``: the in-plane displacement ``d`` ``(n_zeta, 2)`` from the mesh axis to the label's maximum on the
-    planes of :func:`_planes`, and the size ``h_1`` of the first radial cell (:func:`first_cell`)."""
-    Phi, zetas = seq.map, _planes(seq)
-    xa = label_maximum(seq, T, zetas)
-    ax = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, zetas[:, None]), -1).reshape(-1, 3))
-    S = jax.vmap(Phi.section)
-    return np.asarray(S(jnp.asarray(xa)) - S(ax)), first_cell(seq, Phi, zetas)
+
+def _first_knot(seq):
+    """The first radial breakpoint of ``seq`` after the axis: the logical size of the first radial cell."""
+    T_r = np.asarray(seq.basis_0.Lambda[0].T, dtype=np.float64)
+    return float(np.unique(T_r[(T_r > 0) & (T_r <= 1)])[0])
+
+
+def _series(modes, z):
+    """The values and the ``zeta`` derivatives ``(len(z), 2, modes + 1)`` of ``cos(2 pi k zeta)`` and
+    ``sin(2 pi k zeta)``, ``k = 0 .. modes``, at ``z``."""
+    k = 2.0 * np.pi * np.arange(modes + 1)
+    a = np.outer(z, k)
+    return (np.stack([np.cos(a), np.sin(a)], 1), np.stack([-k * np.sin(a), k * np.cos(a)], 1))
+
+
+def _zeta_quadrature(seq, modes):
+    """Gauss points and weights in ``zeta`` over one field period, on every cell of the ``zeta`` splines, enough of
+    them for the integrand of a spline field along a curve of ``modes`` Fourier modes."""
+    bp = np.unique(np.asarray(seq.basis_0.Lambda[2].T, dtype=np.float64).clip(0.0, 1.0))
+    g = seq.p + 1 + 4 * int(np.ceil(modes / (bp.size - 1)))
+    x, w = np.polynomial.legendre.leggauss(g)
+    a, b = bp[:-1, None], bp[1:, None]
+    return (0.5 * (b - a) * x + 0.5 * (a + b)).ravel(), (0.5 * (b - a) * w).ravel()
+
+
+def _axis_free(seq, modes):
+    """``(free, test)``: the flat indices into ``(2, 2, modes + 1)`` (component ``u``, ``v`` of the chart, cosine or
+    sine, mode) of the free coefficients of an axis curve and of the test functions of its residual. On a
+    stellarator-symmetric sequence ``u`` is even in ``zeta`` and ``v`` odd, and the residual ``y' - f`` the other way
+    round, so its ``u`` part is tested with the sines, its ``v`` part with the cosines: the other parts vanish."""
+    free = np.zeros((2, 2, modes + 1), dtype=bool)
+    if seq.symmetry != "stellarator":
+        free[:, 0, :], free[:, 1, 1:] = True, True
+        return np.flatnonzero(free), np.flatnonzero(free)
+    test = free.copy()
+    free[0, 0, :], free[1, 1, 1:] = True, True
+    test[0, 1, 1:], test[1, 0, :] = True, True
+    return np.flatnonzero(free), np.flatnonzero(test)
+
+
+def _axis_residual(field, coef, x, idx, tidx, z, w, V, dV):
+    """The Galerkin residual of :func:`magnetic_axis` at the free coefficients ``x`` (flat indices ``idx``), tested
+    with the functions of the flat indices ``tidx``."""
+    rhs = cross_section_rhs(field)
+    c = jnp.zeros(2 * V.shape[1] * V.shape[2], dtype=x.dtype).at[idx].set(x).reshape(2, V.shape[1], V.shape[2])
+    y, dy = jnp.einsum("ckn,qkn->qc", c, V), jnp.einsum("ckn,qkn->qc", c, dV)
+    f = jax.vmap(lambda zq, yq: rhs(zq, yq, coef))(z, y)
+    return jnp.einsum("q,qkn,qc->ckn", w, V, dy - f).reshape(-1)[tidx]
+
+
+@partial(jax.jit, static_argnames=("field",))
+def _axis_newton(field, coef, x, idx, tidx, z, w, V, dV):
+    """The Newton step of :func:`magnetic_axis` at ``x`` and the norm of the residual there."""
+    F = partial(_axis_residual, field, coef, idx=idx, tidx=tidx, z=z, w=w, V=V, dV=dV)
+    R = F(x)
+    return -jnp.linalg.solve(jax.jacfwd(F)(x), R), jnp.linalg.norm(R)
+
+
+@partial(jax.jit, static_argnames=("field",))
+def _axis_residual_norm(field, coef, x, idx, tidx, z, w, V, dV):
+    return jnp.linalg.norm(_axis_residual(field, coef, x, idx, tidx, z, w, V, dV))
+
+
+def magnetic_axis(seq, B, modes=None):
+    """``(c, info)``: the magnetic axis of the 2-form ``B`` on the installed map, the field line that closes after one
+    field period, as a curve in logical coordinates.
+
+    The curve is ``y(zeta) = sum_k c[:, 0, k] cos(2 pi k zeta) + c[:, 1, k] sin(2 pi k zeta)``, ``k = 0 .. modes``,
+    in the chart ``y = (r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane ``zeta``, which is smooth at the
+    pole (``modes`` :data:`AXIS_MODES_PER_SPLINE` per spline of ``zeta`` unless given). On a stellarator-symmetric
+    sequence its first component is a cosine series, its second a sine series. The field line satisfies
+    ``dy/dzeta = f(zeta, y)``, ``f`` the in-plane logical field over ``B^zeta`` in the chart
+    (:func:`mrx.diagnostics.poincare.cross_section_rhs`). ``c`` makes the Galerkin residual
+    ``int_0^1 phi(zeta) (dy/dzeta - f(zeta, y(zeta))) dzeta`` vanish for every ``phi`` of the series (on a symmetric
+    sequence those of the residual's parity, the other way round from the curve's), integrated by Gauss points on the cells of the ``zeta`` splines: the residual is weak in ``zeta``, and the whole
+    curve is found at once. Newton's method with the exact Jacobian, from the curve half a first radial cell off the
+    pole (the chart's derivatives do not exist at the pole itself), each step halved until it lowers the norm of the
+    residual, until a step is below :data:`AXIS_NEWTON_TOL` first radial cells or after :data:`AXIS_NEWTON_STEPS`
+    steps. The solution is the axis of an elliptic field line,
+    whose period map has no eigenvalue 1.
+
+    ``info`` holds the number of modes, the Newton steps, the halvings of all steps, the norms of the residual at the
+    start and the end, the last step in first radial cells and the wall time."""
+    t0 = time.perf_counter()
+    modes = AXIS_MODES_PER_SPLINE * seq.basis_0.Lambda[2].n if modes is None else int(modes)
+    field = logical_field(seq, B)
+    coef = field.coefficients(B)
+    z, w = _zeta_quadrature(seq, modes)
+    V, dV = _series(modes, z)
+    idx, tidx = _axis_free(seq, modes)
+    r1 = _first_knot(seq)
+    x = jnp.zeros(idx.size, dtype=DTYPE).at[0].set(0.5 * r1)        # idx[0] is the mean of u
+    args = (jnp.asarray(idx), jnp.asarray(tidx), jnp.asarray(z, dtype=DTYPE), jnp.asarray(w, dtype=DTYPE), jnp.asarray(V, dtype=DTYPE),
+            jnp.asarray(dV, dtype=DTYPE))
+    resid, halved = [], 0
+    for k in range(AXIS_NEWTON_STEPS):
+        dx, R = _axis_newton(field, coef, x, *args)
+        resid.append(float(R))
+        step = float(jnp.max(jnp.abs(dx))) / r1
+        if step < AXIS_NEWTON_TOL:
+            x = x + dx
+            break
+        # a full step far from the axis may leave the domain, where the field-line equation is not defined
+        while (float(jnp.max(jnp.abs(dx))) / r1 > AXIS_NEWTON_TOL
+               and not float(_axis_residual_norm(field, coef, x + dx, *args)) < resid[-1]):
+            dx, halved = 0.5 * dx, halved + 1
+        x = x + dx
+    c = np.zeros(2 * 2 * (modes + 1))
+    c[idx] = np.asarray(x)
+    return c.reshape(2, 2, modes + 1), dict(modes=modes, newton=k + 1, halved=halved, resid_start=resid[0],
+                                            resid_end=resid[-1], step_cells=step, seconds=time.perf_counter() - t0)
+
+
+def axis_points(c, zetas):
+    """The logical points ``(len(zetas), 3)`` of the axis curve ``c`` of :func:`magnetic_axis` on the planes
+    ``zetas``."""
+    zetas = np.asarray(zetas, dtype=np.float64)
+    y = np.einsum("ckn,qkn->qc", c, _series(c.shape[2] - 1, zetas)[0])
+    return np.stack([np.hypot(y[:, 0], y[:, 1]), np.arctan2(y[:, 1], y[:, 0]) / (2.0 * np.pi) % 1.0, zetas], 1)
 
 
 def _axis_profile(seq):
@@ -221,13 +273,6 @@ def axis_step(seq, d):
         raw = jnp.stack([stellarator_symmetric_scalar(raw[0], seq.basis_0, even=True),
                          stellarator_symmetric_scalar(raw[1], seq.basis_0, even=False)])
     return raw
-
-
-def pinned(seq, v):
-    """The coefficients ``v`` ``(2, n_r, n_theta, n_zeta)`` less their axis values carried out by ``1 - r^2``: zero on
-    the axis, so they leave the axis where the axis step puts it. The axis value of a polar-regular spline is its ring 0
-    coefficient, the same for every ``theta``."""
-    return v - jnp.einsum("i,ck->cik", jnp.asarray(_axis_profile(seq), dtype=v.dtype), v[:, 0, 0, :])[:, :, None, :]
 
 
 def moved(Phi, delta):
@@ -276,127 +321,6 @@ def _backtrack(seq, base, delta):
     return 0.0, _det_ratio(seq, moved(seq.map, base))
 
 
-@eqx.filter_jit
-def _label_at(seq, T, B_jk, x):
-    """``(s, g)`` at the logical points ``x``: the label and its gradient in the plane, ``(n, 2)``, with respect to
-    the in-plane coordinates of the installed map."""
-    smap = enclosed_flux_map(seq, T, B_jk)
-    Tx, dT = _temperature(seq, T, x)
-    J2 = jax.vmap(lambda y: jax.jacfwd(seq.map.section)(y)[:, :2])(x)
-    dsdT = jax.vmap(jax.grad(smap))(Tx)
-    g = jnp.linalg.solve(jnp.swapaxes(J2, 1, 2), dT[:, :2, None])[..., 0]
-    return smap(Tx), dsdT[:, None] * g
-
-
-def alignment(seq, s_q):
-    """``(e, e_rms, e_max)``: the alignment error ``e = s - S(r)`` of the label ``s_q`` at the quadrature points,
-    ``S`` the volume mean of ``s`` on each quadrature layer ``r``, and its volume rms and largest size."""
-    shape = tuple(int(n) for n in seq.quad.shape)
-    w = (seq.quad.w * seq.jacobian_j).reshape(shape)
-    s = jnp.asarray(s_q).reshape(shape)
-    e = (s - (w * s).sum((1, 2), keepdims=True) / w.sum((1, 2), keepdims=True)).reshape(-1)
-    w = w.reshape(-1)
-    return e, float(jnp.sqrt(jnp.sum(w * e ** 2) / jnp.sum(w))), float(jnp.max(jnp.abs(e)))
-
-
-@eqx.filter_jit
-def _velocity(seq, e, g, alpha, kappa):
-    """The coefficients ``(2, n_r, n_theta, n_zeta)`` of the velocity of step 3 of the module docstring and the
-    signed counts of its two solves."""
-    g2 = jnp.sum(g ** 2, axis=1)
-    shape = seq.basis_0.shape[0]
-
-    def solve(view, comp):
-        def A(v):
-            v = to_working(v)
-            return lift(view._scalar_load_values(g2 * view.evaluate_at_quadrature(v, 0)[:, 0], 0)
-                        + alpha * (view.S[0] @ v))
-        b = view._scalar_load_values(-kappa * e * comp, 0)
-        v, info = preconditioned_cg(A, b, M=lambda x: view.L[0].precondition(x) / alpha, tol=VELOCITY_TOL,
-                                    maxiter=seq.maxiter)
-        return (view.E(0).T @ to_working(v)).reshape(shape), info
-    v1, i1 = solve(seq.even, g[:, 0])
-    v2, i2 = solve(seq.odd, g[:, 1])
-    return jnp.stack([v1, v2]), i1, i2
-
-
-class _Path(eqx.Module):
-    """The maps ``Phi_tau = Phi0 + tau (Phi1 - Phi0)`` from the installed map to a new one, the straight paths of the
-    points, so ``DPhi_tau = D0 + tau (D1 - D0)`` exactly, whatever the frames of the two maps. ``D0``, ``D1`` are the
-    Jacobians of the two ends at the quadrature points and ``d_q = Phi_1 - Phi_0`` there, the velocity of the mesh per
-    unit ``tau``. The geometry of ``Phi_tau`` keeps ``Phi0`` as its map: the steps use only its metric."""
-    Phi0: object
-    D0: jnp.ndarray
-    D1: jnp.ndarray
-    d_q: jnp.ndarray
-
-    def at(self, seq, tau):
-        """``(seq_tau, D)``: ``seq`` with the geometry of ``Phi_tau`` and the Jacobian ``D`` of ``Phi_tau``."""
-        D = self.D0 + tau * (self.D1 - self.D0)
-        G = jnp.einsum("qki,qkj->qij", D, D)
-        return seq.with_geometry(SequenceGeometry(self.Phi0, G, jax.vmap(inv33)(G), jnp.linalg.det(D))), D
-
-
-def _rate(seq, path, tau, b):
-    """``(db / dtau, info)`` on the map ``Phi_tau``: ``-curl E`` with ``E`` the projection of ``xi x b`` onto the
-    Dirichlet 1-forms in that map's ``M_1``, ``xi = DPhi_tau^-1 d`` the logical velocity of the mesh. ``J xi`` is the
-    reference velocity of a 2-form, so this is the ideal increment ``curl(u x B)`` of a relaxation step with the
-    velocity ``u = -J xi``. ``info`` is the signed count of the mass solve."""
-    seq_t, D = path.at(seq, tau)
-    odd = seq_t.odd
-    w_q = seq_t.jacobian_j[:, None] * jnp.linalg.solve(D, path.d_q[..., None])[..., 0]
-    E, info = odd.M[1].solve(odd.cross_product_load_values(w_q, odd.evaluate_at_quadrature(b, 2), 1, 2, 2),
-                             return_info=True)
-    return -(odd.G[1] @ E), info
-
-
-@eqx.filter_jit
-def _substep(seq, path, tau0, tau1, b):
-    """One SSP-RK3 step of :func:`_rate` from ``tau0`` to ``tau1`` and the signed counts of its three mass solves."""
-    h = tau1 - tau0
-    k1, i1 = _rate(seq, path, tau0, b)
-    b1 = b + h * k1
-    k2, i2 = _rate(seq, path, tau0 + h, b1)
-    b2 = 0.75 * b + 0.25 * (b1 + h * k2)
-    k3, i3 = _rate(seq, path, tau0 + 0.5 * h, b2)
-    return b / 3.0 + 2.0 / 3.0 * (b2 + h * k3), jnp.stack([i1, i2, i3])
-
-
-def undrag(seq, B, Phi_new):
-    """``(B', record)``: the coefficients on the map ``Phi_new`` of the physical field of the 2-form ``B`` on the
-    installed map.
-
-    Keeping the coefficients on a new map moves the physical field with the mesh, which keeps every flux through every
-    face of the mesh. The relative motion puts it back. On the maps ``Phi_tau = Phi + tau (Phi_new - Phi)`` the
-    coefficients of a fixed physical field change as ``db / dtau = d(i_xi b) = -curl(xi x b)``, ``xi`` the logical
-    velocity of the mesh: the ideal update of the relaxation with the mesh's velocity in place of the flow's
-    (:func:`_rate`, on the map of each stage). Its eigenvalues lie near the imaginary axis, at most 1.41 times the
-    logical cells crossed per unit ``tau`` (li383 (8..16, 16..32, 8), dense, 2026-11-18). Unlike a relaxation step,
-    whose error the next Newton step removes, this advection is not corrected afterwards: forward Euler and the
-    two-stage methods amplify every such mode (forward Euler substeps blew up over repeated moves at every cap down to
-    0.05 cells on W7-X, 2026-11-19), SSP-RK3 is stable up to ``|z| = 3^(1/2)``. So it is integrated from ``tau = 0``
-    to 1 by SSP-RK3 in substeps that cross at most :data:`~mrx.relaxation.loop.CFL` logical cells
-    (:func:`~mrx.relaxation.loop.logical_cfl_weights`), the cap of the relaxation's substeps. Every increment is a
-    curl of a Dirichlet 1-form, so ``div B = 0``, ``B . n = 0`` and the toroidal flux hold exactly. The fluxes of the
-    other surfaces and the topology are kept to the accuracy of the transport, as by the relaxation's own steps.
-    ``record`` holds the number of substeps, the cells the move crosses, the number of mass solves and the number of
-    them that did not converge."""
-    x, Phi = seq.quad.x, seq.map
-    D0, D1 = map_jacobian_at(Phi, x), map_jacobian_at(Phi_new, x)
-    d_q = jax.vmap(Phi_new)(x) - jax.vmap(Phi)(x)
-    path = _Path(Phi, D0, D1, d_q)
-    weights = logical_cfl_weights(seq)
-    cells = max(float(jnp.max(jnp.abs(seq.jacobian_j[:, None]
-                                      * jnp.linalg.solve(D0 + t * (D1 - D0), d_q[..., None])[..., 0]) * weights))
-                for t in (0.0, 0.5, 1.0))
-    n = max(1, int(np.ceil(cells / CFL)))
-    b, failed = B, 0
-    for i in range(n):
-        b, info = _substep(seq, path, jnp.asarray(i / n), jnp.asarray((i + 1) / n), b)
-        failed += int(jnp.sum(info < 0))
-    return b, dict(substeps=n, cells=cells, mass_solves=3 * n, mass_cg_failed=failed)
-
-
 def install_map(seq, Phi, keep_preconditioners=False):
     """Install the map ``Phi`` on ``seq`` with its harmonic forms, and with its own preconditioners unless
     ``keep_preconditioners``. A move keeps those of the map before it. On the boundary meshes of li383 (48,64,24),
@@ -411,103 +335,73 @@ def install_map(seq, Phi, keep_preconditioners=False):
     compute_nullspaces(seq, verbose=False)
 
 
-def _field_sampler(seq, n=(8, 32, 8)):
-    """A function giving the physical field of a 2-form, on the map installed when it is called, at the physical
-    points of a fixed logical grid of the map installed now (``r`` in 0.1 .. 0.9), with the largest miss of their
-    inversion."""
-    r, t, z = np.meshgrid(np.linspace(0.1, 0.9, n[0]), np.arange(n[1]) / n[1], np.arange(n[2]) / n[2],
-                          indexing="ij")
-    x = jnp.asarray(np.stack([r.ravel(), t.ravel(), z.ravel()], 1))
-    X = jax.vmap(seq.map)(x)
-
-    def B_at(B):
-        xn, miss = locate(seq.map, X, x)
-        f = Pushforward(DiscreteFunction(B, seq.basis_2, seq.odd.E(2)), seq.map, 2)
-        return np.asarray(jax.vmap(f)(xn)), float(jnp.max(miss))
-    return B_at
+def axis_offset(seq, c):
+    """``(d, h_1)``: the in-plane displacement ``d`` ``(n_zeta, 2)`` from the pole to the axis curve ``c`` of
+    :func:`magnetic_axis` on the planes of :func:`_planes`, and the size ``h_1`` of the first radial cell
+    (:func:`first_cell`)."""
+    Phi, zetas = seq.map, _planes(seq)
+    ax = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, zetas[:, None]), -1).reshape(-1, 3))
+    S = jax.vmap(Phi.section)
+    return np.asarray(S(jnp.asarray(axis_points(c, zetas))) - S(ax)), first_cell(seq, Phi, zetas)
 
 
-def aligned(e_rms, d, h1, tol):
-    """Whether a mesh is aligned: the alignment error's rms below ``tol`` and the axis within :data:`AXIS_TOL` of
-    the first radial cell ``h1`` of the label's maximum (``d`` from :func:`axis_offset`)."""
-    return e_rms < tol and float(np.max(np.linalg.norm(d, axis=1))) < AXIS_TOL * h1
+def axis_displacement(seq, B):
+    """``(Phi_new, record)``: the map of one move of the pole of ``seq`` onto the magnetic axis of ``B``, steps 1 and 2
+    of the module docstring. ``seq`` is not changed. ``record`` holds the axis finder's record (``axis``), the axis
+    offset (``axis_m``, the largest distance in metres, and ``axis_cells`` in first radial cells), the backtracking
+    factor ``lam``, the largest move in metres and the range of the ratio of ``det DPhi`` after and before."""
+    c, found = magnetic_axis(seq, B)
+    d, h1 = axis_offset(seq, c)
+    delta = tangent(seq, axis_step(seq, d))
+    lam, ratio = _backtrack(seq, jnp.zeros_like(delta), delta)
+    off = float(np.max(np.linalg.norm(d, axis=1)))
+    return moved(seq.map, lam * delta), dict(
+        axis=found, axis_m=off, axis_cells=off / h1, h1_m=h1, lam=lam,
+        move_m=float(jnp.max(jnp.linalg.norm(_section_values(seq, seq.map, lam * delta), axis=1))),
+        det_ratio_min=float(jnp.min(ratio)), det_ratio_max=float(jnp.max(ratio)))
 
 
-def displacement(seq, B, T, velocity=True):
-    """``(Phi_new, record)``: the map of one move of the mesh of ``seq`` towards the flux surfaces of ``B``, whose label
-    has the temperature ``T``, steps 1 to 4 of the module docstring. ``seq`` is not changed. Without ``velocity`` only
-    the axis step moves the mesh.
-
-    ``record`` holds the alignment before the move (``e_rms``, ``e_max``), the axis offset (``axis_m``, the largest
-    distance in metres, and ``axis_cells`` in first radial cells), the backtracking factors of the axis step and the
-    velocity (``lam_axis``, ``lam_v``), the largest move in metres, the range of the ratio of ``det DPhi`` after and
-    before and the counts of the two Helmholtz solves."""
-    B_jk = seq.odd.evaluate_at_quadrature(B, 2)
-    Phi = seq.map
-    d, h1 = axis_offset(seq, T)
-    s_q = enclosed_flux_map(seq, T, B_jk)(seq.even.evaluate_at_quadrature(T, 0)[:, 0])
-    _, e_rms, e_max = alignment(seq, s_q)
-    # 1. the axis step, halved until no cell folds
-    delta_a = tangent(seq, axis_step(seq, d))
-    lam_a, _ = _backtrack(seq, jnp.zeros_like(delta_a), delta_a)
-    delta_a = lam_a * delta_a
-    # 2. the label and its gradient at the points moved by the axis step, found in the old map
-    x_old, miss = locate(Phi, jax.vmap(moved(Phi, delta_a))(seq.quad.x), seq.quad.x)
-    if velocity:
-        s, g = _label_at(seq, T, B_jk, x_old)
-        e, _, _ = alignment(seq, s)
-        # 3. the velocity
-        wJ = seq.quad.w * seq.jacobian_j
-        alpha = SMOOTHING_CELLS ** 2 * radial_cell_sq(seq) * jnp.sum(wJ * jnp.sum(g ** 2, axis=1)) / jnp.sum(wJ)
-        v, i1, i2 = _velocity(seq, e, g, alpha, jnp.asarray(GAIN, dtype=e.dtype))
-        v = tangent(seq, pinned(seq, v))
-    else:
-        v, i1, i2, alpha = jnp.zeros_like(delta_a), 0, 0, 0.0
-    # 4. the velocity halved until no cell folds
-    lam_v, ratio = _backtrack(seq, delta_a, v)
-    delta = delta_a + lam_v * v
-    record = dict(e_rms=e_rms, e_max=e_max, axis_m=float(np.max(np.linalg.norm(d, axis=1))),
-                  axis_cells=float(np.max(np.linalg.norm(d, axis=1)) / h1), h1_m=h1, lam_axis=lam_a, lam_v=lam_v,
-                  move_m=float(jnp.max(jnp.linalg.norm(_section_values(seq, Phi, delta), axis=1))),
-                  alpha=float(alpha), locate_miss=float(jnp.max(miss)), det_ratio_min=float(jnp.min(ratio)),
-                  det_ratio_max=float(jnp.max(ratio)), velocity_cg=[int(i1), int(i2)])
-    return moved(Phi, delta), record
-
-
-def move(seq, B, T, velocity=True):
-    """Move the mesh of ``seq`` once towards the flux surfaces of ``B``, whose label has the temperature ``T``
-    (:func:`displacement`, without ``velocity`` only the axis step), carry ``B`` onto the new map (:func:`carry`) and
-    return ``(B', record)``, with the records of both and the wall time of the whole move."""
+def axis_move(seq, B):
+    """Move the pole of ``seq`` onto the magnetic axis of ``B`` (:func:`axis_displacement`), install the new map with
+    the preconditioners kept and return the record, with the relative change of the energy (the field keeps its
+    coefficients) and the wall time. ``B`` rides with the map: its axis keeps its logical place, off the new pole by
+    about the old distance, while its equilibrium's axis is now on the pole."""
     t0 = time.perf_counter()
-    Phi_new, record = displacement(seq, B, T, velocity)
-    B_new, carried = carry(seq, B, Phi_new)
-    record.update(carried, wall=time.perf_counter() - t0)
-    return B_new, record
-
-
-def carry(seq, B, Phi_new):
-    """Install the map ``Phi_new`` on ``seq`` and return ``(B', record)``: the field ``B`` carried onto it
-    (:func:`undrag`) and what the move measured. Every move of a field ends here, whichever misfit gave its map.
-
-    ``record`` holds that of :func:`undrag`, the range of ``det DPhi`` after the move, the change of the physical
-    field at fixed physical points (relative L2, ``dB_phys``, with the largest miss of their inversion), the relative
-    changes of the energy and of the toroidal flux, ``||div B|| / ||B||`` and the wall time."""
-    t0 = time.perf_counter()
-    odd = seq.odd
-    B_at = _field_sampler(seq)
-    before, _ = B_at(B)
-    E0, F0 = 0.5 * float(odd.l2_norm_sq(B, 2)), float(toroidal_flux(seq, B))
-    B_new, record = undrag(seq, B, Phi_new)
+    Phi_new, record = axis_displacement(seq, B)
+    E0 = float(seq.odd.l2_norm_sq(B, 2))
     install_map(seq, Phi_new, keep_preconditioners=True)
-    after, miss_new = B_at(B_new)
-    J = np.asarray(seq.jacobian_j)
-    record.update(det_min=float(J.min()), det_max=float(J.max()),
-                  dB_phys=float(np.sqrt(np.sum((after - before) ** 2) / np.sum(before ** 2))), dB_miss=miss_new,
-                  dE_rel=(0.5 * float(odd.l2_norm_sq(B_new, 2)) - E0) / E0,
-                  flux_rel=(float(toroidal_flux(seq, B_new)) - F0) / F0,
-                  div_rel=float(compute_divergence_norm(B_new, seq) / odd.l2_norm(B_new, 2)),
-                  wall=time.perf_counter() - t0)
-    return B_new, record
+    record.update(dE_rel=float(seq.odd.l2_norm_sq(B, 2)) / E0 - 1.0, wall=time.perf_counter() - t0)
+    return record
+
+
+def vacuum_start(seq, vacuum, recut):
+    """Move the pole of ``seq`` onto the axis of its vacuum field before a run starts from it, and return the record.
+
+    ``vacuum(seq)`` is the vacuum field on the installed map. Its axis is found and the pole moved there
+    (:func:`axis_displacement`), with no field carried: the vacuum field is solved again on the moved map. The rounds
+    repeat while the distance of the axis from the pole falls by half or more, or the last move was halved against a
+    fold, so a move of any size is made in rounds. With ``recut`` the moved map is cut again by the planes normal to
+    its axis (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its preconditioners
+    and harmonic forms. The record holds the axis offset in first radial cells, the backtracking factor and the
+    largest move and the axis finder's record of every round, the offset on the final map and the wall time."""
+    t0 = time.perf_counter()
+    rounds = []
+    while True:
+        Phi, rec = axis_displacement(seq, vacuum(seq))
+        rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=rec["axis"]))
+        print(f"[mesh] start round {len(rounds)}: vacuum axis {rec['axis_cells']:.3e} first cells off the pole, "
+              f"move {rec['move_m']:.3e} m x{rec['lam']:g}, axis {rec['axis']}", flush=True)
+        if len(rounds) > 1 and rounds[-2]["lam"] == 1.0 and rec["axis_cells"] > 0.5 * rounds[-2]["axis_cells"]:
+            break
+        install_map(seq, Phi, keep_preconditioners=True)
+    record = dict(rounds=rounds)
+    if recut:
+        Phi, _, record["cut"] = axis_normal_map(seq, seq.map)
+        install_map(seq, Phi, keep_preconditioners=True)
+    install_map(seq, seq.map)
+    d, h1 = axis_offset(seq, magnetic_axis(seq, vacuum(seq))[0])
+    record.update(axis_cells=float(np.max(np.linalg.norm(d, axis=1))) / h1, seconds=time.perf_counter() - t0)
+    return record
 
 
 def _angle_space(seq):
@@ -691,16 +585,14 @@ def _map_space(seq):
                           knots=[knots(b) for b in seq.basis_0.Lambda], quad_points=seq.quad_points)
 
 
-def axis_normal_map(seq, position, T=None):
+def axis_normal_map(seq, position):
     """``(Phi, shift, info)``: the map of ``position`` re-sectioned so that its surfaces ``zeta = const`` are the
     planes normal to its axis, in the frame of that axis (GVEC's G-frame), and the change of the toroidal coordinate.
 
     ``position`` is a map from the logical points of ``seq`` (one field period of ``seq.nfp``) to Cartesian points:
     a :class:`~mrx.equilibria.FrameMap` on the 0-form splines of ``seq``, in any frame and with any ``X3``, or the
     exact map of a file's state (:func:`mrx.equilibria.state_position`). The curve is its axis ``position(0, theta,
-    zeta)``, sampled at :data:`AXIS_SAMPLES_PER_SPLINE` angles per spline of ``zeta``, or with the temperature ``T``
-    of a flux label on the installed map of ``seq`` the label's maximum on the Greville planes of the ``zeta``
-    splines (:func:`label_maximum`), the magnetic axis. Its frame is :func:`curve_frame`, with half as many modes as
+    zeta)``, sampled at :data:`AXIS_SAMPLES_PER_SPLINE` angles per spline of ``zeta``. Its frame is :func:`curve_frame`, with half as many modes as
     the map has splines of ``zeta``, what they resolve.
 
     Every point of ``Phi`` is the point of ``position`` on the same line ``(r, theta)`` that lies in the frame's plane
@@ -718,8 +610,7 @@ def axis_normal_map(seq, position, T=None):
 
     ``shift`` holds the tensor coefficients of ``f``: a logical point ``x`` of ``Phi`` is the point ``x + f(x)
     e_zeta`` of ``position``. A field given in the logical coordinates of ``position`` is carried onto ``Phi`` with
-    it (:mod:`mrx.relaxation.initial_conditions` does so for a file's field). A discrete field of a map installed on
-    ``seq`` is carried by :func:`carry`.
+    it (:mod:`mrx.relaxation.initial_conditions` does so for a file's field).
 
     ``info`` holds the number of frame modes and the curve's fit error (``frame_modes``, ``curve_rms``), the tilt of
     the surfaces ``zeta = const`` against the axis before and after, in degrees (:func:`section_tilt`, the largest
@@ -731,12 +622,8 @@ def axis_normal_map(seq, position, T=None):
     bases = seq.basis_0.Lambda
     g = [np.asarray(b.greville_points(), dtype=np.float64) for b in bases]
     n_z = bases[2].n
-    if T is None:
-        zetas = np.arange(AXIS_SAMPLES_PER_SPLINE * n_z + 1) / (AXIS_SAMPLES_PER_SPLINE * n_z + 1)
-        x_a = np.stack(np.broadcast_arrays(0.0, 0.0, zetas), 1)
-    else:
-        zetas = g[2]
-        x_a = label_maximum(seq, T, zetas)
+    zetas = np.arange(AXIS_SAMPLES_PER_SPLINE * n_z + 1) / (AXIS_SAMPLES_PER_SPLINE * n_z + 1)
+    x_a = np.stack(np.broadcast_arrays(0.0, 0.0, zetas), 1)
     n_modes = min(n_z // 2, (zetas.size - 1) // 2)
     frame, rms = curve_frame(zetas, np.asarray(jax.vmap(position)(jnp.asarray(x_a, dtype=float))), seq.nfp, n_modes)
     zeros = jnp.zeros(seq.basis_0.shape[0], dtype=float)
@@ -807,3 +694,4 @@ def install_checkpoint_map(seq, path):
                                for k in ("frame_cos", "frame_sin", "frame_n")))
     install_map(seq, Phi)
     return True
+

@@ -229,19 +229,11 @@ class Current:
 
 @dataclass(frozen=True)
 class Mesh:
-    """Motion of the mesh towards the flux surfaces of the field between chunks (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
+    """Motion of the mesh's axis onto the magnetic axis before every chunk (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
     align: bool = False
-    """Move the mesh towards the flux surfaces until it is aligned."""
-    tol: float = 1e-2
-    """The volume rms of s - S(r), the flux label against its mean on each logical surface, below which the mesh is aligned (with the magnetic axis within a quarter of the first radial cell of the mesh axis). Then the run only relaxes."""
-    moves: int = 8
-    """The largest number of moves."""
-    start: int = 20
-    """The step from which on a move may happen: the label of the start field may be far from that of the relaxed field. A multiple of --budget.chunk."""
-    every: int = 20
-    """The steps between two moves, with which the relaxation removes the error of the carried field. A multiple of --budget.chunk."""
-    axis_only: bool = False
-    """Move only the mesh axis onto the magnetic axis (the axis step of a move), not the points between it and the wall. The mesh is then aligned once the axis is within a quarter of the first radial cell, whatever --mesh.tol."""
+    """Keep the pole of the mesh on the magnetic axis: from the vacuum field of a namelist the mesh moves onto the vacuum's axis before the run (mrx.relaxation.mesh_motion.vacuum_start), and before every chunk the pole moves onto the field's axis, the field's coefficients kept (mrx.relaxation.mesh_motion.axis_move). The moves keep the preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve exceeds --mesh.rebuild-factor times that of the first chunk after their last build, or a Newton solve stopped at --newton.maxiter."""
+    rebuild_factor: float = 1.5
+    """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
 
     def __bool__(self):
         return self.align
@@ -299,8 +291,6 @@ class RelaxConfig:
             if self.drive:
                 raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the "
                                  "mesh it was written on")
-            if self.mesh.start % chunk or self.mesh.every % chunk or self.mesh.every < chunk:
-                raise ValueError("--mesh.start and --mesh.every must be multiples of --budget.chunk")
 
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""
