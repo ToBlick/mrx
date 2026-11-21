@@ -345,20 +345,70 @@ def axis_offset(seq, c):
     return np.asarray(S(jnp.asarray(axis_points(c, zetas))) - S(ax)), first_cell(seq, Phi, zetas)
 
 
-def axis_displacement(seq, B):
-    """``(Phi_new, record)``: the map of one move of the pole of ``seq`` onto the magnetic axis of ``B``, steps 1 and 2
-    of the module docstring. ``seq`` is not changed. ``record`` holds the axis finder's record (``axis``), the axis
-    offset (``axis_m``, the largest distance in metres, and ``axis_cells`` in first radial cells), the backtracking
-    factor ``lam``, the largest move in metres and the range of the ratio of ``det DPhi`` after and before."""
-    c, found = magnetic_axis(seq, B)
-    d, h1 = axis_offset(seq, c)
+def _displacement(seq, d, h1):
+    """``(Phi_new, record)``: the map of the move of the pole of ``seq`` by the in-plane offsets ``d`` on the planes of
+    :func:`_planes` (step 2 of the module docstring), halved against folds. ``record`` holds the largest offset
+    (``axis_m`` in metres, ``axis_cells`` in first radial cells of size ``h1``), the backtracking factor ``lam``, the
+    largest move in metres and the range of the ratio of ``det DPhi`` after and before."""
     delta = tangent(seq, axis_step(seq, d))
     lam, ratio = _backtrack(seq, jnp.zeros_like(delta), delta)
     off = float(np.max(np.linalg.norm(d, axis=1)))
     return moved(seq.map, lam * delta), dict(
-        axis=found, axis_m=off, axis_cells=off / h1, h1_m=h1, lam=lam,
+        axis_m=off, axis_cells=off / h1, h1_m=h1, lam=lam,
         move_m=float(jnp.max(jnp.linalg.norm(_section_values(seq, seq.map, lam * delta), axis=1))),
         det_ratio_min=float(jnp.min(ratio)), det_ratio_max=float(jnp.max(ratio)))
+
+
+def axis_displacement(seq, B):
+    """``(Phi_new, record)``: the map of one move of the pole of ``seq`` onto the magnetic axis of ``B``, steps 1 and 2
+    of the module docstring. ``seq`` is not changed. ``record`` is that of :func:`_displacement` with the axis
+    finder's record (``axis``)."""
+    c, found = magnetic_axis(seq, B)
+    Phi, record = _displacement(seq, *axis_offset(seq, c))
+    record.update(axis=found)
+    return Phi, record
+
+
+def axis_curve(seq, B, samples=8):
+    """``(zetas, points)``: the magnetic axis of ``B`` (:func:`magnetic_axis`) as Cartesian points ``(K, 3)`` at the
+    logical ``zetas`` of one field period, ``samples`` per spline of ``zeta``: a curve in space, which
+    :func:`curve_start` puts the pole of another mesh of the same domain on."""
+    c, _ = magnetic_axis(seq, B)
+    zetas = np.arange(samples * seq.basis_0.Lambda[2].n) / (samples * seq.basis_0.Lambda[2].n)
+    return zetas, np.asarray(jax.vmap(seq.map)(jnp.asarray(axis_points(c, zetas))))
+
+
+def curve_offset(seq, zetas, points):
+    """``(d, h_1)`` of :func:`axis_offset` for a closed curve in space given by the Cartesian ``points`` at the
+    logical ``zetas`` of one field period (:func:`axis_curve`): on every plane of :func:`_planes` the point where the
+    curve crosses the surface ``zeta = const`` of the installed map. The curve turned back by ``2 pi zeta / nfp``
+    about the ``z`` axis is periodic, its least-squares Fourier series has a quarter as many modes as samples. The
+    crossing solves ``Phi(r, theta, zeta_k) = X(t)`` for the chart point and the curve's parameter ``t`` by Newton's
+    method from half a first radial cell off the pole and ``t = zeta_k``."""
+    Phi, planes = seq.map, _planes(seq)
+    omega = 2.0 * np.pi / seq.nfp
+    p = np.asarray(points, dtype=np.float64)
+    c, s = np.cos(-omega * zetas), np.sin(-omega * zetas)
+    turned = np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
+    modes = (len(zetas) - 1) // 4
+    a_cos, a_sin, _ = _fourier_fit(np.asarray(zetas, dtype=np.float64), turned, modes)
+    k = jnp.arange(modes + 1)
+    a_cos, a_sin = jnp.asarray(a_cos), jnp.asarray(a_sin)
+
+    def X(t):
+        a = a_cos @ jnp.cos(-2.0 * jnp.pi * k * t) + a_sin @ jnp.sin(-2.0 * jnp.pi * k * t)
+        cz, sz = jnp.cos(omega * t), jnp.sin(omega * t)
+        return jnp.array([cz * a[0] - sz * a[1], sz * a[0] + cz * a[1], a[2]])
+
+    r1 = _first_knot(seq)
+
+    def one(z):
+        F = lambda q: Phi(_chart(q[:2], z)) - X(q[2])   # noqa: E731
+        q = jnp.array([0.5 * r1, 0.0, z])
+        for _ in range(NEWTON_STEPS):
+            q = q - jnp.linalg.solve(jax.jacfwd(F)(q), F(q))
+        return Phi.section(_chart(q[:2], z)) - Phi.section(jnp.array([0.0, 0.0, z]))
+    return np.asarray(jax.jit(jax.vmap(one))(jnp.asarray(planes))), first_cell(seq, Phi, planes)
 
 
 def axis_move(seq, B):
@@ -374,23 +424,22 @@ def axis_move(seq, B):
     return record
 
 
-def vacuum_start(seq, vacuum, recut):
-    """Move the pole of ``seq`` onto the axis of its vacuum field before a run starts from it, and return the record.
-
-    ``vacuum(seq)`` is the vacuum field on the installed map. Its axis is found and the pole moved there
-    (:func:`axis_displacement`), with no field carried: the vacuum field is solved again on the moved map. The rounds
-    repeat while the distance of the axis from the pole falls by half or more, or the last move was halved against a
-    fold, so a move of any size is made in rounds. With ``recut`` the moved map is cut again by the planes normal to
-    its axis (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its preconditioners
-    and harmonic forms. The record holds the axis offset in first radial cells, the backtracking factor and the
-    largest move and the axis finder's record of every round, the offset on the final map and the wall time."""
+def _start(seq, offset, recut):
+    """Move the pole of ``seq`` in rounds onto the curve whose offsets ``offset(seq) = (d, h_1, info)`` gives on the
+    installed map (:func:`_displacement`), with no field carried, and return the record. The rounds repeat while the
+    distance falls by half or more, or the last move was halved against a fold, so a move of any size is made in
+    rounds. With ``recut`` the moved map is cut again by the planes normal to its axis (:func:`axis_normal_map`),
+    which the pole stays on. The final map is installed with its preconditioners and harmonic forms. The record holds
+    the offset in first radial cells, the backtracking factor, the largest move and ``info`` of every round, the
+    offset on the final map and the wall time."""
     t0 = time.perf_counter()
     rounds = []
     while True:
-        Phi, rec = axis_displacement(seq, vacuum(seq))
-        rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=rec["axis"]))
-        print(f"[mesh] start round {len(rounds)}: vacuum axis {rec['axis_cells']:.3e} first cells off the pole, "
-              f"move {rec['move_m']:.3e} m x{rec['lam']:g}, axis {rec['axis']}", flush=True)
+        d, h1, info = offset(seq)
+        Phi, rec = _displacement(seq, d, h1)
+        rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=info))
+        print(f"[mesh] start round {len(rounds)}: axis {rec['axis_cells']:.3e} first cells off the pole, "
+              f"move {rec['move_m']:.3e} m x{rec['lam']:g}, {info}", flush=True)
         if len(rounds) > 1 and rounds[-2]["lam"] == 1.0 and rec["axis_cells"] > 0.5 * rounds[-2]["axis_cells"]:
             break
         install_map(seq, Phi, keep_preconditioners=True)
@@ -399,9 +448,29 @@ def vacuum_start(seq, vacuum, recut):
         Phi, _, record["cut"] = axis_normal_map(seq, seq.map)
         install_map(seq, Phi, keep_preconditioners=True)
     install_map(seq, seq.map)
-    d, h1 = axis_offset(seq, magnetic_axis(seq, vacuum(seq))[0])
+    d, h1, _ = offset(seq)
     record.update(axis_cells=float(np.max(np.linalg.norm(d, axis=1))) / h1, seconds=time.perf_counter() - t0)
     return record
+
+
+def vacuum_start(seq, vacuum, recut):
+    """Move the pole of ``seq`` onto the axis of its vacuum field before a run starts from it, and return the record
+    of :func:`_start`. ``vacuum(seq)`` is the vacuum field on the installed map: every round finds its axis
+    (:func:`magnetic_axis`) on the map the round before made, with the vacuum field solved again there."""
+    def offset(sq):
+        c, found = magnetic_axis(sq, vacuum(sq))
+        return (*axis_offset(sq, c), found)
+    return _start(seq, offset, recut)
+
+
+def curve_start(seq, zetas, points, recut):
+    """Move the pole of ``seq`` onto a closed curve in space before a run starts, and return the record of
+    :func:`_start`: the magnetic axis of the equilibrium of a coarser run of the same domain and targets
+    (:func:`axis_curve`, Cartesian ``points`` at its logical ``zetas``), crossed with the surfaces ``zeta = const``
+    of every round's map (:func:`curve_offset`). The field of the run is solved on the final map afterwards. Its
+    vacuum axis is then off the pole by the shift the pressure makes, which the relaxation carries the field's axis
+    across."""
+    return _start(seq, lambda sq: (*curve_offset(sq, zetas, points), "curve"), recut)
 
 
 def _angle_space(seq):

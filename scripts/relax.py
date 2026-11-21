@@ -34,7 +34,8 @@ The loop starts from the current the field carries. The target is kept in every 
 misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
-the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with the vacuum solved on it. Before
+the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, or with ``--mesh.axis-from`` onto the
+magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. Before
 every chunk the pole moves onto the axis of the field. The field keeps its coefficients: it rides with the map, and
 the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
 the slips are rebuilt and does not change the targets. With ``--mesh.bar`` the pole moves only at an equilibrium, and
@@ -154,11 +155,18 @@ def main(cfg, fit=None):
     else:
         t1 = time.perf_counter()
         if cfg.mesh and seq.equilibrium["kind"] == "indata":
-            # the first move needs no transport: the pole goes onto the vacuum's axis, the vacuum is solved there
-            start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut=g.zeta == "axis-normal")
+            # the first move needs no transport: the pole goes onto the vacuum's axis, or onto the axis of a coarser
+            # run's equilibrium, and the vacuum is solved there
+            recut = g.zeta == "axis-normal"
+            if cfg.mesh.axis_from:
+                with np.load(cfg.mesh.axis_from) as z:
+                    start = mesh_motion.curve_start(seq, z["zetas"], z["points"], recut)
+            else:
+                start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut)
             results["mesh"]["start"] = start
             ts = cfg.stepper(seq)
-            print(f"[mesh] start: the pole onto the vacuum's axis in {len(start['rounds'])} rounds, axis "
+            onto = f"the curve of {cfg.mesh.axis_from}" if cfg.mesh.axis_from else "the vacuum's axis"
+            print(f"[mesh] start: the pole onto {onto} in {len(start['rounds'])} rounds, axis "
                   + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
                   + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
                   + f"), {start['axis_cells']:.2e} cells on the final map, {start['seconds']:.0f} s", flush=True)

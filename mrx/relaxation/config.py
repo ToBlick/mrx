@@ -236,6 +236,8 @@ class Mesh:
     """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
     bar: Optional[float] = None
     """Move the pole only at a chunk boundary where the squared force residual of the field is below this, at an equilibrium: during a ramp the field's axis is not that of the equilibrium it relaxes to. A move is made only if the axis is closer to the pole than at the move before. The first time it is not, the moves stop for the rest of the run. Unset, the pole moves at every chunk boundary."""
+    axis_from: Optional[str] = None
+    """An npz of the magnetic axis of a coarser run's equilibrium of the same domain and targets, Cartesian points at logical zetas (mrx.relaxation.mesh_motion.axis_curve): a run from the vacuum field of a namelist starts with the pole on that curve instead of on the vacuum's axis (mrx.relaxation.mesh_motion.curve_start), so the pressure carries the field's axis onto the pole instead of off it."""
 
     def __bool__(self):
         return self.align

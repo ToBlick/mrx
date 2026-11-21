@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.every-step` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.axis-from`, `--mesh.every-step` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -475,6 +475,16 @@ preconditioners are kept. They are built again on the installed map when the
 chunk's mean MINRES count of the Newton solve exceeds `--mesh.rebuild-factor`
 (1.5) times that of the first chunk after their last build, or a Newton
 solve stopped at `--newton.maxiter`. RUN_NUMBERS
+
+The pressure shifts the axis away from the vacuum's, on W7-X (32,64,36) by
+four first radial cells, so with the pole on the vacuum's axis the first
+equilibrium has its axis that far off the pole. With `--mesh.axis-from` the
+mesh is built around the axis of a coarser run's equilibrium of the same
+domain and targets instead: the pole goes onto that curve in rounds, the
+mesh is cut by the planes normal to it, and the vacuum is solved there
+(`mrx.relaxation.mesh_motion.curve_start`). The vacuum's axis is then off the
+pole, and the pressure carries the field's axis onto it. The curve is the
+Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz.
 
 During the pressure's rise the field's axis is not that of the
 equilibrium it relaxes to, and a move there kicks the field away from it.
