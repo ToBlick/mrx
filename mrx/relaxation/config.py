@@ -234,6 +234,8 @@ class Mesh:
     """Keep the pole of the mesh on the magnetic axis: from the vacuum field of a namelist the mesh moves onto the vacuum's axis before the run (mrx.relaxation.mesh_motion.vacuum_start), and before every chunk the pole moves onto the field's axis, the field's coefficients kept (mrx.relaxation.mesh_motion.axis_move). The moves keep the preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve exceeds --mesh.rebuild-factor times that of the first chunk after their last build, or a Newton solve stopped at --newton.maxiter."""
     rebuild_factor: float = 1.5
     """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
+    bar: Optional[float] = None
+    """Move the pole only at a chunk boundary where the squared force residual of the field is below this, at an equilibrium: during a ramp the field's axis is not that of the equilibrium it relaxes to. Unset, the pole moves at every chunk boundary."""
 
     def __bool__(self):
         return self.align

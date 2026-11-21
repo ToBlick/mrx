@@ -128,7 +128,7 @@ def main(cfg, fit=None):
     params["h_r_sq"] = float(h_r_sq)
     ts = cfg.stepper(seq)
     if cfg.mesh:
-        results["mesh"] = dict(moves=[], chunks=[], builds=[])
+        results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
     if cfg.output.restart:
         state, it0 = read_checkpoint(cfg.output.restart, ts)
         print(f"[restart] {cfg.output.restart}: descent state at step {it0}", flush=True)
@@ -284,6 +284,14 @@ def main(cfg, fit=None):
             coefficients, its force residual right before and after the move goes into the record."""
             nonlocal ts
             before = float(initial_state(state.B_n, ts).best.resid)
+            if mm.bar is not None and not before < mm.bar:
+                # not an equilibrium: its axis is not that of the field it relaxes to, the offset is only recorded
+                d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
+                off = float(np.max(np.linalg.norm(d, axis=1))) / h1
+                results["mesh"]["checks"].append(dict(step=it, axis_cells=off, resid=before))
+                print(f"[mesh] step {it}: residual {before:.3e} above the bar, axis {off:.3e} first cells off the pole, "
+                      f"no move", flush=True)
+                return state
             rec = mesh_motion.axis_move(seq, state.B_n)
             ts = cfg.stepper(seq)
             rec.update(step=it, resid_before=before, resid_after=float(initial_state(state.B_n, ts).best.resid))
