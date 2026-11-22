@@ -172,10 +172,10 @@ def test_kept_preconditioners_precondition_a_nearby_map(seq):
         assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
 
 
-@pytest.mark.skip(reason="pending Tobias: kappa 264 on the tokamak fixture (99.6 / 0.377), below 5 on li383 and shearedE")
 def test_slab_mass_model_conditions_the_one_form_mass(seq):
-    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 4.04 on li383 (16, 32, 12)
-    (2026-10-20). The metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
+    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass, from the Lanczos matrix of PCG cut at its
+    convergence. 1.306 on the tokamak densely (2026-11-22), 4.04 on li383 (16, 32, 12) (2026-10-20). The
+    metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
     from mrx.metric_lumping import ReducedAtom
     from mrx.slab_mass import SlabMass
     from mrx.solvers import lanczos_bounds
@@ -184,4 +184,5 @@ def test_slab_mass_model_conditions_the_one_form_mass(seq):
     M = odd.M[1]
     b = M @ jnp.asarray(np.random.default_rng(0).standard_normal(odd.n(1)))
     lo, hi = lanczos_bounds(lambda x: M @ x, b, P.apply, 40)
+    print(f"\n  kappa {hi / lo:.4f} ({lo:.4f} .. {hi:.4f})")
     assert hi / lo < 5.0
