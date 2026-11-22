@@ -16,8 +16,8 @@ from mrx.relaxation.seeding import energy_seed
 #: The resonance of the seed.
 IOTA = 3.0 / 4.0
 #: The resonant normal field of the brute-force seed, ``|dB^r| / |B^zeta|`` on the resonant surface: an island about
-#: 0.05 wide in ``sqrt(s)``.
-AMPLITUDE = 1e-3
+#: 0.065 wide in ``sqrt(s)`` (0.029 at 1e-3 left the nearest line, 0.011 off the resonance, at 0.7478).
+AMPLITUDE = 5e-3
 
 
 def test_the_energy_seed_is_the_optimum_in_its_span(seq, b0):
@@ -45,7 +45,7 @@ def test_a_resonant_seed_opens_a_chain(seq, b0):
     measured."""
     seeded, rows = energy_seed(seq, b0, iotas=[IOTA], amplitudes=[AMPLITUDE], verbose=False)
     (row,) = rows
-    kw = dict(lines=8, periods=60, planes=(0.0,))
+    kw = dict(lines=8, periods=200, planes=(0.0,))
     iota_0 = np.abs(np.asarray(poincare(seq, b0, **kw)["iota"]))
     trace = poincare(seq, seeded, **kw)
     iota = np.abs(np.asarray(trace["iota"]))
