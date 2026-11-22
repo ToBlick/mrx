@@ -350,7 +350,9 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
     rec = dict(r=r.tolist(), r_max=float(np.abs(r).max()), r_rms=float(np.sqrt(np.sum(w * r ** 2) / np.sum(w))),
                mu=np.asarray(mu).tolist(), lam=lam.tolist(), delta=delta.tolist(), r_eq=r_eq.tolist(),
                minres=info.tolist())
-    return build_slips(seq, B, T, jnp.asarray(lam, dtype=T.dtype))[0], lam, rec
+    # the field changes hold the label alone: the new target changes only the right-hand side g = -Z mu*
+    g = -jnp.sum(seq.quad.w_z) * jnp.asarray(lam, dtype=slips.g.dtype)
+    return eqx.tree_at(lambda x: x.g, slips, g), lam, rec
 
 
 @eqx.filter_jit

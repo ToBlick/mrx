@@ -154,6 +154,8 @@ def main(cfg, fit=None):
                 print(f"[restart] the iota loop's current target, near the wall {iota_target[-1]:+.4e} T m", flush=True)
     else:
         t1 = time.perf_counter()
+        if (cfg.mesh.nested or cfg.mesh.axis_from) and seq.equilibrium["kind"] != "indata":
+            raise ValueError("--mesh.nested and --mesh.axis-from start from the vacuum field of a VMEC input namelist")
         if cfg.mesh and seq.equilibrium["kind"] == "indata":
             # the first move needs no transport: the pole goes onto the vacuum's axis, onto the nested solve's axis or
             # onto the axis of a coarser run's equilibrium, and the vacuum is solved there
@@ -312,13 +314,12 @@ def main(cfg, fit=None):
     if mm:
         built = dict(ref=None, last=None, cap=False)
 
-        def align_axis(state, it):
+        def align_axis(state, it, before):
             """The state at step ``it`` after the move of the pole onto the field's magnetic axis, if one is due: at an
             equilibrium (residual below --mesh.bar) with the axis more than --mesh.move-tol first cells off the pole.
-            The field is carried onto the moved map, its force residual right before and after the move goes into the
-            record."""
+            ``before`` is the field's squared force residual. The field is carried onto the moved map, its residual
+            right before and after the move goes into the record."""
             nonlocal ts
-            before = float(initial_state(state.B_n, ts).best.resid)
             schedule["resid"] = before
             d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
             off = float(np.max(np.linalg.norm(d, axis=1))) / h1
@@ -394,7 +395,8 @@ def main(cfg, fit=None):
         """The state and the stepper of the chunk from step ``it``."""
         nonlocal ts, seed_pending, iota_target
         updated = False
-        if mm and cfg.iota and float(initial_state(state.B_n, ts).best.resid) < mm.bar:
+        resid = float(initial_state(state.B_n, ts).best.resid) if mm else None
+        if mm and cfg.iota and resid < mm.bar:
             # at an equilibrium the loop reads the field before the mesh moves: the move would kick it off
             s_q, info = label_of(state)
             if iota_target is None:     # the loop starts from the current the field carries
@@ -403,7 +405,7 @@ def main(cfg, fit=None):
             record_iota(it, rec, info)
             schedule["hold"], updated = False, True
         if mm:
-            state = align_axis(state, it)
+            state = align_axis(state, it, resid)
             precondition(it)
         if not targets:
             return state, ts
@@ -500,9 +502,10 @@ def main(cfg, fit=None):
             record_current(it, current_on_label(seq, state.B_n, T_label, pr.cells), info)
             results["summary"].update(current_error=results["current"]["rebuilds"][-1]["error"])
         if cfg.iota:
-            mu_end = iota_target if iota_target is not None else current_on_label(seq, state.B_n, T_label, pr.cells)
-            record_iota(it, iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, mu_end)[2], info)
-            results["summary"].update(iota_r_max=results["iota"]["rebuilds"][-1]["r_max"])
+            r = np.asarray(iota_residual(seq, state.B_n, s_q, iota_star, pr.cells + 2)(state.B_n)[0], dtype=np.float64)
+            results["iota"]["end"] = dict(step=it, label_it=info, r=r.tolist(), r_max=float(np.abs(r).max()))
+            print(f"[iota] step {it}: weak residual max {np.abs(r).max():.3e} at the end", flush=True)
+            results["summary"].update(iota_r_max=float(np.abs(r).max()))
         write()
     checkpoint("best.h5", initial_state(res.state.best.B, ts, step=int(res.state.best.step)),
                int(res.state.best.step))

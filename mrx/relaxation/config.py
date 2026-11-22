@@ -297,10 +297,14 @@ class RelaxConfig:
                              "--drive.resistivity")
         if self.current and self.iota:
             raise ValueError("--iota.target and --current.target both set the current: give one")
-        if self.mesh:
-            if self.drive:
-                raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the "
-                                 "mesh it was written on")
+        m = self.mesh
+        if (m.nested or m.axis_from or m.axis_to) and not m.align:
+            raise ValueError("--mesh.nested, --mesh.axis-from and --mesh.axis-to need --mesh.align")
+        if m.nested and m.axis_from:
+            raise ValueError("--mesh.nested and --mesh.axis-from both give the start's axis: give one")
+        if m and self.drive:
+            raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the mesh it "
+                             "was written on")
 
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""

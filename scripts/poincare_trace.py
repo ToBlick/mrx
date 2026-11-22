@@ -104,8 +104,8 @@ def main(cli):
     seq = build_sequence(cli.geometry, attrs["ns"], attrs["p"], knots=attrs["knots"],
                          symmetry=attrs["symmetry"], graded=attrs["graded"], map_theta=attrs["map_theta"], zeta="phi")
     maps = [checkpoint_map(path) for path in cli.checkpoints]
-    if any((m is None) != (maps[0] is None) or (m is not None and (m.keys() != maps[0].keys() or not all(
-            np.array_equal(m[k], maps[0][k]) for k in m))) for m in maps):
+    if any((m is None) != (maps[0] is None) or (m is not None and not all(np.array_equal(m[k], maps[0][k]) for k in m))
+           for m in maps):
         raise ValueError("the checkpoints were written on different maps (a moving mesh): trace each map in its own call")
     install_checkpoint_map(seq, cli.checkpoints[0])
     fields = {name: read_field(path, seq) for name, path in zip(field_names(cli.checkpoints), cli.checkpoints)}

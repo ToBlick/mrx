@@ -27,10 +27,11 @@ current map:
 4. The geometry and the harmonic forms of the new map are installed (:func:`install_map`), the preconditioners of
    the old map are kept. The map is data of the sequence, so the compiled relaxation is reused.
 
-``scripts/relax.py --mesh.align`` moves the axis so at a chunk boundary where the field is at an equilibrium and its
+``scripts/relax.py --mesh.align`` moves the pole at a chunk boundary where the field is at an equilibrium and its
 axis is off the pole by more than a tolerance, and builds the preconditioners again when the Newton solve says that
 those of an older map no longer fit. A run from the vacuum field of a namelist starts on a
-mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`): there the mesh moves first and the vacuum field
+mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`), or on a given curve, the axis of the
+namelist's nested-surface solve or of a coarser run (:func:`curve_start`): there the mesh moves first and the vacuum field
 is solved on it, so the first move, the largest, perturbs nothing. A moved map goes into the checkpoints
 (:func:`write_map`, :func:`install_checkpoint_map`).
 
@@ -109,14 +110,12 @@ def _planes(seq):
 def first_cell(seq, Phi, zetas):
     """The mean distance in the planes ``zetas`` from the axis to the first radial breakpoint, the size of the
     innermost radial cell."""
-    T_r = np.asarray(seq.basis_0.Lambda[0].T, dtype=np.float64)
-    r1 = np.unique(T_r[(T_r > 0) & (T_r <= 1)])[0]
+    r1 = _first_knot(seq)
     th = np.arange(16) / 16
     x = jnp.asarray(np.stack(np.broadcast_arrays(r1, th[None, :], zetas[:, None]), -1).reshape(-1, 3))
     ax = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, zetas[:, None]), -1).reshape(-1, 3))
     S = jax.vmap(Phi.section)
     return float(jnp.mean(jnp.linalg.norm(S(x).reshape(len(zetas), 16, 2) - S(ax).reshape(len(zetas), 1, 2), axis=-1)))
-
 
 
 def _first_knot(seq):
@@ -328,11 +327,12 @@ def _backtrack(seq, base, delta):
 def install_map(seq, Phi, keep_preconditioners=False):
     """Install the map ``Phi`` on ``seq`` with its harmonic forms, and with its own preconditioners unless
     ``keep_preconditioners``. A move keeps those of the map before it. On the boundary meshes of li383 (48,64,24),
-    W7-X (24,48,28) and HSX (32,64,36), aligned after three, three and one moves, the start map's preconditioners take
-    the same MINRES and label CG counts as those of the moved map, but the mass solves inside every step take more
-    iterations (the 1-form solve of the Newton operator 15, 15, 19 against 11, 11, 16), and a chunk of ten steps with
-    both targets takes 26, 23 and 12 % longer. A build costs 57-72 s on an H200 (host assembly), the price of 25 to
-    50 such chunks, so it is done once, on the final map (2026-11-19)."""
+    W7-X (24,48,28) and HSX (32,64,36), after three, three and one moves of the whole mesh, the start map's
+    preconditioners took the same MINRES and label CG counts as those of the moved map, but the mass solves inside
+    every step took more iterations (the 1-form solve of the Newton operator 15, 15, 19 against 11, 11, 16), and a
+    chunk of ten steps with both targets took 26, 23 and 12 % longer. A build costs 57-72 s on an H200 (host
+    assembly), the price of 25 to 50 such chunks, so it is done only when the Newton solve asks for it (2026-11-19).
+    A move of the pole alone changes the map less."""
     seq.set_geometry(frame_geometry(seq, Phi), keep_preconditioners)
     if not keep_preconditioners:
         seq.build_preconditioners()
@@ -523,8 +523,8 @@ def harmonic_displacement(seq, q):
     Every point moves along its line of constant ``r`` and ``theta`` by the Newton step of ``q = 0`` at that point,
     the logical shift ``-q / (1 + d_zeta q)``, to the position the installed map has there (:func:`_resection`).
     The surfaces ``r = const`` and the poloidal angle stay, and the wall slides along itself. The change of ``X1``
-    (even), ``X2`` and ``X3`` (odd) is the L2 projection onto the free 0-forms of the sequence, the space of the
-    flux alignment's velocity with the wall's values free. The move is halved until no cell folds
+    (even), ``X2`` and ``X3`` (odd) is the L2 projection onto the free 0-forms of the sequence, with the wall's values
+    free. The move is halved until no cell folds
     (:func:`_backtrack`). ``record`` holds the largest shift in logical ``zeta``, the backtracking factor ``lam`` and
     the range of the ratio of ``det DPhi`` after and before."""
     free = _angle_space(seq)
@@ -761,26 +761,23 @@ MAP_ARRAYS = ("raw_X1", "raw_X2", "raw_X3", "frame_cos", "frame_sin", "frame_n")
 
 def checkpoint_map(path):
     """The arrays of the map stored in the checkpoint ``path`` by :func:`write_map`, a dict by the names of
-    :data:`MAP_ARRAYS`, or ``None`` for a checkpoint without one (written on the file's sections). A checkpoint written
-    before the frame was stored holds the coefficients alone, on the frame of the file."""
+    :data:`MAP_ARRAYS`, or ``None`` for a checkpoint without one (written on the file's sections)."""
     with h5py.File(path, "r") as fh:
         if "map_raw_X1" not in fh:
             return None
-        return {name: np.asarray(fh[f"map_{name}"]) for name in MAP_ARRAYS if f"map_{name}" in fh}
+        return {name: np.asarray(fh[f"map_{name}"]) for name in MAP_ARRAYS}
 
 
 def install_checkpoint_map(seq, path):
     """Install the map of the checkpoint ``path`` (:func:`checkpoint_map`) on ``seq`` and return ``True``, or return
-    ``False`` if it has none. The coefficients come with the frame they belong to, unless the checkpoint predates the
-    stored frame."""
+    ``False`` if it has none. The coefficients come with the frame they belong to."""
     arrays = checkpoint_map(path)
     if arrays is None:
         return False
     Phi = seq.map.with_coordinates(*(jnp.asarray(arrays[k], dtype=seq.map.raw_X1.dtype)
                                      for k in ("raw_X1", "raw_X2", "raw_X3")))
-    if "frame_cos" in arrays:
-        Phi = Phi.with_frame(*(jnp.asarray(arrays[k], dtype=seq.map.frame_cos.dtype)
-                               for k in ("frame_cos", "frame_sin", "frame_n")))
+    Phi = Phi.with_frame(*(jnp.asarray(arrays[k], dtype=seq.map.frame_cos.dtype)
+                           for k in ("frame_cos", "frame_sin", "frame_n")))
     install_map(seq, Phi)
     return True
 

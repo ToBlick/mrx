@@ -213,20 +213,18 @@ def surface_normals(seq, T):
     return g / jnp.linalg.norm(g, axis=1, keepdims=True)
 
 
-def kernel_rows(seq, s_q, n_q, X_q, y, width, region=None, cells=PROFILE_CELLS):
-    """``(A, record)``: the observations ``A_ik = int K_i region phi_k(s) dV / int K_i dV`` of the ``K`` splines of the
+def kernel_rows(seq, s_q, n_q, X_q, y, width, cells=PROFILE_CELLS):
+    """``(A, record)``: the observations ``A_ik = int K_i phi_k(s) dV / int K_i dV`` of the ``K`` splines of the
     profile space by the instrument kernels of the data, ``K_i`` the Gaussian about the point ``y_i`` (Cartesian,
     ``(n, 3)``) with the standard deviations ``width`` ``(n, 2)`` across the flux surfaces (along their normal ``n_q``
     at each quadrature point, :func:`surface_normals`) and along them. The integrals are the volume quadrature of
     ``seq`` over the whole torus (``X_q`` the physical quadrature points), with the label ``s_q`` at the quadrature
-    points and the indicator ``region`` (the plasma, the whole domain without it), which the pressure vanishes outside.
-    No point is located on the map and no label is read off at a point.
+    points. No point is located on the map and no label is read off at a point.
 
     The record holds per datum the effective number of quadrature points in its kernel, ``(sum K)^2 / sum K^2`` with
-    the quadrature's volume weights, and the kernel's mean label in the region, ``labels`` (for plots)."""
+    the quadrature's volume weights, and the kernel's mean label, ``labels`` (for plots)."""
     wJ = seq.quad.w * seq.jacobian_j
     values, indices = shell_table(cells + PROFILE_DEGREE, s_q)
-    inside = jnp.ones_like(wJ) if region is None else region
     Xi, Ni = _images(seq, X_q), _images(seq, n_q)
 
     def one(args):
@@ -236,8 +234,8 @@ def kernel_rows(seq, s_q, n_q, X_q, y, width, region=None, cells=PROFILE_CELLS):
         K = jnp.sum(jnp.exp(-0.5 * ((across / wi[0]) ** 2 + (jnp.sum(e * e, axis=-1) - across ** 2) / wi[1] ** 2)),
                     axis=0) * wJ
         norm = jnp.sum(K)
-        row = jnp.zeros(cells + PROFILE_DEGREE, K.dtype).at[indices].add(values * (K * inside)[:, None]) / norm
-        return row, norm ** 2 / jnp.sum(K ** 2), jnp.sum(K * inside * s_q) / jnp.sum(K * inside)
+        row = jnp.zeros(cells + PROFILE_DEGREE, K.dtype).at[indices].add(values * K[:, None]) / norm
+        return row, norm ** 2 / jnp.sum(K ** 2), jnp.sum(K * s_q) / jnp.sum(K)
     A, n_eff, s_mean = jax.lax.map(one, (jnp.asarray(y), jnp.asarray(width)))
     return np.asarray(A, dtype=np.float64), dict(kernel_points=np.asarray(n_eff).tolist(),
                                                  labels=np.asarray(s_mean).tolist())

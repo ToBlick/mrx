@@ -83,7 +83,7 @@ equilibrium along it. With `h` the same direction has +0.33 and a current
 part of about zero (2026-11-21). `h` has no boundary condition: `B` is
 tangential to the wall, where the Dirichlet 1-forms have no tangential
 trace, and the Dirichlet projection puts a layer there (Gauss-Newton part 40
-times larger on that direction; as the auxiliary field of 2026-09 it raised
+times larger on that direction. As the auxiliary field of 2026-09 it raised
 the force floor fivefold and stalled the Newton steps).
 
 ### Newton

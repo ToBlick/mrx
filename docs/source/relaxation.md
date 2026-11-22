@@ -74,21 +74,20 @@ potential of the vacuum field of the domain,
 so that $\nabla \zeta$ is the harmonic 1-form $h$, the direction of the
 vacuum field, fixed by the boundary alone. The planes are not: on li383, W7-X
 and HSX $\|\nabla \zeta - h\| / \|h\|$ is 0.29, 0.35 and 0.65 on the
-planes. The map gets there by moves of the same kind as the alignment with
-the flux surfaces (see Mesh motion below), with a different misfit.
+planes. The map gets there by moves of its points along their lines of
+constant $r$ and $\theta$.
 
 The misfit is a scalar $q$ on the mesh. One Neumann solve for the Laplacian
 on the map gives the harmonic angle $\zeta + q$
 (`mrx.nullspace.harmonic_angle`), so $q$ says how far the logical $\zeta$
 is from the harmonic angle at each point. The mesh is aligned in $\zeta$
-when $q = 0$, as it is aligned radially when the flux label is a function
-of $r$. A move slides every point along its line of constant $r$ and
+when $q = 0$. A move slides every point along its line of constant $r$ and
 $\theta$, from $\zeta$ to the point the map has at
 $\zeta - q / (1 + \partial_\zeta q)$
 (`mrx.relaxation.mesh_motion.harmonic_displacement`). The surfaces
 $r = $ const and the poloidal angle stay, and the wall slides along
 itself. The change of the map is projected onto its spline space and halved
-if a cell would fold, as in a flux move. On the moved map $q$ is solved
+if a cell would fold, as in a move of the pole. On the moved map $q$ is solved
 again. The shift is the Newton step of $q = 0$ along each line, so each
 move about squares the error until the tolerance of the solves. From the planes the distance
 $\|\nabla \zeta - h\| / \|h\|$ (`mrx.nullspace.zeta_harmonic_distance`) falls
@@ -103,7 +102,7 @@ The moves are made before the field exists, so they only change the map and
 nothing is carried. Each costs one Neumann solve, a fraction of a second
 after the first. The solves need only the preconditioners of the 0-forms,
 so the others are built once, on the final map, and the vacuum field is
-computed there. On one H200 at the resolutions of the mesh motion below the
+computed there. On one H200 on li383 (48,64,24), W7-X (24,48,28) and HSX (32,64,36) the
 setup takes 35 to 55 s longer than with `phi`, which takes 240 to 285 s,
 and the relaxation is the same (2026-11-19). The harmonic choice
 needs a VMEC input namelist, whose start is the vacuum field: the harmonic
@@ -357,27 +356,25 @@ the target of the prescribed current in an outer loop, before every chunk
 
 The loop starts from the current the field carries, and every checkpoint
 keeps the target, so a restart goes on from it. With `--seed` the seed is applied at the first chunk boundary at which
-the transform misses its target by less than 1 % of its largest value, since
-the seed resonates with the field's own transform. The `iota` record has,
+every local mean of the weak residual is below 1 % of the target's largest
+value, since the seed resonates with the field's own transform. The `iota` record has,
 before every chunk, the weak residual, the step and the current target.
 
-On li383 (48,64,24), graded, with 0.95 times the file's transform from the
-file's aligned field at step 80, the largest weak residual falls from 0.18 to
+On li383 (48,64,24), graded, on the file's sections, with 0.95 times the
+file's transform from the file's field after 80 Newton steps, the largest weak residual falls from 0.18 to
 1.5e-2 after the first update, 1.3e-3 after the third and 2.7e-5 at step 300,
 the target near the wall settles within three updates and the force residual
 reaches 1.1e-9. The 19 MINRES solves cost 256 s over the 22 updates (one H200,
-2026-11-20). The transform keeps an oscillation at the scale of the profile
+2026-11-20, with the induction through $B$ of that date). The transform keeps an oscillation at the scale of the profile
 cells, 1.5e-3 at most, which the current-prescribed relaxation has too
 (4.4e-3): it is orthogonal to the $M_j$, so no target reaches it.
 On W7-X standard (32,64,36), graded, p = 2, with the polynomial transform and
 pressure of a namelist, from a state at the residual bar with the axis 0.19
 first cells off the pole (`--mesh.align`), the largest weak
-residual is 3.3e-5 after 120 steps, against 8.2e-3 and 3.8e-2 with the fit of
-the transform this loop replaced. The current target is smooth: the first four
-moments are 0.03e-3 T m at most, against an alternation up to 0.46e-3 T m, and
-the net current is 1.1 kA against 7.5 to 8.0 kA, the answer of the fit to its own
-error near the wall. The traced transform within 63 mm of the axis is within
-0.021 of the target, against 0.036 and 0.12 (one H200, 2026-11-21).
+residual is 3.3e-5 after 120 steps. The current target is smooth: the first
+four moments are 0.03e-3 T m at most, and the net current is 1.1 kA. The
+traced transform within 63 mm of the axis is within 0.021 of the target (one
+H200, 2026-11-21).
 
 ## Outer loops
 
@@ -467,8 +464,7 @@ W7-X graded (32,64,36)
 at p = 2 it takes four or five Newton steps and 0.01 s after compilation,
 and it agrees with the fixed point of the one-period field-line map (Newton
 on 1152 Runge-Kutta steps per period, 45 s) to 4e-6 first radial cells on
-the relaxed states, where the maximum of the flux label is 4e-2 to 5e-2 cells
-off. On the projection of Landreman's exact shearedE equilibrium onto its own
+the relaxed states. On the projection of Landreman's exact shearedE equilibrium onto its own
 surfaces (32,48,32) both put the discrete axis 7e-4 first cells off the exact
 one, the pole (one H200, 2026-11-21).
 
@@ -576,9 +572,11 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`, with `--iota.target` `iota_r_max`. `iota`: the target, the centres `x` of the moments, `rebuilds` before every chunk at which the loop steps (`r`, the weak residual, `r_max`, `r_rms`, `mu` and `lam`, the field's moments and the new target, `delta`, `r_eq`, `minres`), `held` (the boundaries at which the target was held after a move), `end` (the weak residual at the end) and `seed_step`. `mesh`, with `--mesh.align`: `start` (the rounds of the first move), `nested` (with `--mesh.nested`), `moves` and `checks` (the chunk boundaries with and without a move), `chunks` and `builds` (the preconditioners). The stop reason `axis` ends a run of `--mesh.axis-to`. |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
+| `checkpoints/moved_<step>.h5` | with `--mesh.align`, the state right after a move of the pole, on the moved map |
+| `nested_axis.npz` | with `--mesh.nested`, the axis of the nested-surface solve (`zetas`, `points`, `record`) |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
 leaves its trace and its last state. A healthy ideal run has `dE < 0` at
@@ -600,11 +598,13 @@ To evaluate a checkpoint's field:
 ```python
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.relaxation.loop import checkpoint_attrs, read_field
+from mrx.relaxation.mesh_motion import install_checkpoint_map
 
 path = "<run>/checkpoints/best.h5"
 a = checkpoint_attrs(path)
 seq = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"],
                      graded=a["graded"], map_theta=a["map_theta"])
+install_checkpoint_map(seq, path)     # the map of a run with a moving mesh, if the checkpoint holds one
 B, step = read_field(path, seq)
 odd = seq.odd                     # B is odd under the stellarator symmetry
 B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)

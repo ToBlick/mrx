@@ -34,7 +34,7 @@ def induction_field(B: jnp.ndarray, seq: DeRhamSequence, tol=None) -> jnp.ndarra
 
     The induction and the force use ``h`` in place of ``B``: the electric field of a flow ``u`` is ``E = Pi_1(u x h)``,
     ``dB/dt = curl E``, and the force is ``J x h``. Then ``(B, curl E)_M = (J, E)_{M_1} = -(u, J x h)``, so the force is
-    the exact derivative of the energy along the flow, as before. With ``E = Pi_1(u x B)`` the second variation of
+    the exact derivative of the energy along the flow. With ``E = Pi_1(u x B)`` the second variation of
     the discrete energy at the exact equilibrium shearedE (Landreman 2026, (32,48,32) graded p = 2) has a negative
     direction: a checkerboard in zeta of flows mostly along ``B``, carried by the terms in the current (Rayleigh
     value -0.25 against the mass, current part -0.57), along which the relaxation leaves the equilibrium. With

@@ -193,7 +193,7 @@ the default) does not install that map. It cuts the state's own map by the
 planes normal to its axis (`mrx.relaxation.mesh_motion.axis_normal_map`).
 The frame is that of the axis: `a` the axis, `N` the radial direction made
 normal to the axis, `B = N x t` with `t` the axis tangent, so that
-`T = -t` as in the cylindrical frame and `X1`, `X2` are about `R`, `Z`
+`N x B = -t` as in the cylindrical frame and `X1`, `X2` are about `R`, `Z`
 about the axis. Each point keeps `r` and `theta` and slides along its
 surface into the plane of its `zeta`, `Phi'(r, theta, zeta) =
 position(r, theta, zeta + f)`, `f` found by Newton's method along the line.

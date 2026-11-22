@@ -149,11 +149,11 @@ def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=M
     return to_working(T), info
 
 
-def label_spline(seq, T, B_jk, cells=None):
+def label_spline(seq, T, B_jk):
     """``(a, b, e)``: the label ``s = sigma(T)`` as a cubic spline in ``T`` on ``[a, b]``, ``a`` and ``b`` the smallest
     and the largest tensor coefficient of ``T`` (bounds of its values, ``a <= 0`` since ``T`` vanishes on the wall),
-    ``e`` the coefficients of ``sigma`` in the clamped cubic splines of ``u = (T - a) / (b - a)`` on ``cells`` uniform
-    cells (the number of radial cells of ``seq`` unless given).
+    ``e`` the coefficients of ``sigma`` in the clamped cubic splines of ``u = (T - a) / (b - a)`` on as many uniform
+    cells as ``seq`` has radial cells.
 
     ``sigma(t)`` is the toroidal flux inside the level set ``T = t`` over the total flux. The flux through a plane
     ``zeta = const`` is ``int Bh^zeta dr dtheta``, its mean over ``zeta`` the volume integral of ``Bh^zeta`` over
@@ -169,7 +169,7 @@ def label_spline(seq, T, B_jk, cells=None):
     of the flux over ``T`` on the cells: where the level sets meet the hottest value (the magnetic axis) the
     distribution ends with a jump inside the last cell, and there the projection is accurate to about a cell's share
     of the flux."""
-    nc = (seq.basis_0.Lambda[0].n - seq.p) if cells is None else int(cells)
+    nc = seq.basis_0.Lambda[0].n - seq.p
     basis = SplineBasis(nc + 3, 3, "clamped")
     d = DerivativeSpline(basis)
     c = seq.even.E(0).T @ T

@@ -1,7 +1,7 @@
 """The magnetic axis of a fixed-boundary equilibrium with nested surfaces, from a VMEC input namelist alone.
 
 A small nested-surface solver whose one job is the finite-beta axis that a relaxation builds its mesh around
-(``relax.py --mesh.axis-from``). It reads the boundary and the target profiles of the namelist
+(``relax.py --mesh.nested``). It reads the boundary and the target profiles of the namelist
 (:mod:`mrx.equilibria.indata`), pressure ``p*(s)`` and either the transform ``iota*(s)`` (``NCURR = 0``) or the
 enclosed toroidal current ``I*(s)`` (``NCURR = 1``), and nothing else: no axis, no other code's equilibrium.
 
@@ -33,13 +33,9 @@ start with its eigenvalues replaced by their moduli held above ``1e-6`` of the l
 convex, and the poloidal reparametrisation is a near null space), made again whenever a step needs cutting below
 1/64. BFGS stops once the axis has moved less than ``axis_tol`` over ``window`` iterations, or the energy stops
 decreasing.
-
-    python -m mrx.equilibria.nested_axis input.<name> out.npz [nr=6 nt=12 nz=10 q_r=10]
 """
 from __future__ import annotations
 
-import json
-import sys
 import time
 
 import jax
@@ -241,16 +237,3 @@ def solve(path, max_iter=3000, ftol=1e-14, axis_tol=1e-6, window=25, verbose=Tru
               f"{t_total:.1f} s ({t_compile:.1f} s setup, compile and the first Hessian)", flush=True)
     return map_of(prob, x), rec
 
-
-def main(argv):
-    path, out = argv[:2]
-    Phi, rec = solve(path, **{k: int(v) for k, v in (a.split("=") for a in argv[2:])})
-    zetas, points = axis_points(Phi)
-    np.savez(out, zetas=zetas, points=points, raw_X1=np.asarray(Phi.raw_X1), raw_X2=np.asarray(Phi.raw_X2),
-             record=json.dumps(rec))
-    R = np.hypot(points[:, 0], points[:, 1])
-    print(f"[nested] axis -> {out}: R {R.min():.5f} .. {R.max():.5f} m", flush=True)
-
-
-if __name__ == "__main__":
-    main(sys.argv[1:])
