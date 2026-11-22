@@ -25,7 +25,9 @@ def test_flux_label_is_a_function_of_the_flux(seq, b0):
     T_q = np.asarray(seq.even.evaluate_at_quadrature(T, 0)[:, 0]).reshape(nx, -1)
     # the angular spread on a layer over max T: 1.14e-3 at kperp = 1e-5, 1.27e-4 at 1e-6 on the fixture.
     # The discrete flux functions are exactly null for the parallel part (Bhat^r = 0), so there is no floor.
-    assert (T_q.std(axis=1) / T_q.max()).max() < 1.43e-3
+    spread = float((T_q.std(axis=1) / T_q.max()).max())
+    print(f"\n  angular spread of T on a layer over max T {spread:.3e}")
+    assert spread < 1.43e-3
     assert np.all(np.diff(T_q.mean(axis=1)) < 0)
     # |s - r^2| over the volume, 7.0e-4 measured on the fixture (2.45e-3 with the sorted and binned label)
     s_q = np.asarray(enclosed_flux(seq, T, B_jk)).reshape(nx, -1)

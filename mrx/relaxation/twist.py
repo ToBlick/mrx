@@ -64,8 +64,6 @@ from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS, PROFILE_DEGREE, prof
 from mrx.solvers import solve_singular_cg
 from mrx.spline_bases import DerivativeSpline, basis_table
 
-#: The cumulative sums :func:`iota_fit` fits, sampled at this many points.
-FIT_SAMPLES = 1024
 #: The transform is at its target when the label fit misses it by less than this fraction of the target's largest
 #: magnitude: ``relax.py --seed`` waits for it with ``--iota.target``.
 AT_TARGET = 1e-2
@@ -104,20 +102,22 @@ def poloidal_density(seq, B):
     return Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z, Bq
 
 
-def iota_fit(seq, B, s_q, degree):
-    """The transform per full turn as a smooth function of the label ``s``: the poloidal flux enclosed by the label's
-    level sets (:func:`poloidal_density`) against the toroidal flux they enclose, cumulative volume sums over the
-    points sorted by ``s``, fitted by a polynomial of ``degree + 1`` without constant in the enclosed toroidal flux
-    fraction and differentiated."""
+def iota_fit(seq, B, s_q, degree, n_mu=PROFILE_CELLS + PROFILE_DEGREE - 1):
+    """The transform per full turn as a polynomial of ``degree`` in the label ``s``: the one whose weak residual
+    (:func:`iota_residual`) on the ``n_mu`` derivative splines of the profile space is least in the mean square,
+
+        min_c sum_j (int M_j(s) (nfp B . grad theta_a - sum_i c_i s^i B . grad zeta) dV)^2,
+
+    ``theta_a`` the angle about the magnetic axis of ``B`` (:func:`poloidal_density`). Both terms are moments of the
+    field against functions of the label, so the fit does not depend on how points of one level set are ordered, and
+    it needs no sorting and no differentiation of sampled fluxes."""
     dens, Bq = poloidal_density(seq, B)
-    w = np.asarray(seq.quad.w)
-    order = np.argsort(np.asarray(s_q))
-    psi = np.cumsum((w * dens)[order])
-    phi = np.cumsum((w * Bq[:, 2])[order])
-    pick = np.linspace(0, psi.size - 1, FIT_SAMPLES).astype(int)
-    x = phi[pick] / phi[-1]
-    c = np.linalg.lstsq(np.stack([x ** k for k in range(1, degree + 2)], axis=1), psi[pick] / phi[-1], rcond=None)[0]
-    return seq.nfp * np.polynomial.Polynomial(np.concatenate([[0.0], c])).deriv()
+    s = np.asarray(s_q, dtype=np.float64)
+    w = np.asarray(seq.quad.w, dtype=np.float64)
+    M = np.asarray(basis_table(_derivatives(n_mu), jnp.asarray(s)), dtype=np.float64)       # (n_mu, n_q)
+    rhs = M @ (seq.nfp * w * np.asarray(dens, dtype=np.float64))
+    A = M @ ((w * np.asarray(Bq[:, 2], dtype=np.float64))[:, None] * s[:, None] ** np.arange(degree + 1))
+    return np.polynomial.Polynomial(np.linalg.lstsq(A, rhs, rcond=None)[0])
 
 
 def enclosed_current(seq, B, s_q, edges):
