@@ -274,8 +274,7 @@ def main(cfg, fit=None):
         def record_iota(it, rec, info):
             results["iota"]["rebuilds"].append(dict(step=it, label_it=info, **rec))
             print(f"[iota] step {it}: weak residual max {rec['r_max']:.3e} rms {rec['r_rms']:.3e}, of the equilibrium "
-                  f"{np.abs(rec['r_eq']).max():.3e}, label iota miss max {rec['miss_max']:.3e} median "
-                  f"{rec['miss_median']:.3e} (s 0.05..0.95), at s 0.01 {rec['miss_axis']:.3e}, target near the wall "
+                  f"{np.abs(rec['r_eq']).max():.3e}, target near the wall "
                   f"{rec['lam'][-1]:+.4e} T m (mu {rec['mu'][-1]:+.4e}), MINRES {rec['minres'][0]} / "
                   f"{min(rec['minres'][1:])} .. {max(rec['minres'][1:])}, label CG {info}", flush=True)
         iota_max = float(np.abs(np.asarray(iota_star(np.linspace(0.05, 0.95, 19)))).max())
@@ -486,7 +485,7 @@ def main(cfg, fit=None):
         if cfg.iota:
             mu_end = iota_target if iota_target is not None else current_on_label(seq, state.B_n, T_label, pr.cells)
             record_iota(it, iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, mu_end)[2], info)
-            results["summary"].update(iota_miss_max=results["iota"]["rebuilds"][-1]["miss_max"])
+            results["summary"].update(iota_r_max=results["iota"]["rebuilds"][-1]["r_max"])
         write()
     checkpoint("best.h5", initial_state(res.state.best.B, ts, step=int(res.state.best.step)),
                int(res.state.best.step))

@@ -391,8 +391,7 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
 
     ``record`` holds ``r`` (local means of ``iota - iota*`` with the field's sign), its largest magnitude and rms in
     ``s``, ``mu`` (the moments of ``B``), ``lam`` (the new target), ``delta``, ``r_eq = r + R d_N``, the MINRES
-    counts and the miss of the label's fit of the transform (:func:`iota_fit`) on ``s = 0.05 .. 0.95`` and at
-    ``s = 0.01``."""
+    counts."""
     mu_star = jnp.asarray(mu_star, dtype=T.dtype)
     L = int(mu_star.size)
     slips, mu = build_slips(seq, B, T, mu_star)
@@ -403,14 +402,10 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
     r_eq = r + R @ d_N.astype(np.float64)
     delta = np.linalg.solve(R @ C.astype(np.float64), -r_eq)
     lam = np.asarray(mu_star, dtype=np.float64) + delta
-    fit = iota_fit(seq, B, T, s_q, 6)
-    s = np.linspace(0.05, 0.95, 19)
-    miss = np.abs(np.abs(fit(s)) - np.abs(np.asarray(iota(s))))
     w = moment_widths(L)
     rec = dict(r=r.tolist(), r_max=float(np.abs(r).max()), r_rms=float(np.sqrt(np.sum(w * r ** 2) / np.sum(w))),
                mu=np.asarray(mu).tolist(), lam=lam.tolist(), delta=delta.tolist(), r_eq=r_eq.tolist(),
-               minres=info.tolist(), miss_max=float(miss.max()), miss_median=float(np.median(miss)),
-               miss_axis=float(abs(abs(fit(0.01)) - abs(float(iota(0.01))))))
+               minres=info.tolist())
     return build_slips(seq, B, T, jnp.asarray(lam, dtype=T.dtype))[0], lam, rec
 
 

@@ -358,8 +358,7 @@ The loop starts from the current the field carries, and every checkpoint
 keeps the target, so a restart goes on from it. With `--seed` the seed is applied at the first chunk boundary at which
 the transform misses its target by less than 1 % of its largest value, since
 the seed resonates with the field's own transform. The `iota` record has,
-before every chunk, the weak residual, the transform's miss, the step and the
-current target.
+before every chunk, the weak residual, the step and the current target.
 
 On li383 (48,64,24), graded, with 0.95 times the file's transform from the
 file's aligned field at step 80, the largest weak residual falls from 0.18 to
