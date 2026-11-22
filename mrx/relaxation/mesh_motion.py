@@ -451,13 +451,13 @@ def axis_move(seq, B):
 
 
 def _start(seq, offset, recut):
-    """Move the pole of ``seq`` in rounds onto the curve whose offsets ``offset(seq) = (d, h_1, info)`` gives on the
+    """Move the pole of ``seq`` in rounds onto the curve whose offsets ``offset(seq) = (dz, d, h_1, info)`` gives on the
     installed map (:func:`_displacement`), with no field carried, and return the record. The rounds repeat while the
     distance falls by half or more, or the last move was halved against a fold, so a move of any size is made in
-    rounds. With ``recut`` the moved map is cut again by the planes normal to its axis (:func:`axis_normal_map`),
-    which the pole stays on. The final map is installed with its preconditioners and harmonic forms. The record holds
-    the offset in first radial cells, the backtracking factor, the largest move and ``info`` of every round, the
-    offset on the final map and the wall time."""
+    rounds. They stop when a move is halved to nothing. With ``recut`` the moved map is cut again by the planes normal
+    to its axis (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its
+    preconditioners and harmonic forms. The record holds the offset in first radial cells, the backtracking factor,
+    the largest move and ``info`` of every round, the offset on the final map and the wall time."""
     t0 = time.perf_counter()
     rounds = []
     while True:
@@ -466,7 +466,9 @@ def _start(seq, offset, recut):
         rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=info))
         print(f"[mesh] start round {len(rounds)}: axis {rec['axis_cells']:.3e} first cells off the pole, "
               f"move {rec['move_m']:.3e} m x{rec['lam']:g}, {info}", flush=True)
-        if len(rounds) > 1 and rounds[-2]["lam"] == 1.0 and rec["axis_cells"] > 0.5 * rounds[-2]["axis_cells"]:
+        # a move halved to nothing against a fold changes nothing: the next round would find the same offset
+        if rec["lam"] == 0.0 or (len(rounds) > 1 and rounds[-2]["lam"] == 1.0
+                                 and rec["axis_cells"] > 0.5 * rounds[-2]["axis_cells"]):
             break
         install_map(seq, Phi, keep_preconditioners=True)
     record = dict(rounds=rounds)
