@@ -144,7 +144,7 @@ def test_phi_sections_of_an_axis_normal_map(seq, b0):
     st = {k: v for k, v in seq.equilibrium.items() if k != "zeta_shift"}
     free = seq.odd.free
     A = free.interpolate(_clebsch_potential(st, seq.nfp, seq.basis_0.bases[0]), 1)
-    B_file = seq.restrict(free.G[1] @ A, 2)
+    B_file = seq.odd.restrict(free.G[1] @ A, 2)
     Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
     on_file = seq.with_geometry(SequenceGeometry.from_map(Phi, seq.quad.x))
     kw = dict(lines=8, periods=40, planes=(0.0, 0.25), sections="phi")

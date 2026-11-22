@@ -40,16 +40,17 @@ from test.solovev import Solovev
 #: The mesh per field period (one field period, the whole torus), p = 2, graded.
 MESH = (14, 24, 6)
 #: 1.5x the errors measured in float64: the start field 1.09e-3, the weak current against the projection of the
-#: Solov'ev current 9.90e-3, the flux label (rms of s) 4.91e-4 with the label spline (2026-11-22). The transform of the
-#: weak moments (largest error on s in 0.05 .. 0.95 over the largest transform): PENDING measured, the degree-6 fit of
-#: the label's flux missed by 1.42e-2 here and the tracer is within 4e-4 (2026-11-21).
-BANDS = {"B": 1.6e-3, "J": 1.5e-2, "s": 7.4e-4, "iota": 2.1e-2}
+#: Solov'ev current 9.90e-3, the flux label (rms of s) 4.91e-4 with the label spline, the transform of the weak
+#: moments (largest error on s in 0.05 .. 0.95 over the largest transform) 1.35e-2 (2026-11-22). The degree-6 fit of
+#: the label's fluxes missed by 1.42e-2 here, the field-line tracer is within 4e-4 (2026-11-21): the label's transform
+#: carries an error of its own.
+BANDS = {"B": 1.6e-3, "J": 1.5e-2, "s": 7.4e-4, "iota": 2.0e-2}
 STEPS = 10
 #: The cells of the profile space of the targets: the mesh's 12 radial cells resolve 8 (test_twist.py).
 CELLS = 8
 #: The end of the run with targets: the pressure against the exact pressure and the current against the start's,
-#: PENDING measured.
-TARGET_BANDS = {"p": 2e-2, "I": 1e-2}
+#: 7.4e-3 and 3.5e-6 measured in float64 (2026-11-22).
+TARGET_BANDS = {"p": 1.1e-2, "I": 7e-6}
 
 
 @pytest.fixture(scope="module")
@@ -121,6 +122,7 @@ def test_the_label_is_the_toroidal_flux_and_its_transform_is_solovevs(solovev):
     assert int(info) > 0
     _check("s", float(np.sqrt(np.sum(w * (np.asarray(s_q) - eq.s_at(X)) ** 2) / np.sum(w))))
     iota = -iota_projection(seq, B, s_q)[0](S)
+    print("\n  iota error on s = " + " ".join(f"{x:.2f}: {e:+.1e}" for x, e in zip(S, iota - eq.iota(S))))
     _check("iota", float(np.abs(iota - eq.iota(S)).max() / eq.iota(S).max()))
 
 
