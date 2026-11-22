@@ -58,7 +58,7 @@ def test_traced_iota_is_the_exact_iota(eq, seq, b0):
           f"relative error {err:.2e}, drift {float(res['drift']):.2e}, padding off its surface {off:.1e}")
     assert shown.all()                  # the field is integrable: no line is chaotic or leaves the domain
     assert err < IOTA_BAND
-    assert float(res["drift"]) < DRIFT_BAND
+    assert float(res["drift"]) < _tol(DRIFT_BAND, 5e-4)       # float32: 2.7e-4 measured
     assert pad["shown"].all() and np.isfinite(logr[:, 1:]).all()      # column 0: the seed, where on the plane
     assert off < _tol(1e-9, 1e-4)     # B^r = 0 exactly: measured 6.2e-10 on the tokamak (float64), 1.2e-5 (float32)
 
