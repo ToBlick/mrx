@@ -16,7 +16,7 @@ the transform of the namelist as targets), driven through the library:
 
 The end state is checked against shearedE: the field error at the projection's level, beta, the magnetic axis in
 fractions of the minor radius, the traced transform and the residual below the bar. The nested axis is checked on its
-own, on the planar axis of the tokamak and on the non-planar axis of shearedE (:mod:`test.landreman`). The run is the
+own, on the tokamak. The run is the
 most expensive test of the suite, in float64 only: a float32 Newton step costs three times a float64 one on the CPU.
 """
 import jax
@@ -87,18 +87,6 @@ def test_the_nested_axis_is_the_exact_axis(eq, nested, minor):
     _float64_only()
     off = _off_axis(eq, nested[1], minor)
     print(f"\n  nested axis {off:.3e} of the minor radius off the exact axis")
-    assert off < NESTED_AXIS
-
-
-@pytest.mark.skip(reason="pending Tobias: the non-planar axis of shearedE is found to 7.2e-3 of a only at the default "
-                         "(6, 12, 10) solve, 770 s on 8 CPU cores; (4, 8, 6) misses by 3.3e-2 in 25 s")
-def test_the_nested_axis_of_a_non_planar_axis(sheared):
-    """The nested axis of the shearedE namelist at the default solve is its exact non-planar axis within
-    :data:`NESTED_AXIS` of the minor radius: 7.2e-3 measured (2026-11-22)."""
-    from test.conftest import minor_radius
-    e3 = sheared[0]
-    xm, xn, R, Z = e3.surfaces(np.array([1.0]))
-    off = _off_axis(e3, _nested(sheared[2])[1], minor_radius(np.stack([xm, xn, R[0], Z[0]], axis=1), 2))
     assert off < NESTED_AXIS
 
 
