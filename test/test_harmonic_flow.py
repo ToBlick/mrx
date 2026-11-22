@@ -23,8 +23,9 @@ from mrx.relaxation.newton import (NEWTON_PENALTY, atom_profiles, parallel_penal
 TIGHT = 1e-4
 #: The size of the symmetry-breaking curl relative to the field.
 BREAK = 1e-2
-#: The harmonic part of the force of the broken field relative to the force: PENDING measured.
-HARMONIC_SHARE = 1e-4
+#: The harmonic part of the force of the broken field relative to the force: 3.1e-4 measured in float64, the harmonic
+#: row after the bordered step 20 TIGHT of it (2026-11-22).
+HARMONIC_SHARE = 1.5e-4
 
 
 def _harmonic_part(ts, y):

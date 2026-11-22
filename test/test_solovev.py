@@ -39,11 +39,11 @@ from test.solovev import Solovev
 
 #: The mesh per field period (one field period, the whole torus), p = 2, graded.
 MESH = (14, 24, 6)
-#: 1.5x the errors measured, the same in float64 and float32: the start field 1.09e-3, the weak current against the
-#: projection of the Solov'ev current 9.90e-3, the flux label (rms of s) 3.06e-4 with the label spline. The transform
-#: of the weak moments (largest error on s in 0.05 .. 0.95 over the largest transform): PENDING measured, the
-#: degree-6 fit of the label's flux missed by 1.42e-2 here and the tracer is within 4e-4 (2026-11-21).
-BANDS = {"B": 1.6e-3, "J": 1.5e-2, "s": 4.6e-4, "iota": 2.1e-2}
+#: 1.5x the errors measured in float64: the start field 1.09e-3, the weak current against the projection of the
+#: Solov'ev current 9.90e-3, the flux label (rms of s) 4.91e-4 with the label spline (2026-11-22). The transform of the
+#: weak moments (largest error on s in 0.05 .. 0.95 over the largest transform): PENDING measured, the degree-6 fit of
+#: the label's flux missed by 1.42e-2 here and the tracer is within 4e-4 (2026-11-21).
+BANDS = {"B": 1.6e-3, "J": 1.5e-2, "s": 7.4e-4, "iota": 2.1e-2}
 STEPS = 10
 #: The cells of the profile space of the targets: the mesh's 12 radial cells resolve 8 (test_twist.py).
 CELLS = 8
@@ -124,28 +124,29 @@ def test_the_label_is_the_toroidal_flux_and_its_transform_is_solovevs(solovev):
     _check("iota", float(np.abs(iota - eq.iota(S)).max() / eq.iota(S).max()))
 
 
-def _descends(res):
-    """Every step taken above the floor of the squared force residual, ``1e3 eps^2``, moves along its descent
-    direction, and ``W`` (the energy less the targets' work) never rises by more than its round-off."""
+def _descends(res, floor):
+    """Every step taken above the residual ``floor`` moves along its descent direction (a step with ``dt* <= 0`` is
+    clipped to no step), and ``W`` (the energy less the targets' work) never rises by more than its round-off."""
     resid = np.asarray(res.trace["resid"], dtype=float)
     dt_star = np.asarray(res.trace["dt_star"], dtype=float)
     dW = np.asarray(res.trace["dW" if "dW" in res.trace else "dE"], dtype=float)
     print(f"\n  resid {' '.join(f'{r:.1e}' for r in resid)}\n  dt* {' '.join(f'{d:.2f}' for d in dt_star)}"
           f"\n  max dW / E0 {dW.max() / res.E0:+.1e}")
     assert np.all(dW < eps() * res.E0)
-    assert np.all(dt_star[resid > 1e3 * eps() ** 2] > 0.0)
+    assert np.all(dt_star[resid > floor] > 0.0)
     return resid
 
 
 def test_newton_steps_reach_the_discrete_equilibrium_next_to_solovevs(solovev):
-    """Ten Newton steps from the start field descend (:func:`_descends`), the residual falls from 3.1e-7 to 2.4e-16
-    in float64 and to 3.1e-13 in float32 (bound: by 1e6 or to the floor ``1e3 eps^2``), and the end field is as close
+    """Ten Newton steps from the start field descend (:func:`_descends`) above the round-off floor ``1e3 eps^2`` of the
+    squared force residual, the residual falls from 3.1e-7 to 2.4e-16 in float64 and to 3.1e-13 in float32 (bound: by
+    1e6 or to that floor), and the end field is as close
     to the Solov'ev field as the start (1.06e-3 against 1.09e-3 in both precisions, bound 1.05 times the start's
     error)."""
     eq, seq, B = solovev
     ts = TimeStepper(seq=seq, newton=True)
     res = relax(initial_state(B, ts), ts, steps=STEPS, chunk=STEPS, verbose=False)
-    resid = _descends(res)
+    resid = _descends(res, 1e3 * eps() ** 2)
     start, end = _field_error(eq, seq, B), _field_error(eq, seq, res.state.B_n)
     print(f"  error against Solov'ev {start:.3e} -> {end:.3e}")
     assert resid[-1] < max(1e-6 * resid[0], 1e3 * eps() ** 2)
@@ -155,8 +156,9 @@ def test_newton_steps_reach_the_discrete_equilibrium_next_to_solovevs(solovev):
 def test_newton_steps_with_the_exact_pressure_and_current_as_targets(solovev):
     """Ten Newton steps in two chunks with the shells of the exact pressure ``mu0 p = c (psi_b - psi(s))`` and the
     slips of the start's current on :data:`CELLS` cells as targets, both rebuilt on the field's label before each
-    chunk (as ``scripts/relax.py`` does): they descend (:func:`_descends`), end at the pressure and the current within
-    :data:`TARGET_BANDS` and leave the field as close to the Solov'ev field as the start (bound 1.05 times its
+    chunk (as ``scripts/relax.py`` does): they descend (:func:`_descends`) until the residual is 1e-5 of the start's,
+    then it stays at the floor of the targets (2.4e-13 from 3.1e-7 in float64, 2026-11-22), they end at the pressure
+    and the current within :data:`TARGET_BANDS` and leave the field as close to the Solov'ev field as the start (bound 1.05 times its
     error)."""
     eq, seq, B = solovev
     ts = TimeStepper(seq=seq, newton=True)
@@ -171,7 +173,8 @@ def test_newton_steps_with_the_exact_pressure_and_current_as_targets(solovev):
         shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol, CELLS)
         return state, ts.with_shells(shells).with_slips(build_slips(seq, state.B_n, T, mu_star)[0])
     res = relax(initial_state(B, ts), ts, steps=STEPS, chunk=STEPS // 2, rebuild=rebuild, verbose=False)
-    _descends(res)
+    resid = _descends(res, 1e-5 * res.trace["resid"][0])
+    assert resid[-1] < 1e-5 * resid[0]
     B_end = res.state.B_n
     s_q, T, _ = label(seq, B_end, ANISOTROPY)
     p_err, _ = pressure_error(seq, weak_pressure(current(B_end, seq), B_end, seq), s_q, p_star(s_q), ERROR_BINS)

@@ -22,7 +22,7 @@ from test.conftest import map_installed
 #: The displacement of the pole of the test map along X1, a fraction of the minor radius: 4 cm on li383, 1.4 first
 #: radial cells of 2.9 cm.
 SHIFT = 0.12
-#: The field after a transfer there and back against the start: 1.24e-6 measured in float64 with the induction of
+#: The field after a transfer there and back against the start: 1.14e-6 measured (2026-11-22), 1.24e-6 in float64 with the induction of
 #: h = Pi_1 B (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21), 4.0e-6 in float32 with the old
 #: induction (2026-11-18).
 ROUND_TRIP = 1e-5
@@ -34,9 +34,9 @@ ROUND_TRIP = 1e-5
 CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 5.0, 2e-2, 2e-2, 1.2e-2, 1.5e-2
 #: The distance of the file's axis from its pole in first radial cells.
 AXIS_ON_POLE = 2e-2
-#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells:
-#: PENDING measured.
-AXIS_AFTER_MOVE = 0.1
+#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 7.1e-3
+#: measured in float64, from 1.35 before (2026-11-22).
+AXIS_AFTER_MOVE = 1e-2
 
 
 def _locate(Phi, X, x, steps=10):

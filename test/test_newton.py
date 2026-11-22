@@ -37,8 +37,9 @@ from mrx.relaxation.physics import compute_force, current, resistive_step
 from test.conftest import divergence_free, energy_derivatives, ideal_flow
 
 GD_STEPS = 4
-#: |H_end - H_0| / (2 E_0) over the gradient-descent steps, grid-scale reconnection: PENDING measured.
-HELICITY_DRIFT = 5e-6
+#: |H_end - H_0| / (2 E_0) over the gradient-descent steps, grid-scale reconnection: 1.75e-8 measured in float64
+#: (2026-11-22).
+HELICITY_DRIFT = 3.5e-8
 
 
 def test_second_variation_is_the_hessian_along_the_flow(seq, b0):
