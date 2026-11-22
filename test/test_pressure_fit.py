@@ -33,10 +33,10 @@ MEAN_LS = 1e-10
 PRIOR_PRECISION = 1e-10
 #: The standard deviation beyond the data over its mean on them: 4.2 measured.
 WIDEN = 3.0
-#: The data file's fit against the file's profile and its coverage at two standard deviations: 1.59e-2 and 1.00
-#: measured.
+#: The data file's fit against the file's profile and its coverage at two standard deviations: 1.61e-2 and 1.00
+#: measured with kernels across / along the flux surfaces (2026-11-21).
 DATA_ERROR, DATA_COVER = 2e-2, 0.85
-#: The fewest effective quadrature points in a kernel of the data file: 19.4 measured.
+#: The fewest effective quadrature points in a kernel of the data file: 29.8 measured.
 KERNEL_POINTS = 10.0
 
 
@@ -95,9 +95,9 @@ def test_pressure_data_at_points(seq, b0, tmp_path):
     """A user's data file of pressure measured in volumes about points in space with error bars
     (``scripts/pressure_fit.py --pressure.target data.json``): 30 points on two lines through the axis in the plane
     ``phi = 0``, Gaussian kernels of standard deviations 1 cm across the flux surfaces and 10 cm along them (resolved
-    by the fixture's quadrature: at least KERNEL_POINTS_MEASURED effective points each), the kernel means of the
+    by the fixture's quadrature: at least 29.8 effective points each), the kernel means of the
     file's pressure on the file's field's label with 2 % noise. ``DataFit`` observes the splines by the kernels on the
-    label and fits the posterior. Its mean misses the file's profile by 1.59e-2 relative, and the truth lies within two
+    label and fits the posterior. Its mean misses the file's profile by 1.61e-2 relative, and the truth lies within two
     standard deviations at all of the labels. 10 s on an H200 after the fixture (2026-11-21).
     """
     p_r = seq.equilibrium["profiles"]["pressure"]                        # Pa, a function of r = sqrt(s)

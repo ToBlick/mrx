@@ -5,7 +5,7 @@ the axis finder finds it on the pole and a move hardly moves that mesh. A field 
 map keeps its field lines at their logical places: on the mesh with its pole displaced by :data:`SHIFT` the finder
 finds the same logical axis. The transfer of the field onto that mesh and back keeps ``div B`` and the toroidal flux
 at round-off and returns the field to the time error of its substeps. The harmonic section brings ``zeta`` onto the
-harmonic angle, and a move of the pole tangent to the sections changes it at second order in the move. The cut by the planes normal to the axis keeps the file's surfaces and field. The moves of a run and the axis
+harmonic angle, and a move of the pole changes the metric and with it the harmonic angle. The cut by the planes normal to the axis keeps the file's surfaces and field. The moves of a run and the axis
 they find are checked on the run of test_relax_run.py. The moves change the sequence, so the module builds its own.
 """
 import jax
@@ -27,12 +27,13 @@ SHIFT = 0.04
 #: by the harmonic moves in metres: 0.30, 1.3e-6 in float64, 2.9e-6 in float32 (four moves), 3.0e-3 m (a tenth of the
 #: 2.9 cm first radial cell, the spline of the wall on 16 radial splines) measured (2026-11-19).
 PHI_DRIFT, HARMONIC_DRIFT, HARMONIC_WALL = 0.1, 1e-5, 1e-2
-#: The growth of |grad zeta - h| / |h| by a move of the pole by SHIFT over that by SHIFT / 2: 4 for a move tangent to
-#: the sections to first order. MEASURED_ORDER measured.
-DRIFT_ORDER = 3.0
+#: |grad zeta - h| / |h| after a move of the pole by SHIFT on the harmonic map: 2.2e-3 measured in float64 (1.8e-3 by
+#: SHIFT / 2, 2026-11-21). The move changes the metric, so the angle is harmonic again only after harmonic moves.
+MOVE_DRIFT = 5e-3
 #: The field after a transfer there and back against the start: 3.7e-6 measured with the old induction in float64,
 #: 4.0e-6 in float32 (SSP-RK3 at the relaxation's CFL cap, 36 substeps each way, li383 (16,32,12) with the axis
-#: displaced by 4 cm, div B 2.6e-15 and 1.4e-6 relative, 2026-11-18), MEASURED_ROUND_TRIP with the induction of h.
+#: displaced by 4 cm, div B 2.6e-15 and 1.4e-6 relative, 2026-11-18), 1.24e-6 in float64 with the induction of h
+#: (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21).
 ROUND_TRIP = 1e-5
 #: The axis-normal cut of the fixture's map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
@@ -122,9 +123,8 @@ def test_harmonic_moves(mesh):
     """``--geometry.zeta harmonic``: the moves of the fixture's map towards the harmonic toroidal angle
     (:func:`~mrx.relaxation.mesh_motion.harmonic_build`) take ``|grad zeta - h| / |h|`` from :data:`PHI_DRIFT` or
     more on the planes ``phi = const`` below :data:`HARMONIC_DRIFT`, move the wall by less than :data:`HARMONIC_WALL`
-    and keep ``det DPhi > 0`` (``set_geometry`` raises otherwise). A move of the pole on the new map is tangent to the
-    surfaces ``zeta = const`` to first order (:func:`~mrx.relaxation.mesh_motion.tangent`), so the drift it adds grows
-    as the square of the move: by :data:`DRIFT_ORDER` or more from a move by ``SHIFT / 2`` to one by :data:`SHIFT`."""
+    and keep ``det DPhi > 0`` (``set_geometry`` raises otherwise). A move of the pole by :data:`SHIFT` on the new map
+    leaves the drift below :data:`MOVE_DRIFT`: it changes the metric, and with it the harmonic angle."""
     seq, Phi, _ = mesh
     mm.install_map(seq, Phi)
     before = zeta_harmonic_distance(seq)[0]
@@ -137,16 +137,13 @@ def test_harmonic_moves(mesh):
     after = zeta_harmonic_distance(seq)[0]
     _displaced(seq, new)
     moved = zeta_harmonic_distance(seq)[0]
-    _displaced(seq, new, 0.5 * SHIFT)
-    half = zeta_harmonic_distance(seq)[0]
     mm.install_map(seq, Phi)
-    order = (moved - after) / (half - after)
     print(f"\n  |grad zeta - h| / |h| {before:.2e} on the phi planes, " + " -> ".join(f"{d:.2e}" for d in drift)
-          + f" in {len(drift) - 1} moves, {after:.2e} installed, {moved:.2e} / {half:.2e} after a move of the pole by "
-          f"{SHIFT} / {0.5 * SHIFT} m (growth {order:.2f}), wall moved by {wall:.1e} m")
+          + f" in {len(drift) - 1} moves, {after:.2e} installed, {moved:.2e} after a move of the pole by {SHIFT} m, "
+          f"wall moved by {wall:.1e} m")
     assert before > PHI_DRIFT
     assert after < HARMONIC_DRIFT
-    assert order > DRIFT_ORDER
+    assert moved < MOVE_DRIFT
     assert wall < HARMONIC_WALL
 
 
