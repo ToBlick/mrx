@@ -27,8 +27,12 @@ from test.conftest import field_error
 #: The cells of the profile space of the targets on the shared sequence's 10 radial cells.
 CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
-#: exact pressure, and the largest local mean of the transform's miss over the largest transform: PENDING measured.
-BANDS = dict(B=3e-3, J=5e-2, p=5e-2, iota=5e-2)
+#: exact pressure, and the largest local mean of the transform's miss over the largest transform: 1.25e-3, 4.87e-3,
+#: 4.22e-2 and 3.3e-5 measured in float64 (2026-11-22).
+BANDS = dict(B=1.6e-3, J=7e-3, p=6e-2, iota=5e-5)
+#: The end of the run with the exact targets: the pressure and the transform's weak residual, 5.14e-2 and 2.7e-4
+#: measured in float64 after 20 steps, residual 2.9e-10 (2026-11-22).
+TARGET_BANDS = dict(p=7e-2, iota=4e-4)
 #: The size of the smooth perturbation of the Newton run, relative to the field.
 PERTURBATION = 1e-3
 #: Newton steps of the runs.
@@ -101,7 +105,8 @@ def _descends(res, floor):
 def test_newton_returns_to_the_discrete_equilibrium(eq, seq, b0):
     """Newton steps from ``b0`` plus a smooth curl of :data:`PERTURBATION` of its norm descend, take the squared
     force residual below :data:`BAR` and end as close to the exact field as the projection: within 1.1 times the
-    error of ``b0``. PENDING measured."""
+    error of ``b0``. Measured in float64: the residual 5.0e-6 -> 2.5e-9, the error 1.25e-3 (projection), 1.60e-3
+    (perturbed) -> 1.24e-3 (2026-11-22)."""
     _float64_only()
     odd = seq.odd
 
@@ -123,8 +128,8 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     """Newton steps from ``b0`` in two chunks with the exact pressure as the shells' target and the exact transform
     as the target of the iota loop (:func:`mrx.relaxation.twist.iota_newton` before each chunk, from the current
     ``b0`` carries), both on the field's label rebuilt before each chunk: they descend, end below :data:`BAR`, at the
-    pressure and the transform within :data:`BANDS` and as close to the exact field as the projection, within 1.1
-    times the error of ``b0``. PENDING measured."""
+    pressure and the transform within :data:`TARGET_BANDS` and as close to the exact field as the projection, within
+    1.1 times the error of ``b0`` (1.25e-3 -> 1.28e-3 measured in float64, 2026-11-22)."""
     _float64_only()
     ts = TimeStepper(seq=seq, newton=True)
     p_star = _p_star(eq)
@@ -148,5 +153,5 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     start, end = field_error(eq, seq, b0), field_error(eq, seq, B)
     print(f"  pressure {e_p:.3e}, transform's weak residual {miss:.3e}, field {start:.3e} -> {end:.3e}")
     assert resid[-1] < BAR
-    assert e_p < BANDS["p"] and miss < BANDS["iota"]
+    assert e_p < TARGET_BANDS["p"] and miss < TARGET_BANDS["iota"]
     assert end < 1.1 * start

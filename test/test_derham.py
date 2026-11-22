@@ -165,7 +165,8 @@ def test_zeta_harmonic_distance(seq):
     """:func:`mrx.nullspace.zeta_harmonic_distance` is zero to round-off on an axisymmetric torus with ``zeta`` the
     cylindrical angle, where ``grad zeta`` is harmonic: the file's map on its own sections (:func:`mrx.equilibria
     .build_map`) averaged over ``zeta``. On the file's map itself (shearedE, ``zeta`` the cylindrical angle) it is the
-    poloidal part of the vacuum field, which ``grad phi`` lacks: PENDING measured. Both maps are installed on the
+    poloidal part of the vacuum field, which ``grad phi`` lacks: 0.395 in the mass norm, 0.76 at worst, checked against
+    the band 0.3 to 0.5 (2026-11-22). Both maps are installed on the
     sequence with its preconditioners."""
     import dataclasses
 
@@ -182,4 +183,4 @@ def test_zeta_harmonic_distance(seq):
         rel_ax, worst_ax, _ = zeta_harmonic_distance(seq)
     print(f"\n  shearedE {rel:.3e} (worst {worst:.3e}), axisymmetric {rel_ax:.1e} (worst {worst_ax:.1e})")
     assert rel_ax < 1e3 * eps() and worst_ax < 1e3 * eps()
-    assert rel > 0.05
+    assert 0.3 < rel < 0.5

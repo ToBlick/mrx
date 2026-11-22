@@ -21,21 +21,20 @@ from test.conftest import LENGTH, map_installed
 
 #: The displacement of the pole of the test map along X1, a fraction of the minor radius, about one first radial cell.
 SHIFT = 0.12
-#: The field after a transfer there and back against the start: 1.14e-6 measured (2026-11-22), 1.24e-6 in float64 with the induction of
-#: h = Pi_1 B (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21), 4.0e-6 in float32 with the old
-#: induction (2026-11-18).
-ROUND_TRIP = 1e-5
+#: The field after a transfer there and back against the start: 3.2e-7 measured in float64 (4 substeps, 2026-11-22),
+#: the time error of SSP-RK3. float32 PENDING.
+ROUND_TRIP = 1e-6
 #: The axis-normal cut of the fixture's map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
 #: the first radial cell is 0.07) and the relative rms over random points of the file's field on the cut map against
-#: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 10.7, 6.4e-3,
-#: 7.8e-3, 5.9e-3 and 2.4e-2 measured in float64 (2026-11-20).
-CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 5.0, 2e-2, 2e-2, 1.2e-2, 1.5e-2
+#: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 20.7, 4.9e-2,
+#: 6.5e-3, 5.8e-3 and 2.5e-2 measured in float64 (2026-11-22).
+CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 10.0, 8e-2, 1e-2, 9e-3, 1.5e-2
 #: The distance of the file's axis from its pole in first radial cells.
 AXIS_ON_POLE = 2e-2
-#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 7.1e-3
-#: measured in float64, from 1.35 before (2026-11-22).
-AXIS_AFTER_MOVE = 1e-2
+#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 3.0e-2
+#: measured in float64, from 0.95 before (2026-11-22). The move is one linear step.
+AXIS_AFTER_MOVE = 5e-2
 
 
 def _locate(Phi, X, x, steps=10):

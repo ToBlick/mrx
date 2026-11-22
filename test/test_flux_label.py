@@ -17,8 +17,8 @@ from mrx.precision import eps
 from mrx.relaxation.shells import LABEL_TOL, label
 
 #: The angular spread of ``T`` on a radial layer over its maximum at ``kperp = 1e-5``, and the volume rms of the label
-#: against the exact ``s`` at the production anisotropy and 1e-9: PENDING measured.
-SPREAD, S_RMS = 2e-3, 1e-3
+#: against the exact ``s`` at the production anisotropy and 1e-9: 2.1e-4 and 6.7e-4 measured in float64 (2026-11-22).
+SPREAD, S_RMS = 4e-4, 1e-3
 
 
 def test_flux_label_is_the_toroidal_flux(eq, seq, b0):
