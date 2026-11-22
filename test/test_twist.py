@@ -17,7 +17,7 @@ from mrx.precision import eps
 from mrx.relaxation.physics import compute_divergence_norm
 from mrx.relaxation.shells import label
 from mrx.relaxation.twist import (build_slips, current_on_label, current_target, enclosed_current, iota_residual,
-                                  load_iota_target, slip_transform)
+                                  slip_transform)
 
 #: The cells of the profile space on the fixture. Its 14 radial cells resolve 8 cells of the profile space, not the
 #: default 16 of finer meshes: with 16 the slip block's condition is 1.1e7 and the moments miss the weak current by
@@ -81,17 +81,16 @@ def test_slip_move_and_derivative(seq, b0):
     assert ev.min() > 0.0
 
 
-def test_one_slip_update_zeroes_the_weak_iota_residual(seq, b0):
-    """The weak residual of the target 0.95 times the file's transform on the fixture's field and label, on
+def test_one_slip_update_zeroes_the_weak_iota_residual(eq, seq, b0):
+    """The weak residual of the exact transform as the target on the fixture's field and label, on
     :data:`CELLS` cells: with ``R`` its derivatives along the slips (:func:`mrx.relaxation.twist.slip_transform`)
     the field ``B + T d``, ``d = -R^-1 r``, has the residual zero to round-off relative to ``r``. The slips have no
     ``zeta`` component, so the toroidal flux in the residual's denominator does not change: the identity is exact up
-    to the condition of ``R``: 3.3e-2 to 9.3e-17 in float64, the condition of ``R`` 117 (2026-11-22)."""
+    to the condition of ``R``: PENDING measured."""
     s_q, T, _ = label(seq, b0, ANISOTROPY)
-    file_iota = load_iota_target(seq.equilibrium["path"])
     slips, mu = build_slips(seq, b0, T, current_on_label(seq, b0, T, CELLS))
     move = slips.maps(seq)[0]
-    residual = iota_residual(seq, b0, s_q, lambda s: 0.95 * np.asarray(file_iota(s)), mu.size)
+    residual = iota_residual(seq, b0, s_q, eq.iota, mu.size)
     r0 = np.asarray(residual(b0)[0], dtype=float)
     R = slip_transform(residual, b0, move, mu.size)
     d = np.linalg.solve(R, -r0)

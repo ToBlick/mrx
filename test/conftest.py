@@ -34,68 +34,72 @@ if _CACHE:
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
 
-#: The wout geometry, tracked in the repository.
-GEOMETRY = "data/wout_li383_low_res_reference.nc"
-#: Resolution (r, theta, zeta) per field period and the spline degree.
-NS, P = (16, 32, 12), 2
-#: The two representations of the li383 domain, by their symmetry.
-DOMAINS = {"half": "stellarator", "period": "field-period"}
+#: The mesh per field period of the shared sequence and the spline degree: the smallest graded mesh that resolves
+#: shearedE (see docs/source/concepts/testing_strategy.md).
+NS, P = (12, 16, 12), 2
+#: The surfaces of the fixture's wout.
+WOUT_SURFACES = 51
 #: The default bound of a length error, as a fraction of the minor radius of the device under test (Tobias
 #: 2026-11-21). A test with a tighter measured bound states it.
 LENGTH = 1e-2
 
 
-def _build(name):
+@pytest.fixture(scope="session")
+def eq():
+    """The exact equilibrium shearedE (:class:`test.landreman.Sheared`)."""
+    from test.landreman import Sheared
+    return Sheared()
+
+
+@pytest.fixture(scope="session")
+def files(eq, tmp_path_factory):
+    """``(wout, namelist)``: the paths of the exact equilibrium's wout and of its namelist (boundary, pressure and
+    transform), written once per session."""
+    d = tmp_path_factory.mktemp("sheared")
+    return (eq.write_wout(str(d / "wout_shearedE.nc"), ns=WOUT_SURFACES),
+            eq.write_namelist(str(d / "input.shearedE")))
+
+
+@pytest.fixture(scope="session")
+def seq(files):
+    """The shared sequence: the wout of shearedE at :data:`NS`, degree :data:`P`, graded, one field period with
+    stellarator symmetry, with its preconditioners and harmonic forms. The only sequence of the suite besides the
+    tiny ones of the de Rham statements."""
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
     t0 = time.perf_counter()
-    s = build_sequence(GEOMETRY, NS, P, symmetry=DOMAINS[name], graded=True)
+    s = build_sequence(files[0], NS, P, symmetry="stellarator", graded=True)
     compute_nullspaces(s, verbose=False)
-    print(f"\n  li383 {name}: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
+    print(f"\n  shearedE: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
     return s
 
 
-_SEQUENCES = {}
-
-
 @pytest.fixture(scope="session")
-def domains():
-    """A function ``name -> sequence`` for the names of :data:`DOMAINS`, each built once per session with its
-    preconditioners and harmonic forms."""
-    def get(name):
-        if name not in _SEQUENCES:
-            _SEQUENCES[name] = _build(name)
-        return _SEQUENCES[name]
-    return get
-
-
-@pytest.fixture(scope="session")
-def seq(domains):
-    """The production sequence, ``half``."""
-    return domains("half")
-
-
-@pytest.fixture(scope="session")
-def minor():
-    """The minor radius of the fixture's wout boundary (:func:`minor_radius`), 0.326 m."""
-    from scipy.io import netcdf_file
-
-    from mrx.paths import data_file
-    with netcdf_file(data_file(GEOMETRY), "r", mmap=False) as f:
-        v = f.variables
-        rows = np.stack([v["xm"].data, v["xn"].data, v["rmnc"].data[-1], v["zmns"].data[-1]], axis=1)
-        return minor_radius(rows, int(v["nfp"].data))
+def minor(eq):
+    """The minor radius of shearedE (:func:`minor_radius` of its boundary)."""
+    xm, xn, R, Z = eq.surfaces(np.array([1.0]))
+    return minor_radius(np.stack([xm, xn, R[0], Z[0]], axis=1), 2)
 
 
 @pytest.fixture(scope="session")
 def b0(seq):
-    """The equilibrium's own field ``B = dA'``, a divergence-free 2-form built by
-    :func:`mrx.relaxation.initial_conditions.potential_two_form`."""
+    """The exact field projected: the curl of its interpolated vector potential, a divergence-free 2-form built by
+    :func:`mrx.relaxation.initial_conditions.potential_two_form` from the wout."""
     from mrx.relaxation.initial_conditions import potential_two_form
 
     B, _ = potential_two_form(seq)
     return B
+
+
+def field_error(eq, seq, B):
+    """The relative L2 error of the 2-form ``B`` against the exact field over the plasma, at the quadrature points."""
+    from mrx.differential_forms import DiscreteFunction, Pushforward
+    X = np.asarray(jax.vmap(seq.map)(seq.quad.x))
+    w = np.asarray(seq.quad.w * seq.jacobian_j)
+    Bh = np.asarray(jax.vmap(Pushforward(DiscreteFunction(B, seq.odd.basis_2, seq.odd.E(2)), seq.map, 2))(seq.quad.x))
+    Be = eq.field(X)
+    return float(np.sqrt(np.sum(w[:, None] * (Bh - Be) ** 2) / np.sum(w[:, None] * Be ** 2)))
 
 
 def minor_radius(rows, nfp, n_v=16, n_u=256):

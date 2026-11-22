@@ -223,11 +223,11 @@ class Sheared:
         xm, xn, rmnc, zmns = self.surfaces(np.array([1.0]), n_theta, n_zeta)
         s = np.linspace(0.0, 1.0, n_profile)
         row = lambda v: " ".join(f"{x:.17g}" for x in v)  # noqa: E731
-        lines = [f"NFP = {NFP}", f"PHIEDGE = {self.phi_edge!r}", "NCURR = 0",
+        lines = [f"NFP = {NFP}", f"PHIEDGE = {float(self.phi_edge)!r}", "NCURR = 0",
                  "PMASS_TYPE = 'cubic_spline'", f"AM_AUX_S = {row(s)}",
                  f"AM_AUX_F = {row(self.mu0_p_of_s(s) / (4e-7 * np.pi))}",
                  "PIOTA_TYPE = 'cubic_spline'", f"AI_AUX_S = {row(s)}", f"AI_AUX_F = {row(self.iota(s))}"]
-        lines += [f"RBC({int(n) // NFP},{int(m)}) = {r!r}  ZBS({int(n) // NFP},{int(m)}) = {z!r}"
+        lines += [f"RBC({int(n) // NFP},{int(m)}) = {float(r)!r}  ZBS({int(n) // NFP},{int(m)}) = {float(z)!r}"
                   for m, n, r, z in zip(xm, xn, rmnc[0], zmns[0]) if abs(r) > 1e-14 or abs(z) > 1e-14]
         with open(path, "w") as fh:
             fh.write("&INDATA\n" + "\n".join(lines) + "\n/\n")

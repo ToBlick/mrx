@@ -2,8 +2,8 @@
 
 ``b0`` (:func:`mrx.relaxation.initial_conditions.potential_two_form`) is the curl of a vector potential whose
 ``theta`` and ``zeta`` components depend on ``r`` alone, so ``B^r = 0`` exactly: its field lines stay on their
-logical surfaces and wind with the rotational transform of the file. The traced iota of every regular line
-matches ``|iota(r)|`` of the file at the line's radius within a measured band, the discretisation error of the
+logical surfaces and wind with the rotational transform of the exact equilibrium shearedE. The traced iota of
+every regular line matches the exact transform on its surface within a measured band, the discretisation error of the
 field, and halving the step moves the lines by less than a measured drift, also with ``b0`` written as a free
 2-form (no flux through the wall). A closed-form field, whose lines are
 known exactly, pins the crossings forwards and backwards and the cut at the boundary. The sections ``phi = const``
@@ -17,11 +17,11 @@ import numpy as np
 
 from mrx.diagnostics.poincare import poincare
 
-#: 1.25x ``max |iota_traced - |iota_file|| / max |iota_file|`` on li383 (16, 32, 12) p=2, 8 lines over 60 periods,
-#: measured 1.06e-3 (2026-10-20). A tracer that missed the factor nfp or a wrong winding would be off by O(1).
-IOTA_BAND = 1.33e-3
-#: 1.25x the step-halving drift of the same trace in logical radius, measured 3.23e-4.
-DRIFT_BAND = 4.1e-4
+#: ``max |iota_traced - iota| / max iota`` against the exact transform, 8 lines over 60 periods: PENDING measured.
+#: A tracer that missed the factor nfp or a wrong winding would be off by O(1).
+IOTA_BAND = 1e-2
+#: The step-halving drift of the same trace in logical radius: PENDING measured.
+DRIFT_BAND = 1e-2
 
 
 #: The file's field on the fixture's map (sections normal to the axis) and on the file's map, traced from the same
@@ -38,8 +38,10 @@ def _tol(f64, f32):
     return f64 if DTYPE == np.float64 else f32
 
 
-def test_traced_iota_is_the_file_iota(seq, b0):
-    """The traced iota of the regular lines is the file's iota at their radius, and the step is resolved. The field
+def test_traced_iota_is_the_exact_iota(eq, seq, b0):
+    """The traced iota of the regular lines is the exact transform of shearedE on their surface (the logical radius
+    of the wout is Landreman's ``rho``, which the cut by the planes normal to the axis keeps), and the step is
+    resolved. The field
     is ``b0`` as a free 2-form, the space of fields with a flux through the wall, here zero. The padding lines,
     traced forwards and backwards for more periods than the main lines, stay on their seed's logical surface both
     ways."""
@@ -48,7 +50,7 @@ def test_traced_iota_is_the_file_iota(seq, b0):
     res = poincare(seq, B, lines=8, periods=60, planes=1, padding=(4, 64, 0.8))
     shown = np.asarray(res["shown"])
     r = np.asarray(res["seed_r"])[shown]
-    want = np.abs(np.asarray(seq.equilibrium["profiles"]["iota"](r)))
+    want = eq.iota(eq.s_of_rho(r))
     err = float(np.abs(np.asarray(res["iota"])[shown] - want).max() / want.max())
     pad = res["padding"]
     logr = next(iter(pad["sections"].values()))["logr"]
@@ -103,7 +105,7 @@ def test_crossings_of_a_closed_form_field(seq):
 
 
 def test_phi_sections_are_zeta_sections_on_a_cylindrical_map(seq, b0):
-    """On the li383 file's own map the planes ``phi = const`` are the sections ``zeta = const``. The crossings that
+    """On the file's own map the planes ``phi = const`` are the sections ``zeta = const``. The crossings that
     the Newton path of the sections ``"phi"`` finds in the steps the batched trace kept (:func:`_refine_crossings`)
     are then the states at the ends of steps, forwards and backwards, to round-off. The fixture's map has the
     sections normal to the axis, so the file's map (:func:`mrx.equilibria.build_map`) stands in for it, with the

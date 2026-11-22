@@ -1,7 +1,7 @@
 """The motion of the mesh's pole onto the magnetic axis changes the map, and the field is carried onto it.
 
-On the li383 fixture the file's field is the VMEC equilibrium, whose magnetic axis is the mesh axis: the axis finder
-finds it on the pole and a move hardly moves that mesh. The field carried by the relaxation's induction
+On the fixture the field is the projected exact equilibrium shearedE, whose magnetic axis is the mesh axis: the axis
+finder finds it on the pole and on the exact axis, and a move hardly moves that mesh. The field carried by the relaxation's induction
 (:func:`~mrx.relaxation.mesh_motion.transfer`) onto the map with its pole displaced by :data:`SHIFT` and back keeps
 ``div B`` and the toroidal flux at round-off and returns to the time error of its substeps. On the displaced map the
 carried field's axis is off the pole, and one move (:func:`~mrx.relaxation.mesh_motion.axis_move`) puts the pole back
@@ -17,10 +17,9 @@ from mrx.precision import eps
 from mrx.relaxation import mesh_motion as mm
 from mrx.relaxation.initial_conditions import _clebsch_potential, toroidal_flux
 from mrx.relaxation.physics import compute_divergence_norm
-from test.conftest import map_installed
+from test.conftest import LENGTH, map_installed
 
-#: The displacement of the pole of the test map along X1, a fraction of the minor radius: 4 cm on li383, 1.4 first
-#: radial cells of 2.9 cm.
+#: The displacement of the pole of the test map along X1, a fraction of the minor radius, about one first radial cell.
 SHIFT = 0.12
 #: The field after a transfer there and back against the start: 1.14e-6 measured (2026-11-22), 1.24e-6 in float64 with the induction of
 #: h = Pi_1 B (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21), 4.0e-6 in float32 with the old
@@ -67,15 +66,20 @@ def _axis_cells(seq, B):
     return float(np.max(np.linalg.norm(d, axis=1))) / h1
 
 
-def test_the_axis_of_the_file_is_on_its_pole(seq, b0):
-    """The VMEC field on the fixture: the axis finder (:func:`~mrx.relaxation.mesh_motion.magnetic_axis`) puts the
-    magnetic axis within :data:`AXIS_ON_POLE` first radial cells of the pole, and a move moves the mesh by less than
-    that."""
+def test_the_axis_is_the_exact_axis_on_the_pole(eq, seq, b0, minor):
+    """The projected exact field on the fixture: the axis finder (:func:`~mrx.relaxation.mesh_motion.magnetic_axis`)
+    puts the magnetic axis within :data:`AXIS_ON_POLE` first radial cells of the pole, a move moves the mesh by less
+    than that, and the axis curve is the exact axis ``k = 0`` within :data:`~test.conftest.LENGTH` of the minor
+    radius."""
     _, rec = mm.axis_displacement(seq, b0)
+    zetas, points = mm.axis_curve(seq, b0)
+    # the exact axis in the plane of each point's own azimuth: the cut map's zeta is not the azimuth
+    off = float(np.max(np.linalg.norm(points - eq.axis(np.arctan2(points[:, 1], points[:, 0])), axis=1))) / minor
     print(f"\n  axis {rec['axis_cells']:.2e} first cells off the pole ({rec['axis']['newton']} Newton steps), largest "
-          f"move {rec['move_m']:.2e} m, first cell {rec['h1_m']:.2e} m")
+          f"move {rec['move_m']:.2e} m, first cell {rec['h1_m']:.2e} m, {off:.2e} of the minor radius off the exact axis")
     assert rec["axis_cells"] < AXIS_ON_POLE
     assert rec["move_m"] < AXIS_ON_POLE * rec["h1_m"]
+    assert off < LENGTH
 
 
 def test_transfer_there_and_back_and_a_move_onto_the_axis(seq, b0, minor):
