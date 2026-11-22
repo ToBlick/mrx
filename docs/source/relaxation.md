@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol`, `--mesh.nested`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -496,14 +496,17 @@ the planes normal to its axis.
 
 The pressure shifts the axis away from the vacuum's, on W7-X (32,64,36) by
 four first radial cells, so with the pole on the vacuum's axis the first
-equilibrium has its axis that far off the pole. With `--mesh.axis-from` the
-mesh is built around the axis of a coarser run's equilibrium of the same
-domain and targets instead: the pole goes onto that curve in rounds, the mesh
-is cut by the planes normal to it, and the vacuum is solved there
+equilibrium has its axis that far off the pole. With `--mesh.nested` the
+mesh is built around the finite-beta axis of a small nested-surface solve of
+the namelist instead (`mrx.equilibria.nested_axis`, on (6,12,10) cubic
+splines, 2.5 minutes on one H200, 0.5 mm from the axis of a coarse MRX run
+on W7-X): the pole goes onto that curve in rounds, the mesh is cut by the
+planes normal to it, and the vacuum is solved there
 (`mrx.relaxation.mesh_motion.curve_start`). The vacuum's axis is then off the
-pole, and the pressure carries the field's axis onto it. The curve is the
-Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz, which
-the coarse run writes with `--mesh.axis-to`: it ends once its axis has moved
+pole, and the pressure carries the field's axis onto it. `--mesh.axis-from`
+takes the curve from an npz instead, the Cartesian points of
+`mrx.relaxation.mesh_motion.axis_curve`. A coarser MRX run of the same domain
+and targets writes it with `--mesh.axis-to`: it ends once its axis has moved
 by less than `--mesh.axis-tol` (0.01) of its first radial cell over a chunk.
 
 During the pressure's rise the field's axis is not that of the equilibrium it
@@ -524,8 +527,8 @@ when the chunk's mean MINRES count of the Newton solve exceeds
 build, or a Newton solve stopped at `--newton.maxiter` while the field is
 above the bar. RUN_NUMBERS
 
-The `mesh` record of `relax.json` holds the rounds of the start, every move
-(the step, the axis offset in first radial cells, the
+The `mesh` record of `relax.json` holds the nested solve's record, the rounds
+of the start, every move (the step, the axis offset in first radial cells, the
 axis finder's record, the largest move and its backtracking factor, the range
 of the change of $\det D\Phi$, the transfer's substeps, the relative change of
 the coefficients and of the energy, the force residual right before and right

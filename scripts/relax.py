@@ -33,7 +33,8 @@ The loop starts from the current the field carries. The target is kept in every 
 misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
-the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, or with
+the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with ``--mesh.nested`` onto the
+finite-beta axis of the namelist's nested-surface solve (:mod:`mrx.equilibria.nested_axis`), or with
 ``--mesh.axis-from`` onto the magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. With
 ``--mesh.axis-to`` the run is that coarse pass: it ends once its magnetic axis has settled and writes it. Then the
 pole moves only at a chunk boundary where the field is at an equilibrium (its squared force residual below
@@ -64,6 +65,7 @@ Output (in ``--output.out``):
                                  checkpoint also holds its map (:func:`mrx.relaxation.mesh_motion.write_map`), which a
                                  restart and ``scripts/poincare_trace.py`` install, and ``moved_<step>.h5`` holds the
                                  field right after a move of the axis, on the moved map.
+    nested_axis.npz              With ``--mesh.nested``: the axis of the nested-surface solve and its record.
 """
 from __future__ import annotations
 
@@ -152,17 +154,25 @@ def main(cfg, fit=None):
     else:
         t1 = time.perf_counter()
         if cfg.mesh and seq.equilibrium["kind"] == "indata":
-            # the first move needs no transport: the pole goes onto the vacuum's axis, or onto the axis of a coarser
-            # run's equilibrium, and the vacuum is solved there
+            # the first move needs no transport: the pole goes onto the vacuum's axis, onto the nested solve's axis or
+            # onto the axis of a coarser run's equilibrium, and the vacuum is solved there
             recut = g.zeta == "axis-normal"
-            if cfg.mesh.axis_from:
-                with np.load(cfg.mesh.axis_from) as z:
+            axis_from = cfg.mesh.axis_from
+            if cfg.mesh.nested:
+                from mrx.equilibria import nested_axis
+                Phi_n, rec_n = nested_axis.solve(data_file(g.path))
+                zetas, points = nested_axis.axis_points(Phi_n)
+                axis_from = os.path.join(out, "nested_axis.npz")
+                np.savez(axis_from, zetas=zetas, points=points, record=json.dumps(rec_n))
+                results["mesh"]["nested"] = rec_n
+            if axis_from:
+                with np.load(axis_from) as z:
                     start = mesh_motion.curve_start(seq, z["zetas"], z["points"], recut)
             else:
                 start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut)
             results["mesh"]["start"] = start
             ts = cfg.stepper(seq)
-            onto = f"the curve of {cfg.mesh.axis_from}" if cfg.mesh.axis_from else "the vacuum's axis"
+            onto = f"the curve of {axis_from}" if axis_from else "the vacuum's axis"
             print(f"[mesh] start: the pole onto {onto} in {len(start['rounds'])} rounds, axis "
                   + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
                   + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
