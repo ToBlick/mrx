@@ -31,9 +31,9 @@ jobs:
         dtype: ['float64', 'float32']
     env:
       MRX_DTYPE: ${{ matrix.dtype }}
-      # The suite is XLA-compile-bound (4 cores run it as fast as 32), so
-      # the persistent compilation cache is the main lever on wall time.
-      # test/conftest.py points JAX at MRX_XLA_CACHE, so that is the variable to set.
+      # The suite's time goes into its solves. The persistent compilation cache
+      # saves the compiles on top. test/conftest.py points JAX at MRX_XLA_CACHE,
+      # so that is the variable to set.
       MRX_XLA_CACHE: ${{ github.workspace }}/.jax_cache
     steps:
     - uses: actions/checkout@v4
