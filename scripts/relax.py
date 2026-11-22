@@ -33,16 +33,16 @@ The loop starts from the current the field carries. The target is kept in every 
 misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
-the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, or with ``--mesh.axis-from`` onto the
-magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. Before
-every chunk the pole moves onto the axis of the field. The field keeps its coefficients: it rides with the map, and
-the relaxation brings it back to its equilibrium, whose axis is then on the pole. A move happens before the shells and
-the slips are rebuilt and does not change the targets. With ``--mesh.axis-to`` the run is the coarse pass of a finer
-one's ``--mesh.axis-from``: it ends once its magnetic axis has settled and writes it. With ``--mesh.bar`` the pole moves only at an equilibrium, and
-only when the axis is more than ``--mesh.move-tol`` first radial cells off it. With ``--iota.target`` the loop takes its step at such
-an equilibrium before the move and holds its current target from a move until the field is below the bar again. The
-checkpoints keep that schedule. The moves keep the preconditioners, which are built again on the installed map when
-the chunk's mean MINRES count of the Newton solve exceeds ``--mesh.rebuild-factor`` times that of the first chunk
+the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, or with
+``--mesh.axis-from`` onto the magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. With
+``--mesh.axis-to`` the run is that coarse pass: it ends once its magnetic axis has settled and writes it. Then the
+pole moves only at a chunk boundary where the field is at an equilibrium (its squared force residual below
+``--mesh.bar``) and its axis is more than ``--mesh.move-tol`` first radial cells off the pole. The field is carried
+onto the moved map by the relaxation's induction (:func:`mrx.relaxation.mesh_motion.transfer`). A move happens before
+the shells and the slips are rebuilt and does not change the targets. With ``--iota.target`` the loop takes its step
+at such an equilibrium before the move and holds its current target from a move until the field is below the bar
+again. The checkpoints keep that hold. The moves keep the preconditioners, which are built again on the installed map
+when the chunk's mean MINRES count of the Newton solve exceeds ``--mesh.rebuild-factor`` times that of the first chunk
 after their last build, or a Newton solve stopped at its iteration cap.
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
@@ -55,14 +55,15 @@ Output (in ``--output.out``):
                                  ``iota`` (the target and before every chunk the transform's weak residual, its miss, the step and the current target), ``seed``, ``drive``, ``pressure`` (the target and before every chunk
                                  and at the end the pressure's error against it and the target's beta), ``current``
                                  (the target's moments and before every chunk and at the end the current's), ``mesh``
-                                 (the moves of the start, every move of the axis, the chunks' MINRES counts and the
-                                 builds of the preconditioners), the per-step
+                                 (the moves of the start, every move of the axis and every check without a move, the
+                                 chunks' MINRES counts and the builds of the preconditioners), the per-step
                                  ``trace``, the per-chunk ``qoi`` and the ``summary``. The file is rewritten after every chunk.
     checkpoints/state_<step>.h5  The descent state at the start and after every chunk
                                  (:func:`mrx.relaxation.loop.write_checkpoint`). ``best.h5`` holds the field with
                                  the lowest residual, since the last move of the mesh. With ``--mesh.align`` every
                                  checkpoint also holds its map (:func:`mrx.relaxation.mesh_motion.write_map`), which a
-                                 restart and ``scripts/poincare_trace.py`` install.
+                                 restart and ``scripts/poincare_trace.py`` install, and ``moved_<step>.h5`` holds the
+                                 field right after a move of the axis, on the moved map.
 """
 from __future__ import annotations
 
@@ -134,7 +135,7 @@ def main(cfg, fit=None):
     ts = cfg.stepper(seq)
     if cfg.mesh:
         results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
-    # with --mesh.bar: whether the iota loop holds its target since the last move, and the field's residual at this
+    # with --mesh.align: whether the iota loop holds its target since the last move, and the field's residual at this
     # chunk boundary
     schedule = dict(hold=False, resid=None)
     iota_target = None              # the iota loop's current target, set at its first chunk
@@ -296,44 +297,50 @@ def main(cfg, fit=None):
             print(f"[seed] step {it}: the transform misses by {miss:.2e} < {AT_TARGET:g} of its largest value, "
                   f"seeded", flush=True)
             return initial_state(B_seeded, ts, step=it), True
-    # --- the pole on the magnetic axis before every chunk, the preconditioners built again on need ---
+    # --- the pole on the magnetic axis at an equilibrium, the preconditioners built again on need ---
     mm = cfg.mesh
     if mm:
         built = dict(ref=None, last=None, cap=False)
 
         def align_axis(state, it):
-            """The state at step ``it`` after the move of the pole onto the field's magnetic axis. The field keeps its
-            coefficients, its force residual right before and after the move goes into the record."""
+            """The state at step ``it`` after the move of the pole onto the field's magnetic axis, if one is due: at an
+            equilibrium (residual below --mesh.bar) with the axis more than --mesh.move-tol first cells off the pole.
+            The field is carried onto the moved map, its force residual right before and after the move goes into the
+            record."""
             nonlocal ts
             before = float(initial_state(state.B_n, ts).best.resid)
             schedule["resid"] = before
-            if mm.bar is not None:
-                d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
-                off = float(np.max(np.linalg.norm(d, axis=1))) / h1
-                # not an equilibrium: its axis is not that of the field it relaxes to. At an equilibrium the pole
-                # moves only when the axis is more than --mesh.move-tol first cells off it
-                why = ("above the bar" if not before < mm.bar else
-                       f"within {mm.move_tol:g} first cells" if not off > mm.move_tol else None)
-                if why is not None:
-                    results["mesh"]["checks"].append(dict(step=it, axis_cells=off, resid=before, why=why))
-                    print(f"[mesh] step {it}: residual {before:.3e}, axis {off:.3e} first cells off the pole, no move "
-                          f"({why})", flush=True)
-                    return state
-            rec = mesh_motion.axis_move(seq, state.B_n)
+            d, h1 = mesh_motion.axis_offset(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
+            off = float(np.max(np.linalg.norm(d, axis=1))) / h1
+            # not an equilibrium: its axis is not that of the field it relaxes to. The vacuum field of a fresh start
+            # is below the bar but the equilibrium of no target: the start has put the pole where it is wanted
+            why = ("the start's vacuum" if it == 0 and "start" in results["mesh"] else
+                   "above the bar" if not before < mm.bar else
+                   f"within {mm.move_tol:g} first cells" if not off > mm.move_tol else None)
+            if why is not None:
+                results["mesh"]["checks"].append(dict(step=it, axis_cells=off, resid=before, why=why))
+                print(f"[mesh] step {it}: residual {before:.3e}, axis {off:.3e} first cells off the pole, no move "
+                      f"({why})", flush=True)
+                return state
+            B, rec = mesh_motion.axis_move(seq, state.B_n)
+            state = eqx.tree_at(lambda s_: s_.B_n, state, B)
             ts = cfg.stepper(seq)
             rec.update(step=it, resid_before=before, resid_after=float(initial_state(state.B_n, ts).best.resid))
-            # the move transports the field ideally: the transform as a function of the toroidal flux and the
-            # equilibrium of the targets stay, only the field is kicked off it. The iota loop holds its target until
-            # the field is back at an equilibrium: read before, its residual and its Newton direction are the kick's
-            schedule.update(resid=rec["resid_after"], hold=mm.bar is not None)
+            # the transform as a function of the toroidal flux and the equilibrium of the targets stay, the field is
+            # kicked off it by the transfer's error. The iota loop holds its target until the field is back at an
+            # equilibrium: read before, its residual and its Newton direction are the kick's
+            schedule.update(resid=rec["resid_after"], hold=True)
             results["mesh"]["moves"].append(rec)
             print(f"[mesh] step {it}: axis {rec['axis_cells']:.3e} first cells off the pole, move {rec['move_m']:.3e} m "
-                  f"(x{rec['lam']:g}), det DPhi ratio [{rec['det_ratio_min']:.4f}, {rec['det_ratio_max']:.4f}], energy "
-                  f"{rec['dE_rel']:+.2e}, residual {before:.3e} -> {rec['resid_after']:.3e}, axis Newton "
-                  f"{rec['axis']['newton']}, {rec['wall']:.1f}s", flush=True)
+                  f"(x{rec['lam']:g}), det DPhi ratio [{rec['det_ratio_min']:.4f}, {rec['det_ratio_max']:.4f}], "
+                  f"transfer {rec['substeps']} substeps, |dB| / |B| {rec['dB_rel']:.2e}, energy {rec['dE_rel']:+.2e}, "
+                  f"residual {before:.3e} -> {rec['resid_after']:.3e}, axis Newton {rec['axis']['newton']}, "
+                  f"{rec['wall']:.1f}s", flush=True)
             # the warm starts stay, the best field is the best since this move: an older one lives on an older map
             best = BestState(B=state.B_n, resid=jnp.full_like(state.best.resid, jnp.inf), step=jnp.int32(it))
-            return eqx.tree_at(lambda s_: s_.best, state, best)
+            state = eqx.tree_at(lambda s_: s_.best, state, best)
+            checkpoint(f"moved_{it:06d}.h5", state, it)
+            return state
 
         def precondition(it):
             """Build the preconditioners on the installed map if the last chunk's mean MINRES count exceeds
@@ -376,8 +383,7 @@ def main(cfg, fit=None):
         """The state and the stepper of the chunk from step ``it``."""
         nonlocal ts, seed_pending, iota_target
         updated = False
-        if mm and cfg.iota and mm.bar is not None and not (it - it0) % b.chunk and \
-                float(initial_state(state.B_n, ts).best.resid) < mm.bar:
+        if mm and cfg.iota and float(initial_state(state.B_n, ts).best.resid) < mm.bar:
             # at an equilibrium the loop reads the field before the mesh moves: the move would kick it off
             s_q, info = label_of(state)
             if iota_target is None:     # the loop starts from the current the field carries

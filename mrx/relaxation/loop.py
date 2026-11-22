@@ -33,8 +33,8 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL,
                                    newton_direction, target_direction)
-from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, induction_field,
-                                   resistive_step, weak_pressure)
+from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, electric_field,
+                                   induction_field, resistive_step, weak_pressure)
 from mrx.relaxation.shells import Shells
 from mrx.relaxation.twist import Slips
 
@@ -320,7 +320,7 @@ class TimeStepper(eqx.Module):
 
         def substep(c):
             k, B, E, E0, dt, dt_star, n = c
-            E = odd.M[1].solve(odd.cross_product_load_values(d.u_jk, induction_field(B, self.seq), 1, 2, 1), guess=E)
+            E = electric_field(d.u_jk, B, self.seq, guess=E)
             # the topological curl: div B is conserved exactly, no mass solve
             dB = odd.G[1] @ E
             first = k == 0

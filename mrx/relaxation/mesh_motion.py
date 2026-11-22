@@ -19,16 +19,17 @@ current map:
    (:func:`axis_coefficients`), moves every point by ``d(zeta) (1 - r^2)`` (:func:`axis_step`): the pole goes onto the
    magnetic axis, the wall
    stays. The move is halved until no cell loses more than half its volume (:data:`MIN_DET_RATIO` of ``det DPhi``).
-3. The field keeps its coefficients: it rides with the map, the exact ideal transport of the field by the move, which
-   keeps ``div B = 0``, ``B . n = 0`` and every flux through every face of the mesh, and nothing is projected. Its
-   axis keeps its logical place, so right after the move it is off the new pole by about the old distance, but the
-   equilibrium it is transported from has its axis on the pole now, and the relaxation steps bring the field back
-   there.
+3. The physical field is carried onto the moved map (:func:`transfer`) by the relaxation's own induction with the
+   mesh's velocity, which keeps ``div B = 0``, ``B . n = 0`` and the toroidal flux exactly. Kept coefficients would
+   move the field with the mesh instead, an ideal transport that kicks the equilibrium: on W7-X P_M_p2 a move of 0.19
+   first cells raised the force residual from 7e-10 to 5.2e-5 and took 33 steps back below 1e-8, the transfer 5.9e-8
+   and 2 steps, to the same end state (2026-11-21).
 4. The geometry and the harmonic forms of the new map are installed (:func:`install_map`), the preconditioners of
    the old map are kept. The map is data of the sequence, so the compiled relaxation is reused.
 
-``scripts/relax.py --mesh.align`` moves the axis so before every chunk and builds the preconditioners again when the
-Newton solve says that those of an older map no longer fit. A run from the vacuum field of a namelist starts on a
+``scripts/relax.py --mesh.align`` moves the axis so at a chunk boundary where the field is at an equilibrium and its
+axis is off the pole by more than a tolerance, and builds the preconditioners again when the Newton solve says that
+those of an older map no longer fit. A run from the vacuum field of a namelist starts on a
 mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`): there the mesh moves first and the vacuum field
 is solved on it, so the first move, the largest, perturbs nothing. A moved map goes into the checkpoints
 (:func:`write_map`, :func:`install_checkpoint_map`).
@@ -60,11 +61,14 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.diagnostics.poincare import logical_field, to_polar
-from mrx.differential_forms import det33
+from mrx.differential_forms import det33, inv33
 from mrx.equilibria import FrameMap, frame_derivatives, polar_projection
+from mrx.geometry import SequenceGeometry, map_jacobian_at
 from mrx.nullspace import compute_nullspaces
 from mrx.optimization.shape_ad import frame_geometry
 from mrx.precision import DTYPE, to_working
+from mrx.relaxation.loop import CFL, logical_cfl_weights
+from mrx.relaxation.physics import electric_field
 from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defect
 
 #: The smallest ratio of ``det DPhi`` after and before a move at any quadrature point.
@@ -438,16 +442,19 @@ def curve_offset(seq, zetas, points):
 
 
 def axis_move(seq, B):
-    """Move the pole of ``seq`` onto the magnetic axis of ``B`` (:func:`axis_displacement`), install the new map with
-    the preconditioners kept and return the record, with the relative change of the energy (the field keeps its
-    coefficients) and the wall time. ``B`` rides with the map: its axis keeps its logical place, off the new pole by
-    about the old distance, while its equilibrium's axis is now on the pole."""
+    """Move the pole of ``seq`` onto the magnetic axis of ``B`` (:func:`axis_displacement`), carry the field onto the
+    new map (:func:`transfer`), install the map with the preconditioners kept and return ``(B', record)``. The record
+    holds that of the move and of the transfer, the relative change of the energy, the relative change of the field's
+    coefficients against keeping them (``dB_rel``, in the new map's norm) and the wall time."""
     t0 = time.perf_counter()
     Phi_new, record = axis_displacement(seq, B)
     E0 = float(seq.odd.l2_norm_sq(B, 2))
+    B_new, carried = transfer(seq, B, Phi_new)
     install_map(seq, Phi_new, keep_preconditioners=True)
-    record.update(dE_rel=float(seq.odd.l2_norm_sq(B, 2)) / E0 - 1.0, wall=time.perf_counter() - t0)
-    return record
+    record.update(carried, dE_rel=float(seq.odd.l2_norm_sq(B_new, 2)) / E0 - 1.0,
+                  dB_rel=float(seq.odd.l2_norm(B_new - B, 2) / seq.odd.l2_norm(B_new, 2)),
+                  wall=time.perf_counter() - t0)
+    return B_new, record
 
 
 def _start(seq, offset, recut):
@@ -795,3 +802,67 @@ def install_checkpoint_map(seq, path):
                                for k in ("frame_cos", "frame_sin", "frame_n")))
     install_map(seq, Phi)
     return True
+
+
+class _Path(eqx.Module):
+    """The maps ``Phi_tau = Phi0 + tau (Phi1 - Phi0)`` from the installed map to a new one, the straight paths of the
+    points, so ``DPhi_tau = D0 + tau (D1 - D0)`` exactly, whatever the frames of the two maps. ``D0``, ``D1`` are the
+    Jacobians of the two ends at the quadrature points and ``d_q = Phi_1 - Phi_0`` there, the velocity of the mesh per
+    unit ``tau``. The geometry of ``Phi_tau`` keeps ``Phi0`` as its map: the steps use only its metric."""
+    Phi0: object
+    D0: jnp.ndarray
+    D1: jnp.ndarray
+    d_q: jnp.ndarray
+
+    def at(self, seq, tau):
+        """``(seq_tau, D)``: ``seq`` with the geometry of ``Phi_tau`` and the Jacobian ``D`` of ``Phi_tau``."""
+        D = self.D0 + tau * (self.D1 - self.D0)
+        G = jnp.einsum("qki,qkj->qij", D, D)
+        return seq.with_geometry(SequenceGeometry(self.Phi0, G, jax.vmap(inv33)(G), jnp.linalg.det(D))), D
+
+
+def _rate(seq, path, tau, b):
+    """``db / dtau`` on the map ``Phi_tau``: the relaxation's induction ``curl E``, ``E = Pi_1(u x h)``
+    (:func:`mrx.relaxation.physics.electric_field`), on that map with the velocity ``u = -J xi`` of the mesh's
+    relative motion, ``xi = DPhi_tau^-1 d`` the logical velocity of the mesh and ``J xi`` the reference components of
+    a 2-form."""
+    seq_t, D = path.at(seq, tau)
+    w_q = seq_t.jacobian_j[:, None] * jnp.linalg.solve(D, path.d_q[..., None])[..., 0]
+    return -(seq_t.odd.G[1] @ electric_field(w_q, b, seq_t))
+
+
+@eqx.filter_jit
+def _substep(seq, path, tau0, tau1, b):
+    """One SSP-RK3 step of :func:`_rate` from ``tau0`` to ``tau1``."""
+    h = tau1 - tau0
+    b1 = b + h * _rate(seq, path, tau0, b)
+    b2 = 0.75 * b + 0.25 * (b1 + h * _rate(seq, path, tau0 + h, b1))
+    return b / 3.0 + 2.0 / 3.0 * (b2 + h * _rate(seq, path, tau0 + 0.5 * h, b2))
+
+
+def transfer(seq, B, Phi_new):
+    """``(B', record)``: the coefficients on the map ``Phi_new`` of the physical field of the 2-form ``B`` on the
+    installed map, with ``seq`` unchanged.
+
+    Kept coefficients on a new map move the physical field with the mesh. The relative motion puts it back: on the
+    maps ``Phi_tau = Phi + tau (Phi_new - Phi)`` the coefficients of a fixed physical field change as the relaxation's
+    induction with the mesh's velocity in place of the flow's (:func:`_rate`), integrated from ``tau = 0`` to 1 in
+    substeps that cross at most :data:`~mrx.relaxation.loop.CFL` logical cells, the cap of the relaxation's substeps
+    (:func:`~mrx.relaxation.loop.logical_cfl_weights`). Unlike a relaxation step, whose error the next Newton step
+    removes, this advection is not corrected afterwards, so the substeps are SSP-RK3, not forward Euler: forward Euler
+    substeps blew up over repeated moves at every cap down to 0.05 cells on W7-X (2026-11-19). Every increment is a
+    curl of a Dirichlet 1-form, so ``div B = 0``, ``B . n = 0`` and the toroidal flux hold exactly. ``record`` holds the
+    number of substeps and the cells the move crosses."""
+    x, Phi = seq.quad.x, seq.map
+    D0, D1 = map_jacobian_at(Phi, x), map_jacobian_at(Phi_new, x)
+    d_q = jax.vmap(Phi_new)(x) - jax.vmap(Phi)(x)
+    path = _Path(Phi, D0, D1, d_q)
+    weights = logical_cfl_weights(seq)
+    cells = max(float(jnp.max(jnp.abs(seq.jacobian_j[:, None]
+                                      * jnp.linalg.solve(D0 + t * (D1 - D0), d_q[..., None])[..., 0]) * weights))
+                for t in (0.0, 0.5, 1.0))
+    n = max(1, int(np.ceil(cells / CFL)))
+    b = B
+    for i in range(n):
+        b = _substep(seq, path, jnp.asarray(i / n), jnp.asarray((i + 1) / n), b)
+    return b, dict(substeps=n, cells=cells)

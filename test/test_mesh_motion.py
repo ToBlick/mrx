@@ -1,10 +1,11 @@
-"""The motion of the mesh's pole onto the magnetic axis changes the map, and the field rides with it.
+"""The motion of the mesh's pole onto the magnetic axis changes the map, and the field is carried onto it.
 
 On the li383 fixture mesh (16,32,12) the file's field is the VMEC equilibrium, whose magnetic axis is the mesh axis:
-the axis finder finds it on the pole and a move hardly moves that mesh. A field keeps its coefficients on a moved
-map, so its field lines keep their logical places: on the mesh with its pole displaced by :data:`SHIFT` the finder
-finds the same logical axis. The harmonic section brings ``zeta`` onto the harmonic angle and an axis move keeps it
-there. The cut by the planes normal to the axis keeps the file's surfaces and field. The moves of a run and the axis
+the axis finder finds it on the pole and a move hardly moves that mesh. A field kept by its coefficients on a moved
+map keeps its field lines at their logical places: on the mesh with its pole displaced by :data:`SHIFT` the finder
+finds the same logical axis. The transfer of the field onto that mesh and back keeps ``div B`` and the toroidal flux
+at round-off and returns the field to the time error of its substeps. The harmonic section brings ``zeta`` onto the
+harmonic angle, and a move of the pole tangent to the sections changes it at second order in the move. The cut by the planes normal to the axis keeps the file's surfaces and field. The moves of a run and the axis
 they find are checked on the run of test_relax_run.py. The moves change the sequence, so the module builds its own.
 """
 import jax
@@ -17,15 +18,22 @@ from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces, zeta_harmonic_distance
 from mrx.precision import eps
 from mrx.relaxation import mesh_motion as mm
-from mrx.relaxation.initial_conditions import _clebsch_potential, initial_field
+from mrx.relaxation.initial_conditions import _clebsch_potential, initial_field, toroidal_flux
+from mrx.relaxation.physics import compute_divergence_norm
 
 #: The displacement of the axis of the test mesh along X1, in metres (the first radial cell is 2.9 cm).
 SHIFT = 0.04
-#: |grad zeta - h| / |h| on the planes phi = const at least, and after the harmonic moves and an axis move at most, and
-#: the wall's move by the harmonic moves in metres: 0.30, 1.3e-6 and 3.2e-6 in float64, 2.9e-6 and 4.1e-6 in float32
-#: (four moves), 3.0e-3 m (a tenth of the 2.9 cm first radial cell, the spline of the wall on 16 radial splines)
-#: measured (2026-11-19).
+#: |grad zeta - h| / |h| on the planes phi = const at least, and after the harmonic moves at most, and the wall's move
+#: by the harmonic moves in metres: 0.30, 1.3e-6 in float64, 2.9e-6 in float32 (four moves), 3.0e-3 m (a tenth of the
+#: 2.9 cm first radial cell, the spline of the wall on 16 radial splines) measured (2026-11-19).
 PHI_DRIFT, HARMONIC_DRIFT, HARMONIC_WALL = 0.1, 1e-5, 1e-2
+#: The growth of |grad zeta - h| / |h| by a move of the pole by SHIFT over that by SHIFT / 2: 4 for a move tangent to
+#: the sections to first order. MEASURED_ORDER measured.
+DRIFT_ORDER = 3.0
+#: The field after a transfer there and back against the start: 3.7e-6 measured with the old induction in float64,
+#: 4.0e-6 in float32 (SSP-RK3 at the relaxation's CFL cap, 36 substeps each way, li383 (16,32,12) with the axis
+#: displaced by 4 cm, div B 2.6e-15 and 1.4e-6 relative, 2026-11-18), MEASURED_ROUND_TRIP with the induction of h.
+ROUND_TRIP = 1e-5
 #: The axis-normal cut of the fixture's map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
 #: the first radial cell is 0.07) and the relative rms over random points of the file's field on the cut map against
@@ -46,11 +54,17 @@ def mesh():
     return seq, seq.map, initial_field(seq)[0]
 
 
-def _displaced(seq, Phi):
-    """Install the map ``Phi`` with its axis displaced by :data:`SHIFT`."""
-    d = np.zeros((mm._planes(seq).size, 2))
-    d[:, 0] = SHIFT
-    mm.install_map(seq, mm.moved(Phi, mm.tangent(seq, mm.axis_step(seq, d))))
+def _shifted(seq, Phi, shift=SHIFT):
+    """The map ``Phi`` with its axis displaced by ``shift`` along ``X1`` (a constant offset, so its ``zeta`` spline
+    coefficients are that offset)."""
+    d = np.zeros((seq.basis_0.Lambda[2].n, 2))
+    d[:, 0] = shift
+    return mm.moved(Phi, mm.tangent(seq, mm.axis_step(seq, d)))
+
+
+def _displaced(seq, Phi, shift=SHIFT):
+    """Install the map ``Phi`` with its axis displaced by ``shift``."""
+    mm.install_map(seq, _shifted(seq, Phi, shift))
 
 
 def test_the_axis_of_the_file_is_on_its_pole(mesh):
@@ -81,12 +95,36 @@ def test_the_axis_rides_with_the_map(mesh):
     assert diff < 1e3 * eps()
 
 
+def test_transfer_there_and_back(mesh):
+    """The file's field carried by :func:`~mrx.relaxation.mesh_motion.transfer` onto the map with the pole displaced
+    by :data:`SHIFT` and back: each way ``||div B|| / ||B||`` and the toroidal flux hold to round-off, and the field
+    returns to its coefficients within :data:`ROUND_TRIP`, the time error of the transport. The two ways run along the
+    same maps in opposite directions."""
+    seq, Phi, B = mesh
+    mm.install_map(seq, Phi)
+    flux = float(toroidal_flux(seq, B))
+    new = _shifted(seq, Phi)
+    B1, rec = mm.transfer(seq, B, new)
+    mm.install_map(seq, new, keep_preconditioners=True)
+    div1 = float(compute_divergence_norm(B1, seq) / seq.odd.l2_norm(B1, 2))
+    flux1 = float(toroidal_flux(seq, B1)) / flux - 1.0
+    B2, _ = mm.transfer(seq, B1, Phi)
+    mm.install_map(seq, Phi)
+    back = float(seq.odd.l2_norm(B2 - B, 2) / seq.odd.l2_norm(B, 2))
+    print(f"\n  {rec['substeps']} substeps ({rec['cells']:.2f} cells), div {div1:.1e}, flux {flux1:+.1e}, there and "
+          f"back {back:.2e}")
+    assert div1 < 1e2 * eps()
+    assert abs(flux1) < 1e2 * eps()
+    assert back < ROUND_TRIP
+
+
 def test_harmonic_moves(mesh):
     """``--geometry.zeta harmonic``: the moves of the fixture's map towards the harmonic toroidal angle
     (:func:`~mrx.relaxation.mesh_motion.harmonic_build`) take ``|grad zeta - h| / |h|`` from :data:`PHI_DRIFT` or
     more on the planes ``phi = const`` below :data:`HARMONIC_DRIFT`, move the wall by less than :data:`HARMONIC_WALL`
-    and keep ``det DPhi > 0`` (``set_geometry`` raises otherwise). A move of the pole by :data:`SHIFT` on the new
-    map, tangent to the surfaces ``zeta = const``, keeps the drift below :data:`HARMONIC_DRIFT`."""
+    and keep ``det DPhi > 0`` (``set_geometry`` raises otherwise). A move of the pole on the new map is tangent to the
+    surfaces ``zeta = const`` to first order (:func:`~mrx.relaxation.mesh_motion.tangent`), so the drift it adds grows
+    as the square of the move: by :data:`DRIFT_ORDER` or more from a move by ``SHIFT / 2`` to one by :data:`SHIFT`."""
     seq, Phi, _ = mesh
     mm.install_map(seq, Phi)
     before = zeta_harmonic_distance(seq)[0]
@@ -99,12 +137,16 @@ def test_harmonic_moves(mesh):
     after = zeta_harmonic_distance(seq)[0]
     _displaced(seq, new)
     moved = zeta_harmonic_distance(seq)[0]
+    _displaced(seq, new, 0.5 * SHIFT)
+    half = zeta_harmonic_distance(seq)[0]
     mm.install_map(seq, Phi)
+    order = (moved - after) / (half - after)
     print(f"\n  |grad zeta - h| / |h| {before:.2e} on the phi planes, " + " -> ".join(f"{d:.2e}" for d in drift)
-          + f" in {len(drift) - 1} moves, {after:.2e} installed, {moved:.2e} after a move of the pole by {SHIFT} m, "
-          f"wall moved by {wall:.1e} m")
+          + f" in {len(drift) - 1} moves, {after:.2e} installed, {moved:.2e} / {half:.2e} after a move of the pole by "
+          f"{SHIFT} / {0.5 * SHIFT} m (growth {order:.2f}), wall moved by {wall:.1e} m")
     assert before > PHI_DRIFT
-    assert after < HARMONIC_DRIFT and moved < HARMONIC_DRIFT
+    assert after < HARMONIC_DRIFT
+    assert order > DRIFT_ORDER
     assert wall < HARMONIC_WALL
 
 

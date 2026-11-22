@@ -39,10 +39,10 @@ _spec = importlib.util.spec_from_file_location(
 relax_script = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(relax_script)
 
-#: The Newton steps of both runs, in chunks with the pole moved (A) and the label, the shells and the slips rebuilt
-#: before each, and A's moves, one before each chunk.
+#: The Newton steps of both runs, in chunks with the label, the shells and the slips rebuilt before each, and A's
+#: chunk boundaries, at each of which the pole moves or the axis is only checked.
 STEPS, CHUNK = 20, 10
-MOVES = STEPS // CHUNK
+BOUNDARIES = STEPS // CHUNK
 #: The distance of the magnetic axis from the pole in first radial cells on the start's final map.
 AXIS_START = 1e-2
 #: The interior of the labels where the transforms are compared.
@@ -196,18 +196,22 @@ def test_both_runs_meet_the_targets(runs):
 
 def test_the_pole_follows_the_axis(runs):
     """Run A starts on the mesh moved onto the vacuum's axis, which ends within :data:`AXIS_START` first radial cells of
-    the pole, so the move before the first chunk is that small too, and moves its pole onto the field's axis before
-    each chunk without a fold."""
-    mesh = runs["A"][1]["mesh"]
+    the pole, so the first chunk boundary makes no move. At every chunk boundary the pole moves exactly when the field
+    is below the bar and its axis more than the move tolerance off the pole, without a fold."""
+    rec = runs["A"][1]
+    mesh, bar, tol = rec["mesh"], rec["params"]["mesh_bar"], rec["params"]["mesh_move_tol"]
     print("\n  start: axis " + " -> ".join(f"{r['axis_cells']:.2e}" for r in mesh["start"]["rounds"])
           + f" first cells, {mesh['start']['axis_cells']:.2e} on the final map")
     assert mesh["start"]["axis_cells"] < AXIS_START
     for m in mesh["moves"]:
         print(f"  step {m['step']}: axis {m['axis_cells']:.2e} cells off the pole, move x{m['lam']:g}, residual "
               f"{m['resid_before']:.2e} -> {m['resid_after']:.2e}")
-        assert m["lam"] == 1.0
-    assert mesh["moves"][0]["axis_cells"] < AXIS_START
-    assert len(mesh["moves"]) == MOVES
+        assert m["lam"] == 1.0 and m["resid_before"] < bar and m["axis_cells"] > tol
+    for c in mesh["checks"]:
+        print(f"  step {c['step']}: axis {c['axis_cells']:.2e} cells off the pole, residual {c['resid']:.2e}, no move")
+        assert not (c["resid"] < bar and c["axis_cells"] > tol)
+    assert mesh["checks"][0]["step"] == 0 and mesh["checks"][0]["axis_cells"] < AXIS_START
+    assert len(mesh["moves"]) + len(mesh["checks"]) == BOUNDARIES
 
 
 def test_the_two_runs_end_at_the_same_state(runs):

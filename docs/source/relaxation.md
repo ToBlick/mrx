@@ -149,7 +149,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol`, `--mesh.every-step` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -371,7 +371,7 @@ cells, 1.5e-3 at most, which the current-prescribed relaxation has too
 (4.4e-3): it is orthogonal to the $M_j$, so no target reaches it.
 On W7-X standard (32,64,36), graded, p = 2, with the polynomial transform and
 pressure of a namelist, from a state at the residual bar with the axis 0.19
-first cells off the pole (`--mesh.align --mesh.bar 1e-8`), the largest weak
+first cells off the pole (`--mesh.align`), the largest weak
 residual is 3.3e-5 after 120 steps, against 8.2e-3 and 3.8e-2 with the fit of
 the transform this loop replaced. The current target is smooth: the first four
 moments are 0.03e-3 T m at most, against an alternation up to 0.46e-3 T m, and
@@ -475,68 +475,64 @@ A move shifts every plane by the in-plane distance $d(\zeta)$ of the axis
 from the pole, projected in L2 onto the splines of $\zeta$, carried to the
 wall by $1 - r^2$: every point moves within its
 surface $\zeta = $ const and the wall stays. The move is halved until no
-cell loses more than half its volume. The field keeps its coefficients: it
-rides with the map, the exact ideal transport of the field by the move, which
-keeps $\nabla \cdot B = 0$, $B \cdot n = 0$ and every flux through every face
-of the mesh, and nothing is projected. Its axis keeps its logical place, so
-right after a move it is off the new pole again, but the equilibrium it was
-moved from has its axis on the pole, and the relaxation steps bring the field
-back there.
+cell loses more than half its volume. The physical field is carried onto the
+moved map by the relaxation's own induction, $\partial_\tau B = \nabla \times
+\Pi_1(u \times h)$ with the mesh's relative velocity as $u$, in SSP-RK3
+substeps that cross at most half a logical cell each
+(`mrx.relaxation.mesh_motion.transfer`). Every increment is a curl, so
+$\nabla \cdot B = 0$, $B \cdot n = 0$ and the toroidal flux hold exactly.
+Keeping the coefficients instead would move the field with the mesh, an
+ideal transport that kicks the equilibrium: on W7-X standard (32,64,36) a
+move of 0.19 first cells raises the squared force residual from 7e-10 to
+5.2e-5 and takes 33 steps back below 1e-8, the transfer 5.9e-8 and 2 steps,
+to the same end state (one H200, 2026-11-21).
 
 From the vacuum field of a namelist the first move is made before the run:
 the pole goes onto the vacuum's axis and the vacuum is solved again on the
 moved mesh, in rounds while the distance falls by half, so the first move,
 the largest, perturbs no field
 (`mrx.relaxation.mesh_motion.vacuum_start`). The moved map is cut again by
-the planes normal to its axis. Then the pole moves onto the field's axis
-before every chunk, before the shells and the slips are rebuilt. The new map
-is data of the sequence, so the compiled relaxation is reused, and the
-preconditioners are kept. They are built again on the installed map when the
-chunk's mean MINRES count of the Newton solve exceeds `--mesh.rebuild-factor`
-(1.5) times that of the first chunk after their last build, or a Newton
-solve stopped at `--newton.maxiter`. RUN_NUMBERS
+the planes normal to its axis.
 
 The pressure shifts the axis away from the vacuum's, on W7-X (32,64,36) by
 four first radial cells, so with the pole on the vacuum's axis the first
 equilibrium has its axis that far off the pole. With `--mesh.axis-from` the
 mesh is built around the axis of a coarser run's equilibrium of the same
-domain and targets instead: the pole goes onto that curve in rounds, the
-mesh is cut by the planes normal to it, and the vacuum is solved there
+domain and targets instead: the pole goes onto that curve in rounds, the mesh
+is cut by the planes normal to it, and the vacuum is solved there
 (`mrx.relaxation.mesh_motion.curve_start`). The vacuum's axis is then off the
 pole, and the pressure carries the field's axis onto it. The curve is the
-Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz,
-which the coarse run writes with `--mesh.axis-to`: it ends once its axis has
-moved by less than `--mesh.axis-tol` (0.01) of its first radial cell over a
-chunk. The coarse pass needs only the axis, not the residual bar.
+Cartesian points of `mrx.relaxation.mesh_motion.axis_curve` in an npz, which
+the coarse run writes with `--mesh.axis-to`: it ends once its axis has moved
+by less than `--mesh.axis-tol` (0.01) of its first radial cell over a chunk.
 
-During the pressure's rise the field's axis is not that of the
-equilibrium it relaxes to, and a move there kicks the field away from it.
-With `--mesh.bar` the pole moves only at a chunk boundary where the squared
-force residual is below the bar, and only while every move finds the axis
-closer to the pole than the move before. The first time it does not, that
-move is not made and the pole stays for the rest of the run: the targets
-keep the axis that far off, and a frozen move would only kick the field. The
-step 0 of a run from the vacuum start makes no move, since the start has put
-the pole on the vacuum's axis. A move transports the field ideally, so the
-transform as a function of the toroidal flux and the equilibrium of the
-targets stay, and only the field is kicked off that equilibrium. The loop of
-`--iota.target` takes its step at a chunk boundary below the bar before the
-move, on the equilibrium, and holds its current target from a move until the
-field is below the bar again: until then its residual and the slips of its
-Newton direction are the kick's. Every checkpoint keeps the offset of the last move, whether
-the moves have stopped and whether the target is held, so a restart goes on
-with them.
+During the pressure's rise the field's axis is not that of the equilibrium it
+relaxes to. So the pole moves only at a chunk boundary where the squared force
+residual is below `--mesh.bar` (1e-8) and the field's axis is more than
+`--mesh.move-tol` (0.1) first radial cells off the pole, before the shells
+and the slips are rebuilt. The vacuum field of a fresh start is below the bar
+but the equilibrium of no target, so step 0 makes no move: the start has put
+the pole where it is wanted. The loop of `--iota.target` takes its step at a
+chunk boundary below the bar before the move, on the equilibrium, and holds
+its current target from a move until the field is below the bar again: until
+then its residual and the slips of its Newton direction are the kick's. Every
+checkpoint keeps whether the target is held, so a restart goes on with it.
+The new map is data of the sequence, so the compiled relaxation is reused,
+and the preconditioners are kept. They are built again on the installed map
+when the chunk's mean MINRES count of the Newton solve exceeds
+`--mesh.rebuild-factor` (1.5) times that of the first chunk after their last
+build, or a Newton solve stopped at `--newton.maxiter`. RUN_NUMBERS
 
 The `mesh` record of `relax.json` holds the rounds of the start, every move
-(the step, the axis offset in first radial cells, the axis finder's record,
-the largest move and its backtracking factor, the range of the change of
-$\det D\Phi$, the change of the energy, and the force residual right before
-and right after the move), the checks without a move and why, the step at
-which the moves stopped, the chunks' mean MINRES counts against the
-reference and the builds of the preconditioners with their reason and wall
-time. Every checkpoint of such a run holds its map, which a restart and
-`scripts/poincare_trace.py` install. `best.h5` is the best field since the
-last move.
+(the step, the axis offset in first radial cells, the axis finder's record, the largest move and its backtracking factor, the range
+of the change of $\det D\Phi$, the transfer's substeps, the relative change of
+the coefficients and of the energy, the force residual right before and right
+after the move and the wall time), the checks without a move and why, the
+chunks' mean MINRES counts against the reference and the builds of the
+preconditioners with their reason and wall time. Every checkpoint of such a
+run holds its map, which a restart and `scripts/poincare_trace.py` install,
+and `moved_<step>.h5` holds the field right after a move. `best.h5` is the
+best field since the last move.
 
 ## Stopping
 

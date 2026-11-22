@@ -3,7 +3,8 @@
 
 - :func:`compute_force` returns the Lorentz force ``J x h`` with its pressure-gradient part removed, together
   with the pressure and the current. This is the force the relaxation drives to zero.
-- :func:`induction_field` gives ``h``, the field the induction and the force use.
+- :func:`induction_field` gives ``h``, the field the induction and the force use, and :func:`electric_field` the
+  induction's electric field of a flow.
 - :func:`weak_pressure` and :func:`beta_vol` give a pressure that vanishes on the wall and the volume-averaged beta.
 - :func:`compute_helicity` and :func:`compute_divergence_norm` monitor the two quantities an ideal relaxation
   should conserve.
@@ -47,6 +48,16 @@ def induction_field(B: jnp.ndarray, seq: DeRhamSequence, tol=None) -> jnp.ndarra
     free = odd.free
     h = _mass_solve(free, free.vector_load_values(odd.evaluate_at_quadrature(B, 2), 2, 1), 1, tol=tol)
     return free.evaluate_at_quadrature(h, 1)
+
+
+@eqx.filter_jit
+def electric_field(u_jk: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence, guess=None) -> jnp.ndarray:
+    """The electric field ``E = Pi_1(u x h)`` of the flow ``u`` (the reference components of a 2-form at the
+    quadrature points) in the field ``B``, ``h`` of :func:`induction_field`: the projection onto the Dirichlet
+    1-forms, one mass solve warm-started from ``guess``. ``dB/dt = curl E`` is the induction of the relaxation's steps
+    and of the transfer of a field onto a moved mesh (:func:`mrx.relaxation.mesh_motion.transfer`)."""
+    odd = seq.odd
+    return odd.M[1].solve(odd.cross_product_load_values(u_jk, induction_field(B, seq), 1, 2, 1), guess=guess)
 
 
 @eqx.filter_jit
