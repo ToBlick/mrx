@@ -521,10 +521,12 @@ The new map is data of the sequence, so the compiled relaxation is reused,
 and the preconditioners are kept. They are built again on the installed map
 when the chunk's mean MINRES count of the Newton solve exceeds
 `--mesh.rebuild-factor` (1.5) times that of the first chunk after their last
-build, or a Newton solve stopped at `--newton.maxiter`. RUN_NUMBERS
+build, or a Newton solve stopped at `--newton.maxiter` while the field is
+above the bar. RUN_NUMBERS
 
 The `mesh` record of `relax.json` holds the rounds of the start, every move
-(the step, the axis offset in first radial cells, the axis finder's record, the largest move and its backtracking factor, the range
+(the step, the axis offset in first radial cells, the
+axis finder's record, the largest move and its backtracking factor, the range
 of the change of $\det D\Phi$, the transfer's substeps, the relative change of
 the coefficients and of the energy, the force residual right before and right
 after the move and the wall time), the checks without a move and why, the

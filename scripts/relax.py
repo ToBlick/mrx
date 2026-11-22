@@ -43,7 +43,7 @@ the shells and the slips are rebuilt and does not change the targets. With ``--i
 at such an equilibrium before the move and holds its current target from a move until the field is below the bar
 again. The checkpoints keep that hold. The moves keep the preconditioners, which are built again on the installed map
 when the chunk's mean MINRES count of the Newton solve exceeds ``--mesh.rebuild-factor`` times that of the first chunk
-after their last build, or a Newton solve stopped at its iteration cap.
+after their last build, or a Newton solve stopped at its iteration cap while the field is above the bar.
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 
@@ -344,13 +344,14 @@ def main(cfg, fit=None):
 
         def precondition(it):
             """Build the preconditioners on the installed map if the last chunk's mean MINRES count exceeds
-            --mesh.rebuild-factor times that of the first chunk after their last build, or a solve hit its cap."""
+            --mesh.rebuild-factor times that of the first chunk after their last build, or a solve hit its cap while
+            the field is above the bar: near the floor a solve at its cap is no sign of an old map."""
             nonlocal ts
             if built["last"] is None:
                 return
             if built["ref"] is None:
                 built["ref"] = built["last"]
-            reason = ("a Newton solve at its cap" if built["cap"] else
+            reason = ("a Newton solve at its cap" if built["cap"] and not schedule["resid"] < mm.bar else
                       f"MINRES {built['last']:.0f} > {mm.rebuild_factor:g} x {built['ref']:.0f}"
                       if built["last"] > mm.rebuild_factor * built["ref"] else None)
             results["mesh"]["chunks"].append(dict(step=it, minres=built["last"], ref=built["ref"], cap=built["cap"]))
