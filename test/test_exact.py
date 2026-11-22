@@ -27,14 +27,17 @@ from test.conftest import field_error
 #: The cells of the profile space of the targets on the shared sequence's 10 radial cells.
 CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
-#: exact pressure, and the largest local mean of the transform's miss over the largest transform: PENDING.
-BANDS = dict(B=1e-2, J=5e-2, p=1e-1, iota=1e-2)
-#: The end of the run with the exact targets: the pressure and the transform's weak residual: PENDING.
-TARGET_BANDS = dict(p=1e-1, iota=1e-2)
+#: exact pressure, and the largest local mean of the transform's miss over the largest transform: 2.3e-3, 1.95e-2,
+#: 9.7e-3 and 2.4e-4 measured (tokamak (12,16,6), float64, 2026-11-22).
+BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=3.5e-4)
+#: The end of the run with the exact targets: the pressure and the transform's weak residual, 9.2e-3 and 1.1e-4
+#: measured after 20 steps (tokamak (12,16,6), float64, 2026-11-22).
+TARGET_BANDS = dict(p=1.3e-2, iota=1.6e-4)
 #: The size of the smooth perturbation of the Newton run, relative to the field.
 PERTURBATION = 1e-3
-#: Newton steps of the runs.
-STEPS = 10
+#: Newton steps of the runs: the perturbed field is below the bar after 3 (9.3e-9), the exact targets after 3 with one
+#: more rebuild of the loop.
+STEPS = 5
 #: The squared force residual an equilibrium is below (the production bar of the mesh moves).
 BAR = 1e-8
 
@@ -114,7 +117,7 @@ def _descends(res, floor):
 def test_newton_returns_to_the_discrete_equilibrium(eq, seq, b0):
     """Newton steps from ``b0`` plus a smooth curl of :data:`PERTURBATION` of its norm descend, take the squared
     force residual below :data:`BAR` and end as close to the exact field as the projection: within 1.1 times the
-    error of ``b0``. PENDING."""
+    error of ``b0``. Measured (tokamak (12,16,6), float64, 2026-11-22): the residual 1.1e-5 -> 6.9e-10 after 5 steps, the error 2.3e-3 -> 1.9e-3."""
     _float64_only()
     odd = seq.odd
 
@@ -137,7 +140,7 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     as the target of the iota loop (:func:`mrx.relaxation.twist.iota_newton` before each chunk, from the current
     ``b0`` carries), both on the field's label rebuilt before each chunk: they descend, end below :data:`BAR`, at the
     pressure and the transform within :data:`TARGET_BANDS` and as close to the exact field as the projection, within
-    1.1 times the error of ``b0``. PENDING."""
+    1.1 times the error of ``b0``: residual 7e-13 after 20 steps, error 2.3e-3 -> 1.9e-3 (tokamak (12,16,6), float64, 2026-11-22)."""
     _float64_only()
     ts = TimeStepper(seq=seq, newton=True)
     p_star = _p_star(eq)

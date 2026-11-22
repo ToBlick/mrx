@@ -5,7 +5,7 @@ finder finds it on the pole and on the exact axis, and a move hardly moves that 
 (:func:`~mrx.relaxation.mesh_motion.transfer`) onto the map with its pole displaced by :data:`SHIFT` and back keeps
 ``div B`` and the toroidal flux at round-off and returns to the time error of its substeps. On the displaced map the
 carried field's axis is off the pole, and one move (:func:`~mrx.relaxation.mesh_motion.axis_move`) puts the pole back
-on it. On the tiny shearedE sequence the cut by the planes normal to its non-planar axis keeps the file's surfaces and
+on it. On the shearedE sequence the cut by the planes normal to its non-planar axis keeps the file's surfaces and
 field. Every map is installed on the
 fixture with its preconditioners (:func:`test.conftest.map_installed`).
 """
@@ -22,10 +22,10 @@ from test.conftest import LENGTH, map_installed
 
 #: The displacement of the pole of the test map along X1, a fraction of the minor radius, about one first radial cell.
 SHIFT = 0.12
-#: The field after a transfer there and back against the start: 3.2e-7 measured in float64 (4 substeps, 2026-11-22),
-#: the time error of SSP-RK3. float32 PENDING.
-ROUND_TRIP = 1e-6
-#: The axis-normal cut of the tiny shearedE map, PENDING on the tiny mesh: the largest tilt of the sections against the axis before (at least) and
+#: The field after a transfer there and back against the start: 1.02e-6 measured (tokamak (12,16,6), float64, 2026-11-22), 7 substeps, the time
+#: error of SSP-RK3.
+ROUND_TRIP = 2e-6
+#: The axis-normal cut of the shearedE map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
 #: the first radial cell is 0.07) and the relative rms over random points of the file's field on the cut map against
 #: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 20.7, 4.9e-2,
@@ -33,9 +33,9 @@ ROUND_TRIP = 1e-6
 CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 10.0, 8e-2, 1e-2, 9e-3, 1.5e-2
 #: The distance of the file's axis from its pole in first radial cells.
 AXIS_ON_POLE = 2e-2
-#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 3.0e-2
-#: measured in float64, from 0.95 before (2026-11-22). The move is one linear step.
-AXIS_AFTER_MOVE = 5e-2
+#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 2.1e-3
+#: measured (tokamak (12,16,6), float64, 2026-11-22), from 1.14 before. The move is one linear step.
+AXIS_AFTER_MOVE = 4e-3
 
 
 def _locate(Phi, X, x, steps=10):

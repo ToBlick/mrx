@@ -2,7 +2,7 @@
 
 The boundary is that of shearedE in its namelist, with no axis, so the reader fills it about the axis
 :func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly, and the guessed axis
-is a maximum of its objective and leaves the fill unfolded. The fill's spline map on the tiny shearedE spaces, cut by the
+is a maximum of its objective and leaves the fill unfolded. The fill's spline map on the shearedE spaces, cut by the
 planes normal to its axis as every map of a sequence is, meets the boundary to the projection error with a positive
 Jacobian.
 """
@@ -78,10 +78,10 @@ def test_guessed_axis_is_the_best_unfolded_fill(sheared):
 
 def test_the_fill_map_meets_the_boundary(sheared):
     """The namelist's exact fill (:func:`mrx.equilibria.state_position`) cut by the planes normal to its axis on the
-    tiny shearedE spaces (:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the map of every sequence) has a positive
+    shearedE spaces (:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the map of every sequence) has a positive
     Jacobian at every quadrature point, and at ``r = 1`` lies on the namelist's boundary at its own ``phi`` within
     :data:`~test.conftest.LENGTH` of the minor radius. A point of the wall keeps its ``theta`` and slides along the
-    boundary. 0.63 % measured on (12,16,12), PENDING on the tiny mesh."""
+    boundary. 0.63 % measured on (12,16,12)."""
     boundary, nfp = _rows(sheared)
     seq = sheared[3]
     eq = read_equilibrium(sheared[2])

@@ -11,7 +11,7 @@
 - interpolation commutes with the derivative, ``G_k Pi_k f = Pi_{k+1} df``, for fields with the regularity of a smooth
   form at the axis, axis rows included.
 
-The spaces are the graded polar ones of production, on a tiny sequence of the shearedE wout of its own.
+The spaces are the graded polar ones of production, on the shearedE sequence of the suite.
 
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
@@ -27,7 +27,7 @@ from mrx.precision import eps
 
 @pytest.fixture(scope="module")
 def seq(sheared):
-    """The tiny sequence of the shearedE wout (:func:`test.conftest.sheared`)."""
+    """The shearedE sequence (:func:`test.conftest.sheared`)."""
     return sheared[3]
 
 

@@ -5,7 +5,7 @@ A half-period sequence integrates over ``zeta`` in ``[0, 1/2]`` with doubled wei
 parity views ``seq.odd`` (``B``, ``A``, ``J``, ``E``, ``H``) and ``seq.even`` (``u``, ``F``, ``p``). That is exact only for
 integrands even under the reflection ``(theta, zeta) -> (-theta, -zeta)``. An odd integrand, or a field on the wrong
 view, gives a wrong number silently. So every functional the relaxation, its controls and its diagnostics evaluate is
-computed for the projected exact field of shearedE on the tiny mesh twice, with stellarator symmetry (the shared tiny
+computed for the projected exact field of shearedE twice, with stellarator symmetry (the shared shearedE
 sequence) and over the whole field period without it, and the two must agree to the tolerance of the solves inside
 them. An odd integrand is the negative control: it integrates to zero over the period and not over the half.
 """
@@ -23,20 +23,20 @@ from mrx.relaxation.physics import compute_force, compute_helicity, weak_pressur
 from mrx.relaxation.seeding import parallel_seed
 from mrx.relaxation.shells import build_shells, label
 from mrx.relaxation.twist import build_slips, current_on_label, iota_residual, slip_transform
-from test.conftest import TINY, energy_derivatives
+from test.conftest import SHEARED_NS, energy_derivatives
 
-#: The cells of the profile space on the tiny mesh.
-CELLS = 3
+#: The cells of the profile space.
+CELLS = 6
 #: The tolerance of the label solve here.
 LABEL_TOL = 1e-12
 
 
 @pytest.fixture(scope="module")
 def both(sheared):
-    """``(half, full)``: the tiny shearedE sequence with stellarator symmetry and over the whole period."""
+    """``(half, full)``: the shearedE sequence with stellarator symmetry and over the whole period."""
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
-    full = build_sequence(sheared[1], TINY, 2, symmetry="field-period", graded=True)
+    full = build_sequence(sheared[1], SHEARED_NS, 2, symmetry="field-period", graded=True)
     compute_nullspaces(full, verbose=False)
     return sheared[3], full
 

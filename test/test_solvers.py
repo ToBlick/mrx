@@ -17,7 +17,7 @@ the harmonic forms, and the full solve recovers their sum. The right-hand side o
 lifted solution, ``A @ lift(x)``, so in float32 it is formed in double-single and lies in the range of its operator
 to that accuracy. The shifted stiffness solve of
 ``(M_k + eps L_k) x`` differs from ``x`` by a closed form, so it is compared after ``G_k``. The cases run on the production
-spaces: the Dirichlet odd view of li383 (``B``, ``A``, ``J``), with its harmonic 2-form, and the even view for
+spaces: the Dirichlet odd view of the shared sequence (``B``, ``A``, ``J``), with its harmonic 2-form, and the even view for
 the Leray projection (``u``, ``F``). The free spaces are solved by ``test_poisson.py``.
 
 Krylov stopping: a dense symmetric system of size 60 (indefinite for MINRES) with an SPD preconditioner and an
@@ -37,10 +37,10 @@ from mrx.precision import lift
 from mrx.relaxation.loop import SMOOTHING_C, radial_cell_sq
 from mrx.solvers import minres, preconditioned_cg
 
-#: The relative error of a round trip, in units of seq.tol. Measured on the graded li383 2026-10-19: at most 9.8
-#: (L[1] coexact), except the exact parts, 55 to 617 (L[3] exact), whose two solves of degree k - 1 amplify the
-#: solve error.
-ROUND_TRIP = 1e3
+#: The relative error of a round trip, in units of seq.tol: at most 125 (L[2] coexact on shearedE), and for the exact
+#: parts, whose two solves of degree k - 1 amplify the solve error by the conditioning of the cells, 57, 275 and 3090
+#: (L[1], L[2], L[3] exact) measured (tokamak (12,16,6), float64, 2026-11-22) (4.6e4 for L[3] on shearedE (12,16,12), 55 to 617 on li383).
+ROUND_TRIP, EXACT_ROUND_TRIP = 1e3, 5e3
 # the Krylov stopping tests are statements about the recurrences at float64 round-off
 FLOAT64 = pytest.mark.skipif(mrx.DTYPE != jnp.float64, reason="needs MRX_DTYPE=float64")
 N = 60
@@ -109,7 +109,8 @@ def test_every_solve_inverts_its_operator(seq):
     for name, space, k, want, got, info in cases:
         err = float(space.l2_norm(got - want, k) / space.l2_norm(want, k)) / seq.tol
         print(f"  {name:<32}{'' if info is None else int(info):>6}  {err:.2e}")
-        if (info is not None and int(info) <= 0) or not err <= ROUND_TRIP:
+        bound = EXACT_ROUND_TRIP if name.endswith(" exact") else ROUND_TRIP
+        if (info is not None and int(info) <= 0) or not err <= bound:
             failed.append(f"{name}: info {info}, error {err:.2e} tol")
     assert not failed, "; ".join(failed)
 

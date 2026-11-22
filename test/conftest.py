@@ -7,8 +7,8 @@ Every statement about the approximation, the variations, the flows, the controls
 the exact solution on that sequence.
 
 Statements that need a three-dimensional, non-axisymmetric domain (the de Rham complex, the cut by the planes normal
-to a non-planar axis, the nested axis of a non-planar axis, the fill of a 3D boundary) use the tiny sequence of the
-exact stellarator shearedE (:mod:`test.landreman`), without a relaxation.
+to a non-planar axis, the nested axis of a non-planar axis, the fill of a 3D boundary) use the sequence of the
+exact stellarator shearedE (:mod:`test.landreman`) at :data:`SHEARED_NS`, without a relaxation.
 
 No test builds a sequence or preconditioners of its own. A statement on another map installs that map on the fixture
 with the fixture's preconditioners (:func:`map_installed`), and the fixture is put back by reference afterwards.
@@ -37,11 +37,11 @@ if _CACHE:
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
 
-#: The mesh of the shared tokamak sequence and the spline degree: six cells in zeta, the fewest the slab mass model
-#: takes, for the three-dimensional code paths.
-NS, P = (12, 16, 6), 2
-#: The tiny mesh per field period of the shearedE sequence.
-TINY = (6, 8, 6)
+#: The mesh of the shared tokamak sequence and the spline degree: eight cells in zeta, for the three-dimensional code
+#: paths and the seed of toroidal mode 3.
+NS, P = (12, 16, 8), 2
+#: The mesh per field period of the shearedE sequence, the coarsest that resolves its cut and its fill.
+SHEARED_NS = (12, 16, 12)
 #: The default bound of a length error, as a fraction of the minor radius of the device under test (Tobias
 #: 2026-11-21). A test with a tighter measured bound states it.
 LENGTH = 1e-2
@@ -99,12 +99,12 @@ def b0(seq):
 @pytest.fixture(scope="session")
 def sheared(tmp_path_factory):
     """``(eq, wout, namelist, seq)``: the exact stellarator shearedE (:class:`test.landreman.Sheared`), its wout and
-    namelist and its tiny sequence at :data:`TINY`, for the statements that need a non-axisymmetric domain."""
+    namelist and its sequence at :data:`SHEARED_NS`, for the statements that need a non-axisymmetric domain."""
     from test.landreman import Sheared
     e = Sheared()
     d = tmp_path_factory.mktemp("sheared")
     wout, namelist = e.write_wout(str(d / "wout_shearedE.nc")), e.write_namelist(str(d / "input.shearedE"))
-    return e, wout, namelist, _build(wout, TINY, "shearedE")
+    return e, wout, namelist, _build(wout, SHEARED_NS, "shearedE")
 
 
 def field_error(eq, seq, B):

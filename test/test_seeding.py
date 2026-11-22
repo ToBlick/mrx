@@ -1,6 +1,6 @@
 """Island seeds (:mod:`mrx.relaxation.seeding`) on the exact Solov'ev tokamak.
 
-The transform falls from 0.8 to 0.65, so the surface ``iota = 2/3`` carries the resonance ``(m, n) = (3, 2)``. The
+The transform falls from 0.8 to 0.65, so the surface ``iota = 3/4`` carries the resonance ``(m, n) = (4, 3)``. The
 energy seed there is the combination of its radial profiles that lowers the energy the most: the seeded field is
 ``M``-orthogonal to the seed, ``(B + dB, dB)_M = 0``, and the energy falls by ``||dB||^2_M / 2``, both to round-off.
 The seed opens a chain: field lines started inside it have the transform of the rational surface.
@@ -12,7 +12,7 @@ from mrx.precision import eps
 from mrx.relaxation.seeding import energy_seed
 
 #: The resonance of the seed.
-IOTA = 2.0 / 3.0
+IOTA = 3.0 / 4.0
 
 
 def test_the_seed_is_the_energy_optimum_and_opens_a_chain(seq, b0):
@@ -33,6 +33,6 @@ def test_the_seed_is_the_energy_optimum_and_opens_a_chain(seq, b0):
     print(f"\n  seed ({row['m']},{row['n']}) at x {row['x']:.3f}, width {row['w']:.4f}, |dB|/|B| "
           f"{float(odd.l2_norm(dB, 2) / odd.l2_norm(b0, 2)):.2e}, orthogonality {orth:.1e}, dE {dE:.6e} vs "
           f"{model:.6e}\n  lines r {np.round(r, 3)}\n  iota {np.round(iota, 5)}")
-    assert (row["m"], row["n"]) == (3, 2)
+    assert (row["m"], row["n"]) == (4, 3)
     assert orth < 1e3 * eps()
     assert abs(dE - model) < 1e3 * eps() * scale

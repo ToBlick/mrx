@@ -1,6 +1,6 @@
 """The vacuum field of :func:`mrx.optimization.shape_ad.vacuum_two_form` and its shape derivative.
 
-On the tiny shearedE sequence of the suite the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic:
+On the shearedE sequence of the suite the field, which comes from the co-closed solve on ``S_1`` alone, is harmonic:
 closed to round-off (the topological curl) and co-closed to the tolerance of the solve. The derivative of the mean
 rotational transform with respect to every map coefficient matches Richardson-extrapolated central differences. The
 parametrisation holds the volume and the aspect ratio exactly. On a frame map with a frame that changes along zeta,
