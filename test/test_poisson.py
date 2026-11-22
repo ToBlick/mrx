@@ -154,15 +154,15 @@ def test_manufactured_solution(seq, k):
 
 def test_kept_preconditioners_precondition_a_nearby_map(seq):
     """The preconditioners of a map precondition the operators of a nearby one, the path mesh motion takes mid-run
-    and the suite takes for every other map (:func:`test.conftest.map_installed`): on shearedE stretched by 10 % in
+    and the suite takes for every other map (:func:`test.conftest.map_installed`): on the shared sequence stretched by 10 % in
     ``Z`` with the preconditioners kept, the mass solve converges to the tolerance, measured with the new
     mass matrix."""
-    s = seq
-    Phi = s.map
+    Phi = seq.map
+    s = seq.odd
     stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)
-    with map_installed(s, lambda x: stretch * Phi(x)):
+    with map_installed(seq, lambda x: stretch * Phi(x)):
         assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
         x, info = s.M[1].solve(b, return_info=True, accurate=True)
         r = to_working(lift(b) - s.M[1] @ x)
