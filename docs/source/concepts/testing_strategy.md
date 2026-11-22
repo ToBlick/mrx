@@ -27,7 +27,7 @@ file of its own, and no test runs `scripts/relax.py`.
 | `test_exact.py` | on the Solov'ev tokamak: the projected field, current and pressure against the exact ones, the observation error of the transform, Newton steps from a perturbed state back to the discrete equilibrium, and the exact pressure and transform as targets are a fixed point next to the exact state |
 | `test_flux_label.py` | the label is the exact normalised toroidal flux to the discretisation, and the label at the shells' tolerance is the converged one |
 | `test_poincare.py` | the tracer follows closed-form lines exactly, gives the exact transform, and its sections `phi = const` are those of the map's sections |
-| `test_seeding.py` | the energy seed at `iota = 3/4` is the energy optimum in its span and opens its chain |
+| `test_seeding.py` | the energy seed at `iota = 3/4` runs: it finds the (4, 3) chain and keeps `div B` at round-off |
 | `test_pressure_fit.py` | the posterior of `scripts/pressure_fit.py` is calibrated |
 | `test_newton.py` | the second variation reproduces the energy along the ideal flow with `E'(0) = -(u, J x H)`, the spline atom is SPD, gradient-descent steps descend and keep `div B` and the helicity, and the resistive step satisfies its energy identity |
 | `test_shells.py` | a shell velocity is a gradient with its divergence, its row is the derivative of the energy less the target pressure's work |
