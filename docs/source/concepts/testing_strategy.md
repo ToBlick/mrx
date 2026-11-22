@@ -50,7 +50,7 @@ The suite's time goes into the solves, not into compiling. Compiled programs
 are cached on disk all the same (`MRX_XLA_CACHE`, default
 `$MRX_DATA/cache/xla`, or `outputs/xla_cache` in the checkout without
 `MRX_DATA`). On 8 cluster CPU cores from a cold cache the suite takes
-COST64 in float64 and COST32 in float32.
+17 minutes in float64 and 24 in float32 (2026-11-22).
 
 ## What a test asserts
 
