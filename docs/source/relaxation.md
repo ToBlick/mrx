@@ -525,7 +525,19 @@ and the preconditioners are kept. They are built again on the installed map
 when the chunk's mean MINRES count of the Newton solve exceeds
 `--mesh.rebuild-factor` (1.5) times that of the first chunk after their last
 build, or a Newton solve stopped at `--newton.maxiter` while the field is
-above the bar. RUN_NUMBERS
+above the bar.
+
+On W7-X standard (32,64,36), graded, p = 2, with the polynomial transform and
+pressure of a namelist, from the namelist alone with `--mesh.nested`, the
+nested solve takes 134 s and the start 161 s. The pole stays at step 0, the
+field first reaches the bar at step 70 with its axis 0.107 first cells off
+the pole, and the pole moves there and at step 90 (0.118 cells). Each
+transfer changes the physical field at fixed points by 5e-4 and the residual
+from 7e-9 to 4e-8, back below 1e-8 two steps later. The field stays below the
+bar from step 92, the axis ends 0.004 first cells off the pole, and the
+preconditioners are never built again. The traced transform within 63 mm of
+the axis is within 0.009 of the target, the largest weak residual 1.0e-5
+(one H200, 2026-11-21).
 
 The `mesh` record of `relax.json` holds the nested solve's record, the rounds
 of the start, every move (the step, the axis offset in first radial cells, the
