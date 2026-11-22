@@ -20,6 +20,16 @@ a seeded (6,1) chain 0.2 wide in ``r`` keeps 13 % of the drop of ``T`` across it
 and 1 % at ``1e-8``. The uniform source does not give such an island a maximum of its own at any ``kperp`` tried
 (down to 1e-12). Below ``kperp`` of about 1e-9 the discrete equation has spurious local maxima.
 
+Solved once, the temperature is a flux function only to first order in ``kperp``. Expanded as
+``T = T0 / kperp + T1 + ...``, ``T0`` is a flux function and ``T1`` solves ``div(b b.grad T1) = -(1 + div grad T0)``.
+The part of ``div grad T0`` that varies over a flux surface drives a parallel gradient of ``T1`` of order one, so
+``|B.grad T|`` is ``kperp`` times ``|B| |grad T|`` up to a factor of the geometry. At a magnetic axis that is not
+straight and round this factor grows like ``1 / r``: next to the axis ``T0`` is a quadratic form in the distance, its
+Laplacian (twice the trace of the form) varies along the axis, ``T1`` there is a function of the position along the
+axis, and ``grad T0`` vanishes. :func:`flux_label` therefore solves twice with the same operator. The second source is
+the perpendicular flux divergence of the first temperature, ``-div(kperp grad T1)``. To leading order it has the
+same flux function, and the term of first order cancels, so its defect is of second order in ``kperp``.
+
 The field enters only through its values at the quadrature points. On a stellarator-symmetric sequence ``T`` is
 even and lives on ``seq.even``. All functions trace, so they can run inside a compiled relaxation step.
 """
@@ -133,19 +143,30 @@ def flux_label_preconditioner(seq, B_jk, anisotropy=ANISOTROPY, radial_wavenumbe
 
 
 def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=MAXITER):
-    """Return ``(T, info)``, the temperature of :func:`flux_label_operator` with the source 1 per volume.
+    """Return ``(T, info)``, the temperature of :func:`flux_label_operator` with the source 1 per volume, corrected
+    to second order in ``kperp``.
 
-    ``T`` is a 0-form on ``seq.even``. It scales like ``1 / kperp``. The solve is preconditioned conjugate
-    gradients with :func:`flux_label_preconditioner`, warm-started from ``guess``. ``tol`` is relative, in the
-    preconditioner's norm, and defaults to the solve tolerance of the sequence (``seq.tol``).
-    ``info`` is the signed iteration count (positive when converged).
+    With ``A = A_par + kperp A_perp`` the operator and ``b`` the load of the source 1, the first solve is
+    ``A T1 = b`` and the second ``A T = kperp A_perp T1``, written ``b - A_par T1``. The second source is the
+    perpendicular flux divergence of ``T1``. ``T`` has the level sets of ``T1`` without their part of first order in
+    ``kperp`` (module docstring).
+
+    ``T`` is a 0-form on ``seq.even``. It scales like ``1 / kperp``. Both solves are preconditioned conjugate
+    gradients with :func:`flux_label_preconditioner`, the first warm-started from ``guess`` and the second from
+    ``T1``. ``tol`` is relative, in the preconditioner's norm, and defaults to the solve tolerance of the sequence
+    (``seq.tol``). ``info`` is the signed sum of the two iteration counts (positive when both converged).
     """
     even = seq.even
     A = flux_label_operator(seq, B_jk, anisotropy)
+    A_par = flux_label_operator(seq, B_jk, 0.0)
     P = flux_label_preconditioner(seq, B_jk, anisotropy)
     b = even._scalar_load_values(jnp.ones(seq.quad.w.shape), 0)
     tol = even.tol if tol is None else tol
-    T, info = preconditioned_cg(A, b, M=P, tol=tol, maxiter=maxiter, x0=guess)
+    T1, info1 = preconditioned_cg(A, b, M=P, tol=tol, maxiter=maxiter, x0=guess)
+    # the perpendicular flux divergence of T1, kperp A_perp T1 = A T1 - A_par T1 = b - A_par T1 to the tolerance,
+    # in the accurate precision: T1 ~ 1 / kperp and A_par T1 is the small difference of large terms
+    T, info2 = preconditioned_cg(A, b - A_par(T1), M=P, tol=tol, maxiter=maxiter, x0=T1)
+    info = jnp.where((info1 > 0) & (info2 > 0), info1 + info2, -jnp.abs(info1) - jnp.abs(info2))
     return to_working(T), info
 
 
