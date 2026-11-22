@@ -81,19 +81,15 @@ AXIS_NEWTON_STEPS, AXIS_NEWTON_TOL = 20, 1e-10
 #: The distance |grad zeta - h| / |h| (:func:`mrx.nullspace.zeta_harmonic_distance`) below which the moves of
 #: :func:`harmonic_build` stop. From the planes phi = const of the boundary meshes it fell 0.29 -> 1.6e-2 -> 1.6e-5 ->
 #: 2.5e-7 (li383 (48,64,24)), 0.35 -> 3.1e-2 -> 9.5e-5 -> 2.3e-7 (W7-X (24,48,28)), 0.65 -> 9.3e-2 -> 2.4e-3 -> 5.3e-6
-#: (HSX (32,64,36)), three moves each, and the moves of the flux alignment let it drift to 7e-4 (2026-11-19).
+#: (HSX (32,64,36)), three moves each (2026-11-19).
 HARMONIC_TOL = 1e-5
-#: The Newton steps of :func:`locate`.
+#: The Newton steps of :func:`curve_offset`.
 NEWTON_STEPS = 10
 
 
 def _chart(p, z):
     """The logical point of the chart point ``p = (r cos 2 pi theta, r sin 2 pi theta)`` on the surface ``zeta = z``."""
     return jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2.0 * jnp.pi) % 1.0, z])
-
-
-def _unchart(x):
-    return jnp.stack([x[0] * jnp.cos(2.0 * jnp.pi * x[1]), x[0] * jnp.sin(2.0 * jnp.pi * x[1])])
 
 
 def extended(Phi, x):
@@ -103,21 +99,6 @@ def extended(Phi, x):
     c, s = jnp.cos(2.0 * jnp.pi * k / Phi.nfp), jnp.sin(2.0 * jnp.pi * k / Phi.nfp)
     P = Phi(x.at[2].add(-k))
     return jnp.array([c * P[0] - s * P[1], s * P[0] + c * P[1], P[2]])
-
-
-@eqx.filter_jit
-def locate(Phi, X, x):
-    """``(x', miss)``: the logical points ``x'`` with ``Phi(x') = X`` (Cartesian, ``(n, 3)``) and ``|Phi(x') - X|``.
-    Newton from the logical points ``x`` in the chart ``(r cos 2 pi theta, r sin 2 pi theta, zeta)``, which is
-    smooth at the axis. ``zeta`` of ``x'`` may leave ``[0, 1)`` by the move of a point out of its section."""
-    def one(xq, Xq):
-        F = lambda p: extended(Phi, _chart(p[:2], p[2])) - Xq   # noqa: E731
-        p = jnp.concatenate([_unchart(xq), xq[2:]])
-        for _ in range(NEWTON_STEPS):
-            p = p - jnp.linalg.solve(jax.jacfwd(F)(p), F(p))
-        return _chart(p[:2], p[2]), jnp.linalg.norm(F(p))
-    return jax.vmap(one)(x, X)
-
 
 
 def _planes(seq):

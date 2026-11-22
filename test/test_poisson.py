@@ -30,6 +30,7 @@ import numpy as np
 import pytest
 
 from mrx.precision import inner, lift, to_working
+from test.conftest import map_installed
 
 #: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
 #: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20 in float64: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
@@ -164,38 +165,24 @@ def test_manufactured_solution(domains, k):
     assert spread < SAME
 
 
-def test_a_new_geometry_can_keep_the_preconditioners(domains):
-    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the preconditioners of the old map, which
-    still precondition the operators of the new one: the mass solve on li383 stretched by 10 % in ``Z`` converges
-    to the tolerance, measured with the new mass matrix. The harmonic forms are set to zero. Without
-    ``keep_preconditioners`` the bundle is dropped and a solve raises. A new map of the same resolution reuses the
-    compiled programs. The geometry, preconditioners and harmonic forms of ``period`` are restored at the end."""
-    from mrx.nullspace import compute_nullspaces
-
+def test_kept_preconditioners_precondition_a_nearby_map(domains):
+    """The preconditioners of a map precondition the operators of a nearby one, the path mesh motion takes mid-run
+    and the suite takes for every other map (:func:`test.conftest.map_installed`): on li383 stretched by 10 % in
+    ``Z`` with the preconditioners of li383 kept, the mass solve converges to the tolerance, measured with the new
+    mass matrix."""
     s = domains("period")
-    geometry = s.geometry
     Phi = s.map
     stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)
-    try:
-        s.set_geometry_from_map(lambda x: stretch * Phi(x), keep_preconditioners=True)
+    with map_installed(s, lambda x: stretch * Phi(x)):
         assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(to_working(v))) for v in s.operators.nullspaces.values())
         x, info = s.M[1].solve(b, return_info=True, accurate=True)
         r = to_working(lift(b) - s.M[1] @ x)
 
         def norm(v):
             return float(jnp.sqrt(v @ s.M[1].precondition(v)))
         assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
-        s.set_geometry_from_map(lambda x: stretch * Phi(x))
-        assert s.operators is None
-        with pytest.raises(ValueError):
-            s.M[1].solve(b)
-    finally:
-        s.set_geometry(geometry)
-        s.build_preconditioners()
-        compute_nullspaces(s, verbose=False)
 
 
 def test_slab_mass_model_conditions_the_one_form_mass(seq):

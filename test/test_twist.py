@@ -3,8 +3,11 @@
 As unknowns of the Newton step (:class:`mrx.relaxation.twist.Slips`) the twists of the radial spline steps change the
 field by a divergence-free form without a ``zeta`` component, their map's transpose is its transpose, the energy's
 derivative along each is ``-Z`` times the spline mean of the enclosed current, the same as the weak current's to the
-discretisation, and the slip block is the energy's second derivative, positive definite. The run with a current target
-is in test_relax_run.py.
+discretisation, and the slip block is the energy's second derivative, positive definite.
+
+The target transform's weak residual ``r_j = int (iota - iota*) M_j ds`` (:func:`mrx.relaxation.twist.iota_residual`)
+is affine in the field along the slips, which keep the toroidal flux: one update of the slips by its derivative,
+``d = -R^-1 r``, with the rest of the field frozen, zeroes it to round-off.
 """
 import jax.numpy as jnp
 import numpy as np
@@ -12,9 +15,9 @@ import numpy as np
 from mrx.flux_label import ANISOTROPY
 from mrx.precision import eps
 from mrx.relaxation.physics import compute_divergence_norm
-from mrx.relaxation.shells import PROFILE_CELLS, label
-from mrx.relaxation.twist import (build_slips, current_error, current_on_label, current_target,
-                                  enclosed_current)
+from mrx.relaxation.shells import label
+from mrx.relaxation.twist import (build_slips, current_on_label, current_target, enclosed_current, iota_residual,
+                                  load_iota_target, slip_transform)
 
 #: The cells of the profile space on the fixture. Its 14 radial cells resolve 8 cells of the profile space, not the
 #: default 16 of finer meshes: with 16 the slip block's condition is 1.1e7 and the moments miss the weak current by
@@ -78,11 +81,20 @@ def test_slip_move_and_derivative(seq, b0):
     assert ev.min() > 0.0
 
 
-def test_current_error_of_a_zero_target():
-    """:func:`mrx.relaxation.twist.current_error` is relative to the target, and absolute for a zero target, the
-    closure of no net current on any surface: then it is the root mean square of the moments in T m, weighted by the
-    widths of the splines. A target twice the moments gives 1/2, a zero target and constant moments their value, both
-    to round-off. Pure numpy, milliseconds."""
-    mu = np.full(PROFILE_CELLS + 2, 0.25)
-    assert abs(current_error(mu, 2.0 * mu) - 0.5) < 10 * np.finfo(float).eps
-    assert abs(current_error(mu, np.zeros_like(mu)) - 0.25) < 10 * np.finfo(float).eps
+def test_one_slip_update_zeroes_the_weak_iota_residual(seq, b0):
+    """The weak residual of the target 0.95 times the file's transform on the fixture's field and label, on
+    :data:`CELLS` cells: with ``R`` its derivatives along the slips (:func:`mrx.relaxation.twist.slip_transform`)
+    the field ``B + T d``, ``d = -R^-1 r``, has the residual zero to round-off relative to ``r``. The slips have no
+    ``zeta`` component, so the toroidal flux in the residual's denominator does not change: the identity is exact up
+    to the condition of ``R``. Measured PENDING."""
+    s_q, T, _ = label(seq, b0, ANISOTROPY)
+    file_iota = load_iota_target(seq.equilibrium["path"])
+    slips, mu = build_slips(seq, b0, T, current_on_label(seq, b0, T, CELLS))
+    move = slips.maps(seq)[0]
+    residual = iota_residual(seq, b0, s_q, lambda s: 0.95 * np.asarray(file_iota(s)), mu.size)
+    r0 = np.asarray(residual(b0)[0], dtype=float)
+    R = slip_transform(residual, b0, move, mu.size)
+    d = np.linalg.solve(R, -r0)
+    r1 = np.asarray(residual(b0 + move(jnp.asarray(d, dtype=b0.dtype)))[0], dtype=float)
+    print(f"\n  |r| {np.abs(r0).max():.3e} -> {np.abs(r1).max():.3e} after the update, cond R {np.linalg.cond(R):.2e}")
+    assert np.abs(r1).max() < 1e4 * eps() * np.abs(r0).max()

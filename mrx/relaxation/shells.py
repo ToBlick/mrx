@@ -40,8 +40,7 @@ The target is a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a VME
 :func:`load_target`), evaluated at the labels of the quadrature points. An island chain wider than the label's
 flattening width is one level set of the label, so the target has one value on it. A
 profile that an outer loop sets from the field, such as a fit of pressure data (``scripts/pressure_fit.py``), takes
-its place between chunks (:func:`mrx.relaxation.loop.relax`). :func:`logical_points` locates points in space on the
-map.
+its place between chunks (:func:`mrx.relaxation.loop.relax`).
 """
 
 import equinox as eqx
@@ -176,29 +175,6 @@ def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
     # inverted on the host in float64, as the polar Gram blocks are: the block's condition (2e6 on li383 graded
     # (16,32,12)) is beyond a float32 inverse, which came out indefinite and stopped MINRES on nonpositive curvature
     return Shells(Xi, g_p, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), info
-
-
-def logical_points(seq, X, newton_steps=8):
-    """``(x, miss)``: the logical points of the physical points ``X`` (Cartesian, ``(n, 3)``) and the distance
-    ``|Phi(x) - X|`` left. The nearest point of a coarse logical grid, then Newton in the chart ``(r cos 2 pi theta,
-    r sin 2 pi theta, zeta)``, which is smooth at the axis."""
-    def chart(p):
-        return jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2.0 * jnp.pi) % 1.0, p[2]])
-
-    r, t, z = np.meshgrid(np.linspace(0.02, 1.0, 25), np.linspace(0.0, 1.0, 64, endpoint=False),
-                          np.linspace(0.0, 1.0, 32, endpoint=False), indexing="ij")
-    grid = jnp.asarray(np.stack([r.ravel(), t.ravel(), z.ravel()], axis=1))
-    G = jax.lax.map(seq.map, grid, batch_size=4096)
-    X = jnp.asarray(X)
-    x0 = grid[jnp.argmin(jnp.sum((X[:, None, :] - G[None, :, :]) ** 2, axis=2), axis=1)]
-
-    def invert(x, Xi):
-        p = jnp.stack([x[0] * jnp.cos(2.0 * jnp.pi * x[1]), x[0] * jnp.sin(2.0 * jnp.pi * x[1]), x[2]])
-        for _ in range(newton_steps):
-            p = p - jnp.linalg.solve(jax.jacfwd(lambda q: seq.map(chart(q)))(p), seq.map(chart(p)) - Xi)
-        y = chart(p)
-        return y, jnp.linalg.norm(seq.map(y) - Xi)
-    return jax.vmap(invert)(x0, X)
 
 
 def load_target(seq, spec, scale=1.0):

@@ -1,22 +1,18 @@
 """The Bayesian fit of pressure data of ``scripts/pressure_fit.py``, an outer loop written outside the library.
 
 The posterior of a profile given data (``posterior``) is calibrated with the evidence's prior weight, it follows the
-data where they determine the profile and the prior where none lie, and a user's data file at points in space reaches
-it through the kernel means of the splines on the field's label. The script is loaded from its path, it is no module of the
-package.
+data where they determine the profile and the prior where none lie. The script is loaded from its path, it is no
+module of the package.
 """
 import importlib.util
-import json
 import pathlib
 import sys
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 
-from mrx.flux_label import ANISOTROPY
-from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, label, profile_knots
+from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, profile_knots
 
 _spec = importlib.util.spec_from_file_location(
     "pressure_fit", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "pressure_fit.py")
@@ -33,11 +29,6 @@ MEAN_LS = 1e-10
 PRIOR_PRECISION = 1e-10
 #: The standard deviation beyond the data over its mean on them: 4.2 measured.
 WIDEN = 3.0
-#: The data file's fit against the file's profile and its coverage at two standard deviations: 1.61e-2 and 1.00
-#: measured with kernels across / along the flux surfaces (2026-11-21).
-DATA_ERROR, DATA_COVER = 2e-2, 0.85
-#: The fewest effective quadrature points in a kernel of the data file: 29.8 measured.
-KERNEL_POINTS = 10.0
 
 
 def _posterior_draws(s_i, truth, level, draws, seed=0):
@@ -89,47 +80,3 @@ def test_profile_posterior():
     assert mean_ls < MEAN_LS
     assert prior_precision < PRIOR_PRECISION
     assert widen > WIDEN
-
-
-def test_pressure_data_at_points(seq, b0, tmp_path):
-    """A user's data file of pressure measured in volumes about points in space with error bars
-    (``scripts/pressure_fit.py --pressure.target data.json``): 30 points on two lines through the axis in the plane
-    ``phi = 0``, Gaussian kernels of standard deviations 1 cm across the flux surfaces and 10 cm along them (resolved
-    by the fixture's quadrature: at least 29.8 effective points each), the kernel means of the
-    file's pressure on the file's field's label with 2 % noise. ``DataFit`` observes the splines by the kernels on the
-    label and fits the posterior. Its mean misses the file's profile by 1.61e-2 relative, and the truth lies within two
-    standard deviations at all of the labels. 10 s on an H200 after the fixture (2026-11-21).
-    """
-    p_r = seq.equilibrium["profiles"]["pressure"]                        # Pa, a function of r = sqrt(s)
-    r = np.linspace(0.05, 0.95, 15)
-    x = jnp.asarray(np.concatenate([np.stack([r, np.zeros(15), np.zeros(15)], 1),
-                                    np.stack([r, np.full(15, 0.5), np.zeros(15)], 1)]))
-    X = np.asarray(jax.vmap(seq.map)(x))
-    s_q, T, _ = label(seq, b0, ANISOTROPY)
-
-    def truth(s):
-        return p_r(np.sqrt(s)) - p_r(1.0)
-    K = PROFILE_CELLS + PROFILE_DEGREE
-    s_dense = np.linspace(0.0, 1.0, 2001)
-    c_truth = np.linalg.lstsq(BSpline(profile_knots(K), np.eye(K), PROFILE_DEGREE)(s_dense), truth(s_dense),
-                              rcond=None)[0]
-    width = np.array([0.01, 0.1])
-    A, rec = pf.kernel_rows(seq, s_q, pf.surface_normals(seq, T), jax.vmap(seq.map)(seq.quad.x), X,
-                            np.broadcast_to(width, (X.shape[0], 2)))
-    sigma = 0.02 * truth(0.0)
-    p = A @ c_truth + sigma * np.random.default_rng(0).standard_normal(X.shape[0])
-    path = tmp_path / "data.json"
-    path.write_text(json.dumps(dict(points=np.stack([np.hypot(X[:, 0], X[:, 1]), X[:, 2],
-                                                     np.degrees(np.arctan2(X[:, 1], X[:, 0]))], 1).tolist(),
-                                    kernel_m=width.tolist(), p_pa=p.tolist(), sigma_pa=sigma)))
-    fit, _ = pf.DataFit(str(path))(seq, b0, T)
-    s = np.linspace(0.0, 1.0, 101)[:-1] ** 2
-    mean, std = np.asarray(fit(jnp.asarray(s))) / pf.MU0, fit.std(s) / pf.MU0
-    error = float(np.linalg.norm(mean - truth(s)) / np.linalg.norm(truth(s)))
-    cover = float(np.mean(np.abs(mean - truth(s)) < 2.0 * std))
-    print(f"\n  kernel labels {min(rec['labels']):.3f} .. {max(rec['labels']):.3f}, kernel points "
-          f"{min(rec['kernel_points']):.1f} .. {max(rec['kernel_points']):.1f}, error {error:.2e}, within 2 sd "
-          f"{cover:.2f}, chi^2 {fit.chi2():.2f} per point, tau {fit.tau:.2e}")
-    assert min(rec["kernel_points"]) > KERNEL_POINTS
-    assert error < DATA_ERROR
-    assert cover > DATA_COVER

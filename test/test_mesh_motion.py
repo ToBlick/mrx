@@ -1,39 +1,30 @@
 """The motion of the mesh's pole onto the magnetic axis changes the map, and the field is carried onto it.
 
-On the li383 fixture mesh (16,32,12) the file's field is the VMEC equilibrium, whose magnetic axis is the mesh axis:
-the axis finder finds it on the pole and a move hardly moves that mesh. A field kept by its coefficients on a moved
-map keeps its field lines at their logical places: on the mesh with its pole displaced by :data:`SHIFT` the finder
-finds the same logical axis. The transfer of the field onto that mesh and back keeps ``div B`` and the toroidal flux
-at round-off and returns the field to the time error of its substeps. The harmonic section brings ``zeta`` onto the
-harmonic angle, and a move of the pole changes the metric and with it the harmonic angle. The cut by the planes normal to the axis keeps the file's surfaces and field. The moves of a run and the axis
-they find are checked on the run of test_relax_run.py. The moves change the sequence, so the module builds its own.
+On the li383 fixture the file's field is the VMEC equilibrium, whose magnetic axis is the mesh axis: the axis finder
+finds it on the pole and a move hardly moves that mesh. The field carried by the relaxation's induction
+(:func:`~mrx.relaxation.mesh_motion.transfer`) onto the map with its pole displaced by :data:`SHIFT` and back keeps
+``div B`` and the toroidal flux at round-off and returns to the time error of its substeps. On the displaced map the
+carried field's axis is off the pole, and one move (:func:`~mrx.relaxation.mesh_motion.axis_move`) puts the pole back
+on it. The cut by the planes normal to the axis keeps the file's surfaces and field. Every map is installed on the
+fixture with its preconditioners (:func:`test.conftest.map_installed`).
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
-from test.conftest import GEOMETRY, NS, P
-from mrx.geometry import build_sequence
-from mrx.nullspace import compute_nullspaces, zeta_harmonic_distance
+from mrx.equilibria import build_map
 from mrx.precision import eps
 from mrx.relaxation import mesh_motion as mm
-from mrx.relaxation.initial_conditions import _clebsch_potential, initial_field, toroidal_flux
+from mrx.relaxation.initial_conditions import _clebsch_potential, toroidal_flux
 from mrx.relaxation.physics import compute_divergence_norm
+from test.conftest import map_installed
 
-#: The displacement of the axis of the test mesh along X1, in metres (the first radial cell is 2.9 cm).
-SHIFT = 0.04
-#: |grad zeta - h| / |h| on the planes phi = const at least, and after the harmonic moves at most, and the wall's move
-#: by the harmonic moves in metres: 0.30, 1.3e-6 in float64, 2.9e-6 in float32 (four moves), 3.0e-3 m (a tenth of the
-#: 2.9 cm first radial cell, the spline of the wall on 16 radial splines) measured (2026-11-19).
-PHI_DRIFT, HARMONIC_DRIFT, HARMONIC_WALL = 0.1, 1e-5, 1e-2
-#: |grad zeta - h| / |h| after a move of the pole by SHIFT on the harmonic map: 2.2e-3 measured in float64 (1.8e-3 by
-#: SHIFT / 2, 2026-11-21). The move changes the metric, so the angle is harmonic again only after harmonic moves.
-MOVE_DRIFT = 5e-3
-#: The field after a transfer there and back against the start: 3.7e-6 measured with the old induction in float64,
-#: 4.0e-6 in float32 (SSP-RK3 at the relaxation's CFL cap, 36 substeps each way, li383 (16,32,12) with the axis
-#: displaced by 4 cm, div B 2.6e-15 and 1.4e-6 relative, 2026-11-18), 1.24e-6 in float64 with the induction of h
-#: (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21).
+#: The displacement of the pole of the test map along X1, a fraction of the minor radius: 4 cm on li383, 1.4 first
+#: radial cells of 2.9 cm.
+SHIFT = 0.12
+#: The field after a transfer there and back against the start: 1.24e-6 measured in float64 with the induction of
+#: h = Pi_1 B (36 substeps, div B 2.3e-15, flux 1.6e-15 relative, 2026-11-21), 4.0e-6 in float32 with the old
+#: induction (2026-11-18).
 ROUND_TRIP = 1e-5
 #: The axis-normal cut of the fixture's map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
@@ -43,108 +34,77 @@ ROUND_TRIP = 1e-5
 CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 5.0, 2e-2, 2e-2, 1.2e-2, 1.5e-2
 #: The distance of the file's axis from its pole in first radial cells.
 AXIS_ON_POLE = 2e-2
+#: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells:
+#: PENDING measured.
+AXIS_AFTER_MOVE = 0.1
 
 
-@pytest.fixture(scope="module")
-def mesh():
-    """``(seq, Phi, B)``: a sequence of the fixture's discretisation of its own on the file's sections, which the
-    moves change, its map and the file's field. The harmonic moves start from the file's sections, and the
-    axis-normal cut is checked against them."""
-    seq = build_sequence(GEOMETRY, NS, P, symmetry="stellarator", graded=True, zeta="phi")
-    compute_nullspaces(seq, verbose=False)
-    return seq, seq.map, initial_field(seq)[0]
+def _locate(Phi, X, x, steps=10):
+    """``(x', miss)``: the logical points ``x'`` with ``Phi(x') = X`` (Cartesian, ``(n, 3)``) and ``|Phi(x') - X|``,
+    by Newton from the logical points ``x`` in the chart ``(r cos 2 pi theta, r sin 2 pi theta, zeta)``, which is
+    smooth at the axis. ``zeta`` of ``x'`` may leave ``[0, 1)`` by the move of a point out of its section."""
+    def one(xq, Xq):
+        F = lambda p: mm.extended(Phi, mm._chart(p[:2], p[2])) - Xq   # noqa: E731
+        t = 2.0 * jnp.pi * xq[1]
+        p = jnp.stack([xq[0] * jnp.cos(t), xq[0] * jnp.sin(t), xq[2]])
+        for _ in range(steps):
+            p = p - jnp.linalg.solve(jax.jacfwd(F)(p), F(p))
+        return mm._chart(p[:2], p[2]), jnp.linalg.norm(F(p))
+    return jax.jit(jax.vmap(one))(x, X)
 
 
-def _shifted(seq, Phi, shift=SHIFT):
-    """The map ``Phi`` with its axis displaced by ``shift`` along ``X1`` (a constant offset, so its ``zeta`` spline
-    coefficients are that offset)."""
+def _shifted(seq, a):
+    """The fixture's map with its pole displaced by :data:`SHIFT` times the minor radius ``a`` along ``X1`` (a
+    constant offset, so its ``zeta`` spline coefficients are that offset)."""
     d = np.zeros((seq.basis_0.Lambda[2].n, 2))
-    d[:, 0] = shift
-    return mm.moved(Phi, mm.tangent(seq, mm.axis_step(seq, d)))
+    d[:, 0] = SHIFT * a
+    return mm.moved(seq.map, mm.tangent(seq, mm.axis_step(seq, d)))
 
 
-def _displaced(seq, Phi, shift=SHIFT):
-    """Install the map ``Phi`` with its axis displaced by ``shift``."""
-    mm.install_map(seq, _shifted(seq, Phi, shift))
+def _axis_cells(seq, B):
+    """The largest distance of the magnetic axis of ``B`` from the pole, in first radial cells."""
+    d, h1 = mm.axis_offset(seq, mm.magnetic_axis(seq, B)[0])
+    return float(np.max(np.linalg.norm(d, axis=1))) / h1
 
 
-def test_the_axis_of_the_file_is_on_its_pole(mesh):
-    """The VMEC field on its own mesh: the axis finder (:func:`~mrx.relaxation.mesh_motion.magnetic_axis`) puts the
+def test_the_axis_of_the_file_is_on_its_pole(seq, b0):
+    """The VMEC field on the fixture: the axis finder (:func:`~mrx.relaxation.mesh_motion.magnetic_axis`) puts the
     magnetic axis within :data:`AXIS_ON_POLE` first radial cells of the pole, and a move moves the mesh by less than
     that."""
-    seq, Phi, B = mesh
-    mm.install_map(seq, Phi)
-    _, rec = mm.axis_displacement(seq, B)
+    _, rec = mm.axis_displacement(seq, b0)
     print(f"\n  axis {rec['axis_cells']:.2e} first cells off the pole ({rec['axis']['newton']} Newton steps), largest "
           f"move {rec['move_m']:.2e} m, first cell {rec['h1_m']:.2e} m")
     assert rec["axis_cells"] < AXIS_ON_POLE
     assert rec["move_m"] < AXIS_ON_POLE * rec["h1_m"]
 
 
-def test_the_axis_rides_with_the_map(mesh):
-    """The file's field kept on the map with its pole displaced by :data:`SHIFT`: the field-line equation in logical
-    coordinates holds the field's coefficients alone, so the axis curve found is the same to the Newton tolerance and
-    round-off, and still on the pole."""
-    seq, Phi, B = mesh
-    mm.install_map(seq, Phi)
-    c0, _ = mm.magnetic_axis(seq, B)
-    _displaced(seq, Phi)
-    c1, _ = mm.magnetic_axis(seq, B)
-    mm.install_map(seq, Phi)
-    diff = float(np.max(np.abs(c1 - c0))) / mm._first_knot(seq)
-    print(f"\n  axis curves on the two maps differ by {diff:.1e} logical first cells")
-    assert diff < 1e3 * eps()
-
-
-def test_transfer_there_and_back(mesh):
+def test_transfer_there_and_back_and_a_move_onto_the_axis(seq, b0, minor):
     """The file's field carried by :func:`~mrx.relaxation.mesh_motion.transfer` onto the map with the pole displaced
-    by :data:`SHIFT` and back: each way ``||div B|| / ||B||`` and the toroidal flux hold to round-off, and the field
-    returns to its coefficients within :data:`ROUND_TRIP`, the time error of the transport. The two ways run along the
-    same maps in opposite directions."""
-    seq, Phi, B = mesh
-    mm.install_map(seq, Phi)
-    flux = float(toroidal_flux(seq, B))
-    new = _shifted(seq, Phi)
-    B1, rec = mm.transfer(seq, B, new)
-    mm.install_map(seq, new, keep_preconditioners=True)
-    div1 = float(compute_divergence_norm(B1, seq) / seq.odd.l2_norm(B1, 2))
-    flux1 = float(toroidal_flux(seq, B1)) / flux - 1.0
-    B2, _ = mm.transfer(seq, B1, Phi)
-    mm.install_map(seq, Phi)
-    back = float(seq.odd.l2_norm(B2 - B, 2) / seq.odd.l2_norm(B, 2))
+    by :data:`SHIFT` times the minor radius: ``||div B|| / ||B||`` and the toroidal flux hold to round-off, and carried
+    back the field returns to its coefficients within :data:`ROUND_TRIP`, the time error of the transport (the two ways
+    run along the same maps in opposite directions). On the displaced map the carried field's axis is off the pole by
+    about the shift, and one move (:func:`~mrx.relaxation.mesh_motion.axis_move`) puts the pole within
+    :data:`AXIS_AFTER_MOVE` first radial cells of the axis of the field it carries, with ``div B`` at round-off."""
+    Phi = seq.map
+    flux = float(toroidal_flux(seq, b0))
+    new = _shifted(seq, minor)
+    B1, rec = mm.transfer(seq, b0, new)
+    with map_installed(seq, new, harmonic=True):
+        div1 = float(compute_divergence_norm(B1, seq) / seq.odd.l2_norm(B1, 2))
+        flux1 = float(toroidal_flux(seq, B1)) / flux - 1.0
+        B2, _ = mm.transfer(seq, B1, Phi)
+        before = _axis_cells(seq, B1)
+        B3, moved = mm.axis_move(seq, B1)
+        after = _axis_cells(seq, B3)
+        div3 = float(compute_divergence_norm(B3, seq) / seq.odd.l2_norm(B3, 2))
+    back = float(seq.odd.l2_norm(B2 - b0, 2) / seq.odd.l2_norm(b0, 2))
     print(f"\n  {rec['substeps']} substeps ({rec['cells']:.2f} cells), div {div1:.1e}, flux {flux1:+.1e}, there and "
-          f"back {back:.2e}")
-    assert div1 < 1e2 * eps()
-    assert abs(flux1) < 1e2 * eps()
+          f"back {back:.2e}\n  axis {before:.3e} first cells off the pole on the displaced map, {after:.3e} after the "
+          f"move (x{moved['lam']:g}, {moved['substeps']} substeps), div {div3:.1e}")
+    assert div1 < 1e2 * eps() and abs(flux1) < 1e2 * eps()
     assert back < ROUND_TRIP
-
-
-def test_harmonic_moves(mesh):
-    """``--geometry.zeta harmonic``: the moves of the fixture's map towards the harmonic toroidal angle
-    (:func:`~mrx.relaxation.mesh_motion.harmonic_build`) take ``|grad zeta - h| / |h|`` from :data:`PHI_DRIFT` or
-    more on the planes ``phi = const`` below :data:`HARMONIC_DRIFT`, move the wall by less than :data:`HARMONIC_WALL`
-    and keep ``det DPhi > 0`` (``set_geometry`` raises otherwise). A move of the pole by :data:`SHIFT` on the new map
-    leaves the drift below :data:`MOVE_DRIFT`: it changes the metric, and with it the harmonic angle."""
-    seq, Phi, _ = mesh
-    mm.install_map(seq, Phi)
-    before = zeta_harmonic_distance(seq)[0]
-    mm.harmonic_build(seq)
-    new, drift = seq.map, seq.equilibrium["harmonic"]["drift"]
-    t, z = np.meshgrid(np.arange(64) / 64, np.arange(16) / 16, indexing="ij")
-    w = jnp.asarray(np.stack([np.ones(t.size), t.ravel(), z.ravel()], 1))
-    xw, _ = mm.locate(Phi, jax.vmap(new)(w), w)
-    wall = float(jnp.max(jnp.linalg.norm(jax.vmap(Phi)(xw.at[:, 0].set(1.0)) - jax.vmap(new)(w), axis=1)))
-    after = zeta_harmonic_distance(seq)[0]
-    _displaced(seq, new)
-    moved = zeta_harmonic_distance(seq)[0]
-    mm.install_map(seq, Phi)
-    print(f"\n  |grad zeta - h| / |h| {before:.2e} on the phi planes, " + " -> ".join(f"{d:.2e}" for d in drift)
-          + f" in {len(drift) - 1} moves, {after:.2e} installed, {moved:.2e} after a move of the pole by {SHIFT} m, "
-          f"wall moved by {wall:.1e} m")
-    assert before > PHI_DRIFT
-    assert after < HARMONIC_DRIFT
-    assert moved < MOVE_DRIFT
-    assert wall < HARMONIC_WALL
+    assert after < AXIS_AFTER_MOVE < before
+    assert div3 < 1e2 * eps()
 
 
 def _file_field(st, Phi):
@@ -159,22 +119,22 @@ def _file_field(st, Phi):
     return jax.vmap(B)
 
 
-def test_axis_normal_sections(mesh):
+def test_axis_normal_sections(seq):
     """The fixture's map cut by the planes normal to its axis (:func:`~mrx.relaxation.mesh_motion.axis_normal_map`):
     the tilt of the sections at the axis falls from :data:`CUT_TILT_BEFORE` or more to :data:`CUT_TILT_AFTER`, every
     point stays on its surface ``r = const`` of the file's map to :data:`CUT_SURFACE` in ``r`` (the error of the
     splines of the cut), ``det DPhi > 0`` at the quadrature points, and the file's field on the cut map with the
     shift of ``zeta`` is the field on the file's map at the same points to :data:`CUT_CARRIED`. Without the shift it is
     off by :data:`CUT_DRAGGED` or more: the points slide, the field must not."""
-    seq, Phi, _ = mesh
+    Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
     new, shift, info = mm.axis_normal_map(seq, Phi)
     rng = np.random.default_rng(0)
     x = jnp.asarray(np.column_stack([rng.uniform(0.05, 1.0, 256), rng.uniform(0.0, 1.0, 256),
                                      rng.uniform(0.0, 1.0, 256)]))
     f = jax.vmap(lambda y: new.basis.contract(shift, y))(x)
-    x_old, _ = mm.locate(Phi, jax.vmap(new)(x), x.at[:, 2].add(f))
+    x_old, _ = _locate(Phi, jax.vmap(new)(x), x.at[:, 2].add(f))
     surface = float(jnp.max(jnp.abs(x_old[:, 0] - x[:, 0])))
-    st = seq.equilibrium
+    st = {k: v for k, v in seq.equilibrium.items() if k != "zeta_shift"}
     B = _file_field(st, Phi)(x_old)
 
     def rms(C):

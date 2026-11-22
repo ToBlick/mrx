@@ -18,7 +18,7 @@ from mrx.precision import eps
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_PENALTY
 from mrx.relaxation.physics import compute_force
 from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, build_shells, shell_table
-from test.test_newton import _energy_derivatives, _flow
+from test.conftest import energy_derivatives, ideal_flow
 
 
 def test_shell_velocity_and_row(seq, b0):
@@ -55,7 +55,7 @@ def test_shell_velocity_and_row(seq, b0):
         pressure.append(abs(float(shells.g_p[j]) - exact)
                         / float(jnp.linalg.norm(p3) * jnp.linalg.norm(even.M[3] @ div_xi)))
     xi = Xi[K // 2 - 1]
-    d1, _ = _energy_derivatives(seq, b0, xi)
+    d1, _ = energy_derivatives(seq, b0, xi)
     _, _, _, JxB = compute_force(b0, seq)
     force = -float(xi @ (even.M[2] @ JxB))
     band = 1e3 * max(seq.tol, eps())
@@ -66,5 +66,5 @@ def test_shell_velocity_and_row(seq, b0):
     assert info.min() > 0
     assert max(div_err) < 1e2 * max(seq.tol, eps())
     assert max(orth) < 1e4 * eps()
-    assert abs(d1 - force) < band * float(seq.odd.l2_norm(b0, 2) * seq.odd.l2_norm(_flow(seq, xi)(b0), 2))
+    assert abs(d1 - force) < band * float(seq.odd.l2_norm(b0, 2) * seq.odd.l2_norm(ideal_flow(seq, xi)(b0), 2))
     assert max(pressure) < band
