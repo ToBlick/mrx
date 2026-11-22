@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.flux_label import ANISOTROPY, enclosed_flux, enclosed_flux_map, flux_label, label_spline
+from mrx.precision import eps
 from mrx.relaxation.seeding import energy_seed
 from mrx.relaxation.shells import LABEL_TOL, label
 
@@ -33,10 +34,10 @@ def test_flux_label_is_a_function_of_the_flux(seq, b0):
     err = np.sum(wJ * np.abs(s_q - r[:, None] ** 2)) / np.sum(wJ)
     print(f"\n  mean |s - r^2| {err:.3e}")
     assert err < 9e-4
-    # the label spline is 1 at the smallest coefficient of T and 0 at the largest, to round-off
+    # the label spline is 1 at the smallest coefficient of T and 0 at the largest, to round-off (2 eps in float32)
     a, b, _ = label_spline(seq, T, B_jk)
     s_of = enclosed_flux_map(seq, T, B_jk)
-    assert abs(float(s_of(a)) - 1.0) < 1e-13 and abs(float(s_of(b))) < 1e-13
+    assert abs(float(s_of(a)) - 1.0) < eps(10) and abs(float(s_of(b))) < eps(10)
 
 
 def test_label_at_the_shells_tolerance(seq, b0):

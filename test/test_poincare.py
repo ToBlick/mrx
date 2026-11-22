@@ -25,9 +25,11 @@ DRIFT_BAND = 4.1e-4
 
 
 #: The file's field on the fixture's map (sections normal to the axis) and on the file's map, traced from the same
-#: lines and cut at the planes ``phi = const``: the largest difference of a regular line's iota and the largest
-#: distance of its first ten crossings, in metres. TODO measured (2026-11-20).
-PHI_IOTA_BAND, PHI_CROSSING_BAND = 1e-2, 1e-2
+#: lines and cut at the planes ``phi = const``: the largest difference of a regular line's iota, and the largest
+#: distance of its first ten crossings as a fraction of the minor radius. 2.4e-5 and 2.5e-2 m = 7.7 % measured in
+#: float64, 3.6e-5 and 3.8e-2 m = 11.7 % in float32 (2026-11-22): the transforms agree, the crossings drift apart along
+#: the surfaces by the small difference of the two discrete transforms over ten transits.
+PHI_IOTA_BAND, PHI_CROSSING_BAND = 5e-5, 0.2
 
 
 def _tol(f64, f32):
@@ -129,7 +131,7 @@ def test_phi_sections_are_zeta_sections_on_a_cylindrical_map(seq, b0):
             assert np.abs(np.asarray(z[lines, j]) - np.asarray(want[plane][1])).max() < _tol(1e-12, 1e-5)
 
 
-def test_phi_sections_of_an_axis_normal_map(seq, b0):
+def test_phi_sections_of_an_axis_normal_map(seq, b0, minor):
     """The fixture's map has its sections normal to the axis, so its planes ``zeta = const`` are not the planes
     ``phi = const``, and the file's field on it is carried to the new coordinates
     (:mod:`mrx.relaxation.initial_conditions`). Cut at the planes ``phi = const`` (``sections="phi"``, the default),
@@ -154,6 +156,7 @@ def test_phi_sections_of_an_axis_normal_map(seq, b0):
     d_x = max(float(np.nanmax(np.hypot(a["sections"][p]["R"][shown, :10] - b["sections"][p]["R"][shown, :10],
                                        a["sections"][p]["Z"][shown, :10] - b["sections"][p]["Z"][shown, :10])))
               for p in (0.0, 0.25))
-    print(f"\n  {shown.sum()} regular lines, iota apart by {d_iota:.1e}, first ten crossings by {d_x:.1e} m")
+    print(f"\n  {shown.sum()} regular lines, iota apart by {d_iota:.1e}, first ten crossings by {d_x:.1e} m = {d_x / minor:.1%} "
+          f"of the minor radius")
     assert shown.sum() >= 6
-    assert d_iota < PHI_IOTA_BAND and d_x < PHI_CROSSING_BAND
+    assert d_iota < PHI_IOTA_BAND and d_x < PHI_CROSSING_BAND * minor

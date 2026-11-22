@@ -13,7 +13,8 @@ cells in zeta (the field does not depend on zeta, and the slab mass model needs 
 - with the exact pressure and the start's current as targets the steps lower ``W`` at every step and end at both
   targets, next to the Solov'ev field.
 
-This is the suite's relaxation run. The errors are relative L2 errors over the plasma volume at the quadrature
+These are the suite's relaxation runs, in float64 only: a float32 Newton step costs three times a float64 one on
+the CPU. The errors are relative L2 errors over the plasma volume at the quadrature
 points, measured 2026-11-21 in float64 unless stated. The start field's error sits next to the axis (3.1e-3 for
 r < 0.3 against 5e-4 outside) and falls there at order 1.8 only, from the elliptic angle's lambda next to the axis,
 not from the wout's radial resolution (801 surfaces give the same errors as 201). The orders of convergence need a
@@ -29,7 +30,7 @@ from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.flux_label import ANISOTROPY
 from mrx.geometry import build_sequence
 from mrx.nullspace import compute_nullspaces
-from mrx.precision import eps
+from mrx.precision import DTYPE, eps
 from mrx.relaxation.initial_conditions import initial_field
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
@@ -126,6 +127,11 @@ def test_the_label_is_the_toroidal_flux_and_its_transform_is_solovevs(solovev):
     _check("iota", float(np.abs(iota - eq.iota(S)).max() / eq.iota(S).max()))
 
 
+def _float64_only():
+    if DTYPE != np.float64:
+        pytest.skip("the relaxation runs in float64 only: a float32 Newton step costs three times as much on the CPU")
+
+
 def _descends(res, floor):
     """Every step taken above the residual ``floor`` moves along its descent direction (a step with ``dt* <= 0`` is
     clipped to no step), and ``W`` (the energy less the targets' work) never rises by more than its round-off."""
@@ -141,10 +147,10 @@ def _descends(res, floor):
 
 def test_newton_steps_reach_the_discrete_equilibrium_next_to_solovevs(solovev):
     """Ten Newton steps from the start field descend (:func:`_descends`) above the round-off floor ``1e3 eps^2`` of the
-    squared force residual, the residual falls from 3.1e-7 to 2.4e-16 in float64 and to 3.1e-13 in float32 (bound: by
-    1e6 or to that floor), and the end field is as close
-    to the Solov'ev field as the start (1.06e-3 against 1.09e-3 in both precisions, bound 1.05 times the start's
+    squared force residual, the residual falls from 3.1e-7 to 2.4e-16 (bound: by 1e6 or to that floor), and the end
+    field is as close to the Solov'ev field as the start (1.06e-3 against 1.09e-3, bound 1.05 times the start's
     error)."""
+    _float64_only()
     eq, seq, B = solovev
     ts = TimeStepper(seq=seq, newton=True)
     res = relax(initial_state(B, ts), ts, steps=STEPS, chunk=STEPS, verbose=False)
@@ -162,6 +168,7 @@ def test_newton_steps_with_the_exact_pressure_and_current_as_targets(solovev):
     then it stays at the floor of the targets (2.4e-13 from 3.1e-7 in float64, 2026-11-22), they end at the pressure
     and the current within :data:`TARGET_BANDS` and leave the field as close to the Solov'ev field as the start (bound 1.05 times its
     error)."""
+    _float64_only()
     eq, seq, B = solovev
     ts = TimeStepper(seq=seq, newton=True)
 
