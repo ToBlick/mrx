@@ -403,7 +403,8 @@ res = relax(initial_state(B0, ts), ts, steps, chunk, rebuild=rebuild)
 What the loop can read on the label: the label $s$ at the quadrature points
 and its temperature `T` ({func}`mrx.relaxation.shells.label`), the current's moments
 ({func}`mrx.relaxation.twist.current_on_label`), the transform
-({func}`mrx.relaxation.twist.iota_fit`) and the pressure, the weak pressure
+({func}`mrx.relaxation.twist.iota_projection`, the L2 projection of its weak moments) and the
+pressure, the weak pressure
 ({func}`mrx.relaxation.physics.weak_pressure`) against $s$ at the quadrature
 points, with its constant fixed against a target by
 {func}`mrx.relaxation.shells.pressure_error`. What it sets: the pressure

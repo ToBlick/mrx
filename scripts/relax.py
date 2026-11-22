@@ -29,8 +29,9 @@ Before every chunk the transform's weak residual on the flux label is measured a
 step, with its matrix from the Gauss-Newton step's response to the target (:func:`mrx.relaxation.twist.iota_newton`).
 The loop starts from the current the field carries. The target is kept in every checkpoint (attribute
 ``iota_target``), so a restart goes on from it. A current target and ``--iota.target`` exclude each other. With
-``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which the transform
-misses its target by less than :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest value.
+``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which every local
+mean of the transform's miss, the weak residual, is below :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest
+value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
 the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with ``--mesh.nested`` onto the
@@ -97,7 +98,7 @@ def main(cfg, fit=None):
     from mrx.relaxation.physics import current, resistive_step, weak_pressure
     from mrx.relaxation.shells import ERROR_BINS, build_shells, label, load_target, pressure_error, target_beta
     from mrx.relaxation.seeding import energy_seed
-    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_fit, iota_newton,
+    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_newton, iota_residual,
                                       load_current_target, load_iota_target, spline_centres)
     from mrx.flux_label import ANISOTROPY
 
@@ -292,19 +293,18 @@ def main(cfg, fit=None):
 
         def seed_converged(state, it, s_q):
             """With a target transform the seed waits for it: it resonates with the field's own transform,
-            which the first chunks still move. The field is seeded at the first chunk boundary at which the label
-            fit misses the target by less than AT_TARGET of its largest value. Returns the state and whether it
-            seeded."""
-            s = np.linspace(0.05, 0.95, 19)
-            miss = float(np.abs(np.abs(iota_fit(seq, state.B_n, np.asarray(s_q), 6)(s))
-                                - np.abs(np.asarray(iota_star(s)))).max())
+            which the first chunks still move. The field is seeded at the first chunk boundary at which every local
+            mean of the miss, the weak residual on the label, is below AT_TARGET of the target's largest value.
+            Returns the state and whether it seeded."""
+            r = iota_residual(seq, state.B_n, s_q, iota_star, pr.cells + 2)(state.B_n)[0]
+            miss = float(np.abs(np.asarray(r)).max())
             if miss >= AT_TARGET * iota_max:
                 return state, False
             B_seeded, rows = energy_seed(seq, state.B_n, iotas=cfg.seed.iotas, amplitudes=cfg.seed.amplitudes,
                                          scale=cfg.seed.scale, T=T_label)
             results["seed"] = rows
             results["iota"]["seed_step"] = it
-            print(f"[seed] step {it}: the transform misses by {miss:.2e} < {AT_TARGET:g} of its largest value, "
+            print(f"[seed] step {it}: the weak residual of the transform {miss:.2e} < {AT_TARGET:g} of its largest value, "
                   f"seeded", flush=True)
             return initial_state(B_seeded, ts, step=it), True
     # --- the pole on the magnetic axis at an equilibrium, the preconditioners built again on need ---

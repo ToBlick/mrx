@@ -4,7 +4,7 @@ A field with nested flux surfaces (an equilibrium read from a file, or a relaxed
 ``iota = nfp n / m``,
 a perturbation ``dB = curl(A B / |B|)`` with ``A = a(sqrt(s)) cos(2 pi (m theta - n zeta))`` (the SIESTA seed), so
 that the relaxation can open island chains there. The transform is that of the field itself, measured on its flux
-label as a function of ``s`` (:func:`mrx.relaxation.twist.iota_fit`), not the file's, and the profiles ``a`` are
+label as a function of ``s`` (:func:`mrx.relaxation.twist.iota_projection`), not the file's, and the profiles ``a`` are
 functions of the label ``s``: a seed sits on the resonant surface, a level set of ``s``, wherever the mesh puts it. The
 angles of the phase are the logical ones. ``dB`` is divergence-free and tangent to the wall.
 
@@ -33,7 +33,7 @@ from mrx.differential_forms import DiscreteFunction
 from mrx.equilibria import StateField
 from mrx.flux_label import enclosed_flux, flux_label
 from mrx.relaxation.shells import LABEL_TOL
-from mrx.relaxation.twist import iota_fit
+from mrx.relaxation.twist import iota_projection
 from mrx.spline_bases import basis_table
 
 #: The (r, theta, zeta) grid on which the seed's resonant amplitude is measured, and the number of points
@@ -87,7 +87,7 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, T=
     rotational transforms. ``amplitudes`` (one per entry of ``iotas``) rescales each chain's energy-optimal seed
     so that its ``dBr`` takes the given value. If no chain with ``m <= n_theta / 2`` lies in the field's iota range,
     the field is returned unseeded with a warning and ``rows`` is empty. The transform is measured on the flux label of
-    ``B`` (:func:`mrx.relaxation.twist.iota_fit`), whose temperature ``T`` is solved here unless given. The
+    ``B`` (:func:`mrx.relaxation.twist.iota_projection`), whose temperature ``T`` is solved here unless given. The
     function runs eagerly and cannot be traced by ``jax.jit``.
     """
     nfp = int(seq.nfp)
@@ -102,7 +102,7 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, T=
         if verbose:
             print(f"[seed] flux label CG {int(info)}", flush=True)
     s_q = enclosed_flux(seq, T, odd.evaluate_at_quadrature(B, 2))
-    iota_s = iota_fit(seq, B, np.asarray(s_q), 6)          # per full turn, a function of s
+    iota_s, diota_s = iota_projection(seq, B, s_q)             # per full turn, functions of s
     rr = np.linspace(1e-3, 1.0, 40001)                        # x = sqrt(s)
     iota_rr = np.abs(iota_s(rr ** 2))
 
@@ -113,12 +113,13 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, T=
 
     chains = []                          # (m, n, r_mn, |d iota / dr|, indices of the splines used)
     for m, n in resonances(float(iota_rr.min()), float(iota_rr.max()), nfp, ns[1] // 2):
-        r0 = float(rr[int(np.argmin(np.abs(iota_rr - nfp * n / m)))])
-        if abs(abs(float(iota_s(r0 ** 2))) - nfp * n / m) < 1e-4 and 0.02 < r0 < 0.99:
+        k = int(np.argmin(np.abs(iota_rr - nfp * n / m)))
+        r0 = float(rr[k])
+        if abs(float(iota_rr[k]) - nfp * n / m) < 1e-4 and 0.02 < r0 < 0.99:
             # the last spline (at the wall) and the first two (at the axis) are not used
             funcs = [i for i in range(2, rb.n - 1) if support[i][1] > r0 - 1.0 / m and support[i][0] < r0 + 1.0 / m]
             if funcs:
-                chains.append((m, n, r0, abs(float(iota_s.deriv()(r0 ** 2))) * 2 * r0, funcs))
+                chains.append((m, n, r0, abs(float(diota_s(np.array([r0 ** 2]))[0])) * 2 * r0, funcs))
     if not chains:
         warnings.warn(f"no island chain with m <= {ns[1] // 2} lies in the field's iota range "
                       f"[{float(iota_rr.min()):.4f}, {float(iota_rr.max()):.4f}] (nfp = {nfp}): nothing is seeded")

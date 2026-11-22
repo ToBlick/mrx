@@ -39,7 +39,8 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
   :func:`current_error` the current's error against them.
 - :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
   its change along the slips and :func:`iota_newton` the outer Newton step with them.
-- :func:`iota_fit` and :func:`enclosed_current` measure the transform and the current on the label's level sets.
+- :func:`iota_projection` is the transform as a function of ``s``, the L2 projection of its weak moments, and
+  :func:`enclosed_current` the current inside the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
 
@@ -62,12 +63,10 @@ from mrx.precision import DTYPE, to_working
 from mrx.relaxation.physics import current as weak_current
 from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS, PROFILE_DEGREE, profile_basis
 from mrx.solvers import solve_singular_cg
-from mrx.spline_bases import DerivativeSpline, basis_table
+from mrx.spline_bases import DerivativeSpline, basis_derivative_table, basis_table
 
-#: The cumulative sums :func:`iota_fit` fits, sampled at this many points.
-FIT_SAMPLES = 1024
-#: The transform is at its target when the label fit misses it by less than this fraction of the target's largest
-#: magnitude: ``relax.py --seed`` waits for it with ``--iota.target``.
+#: The transform is at its target when every local mean of its miss, the weak residual of :func:`iota_residual`, is
+#: below this fraction of the target's largest magnitude: ``relax.py --seed`` waits for it with ``--iota.target``.
 AT_TARGET = 1e-2
 
 
@@ -75,7 +74,11 @@ def _axis_angle_gradient(seq, B):
     """``(d_r, d_t, d_z)`` at the quadrature points: the logical components of ``grad theta_a``, ``theta_a`` the
     angle about the magnetic axis of ``B`` (:func:`mrx.relaxation.mesh_motion.magnetic_axis`, a curve from a weak
     residual) over 2 pi, so that ``J B . grad theta_a`` is ``B^r d_r + B^theta d_t + B^zeta d_z`` in the 2-form's
-    components. The axis and its ``zeta`` derivative come from its Fourier series at the quadrature planes."""
+    components. Summed over the region inside a level set of the label, ``J B . grad theta_a`` is the poloidal flux
+    enclosed by that surface, for any position of the logical axis. The logical ``theta`` would not do: its cut ends
+    on the logical axis, so it counts no flux inside a surface that does not enclose the logical axis and misses the
+    flux between the two axes in every other. The axis and its ``zeta`` derivative come from its Fourier series at the
+    quadrature planes."""
     from mrx.relaxation.mesh_motion import _series, magnetic_axis
     c, _ = magnetic_axis(seq, B)
     V, dV = _series(c.shape[2] - 1, np.asarray(seq.quad.x_z, dtype=np.float64))
@@ -92,32 +95,31 @@ def _axis_angle_gradient(seq, B):
     return d_r, d_t, d_z
 
 
-def poloidal_density(seq, B):
-    """The density of the poloidal flux at the quadrature points: ``J B . grad theta_a`` with ``theta_a`` the angle
-    about the magnetic axis of ``B`` (:func:`_axis_angle_gradient`), from the 2-form's components. Summed over the
-    region inside a level set of the label it is the poloidal flux enclosed by that surface, for any position of the
-    logical axis. The logical ``theta`` would not do: its cut ends on the logical axis, so it counts no flux inside a
-    surface that does not enclose the logical axis and misses the flux between the two axes in every other. Where the
-    magnetic axis is the logical one ``theta_a = theta``."""
-    Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2))
-    d_r, d_t, d_z = _axis_angle_gradient(seq, B)
-    return Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z, Bq
+def iota_projection(seq, B, s_q, n_mu=PROFILE_CELLS + PROFILE_DEGREE - 1):
+    """``(iota, diota)``: the transform per full turn of ``B`` as a function of the label ``s`` (``s_q`` at the
+    quadrature points) and its derivative in ``s``, with the sign of the field's transform. Its moments
+    ``int M_j iota ds`` on the ``n_mu`` unit-integral derivative splines ``M_j`` of the profile space are the weak
+    residual of the zero target (:func:`iota_residual`), sums over the quadrature points with no sorting and no
+    derivative of a sampled flux. ``iota`` is their L2 projection in ``s`` onto the span of the ``M_j``, a spline of
+    degree :data:`~mrx.relaxation.shells.PROFILE_DEGREE` ``- 1``. Both functions take numpy arrays of ``s``."""
+    r = np.asarray(iota_residual(seq, B, s_q, np.zeros_like, n_mu)(B)[0], dtype=np.float64)
+    d = _derivatives(n_mu)
+    # the Gram matrix int M_i M_j ds, exact by Gauss-Legendre with p + 1 points on every cell of the knots
+    knots = np.unique(np.asarray(d.T))
+    g, wg = np.polynomial.legendre.leggauss(d.p + 1)
+    h = np.diff(knots)
+    x = (knots[:-1, None] + 0.5 * h[:, None] * (g[None, :] + 1.0)).ravel()
+    w = (0.5 * h[:, None] * wg[None, :]).ravel()
+    M = np.asarray(basis_table(d, jnp.asarray(x)), dtype=np.float64)
+    c = np.linalg.solve((M * w) @ M.T, r)
 
+    def iota(s):
+        return c @ np.asarray(basis_table(d, jnp.asarray(np.asarray(s, dtype=np.float64))), dtype=np.float64)
 
-def iota_fit(seq, B, s_q, degree):
-    """The transform per full turn as a smooth function of the label ``s``: the poloidal flux enclosed by the label's
-    level sets (:func:`poloidal_density`) against the toroidal flux they enclose, cumulative volume sums over the
-    points sorted by ``s``, fitted by a polynomial of ``degree + 1`` without constant in the enclosed toroidal flux
-    fraction and differentiated."""
-    dens, Bq = poloidal_density(seq, B)
-    w = np.asarray(seq.quad.w)
-    order = np.argsort(np.asarray(s_q))
-    psi = np.cumsum((w * dens)[order])
-    phi = np.cumsum((w * Bq[:, 2])[order])
-    pick = np.linspace(0, psi.size - 1, FIT_SAMPLES).astype(int)
-    x = phi[pick] / phi[-1]
-    c = np.linalg.lstsq(np.stack([x ** k for k in range(1, degree + 2)], axis=1), psi[pick] / phi[-1], rcond=None)[0]
-    return seq.nfp * np.polynomial.Polynomial(np.concatenate([[0.0], c])).deriv()
+    def diota(s):
+        return c @ np.asarray(basis_derivative_table(d, jnp.asarray(np.asarray(s, dtype=np.float64))),
+                              dtype=np.float64)
+    return iota, diota
 
 
 def enclosed_current(seq, B, s_q, edges):
@@ -244,7 +246,7 @@ def iota_residual(seq, B0, s_q, iota, n_mu):
         r_j = int_0^1 (iota_B - iota*) M_j ds = int M_j(s) (nfp B . grad theta_a - iota*(s) B . grad zeta) dV / (Z Phi),
 
     ``M_j`` the ``n_mu`` unit-integral derivative splines of the profile space, ``theta_a`` the angle about the
-    magnetic axis of ``B0`` (:func:`poloidal_density`), ``Phi`` the toroidal flux per unit ``zeta`` inside the label's
+    magnetic axis of ``B0`` (:func:`_axis_angle_gradient`), ``Phi`` the toroidal flux per unit ``zeta`` inside the label's
     outermost level set and ``Z`` the ``zeta`` extent of the integrals.
 
     ``r_j`` is the local mean of the transform's miss over the support of ``M_j``. The ``M_j`` span the changes of
