@@ -1,11 +1,12 @@
 """The motion of the mesh's pole onto the magnetic axis changes the map, and the field is carried onto it.
 
-On the fixture the field is the projected exact equilibrium shearedE, whose magnetic axis is the mesh axis: the axis
+On the fixture the field is the projected exact Solov'ev equilibrium, whose magnetic axis is the mesh axis: the axis
 finder finds it on the pole and on the exact axis, and a move hardly moves that mesh. The field carried by the relaxation's induction
 (:func:`~mrx.relaxation.mesh_motion.transfer`) onto the map with its pole displaced by :data:`SHIFT` and back keeps
 ``div B`` and the toroidal flux at round-off and returns to the time error of its substeps. On the displaced map the
 carried field's axis is off the pole, and one move (:func:`~mrx.relaxation.mesh_motion.axis_move`) puts the pole back
-on it. The cut by the planes normal to the axis keeps the file's surfaces and field. Every map is installed on the
+on it. On the tiny shearedE sequence the cut by the planes normal to its non-planar axis keeps the file's surfaces and
+field. Every map is installed on the
 fixture with its preconditioners (:func:`test.conftest.map_installed`).
 """
 import jax
@@ -24,7 +25,7 @@ SHIFT = 0.12
 #: The field after a transfer there and back against the start: 3.2e-7 measured in float64 (4 substeps, 2026-11-22),
 #: the time error of SSP-RK3. float32 PENDING.
 ROUND_TRIP = 1e-6
-#: The axis-normal cut of the fixture's map: the largest tilt of the sections against the axis before (at least) and
+#: The axis-normal cut of the tiny shearedE map, PENDING on the tiny mesh: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
 #: the first radial cell is 0.07) and the relative rms over random points of the file's field on the cut map against
 #: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 20.7, 4.9e-2,
@@ -122,13 +123,14 @@ def _file_field(st, Phi):
     return jax.vmap(B)
 
 
-def test_axis_normal_sections(seq):
+def test_axis_normal_sections(sheared):
     """The fixture's map cut by the planes normal to its axis (:func:`~mrx.relaxation.mesh_motion.axis_normal_map`):
     the tilt of the sections at the axis falls from :data:`CUT_TILT_BEFORE` or more to :data:`CUT_TILT_AFTER`, every
     point stays on its surface ``r = const`` of the file's map to :data:`CUT_SURFACE` in ``r`` (the error of the
     splines of the cut), ``det DPhi > 0`` at the quadrature points, and the file's field on the cut map with the
     shift of ``zeta`` is the field on the file's map at the same points to :data:`CUT_CARRIED`. Without the shift it is
     off by :data:`CUT_DRAGGED` or more: the points slide, the field must not."""
+    seq = sheared[3]
     Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
     new, shift, info = mm.axis_normal_map(seq, Phi)
     rng = np.random.default_rng(0)

@@ -25,18 +25,10 @@ import mrx
 from mrx.nullspace import harmonic_rayleigh
 from mrx.precision import eps
 
-#: The tiny mesh of these statements.
-TINY = (6, 8, 6)
-
-
 @pytest.fixture(scope="module")
-def seq(files):
-    """A tiny sequence of the shearedE wout with its preconditioners and harmonic forms."""
-    from mrx.geometry import build_sequence
-    from mrx.nullspace import compute_nullspaces
-    s = build_sequence(files[0], TINY, 2, symmetry="stellarator", graded=True)
-    compute_nullspaces(s, verbose=False)
-    return s
+def seq(sheared):
+    """The tiny sequence of the shearedE wout (:func:`test.conftest.sheared`)."""
+    return sheared[3]
 
 
 # The polar derivative involves an inverse near the axis, which costs accuracy:

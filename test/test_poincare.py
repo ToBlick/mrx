@@ -2,7 +2,7 @@
 
 ``b0`` (:func:`mrx.relaxation.initial_conditions.potential_two_form`) is the curl of a vector potential whose
 ``theta`` and ``zeta`` components depend on ``r`` alone, so ``B^r = 0`` exactly: its field lines stay on their
-logical surfaces and wind with the rotational transform of the exact equilibrium shearedE. The traced iota of
+logical surfaces and wind with the rotational transform of the exact Solov'ev equilibrium. The traced iota of
 every regular line matches the exact transform on its surface within a measured band, the discretisation error of the
 field, and halving the step moves the lines by less than a measured drift, also with ``b0`` written as a free
 2-form (no flux through the wall). A closed-form field, whose lines are
@@ -40,8 +40,7 @@ def _tol(f64, f32):
 
 def test_traced_iota_is_the_exact_iota(eq, seq, b0):
     """The traced iota of the regular lines is the exact transform of shearedE on their surface (the logical radius
-    of the wout is Landreman's ``rho``, which the cut by the planes normal to the axis keeps), and the step is
-    resolved. The field
+    of the wout is ``sqrt(s)``, which the cut by the planes normal to the axis keeps), and the step is resolved. The field
     is ``b0`` as a free 2-form, the space of fields with a flux through the wall, here zero. The padding lines,
     traced forwards and backwards for more periods than the main lines, stay on their seed's logical surface both
     ways."""
@@ -50,7 +49,7 @@ def test_traced_iota_is_the_exact_iota(eq, seq, b0):
     res = poincare(seq, B, lines=8, periods=60, planes=1, padding=(4, 64, 0.8))
     shown = np.asarray(res["shown"])
     r = np.asarray(res["seed_r"])[shown]
-    want = eq.iota(eq.s_of_rho(r))
+    want = eq.iota(r ** 2)
     err = float(np.abs(np.asarray(res["iota"])[shown] - want).max() / want.max())
     pad = res["padding"]
     logr = next(iter(pad["sections"].values()))["logr"]

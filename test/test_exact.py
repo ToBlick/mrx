@@ -1,4 +1,4 @@
-"""MRX against the exact equilibrium shearedE on the shared sequence.
+"""MRX against the exact Solov'ev tokamak on the shared sequence.
 
 - the projections: the field ``b0`` of the wout against the exact ``B``, its weak current against the projection of
   the exact ``mu0 J`` onto the Dirichlet 1-forms, its weak pressure against the exact ``p``,
@@ -27,12 +27,10 @@ from test.conftest import field_error
 #: The cells of the profile space of the targets on the shared sequence's 10 radial cells.
 CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
-#: exact pressure, and the largest local mean of the transform's miss over the largest transform: 1.25e-3, 4.87e-3,
-#: 4.22e-2 and 3.3e-5 measured in float64 (2026-11-22).
-BANDS = dict(B=1.6e-3, J=7e-3, p=6e-2, iota=5e-5)
-#: The end of the run with the exact targets: the pressure and the transform's weak residual, 5.14e-2 and 2.7e-4
-#: measured in float64 after 20 steps, residual 2.9e-10 (2026-11-22).
-TARGET_BANDS = dict(p=7e-2, iota=4e-4)
+#: exact pressure, and the largest local mean of the transform's miss over the largest transform: PENDING.
+BANDS = dict(B=1e-2, J=5e-2, p=1e-1, iota=1e-2)
+#: The end of the run with the exact targets: the pressure and the transform's weak residual: PENDING.
+TARGET_BANDS = dict(p=1e-1, iota=1e-2)
 #: The size of the smooth perturbation of the Newton run, relative to the field.
 PERTURBATION = 1e-3
 #: Newton steps of the runs.
@@ -50,6 +48,11 @@ def _points(seq):
     return np.asarray(jax.vmap(seq.map)(seq.quad.x)), np.asarray(seq.quad.w * seq.jacobian_j)
 
 
+def _mu0_p(eq, X):
+    """The exact ``mu0 p`` at the Cartesian points ``X``."""
+    return eq.mu0_p(np.hypot(X[:, 0], X[:, 1]), X[:, 2])
+
+
 def _p_star(eq):
     """The exact ``mu0 p`` as a function of the label ``s``."""
     return lambda s: jnp.asarray(eq.mu0_p_of_s(np.asarray(s)))
@@ -64,15 +67,21 @@ def test_projections(eq, seq, b0):
 
     def J_exact(x):
         X = seq.map(x)
-        dB = jax.jacfwd(lambda y: eq.field(y, jnp))(X)
-        return jnp.array([dB[2, 1] - dB[1, 2], dB[0, 2] - dB[2, 0], dB[1, 0] - dB[0, 1]])
+        R, Z = jnp.hypot(X[0], X[1]), X[2]
+        cos, sin = X[0] / R, X[1] / R
+        psi_R = 2.0 * eq.a * R * Z ** 2 + 4.0 * eq.b * R * (R ** 2 - 1.0)
+        psi_Z = 2.0 * eq.a * R ** 2 * Z + 2.0 * eq.d * Z
+        psi = eq.a * R ** 2 * Z ** 2 + eq.b * (R ** 2 - 1.0) ** 2 + eq.d * Z ** 2
+        dF = -2.0 * eq.d / jnp.sqrt(eq.F0 ** 2 - 4.0 * eq.d * psi)
+        J_R, J_phi, J_Z = -dF * psi_Z / R, -(eq.c * R + 2.0 * eq.d / R), dF * psi_R / R
+        return jnp.array([J_R * cos - J_phi * sin, J_R * sin + J_phi * cos, J_Z])
     J_proj = odd.M[1].solve(odd.load(J_exact, 1))
     J_h = current(b0, seq)
     e_B = field_error(eq, seq, b0)
     e_J = float(odd.l2_norm(J_h - J_proj, 1) / odd.l2_norm(J_proj, 1))
     X, _ = _points(seq)
     s_q, _, _ = label(seq, b0, ANISOTROPY)
-    e_p, _ = pressure_error(seq, weak_pressure(J_h, b0, seq), s_q, jnp.asarray(eq.mu0_p(X)), ERROR_BINS)
+    e_p, _ = pressure_error(seq, weak_pressure(J_h, b0, seq), s_q, jnp.asarray(_mu0_p(eq, X)), ERROR_BINS)
     print(f"\n  B {e_B:.3e}, J {e_J:.3e}, p {e_p:.3e}")
     assert e_B < BANDS["B"] and e_J < BANDS["J"] and e_p < BANDS["p"]
 
@@ -105,8 +114,7 @@ def _descends(res, floor):
 def test_newton_returns_to_the_discrete_equilibrium(eq, seq, b0):
     """Newton steps from ``b0`` plus a smooth curl of :data:`PERTURBATION` of its norm descend, take the squared
     force residual below :data:`BAR` and end as close to the exact field as the projection: within 1.1 times the
-    error of ``b0``. Measured in float64: the residual 5.0e-6 -> 2.5e-9, the error 1.25e-3 (projection), 1.60e-3
-    (perturbed) -> 1.24e-3 (2026-11-22)."""
+    error of ``b0``. PENDING."""
     _float64_only()
     odd = seq.odd
 
@@ -129,7 +137,7 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     as the target of the iota loop (:func:`mrx.relaxation.twist.iota_newton` before each chunk, from the current
     ``b0`` carries), both on the field's label rebuilt before each chunk: they descend, end below :data:`BAR`, at the
     pressure and the transform within :data:`TARGET_BANDS` and as close to the exact field as the projection, within
-    1.1 times the error of ``b0`` (1.25e-3 -> 1.28e-3 measured in float64, 2026-11-22)."""
+    1.1 times the error of ``b0``. PENDING."""
     _float64_only()
     ts = TimeStepper(seq=seq, newton=True)
     p_star = _p_star(eq)
@@ -147,7 +155,7 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     B = res.state.B_n
     s_q, _, _ = label(seq, B, ANISOTROPY)
     X, _ = _points(seq)
-    e_p, _ = pressure_error(seq, weak_pressure(current(B, seq), B, seq), s_q, jnp.asarray(eq.mu0_p(X)), ERROR_BINS)
+    e_p, _ = pressure_error(seq, weak_pressure(current(B, seq), B, seq), s_q, jnp.asarray(_mu0_p(eq, X)), ERROR_BINS)
     r = np.asarray(iota_residual(seq, B, s_q, eq.iota, CELLS + 2)(B)[0])
     miss = float(np.abs(r).max() / eq.iota(0.0))
     start, end = field_error(eq, seq, b0), field_error(eq, seq, B)

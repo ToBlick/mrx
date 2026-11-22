@@ -1,19 +1,22 @@
 """Shared fixtures and constructions of the test suite (docs/source/concepts/testing_strategy.md).
 
-The fixture is the li383 equilibrium at spline degree 2 on the graded polar space (fewer theta cells near the axis),
-in two representations of the domain with the same mesh, each built once per session:
+The fixture is the Solov'ev tokamak of :mod:`test.solovev`, an exact axisymmetric equilibrium with constant ``p'``
+and ``F F'``, written as a wout and as a namelist, on one session-scoped sequence: graded polar splines of degree 2,
+one field period with stellarator symmetry, with as many cells in ``zeta`` as the three-dimensional code paths need.
+Every statement about the approximation, the variations, the flows, the controls and the pipeline is made against
+the exact solution on that sequence.
 
-- ``half``: the production sequence, one field period with stellarator symmetry, integrating half of it.
-- ``period``: one field period without the reflection.
+Statements that need a three-dimensional, non-axisymmetric domain (the de Rham complex, the cut by the planes normal
+to a non-planar axis, the nested axis of a non-planar axis, the fill of a 3D boundary) use the tiny sequence of the
+exact stellarator shearedE (:mod:`test.landreman`), without a relaxation.
 
-No test builds a sequence or preconditioners of the li383 domain of its own. A statement on another map installs
-that map on the fixture with the fixture's preconditioners (:func:`map_installed`), and the fixture is put back by
-reference afterwards. The suite's time goes into the solves and into compiling the fixture's programs, which are
-cached on disk between runs (see below).
+No test builds a sequence or preconditioners of its own. A statement on another map installs that map on the fixture
+with the fixture's preconditioners (:func:`map_installed`), and the fixture is put back by reference afterwards.
 
 Shared constructions: the ideal flow of a velocity and the energy along it (:func:`ideal_flow`,
-:func:`energy_derivatives`), a random divergence-free velocity (:func:`divergence_free`) and the minor radius of a
-boundary (:func:`minor_radius`), the unit of every length bound.
+:func:`energy_derivatives`), a random divergence-free velocity (:func:`divergence_free`), the field error against the
+exact field (:func:`field_error`) and the minor radius of a boundary (:func:`minor_radius`), the unit of every length
+bound.
 """
 import contextlib
 import os
@@ -34,52 +37,53 @@ if _CACHE:
     jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
     jax.config.update("jax_persistent_cache_min_compile_time_secs", 0.1)
 
-#: The mesh per field period of the shared sequence and the spline degree: the smallest graded mesh that resolves
-#: shearedE (see docs/source/concepts/testing_strategy.md).
-NS, P = (12, 16, 12), 2
-#: The surfaces of the fixture's wout.
-WOUT_SURFACES = 51
+#: The mesh of the shared tokamak sequence and the spline degree: six cells in zeta, the fewest the slab mass model
+#: takes, for the three-dimensional code paths.
+NS, P = (12, 16, 6), 2
+#: The tiny mesh per field period of the shearedE sequence.
+TINY = (6, 8, 6)
 #: The default bound of a length error, as a fraction of the minor radius of the device under test (Tobias
 #: 2026-11-21). A test with a tighter measured bound states it.
 LENGTH = 1e-2
 
 
-@pytest.fixture(scope="session")
-def eq():
-    """The exact equilibrium shearedE (:class:`test.landreman.Sheared`)."""
-    from test.landreman import Sheared
-    return Sheared()
-
-
-@pytest.fixture(scope="session")
-def files(eq, tmp_path_factory):
-    """``(wout, namelist)``: the paths of the exact equilibrium's wout and of its namelist (boundary, pressure and
-    transform), written once per session."""
-    d = tmp_path_factory.mktemp("sheared")
-    return (eq.write_wout(str(d / "wout_shearedE.nc"), ns=WOUT_SURFACES),
-            eq.write_namelist(str(d / "input.shearedE")))
-
-
-@pytest.fixture(scope="session")
-def seq(files):
-    """The shared sequence: the wout of shearedE at :data:`NS`, degree :data:`P`, graded, one field period with
-    stellarator symmetry, with its preconditioners and harmonic forms. The only sequence of the suite besides the
-    tiny ones of the de Rham statements."""
+def _build(path, ns, name):
     from mrx.geometry import build_sequence
     from mrx.nullspace import compute_nullspaces
 
     t0 = time.perf_counter()
-    s = build_sequence(files[0], NS, P, symmetry="stellarator", graded=True)
+    s = build_sequence(path, ns, P, symmetry="stellarator", graded=True)
     compute_nullspaces(s, verbose=False)
-    print(f"\n  shearedE: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
+    print(f"\n  {name}: {s.ns} p={P}, nfp={s.nfp}, built in {time.perf_counter() - t0:.0f} s", flush=True)
     return s
 
 
 @pytest.fixture(scope="session")
+def eq():
+    """The exact Solov'ev tokamak (:class:`test.solovev.Solovev`, A = 0)."""
+    from test.solovev import Solovev
+    return Solovev()
+
+
+@pytest.fixture(scope="session")
+def files(eq, tmp_path_factory):
+    """``(wout, namelist)``: the Solov'ev tokamak as a wout and as a namelist (boundary, pressure, transform)."""
+    d = tmp_path_factory.mktemp("solovev")
+    return eq.write_wout(str(d / "wout_solovev.nc")), eq.write_namelist(str(d / "input.solovev"))
+
+
+@pytest.fixture(scope="session")
+def seq(files):
+    """The shared sequence of the Solov'ev wout at :data:`NS` with its preconditioners and harmonic forms."""
+    return _build(files[0], NS, "Solov'ev")
+
+
+@pytest.fixture(scope="session")
 def minor(eq):
-    """The minor radius of shearedE (:func:`minor_radius` of its boundary)."""
-    xm, xn, R, Z = eq.surfaces(np.array([1.0]))
-    return minor_radius(np.stack([xm, xn, R[0], Z[0]], axis=1), 2)
+    """The minor radius of the Solov'ev boundary (:func:`minor_radius`)."""
+    rmnc, zmns, _ = eq.surfaces(np.array([1.0]), 40)
+    m = np.arange(rmnc.shape[1])
+    return minor_radius(np.stack([m, 0 * m, rmnc[0], zmns[0]], axis=1), 1)
 
 
 @pytest.fixture(scope="session")
@@ -90,6 +94,17 @@ def b0(seq):
 
     B, _ = potential_two_form(seq)
     return B
+
+
+@pytest.fixture(scope="session")
+def sheared(tmp_path_factory):
+    """``(eq, wout, namelist, seq)``: the exact stellarator shearedE (:class:`test.landreman.Sheared`), its wout and
+    namelist and its tiny sequence at :data:`TINY`, for the statements that need a non-axisymmetric domain."""
+    from test.landreman import Sheared
+    e = Sheared()
+    d = tmp_path_factory.mktemp("sheared")
+    wout, namelist = e.write_wout(str(d / "wout_shearedE.nc")), e.write_namelist(str(d / "input.shearedE"))
+    return e, wout, namelist, _build(wout, TINY, "shearedE")
 
 
 def field_error(eq, seq, B):

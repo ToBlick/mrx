@@ -1,9 +1,9 @@
 """Physical quantities of a magnetic field ``B``, given as the coefficients of a 2-form on a
 :class:`~mrx.derham_sequence.DeRhamSequence`.
 
-- :func:`compute_force` returns the Lorentz force ``J x h`` with its pressure-gradient part removed, together
+- :func:`compute_force` returns the Lorentz force ``J x H`` with its pressure-gradient part removed, together
   with the pressure and the current. This is the force the relaxation drives to zero.
-- :func:`induction_field` gives ``h``, the field the induction and the force use, and :func:`electric_field` the
+- :func:`induction_field` gives ``H``, the field the induction and the force use, and :func:`electric_field` the
   induction's electric field of a flow.
 - :func:`weak_pressure` and :func:`beta_vol` give a pressure that vanishes on the wall and the volume-averaged beta.
 - :func:`compute_helicity` and :func:`compute_divergence_norm` monitor the two quantities an ideal relaxation
@@ -28,32 +28,32 @@ from mrx.precision import lift, to_working
 
 @eqx.filter_jit
 def induction_field(B: jnp.ndarray, seq: DeRhamSequence, tol=None) -> jnp.ndarray:
-    """The values at the quadrature points of ``h = Pi_1 B``, the L2 projection of the 2-form ``B`` onto the free
+    """The values at the quadrature points of ``H = Pi_1 B``, the L2 projection of the 2-form ``B`` onto the free
     1-forms (no boundary condition), one free 1-form mass solve to the relative tolerance ``tol`` (``seq.tol`` if
     ``None``).
 
-    The induction and the force use ``h`` in place of ``B``: the electric field of a flow ``u`` is ``E = Pi_1(u x h)``,
-    ``dB/dt = curl E``, and the force is ``J x h``. Then ``(B, curl E)_M = (J, E)_{M_1} = -(u, J x h)``, so the force is
+    The induction and the force use ``H`` in place of ``B``: the electric field of a flow ``u`` is ``E = Pi_1(u x H)``,
+    ``dB/dt = curl E``, and the force is ``J x H``. Then ``(B, curl E)_M = (J, E)_{M_1} = -(u, J x H)``, so the force is
     the exact derivative of the energy along the flow. With ``E = Pi_1(u x B)`` the second variation of
     the discrete energy at the exact equilibrium shearedE (Landreman 2026, (32,48,32) graded p = 2) has a negative
     direction: a checkerboard in zeta of flows mostly along ``B``, carried by the terms in the current (Rayleigh
     value -0.25 against the mass, current part -0.57), along which the relaxation leaves the equilibrium. With
-    ``h`` the value on the same direction is +0.33, the current part about zero (2026-11-21,
+    ``H`` the value on the same direction is +0.33, the current part about zero (2026-11-21,
     runs/mrx/integration/exact_landreman, rounds 4 and 5).
 
-    ``h`` is free, not Dirichlet. ``B`` is tangential to the wall, and the Dirichlet 1-forms have no tangential
+    ``H`` is free, not Dirichlet. ``B`` is tangential to the wall, and the Dirichlet 1-forms have no tangential
     trace there: their projection puts a layer at the wall. On the same direction its Gauss-Newton part is 40 times
     larger, and as the auxiliary field of 2026-09 it raised the force floor fivefold and stalled the Newton steps."""
     odd = seq.odd
     free = odd.free
-    h = _mass_solve(free, free.vector_load_values(odd.evaluate_at_quadrature(B, 2), 2, 1), 1, tol=tol)
-    return free.evaluate_at_quadrature(h, 1)
+    H = _mass_solve(free, free.vector_load_values(odd.evaluate_at_quadrature(B, 2), 2, 1), 1, tol=tol)
+    return free.evaluate_at_quadrature(H, 1)
 
 
 @eqx.filter_jit
 def electric_field(u_jk: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence, guess=None) -> jnp.ndarray:
-    """The electric field ``E = Pi_1(u x h)`` of the flow ``u`` (the reference components of a 2-form at the
-    quadrature points) in the field ``B``, ``h`` of :func:`induction_field`: the projection onto the Dirichlet
+    """The electric field ``E = Pi_1(u x H)`` of the flow ``u`` (the reference components of a 2-form at the
+    quadrature points) in the field ``B``, ``H`` of :func:`induction_field`: the projection onto the Dirichlet
     1-forms, one mass solve warm-started from ``guess``. ``dB/dt = curl E`` is the induction of the relaxation's steps
     and of the transfer of a field onto a moved mesh (:func:`mrx.relaxation.mesh_motion.transfer`)."""
     odd = seq.odd
@@ -100,7 +100,7 @@ def current(B: jnp.ndarray, seq: DeRhamSequence, guess: jnp.ndarray | None = Non
 def compute_force(B: jnp.ndarray, seq: DeRhamSequence, p_guess: jnp.ndarray | None = None,
                   JxB_guess: jnp.ndarray | None = None, J_guess: jnp.ndarray | None = None,
                   F_guess: jnp.ndarray | None = None) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Return ``(F, p, J, JxB)``. ``JxB`` is the Lorentz force ``J x h`` (:func:`induction_field`), ``F`` is ``JxB``
+    """Return ``(F, p, J, JxB)``. ``JxB`` is the Lorentz force ``J x H`` (:func:`induction_field`), ``F`` is ``JxB``
     with its gradient part ``grad p`` removed (the divergence-free force), ``p`` is that pressure (a 3-form) and
     ``J = curl B`` the current (a 1-form, computed weakly).
 
@@ -121,13 +121,13 @@ def weak_pressure(J: jnp.ndarray, B: jnp.ndarray, seq: DeRhamSequence,
                   p_guess: jnp.ndarray | None = None) -> jnp.ndarray:
     """Return the weak pressure ``p_w``, a 0-form that vanishes on the wall.
 
-    It is the gradient part of the Helmholtz split ``J x h = F_w + grad p_w`` of the force as a 1-form
+    It is the gradient part of the Helmholtz split ``J x H = F_w + grad p_w`` of the force as a 1-form
     (:func:`induction_field`). Unlike the
     pressure of :func:`compute_force` it does not absorb the force normal to the wall. ``J`` is the current of
     ``B`` (:func:`current`).
     """
     odd, even = seq.odd, seq.even
-    # the Dirichlet 1-forms suffice: p_w only sees J x h tested against gradients of 0-forms that vanish on the wall
+    # the Dirichlet 1-forms suffice: p_w only sees J x H tested against gradients of 0-forms that vanish on the wall
     v_dual = even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1), induction_field(B, seq), 1, 1, 1)
     return even.leray(even.M[1].solve(v_dual), k=1, p_guess=p_guess)[1]
 

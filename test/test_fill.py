@@ -2,7 +2,7 @@
 
 The boundary is that of shearedE in its namelist, with no axis, so the reader fills it about the axis
 :func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly, and the guessed axis
-is a maximum of its objective and leaves the fill unfolded. The fill's spline map on the fixture's spaces, cut by the
+is a maximum of its objective and leaves the fill unfolded. The fill's spline map on the tiny shearedE spaces, cut by the
 planes normal to its axis as every map of a sequence is, meets the boundary to the projection error with a positive
 Jacobian.
 """
@@ -37,15 +37,15 @@ def _section_jacobian(boundary, axis_point, v, n_rho=200, n_u=400):
     return J * np.sign(np.mean(J))
 
 
-def _rows(files):
+def _rows(sheared):
     """The namelist's boundary rows ``(m, n, R_mn, Z_mn)``, ``n`` times nfp, and nfp."""
-    nl = read_indata(files[1])
+    nl = read_indata(sheared[2])
     return np.asarray(nl.boundary_rows()[0]), nl.nfp
 
 
-def test_fill_meets_boundary_and_axis(files):
+def test_fill_meets_boundary_and_axis(sheared):
     """The fill is the axis at rho = 0 and the boundary at rho = 1 to round-off, mode by mode (numpy, milliseconds)."""
-    rows, nfp = _rows(files)
+    rows, nfp = _rows(sheared)
     axis = np.array([[0, 0.75, 0.0], [nfp, 0.01, -0.005]])
     m, n, R, Z = fill_rows(rows, axis, np.array([0.0, 1.0]))
     on_axis = np.where(m == 0, 1.0, 0.0)
@@ -58,12 +58,12 @@ def test_fill_meets_boundary_and_axis(files):
     assert np.max(np.abs(Z[1] - [table.get((int(a), int(b)), (0.0, 0.0))[1] for a, b in zip(m, n)])) <= 4 * eps
 
 
-def test_guessed_axis_is_the_best_unfolded_fill(files):
+def test_guessed_axis_is_the_best_unfolded_fill(sheared):
     """In each of four planes per field period the fill about the guessed axis is unfolded (``J / rho`` positive on a
     fine grid), and moving the axis point by :data:`AXIS_STEP` of the minor radius in R or Z lowers the mean of
     ``log(J / rho)``, the objective the guess maximises (the axis of the Fourier fit is within the grid search's
     resolution of the planes' maxima). Numpy."""
-    rows, nfp = _rows(files)
+    rows, nfp = _rows(sheared)
     step = AXIS_STEP * minor_radius(rows, nfp)
     axis = guess_axis(rows, nfp)
     for v in 2.0 * np.pi / nfp * np.arange(4) / 4:
@@ -76,14 +76,15 @@ def test_guessed_axis_is_the_best_unfolded_fill(files):
             assert J_d.min() <= 0.0 or np.mean(np.log(J_d)) < best
 
 
-def test_the_fill_map_meets_the_boundary(seq, files):
+def test_the_fill_map_meets_the_boundary(sheared):
     """The namelist's exact fill (:func:`mrx.equilibria.state_position`) cut by the planes normal to its axis on the
-    fixture's spaces (:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the map of every sequence) has a positive
+    tiny shearedE spaces (:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the map of every sequence) has a positive
     Jacobian at every quadrature point, and at ``r = 1`` lies on the namelist's boundary at its own ``phi`` within
     :data:`~test.conftest.LENGTH` of the minor radius. A point of the wall keeps its ``theta`` and slides along the
-    boundary. PENDING measured."""
-    boundary, nfp = _rows(files)
-    eq = read_equilibrium(files[1])
+    boundary. 0.63 % measured on (12,16,12), PENDING on the tiny mesh."""
+    boundary, nfp = _rows(sheared)
+    seq = sheared[3]
+    eq = read_equilibrium(sheared[2])
     Phi, _, cut = axis_normal_map(seq, state_position(eq))
     t, z = np.meshgrid(np.arange(64) / 64, np.arange(12) / 12, indexing="ij")
     X = np.asarray(jax.vmap(Phi)(jnp.asarray(np.stack([np.ones(t.size), t.ravel(), z.ravel()], axis=1))))

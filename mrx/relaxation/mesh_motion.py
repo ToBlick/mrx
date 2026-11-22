@@ -800,7 +800,7 @@ class _Path(eqx.Module):
 
 
 def _rate(seq, path, tau, b):
-    """``db / dtau`` on the map ``Phi_tau``: the relaxation's induction ``curl E``, ``E = Pi_1(u x h)``
+    """``db / dtau`` on the map ``Phi_tau``: the relaxation's induction ``curl E``, ``E = Pi_1(u x H)``
     (:func:`mrx.relaxation.physics.electric_field`), on that map with the velocity ``u = -J xi`` of the mesh's
     relative motion, ``xi = DPhi_tau^-1 d`` the logical velocity of the mesh and ``J xi`` the reference components of
     a 2-form."""

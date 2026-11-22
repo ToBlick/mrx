@@ -6,7 +6,7 @@ whose right-hand side is the projection ``f`` of the shell function less its mea
 must hold to the tolerance of that solve: that makes the step's space the one of any other velocity with that
 divergence. ``xi`` is a gradient, so it is orthogonal to every curl to round-off. Along the ideal flow of ``xi`` the
 energy ``W = ||B||^2 / 2 - int p* dV`` changes at the rate ``E'(0) - int p* div xi dV``, and the shell's row in
-:func:`mrx.relaxation.newton.target_direction` is ``-(xi, J x h) - g_p``. The magnetic part is checked against the
+:func:`mrx.relaxation.newton.target_direction` is ``-(xi, J x H) - g_p``. The magnetic part is checked against the
 flow of the stepper (as for a divergence-free velocity in ``test_newton.py``), the pressure part against the
 divergence.
 """
@@ -24,7 +24,7 @@ from test.conftest import energy_derivatives, ideal_flow
 def test_shell_velocity_and_row(seq, b0):
     """The shells of :func:`build_shells` with the logical radius as the label: ``G_2 xi_j = f_j`` to a multiple
     of the Poisson tolerance, with ``f_j`` the projection of ``g_j - <g_j>`` for the zero-sum combination ``g_j`` of
-    the splines, ``(xi_j, curl a) = 0`` to round-off for a random ``a``, ``E'(0) = -(xi, J x h)`` along the flow of
+    the splines, ``(xi_j, curl a) = 0`` to round-off for a random ``a``, ``E'(0) = -(xi, J x H)`` along the flow of
     the middle shell, and the pressure part ``g_p`` equal to ``int p* div xi_j dV``. The shells' 18 Poisson solves
     take 244 to 369 conjugate gradients. Measured float64 / float32: divergence 1.0e-8 / 6.1e-7 (float32 stores
     ``xi`` rounded to its working precision), orthogonality 8.1e-14 / 1.0e-9, pressure part 4.4e-16 / 8.9e-8. 22 to 29
@@ -61,7 +61,7 @@ def test_shell_velocity_and_row(seq, b0):
     band = 1e3 * max(seq.tol, eps())
     info = np.asarray(info)
     print(f"\n  Poisson CG {info.min()} .. {info.max()},  |G_2 xi - f| / |f| {max(div_err):.1e},  "
-          f"|(xi, curl a)| / |xi||curl a| {max(orth):.1e},  E'(0) {d1:+.6e} vs -(xi, J x h) {force:+.6e},  "
+          f"|(xi, curl a)| / |xi||curl a| {max(orth):.1e},  E'(0) {d1:+.6e} vs -(xi, J x H) {force:+.6e},  "
           f"|g_p - p . M_3 G_2 xi| {max(pressure):.1e}")
     assert info.min() > 0
     assert max(div_err) < 1e2 * max(seq.tol, eps())
