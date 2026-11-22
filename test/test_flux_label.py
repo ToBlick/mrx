@@ -23,18 +23,19 @@ def test_flux_label_is_a_function_of_the_flux(seq, b0):
     nx = int(seq.quad.shape[0])
     r = np.asarray(seq.quad.x_x)
     T_q = np.asarray(seq.even.evaluate_at_quadrature(T, 0)[:, 0]).reshape(nx, -1)
-    # the angular spread on a layer over max T: 1.14e-3 at kperp = 1e-5, 1.27e-4 at 1e-6 on the fixture.
+    # the angular spread on a layer over max T: 3.71e-4 at kperp = 1e-5 on the fixture (1.14e-3 solved once).
     # The discrete flux functions are exactly null for the parallel part (Bhat^r = 0), so there is no floor.
     spread = float((T_q.std(axis=1) / T_q.max()).max())
     print(f"\n  angular spread of T on a layer over max T {spread:.3e}")
-    assert spread < 1.43e-3
+    assert spread < 5.6e-4
     assert np.all(np.diff(T_q.mean(axis=1)) < 0)
-    # |s - r^2| over the volume, 7.0e-4 measured on the fixture (2.45e-3 with the sorted and binned label)
+    # |s - r^2| over the volume, 3.57e-4 measured on the fixture (7.0e-4 solved once, 2.45e-3 with the sorted and
+    # binned label)
     s_q = np.asarray(enclosed_flux(seq, T, B_jk)).reshape(nx, -1)
     wJ = np.asarray(seq.quad.w * seq.jacobian_j).reshape(nx, -1)
     err = np.sum(wJ * np.abs(s_q - r[:, None] ** 2)) / np.sum(wJ)
     print(f"\n  mean |s - r^2| {err:.3e}")
-    assert err < 9e-4
+    assert err < 5.4e-4
     # the label spline is 1 at the smallest coefficient of T and 0 at the largest, to round-off
     a, b, _ = label_spline(seq, T, B_jk)
     s_of = enclosed_flux_map(seq, T, B_jk)
@@ -46,7 +47,7 @@ def test_label_at_the_shells_tolerance(seq, b0):
     warm-starts it from the label of the field before. That label is the converged one (tolerance 1e-9) to a small
     multiple of ``LABEL_TOL``, solved cold or from the label of another field: here the fixture's field seeded with
     its island chains (``energy_seed``), whose label differs by 5.5e-3. Measured at the production anisotropy
-    ``|s - s_ref|`` up to 9.4e-7 cold and 2.0e-6 warm in float64 (2026-11-21, the label spline), against the bound
+    ``|s - s_ref|`` up to 1.5e-6 cold and 1.2e-6 warm in float64 (2026-11-22, the corrected label), against the bound
     ``2 LABEL_TOL``. 14 s on four CPU cores after the fixture, 48 s in float32."""
     s_ref, _, info = label(seq, b0, ANISOTROPY, None, 1e-9)
     assert int(info) > 0

@@ -8,10 +8,10 @@ anisotropic heat diffusion along it still has a well-defined steady state. With 
 
 with the parallel conductivity 1 and the perpendicular one ``kperp``, the ``anisotropy``. As ``kperp -> 0`` the
 temperature becomes constant along the field lines wherever they cover a surface, so on nested surfaces it is a
-function of the enclosed flux: on the li383 VMEC field its spread around a radial layer is 1.1e-3 of its maximum at
-``kperp = 1e-5`` and 1.2e-4 at ``1e-6``. :func:`enclosed_flux` turns it into the label ``s``, the toroidal flux inside
-the level set of ``T`` over the total flux, a spline in ``T`` fixed by weak moments (:func:`label_spline`). On a VMEC
-field this is VMEC's ``s``.
+function of the enclosed flux: on the li383 VMEC field its spread around a radial layer, solved once, is 1.1e-3 of
+its maximum at ``kperp = 1e-5`` and 1.2e-4 at ``1e-6``, and 3.7e-4 at ``1e-5`` with the second solve below.
+:func:`enclosed_flux` turns it into the label ``s``, the toroidal flux inside the level set of ``T`` over the total
+flux, a spline in ``T`` fixed by weak moments (:func:`label_spline`). On a VMEC field this is VMEC's ``s``.
 
 Across an island ``T`` stays smooth and falls through it as across nested surfaces, so ``s`` there is about the flux
 of the surfaces around it. It is not flat: an island flattens only when it is wider than about
@@ -28,7 +28,11 @@ straight and round this factor grows like ``1 / r``: next to the axis ``T0`` is 
 Laplacian (twice the trace of the form) varies along the axis, ``T1`` there is a function of the position along the
 axis, and ``grad T0`` vanishes. :func:`flux_label` therefore solves twice with the same operator. The second source is
 the perpendicular flux divergence of the first temperature, ``-div(kperp grad T1)``. To leading order it has the
-same flux function, and the term of first order cancels, so its defect is of second order in ``kperp``.
+same flux function, and the term of first order cancels, so its defect is of second order in ``kperp``. The defect
+``int |M_j'(s)| |B.grad s| dV`` of the innermost profile cell (normalised by the toroidal flux) falls from 5.4e-3 to
+1.8e-6 on the Solov'ev field (18,32,6), from 3.3e-2 to 4.2e-4 on Landreman's sheared ellipse (24,32,24) and from
+4.8e-2 to 1.5e-4 on the W7-X VMEX field (24,48,28) (2026-11-22). On exact fields the part of ``s`` that is not a
+flux function is then that of the L2 projection of the exact label onto the label's space.
 
 The field enters only through its values at the quadrature points. On a stellarator-symmetric sequence ``T`` is
 even and lives on ``seq.even``. All functions trace, so they can run inside a compiled relaxation step.

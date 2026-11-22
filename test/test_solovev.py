@@ -43,10 +43,10 @@ COARSE, FINE = (14, 24, 6), (18, 32, 6)
 H_RATIO = 4.0 / 3.0
 #: 1.5x the errors measured on (COARSE, FINE), the same in float64 and float32: the start field 1.09e-3, 5.98e-4, the
 #: weak current against the projection of the Solov'ev current 9.90e-3, 7.21e-3, the flux label (rms of s) 4.91e-4,
-#: 3.36e-4, the transform (largest error on s in 0.05 .. 0.95 over the largest transform) 1.42e-2, 7.84e-3.
-BANDS = {"B": (1.6e-3, 9.0e-4), "J": (1.5e-2, 1.1e-2), "s": (7.4e-4, 5.0e-4), "iota": (2.1e-2, 1.2e-2)}
-#: Lower bounds of the orders between the meshes, measured 2.09 (B), 1.10 (J), 1.32 (s), 2.06 (iota).
-ORDERS = {"B": 1.5, "J": 0.8, "s": 1.0, "iota": 1.5}
+#: 3.36e-4, the transform (largest error on s in 0.05 .. 0.95 over the largest transform) 1.43e-4, 5.50e-5.
+BANDS = {"B": (1.6e-3, 9.0e-4), "J": (1.5e-2, 1.1e-2), "s": (7.4e-4, 5.0e-4), "iota": (2.1e-4, 8.3e-5)}
+#: Lower bounds of the orders between the meshes, measured 2.09 (B), 1.10 (J), 1.32 (s), 3.32 (iota).
+ORDERS = {"B": 1.5, "J": 0.8, "s": 1.0, "iota": 2.5}
 STEPS = 10
 
 
@@ -125,8 +125,8 @@ def test_the_label_is_the_toroidal_flux_and_its_transform_is_solovevs(solovev):
     transform fitted on the label (:func:`mrx.relaxation.twist.iota_fit`, degree 6) against the Solov'ev transform on
     ``s`` in 0.05 .. 0.95. MRX reads the wout's angles reversed, so its transform is the negative of the file's.
     The field is tangent to the logical surfaces, so the temperature is a function of ``r`` alone and the anisotropy
-    costs nothing. The fitted transform is off by 1.4 % on the coarse mesh, where the field-line tracer of this
-    equilibrium is within 4e-4 (2026-11-21)."""
+    costs nothing. The fitted transform is off by 1.4e-4 on the coarse mesh, where the field-line tracer of this
+    equilibrium is within 4e-4 (2026-11-21, 2026-11-22)."""
     eq, seqs = solovev
     S = np.linspace(0.05, 0.95, 19)
     errors = {"s": [], "iota": []}
