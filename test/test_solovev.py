@@ -1,6 +1,6 @@
 """MRX against an exact equilibrium: the Solov'ev tokamak of :mod:`test.solovev`.
 
-The wout holds the closed-form surfaces of the Solov'ev equilibrium in their straight-field-line angle, its transform
+The wout holds the closed-form surfaces of the Solov'ev equilibrium (A = 0) in their straight-field-line angle, its transform
 and its pressure, so every quantity MRX computes from it has an exact counterpart. On the graded production space at
 p = 2, on two meshes whose cells differ by the factor 4/3 in r and theta, with 6 cells in zeta (the field does not
 depend on zeta, and the slab mass model needs five):
@@ -52,7 +52,7 @@ STEPS = 10
 def solovev(tmp_path_factory):
     """``(eq, {mesh: (seq, B)})``: the equilibrium, and on each mesh the sequence of its wout with the harmonic
     forms and the start field."""
-    eq = Solovev()
+    eq = Solovev(angle="straight")
     path = eq.write_wout(str(tmp_path_factory.mktemp("solovev") / "wout_solovev.nc"), ns=201, mpol=40)
     out = {}
     for ns in (COARSE, FINE):
@@ -93,7 +93,7 @@ def test_the_start_field_is_the_solovev_field(solovev):
 
 
 def test_the_current_is_solovevs(solovev):
-    """The weak current ``M_1 J = D_1^T B`` against the L2 projection of ``mu0 J = -(8 b + 2 a) R e_phi`` onto the
+    """The weak current ``M_1 J = D_1^T B`` against the L2 projection of the Solov'ev ``mu0 J`` onto the
     Dirichlet 1-forms, in the mass norm. The weak current has no tangential part on the wall, where the Solov'ev
     current has one, so it is compared with the projection onto its own space, not with the current itself."""
     eq, seqs = solovev
@@ -104,7 +104,14 @@ def test_the_current_is_solovevs(solovev):
 
         def J_exact(x):
             X = seq.map(x)
-            return -eq.c * jnp.array([-X[1], X[0], 0.0])
+            R, Z = jnp.hypot(X[0], X[1]), X[2]
+            cos, sin = X[0] / R, X[1] / R
+            psi_R = 2.0 * eq.a * R * Z ** 2 + 4.0 * eq.b * R * (R ** 2 - 1.0)
+            psi_Z = 2.0 * eq.a * R ** 2 * Z + 2.0 * eq.d * Z
+            psi = eq.a * R ** 2 * Z ** 2 + eq.b * (R ** 2 - 1.0) ** 2 + eq.d * Z ** 2
+            dF = -2.0 * eq.d / jnp.sqrt(eq.F0 ** 2 - 4.0 * eq.d * psi)
+            J_R, J_phi, J_Z = -dF * psi_Z / R, -(eq.c * R + 2.0 * eq.d / R), dF * psi_R / R
+            return jnp.array([J_R * cos - J_phi * sin, J_R * sin + J_phi * cos, J_Z])
         J_proj = odd.M[1].solve(odd.load(J_exact, 1))
         errors.append(float(odd.l2_norm(current(B, seq) - J_proj, 1) / odd.l2_norm(J_proj, 1)))
     _check("J", errors)
