@@ -226,7 +226,7 @@ def test_the_two_runs_end_at_the_same_state(runs):
     def iota(sq, B):
         _, T, _ = label(sq, B, ANISOTROPY)
         s_q, T, _ = label(sq, B, ANISOTROPY, T)
-        return np.abs(iota_fit(sq, B, T, np.asarray(s_q), 6)(S_TEST))
+        return np.abs(iota_fit(sq, B, np.asarray(s_q), 6)(S_TEST))
     i_a, i_b = iota(seq_a, B_a), iota(seq_b, B_b)
     i_diff = float(np.abs(i_a - i_b).max())
     print(f"\n  B at common points {b_diff:.2e} (location miss {float(jnp.max(miss)):.1e} m), iota {i_diff:.2e} "

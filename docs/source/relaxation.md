@@ -340,7 +340,8 @@ the target of the prescribed current in an outer loop, before every chunk
    ({func}`mrx.relaxation.twist.iota_residual`). By the coarea formula it is
    the volume integral of $M_j(s)$ against the poloidal flux density
    $n_{fp} B \cdot \nabla\theta_a$ less $\iota^*$ times the toroidal one, with
-   $\theta_a$ an angle about the label's own axis. It needs no sorting by
+   $\theta_a$ the angle about the magnetic axis
+   (`mrx.relaxation.mesh_motion.magnetic_axis`). It needs no sorting by
    $s$, no derivative of a sampled flux and no division by $s$,
 2. the target enters only the slip rows, so the derivative of the state along
    the target's moments is the Gauss-Newton step's solution for the slip rows'

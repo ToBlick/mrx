@@ -285,7 +285,7 @@ def main(cfg, fit=None):
             fit misses the target by less than AT_TARGET of its largest value. Returns the state and whether it
             seeded."""
             s = np.linspace(0.05, 0.95, 19)
-            miss = float(np.abs(np.abs(iota_fit(seq, state.B_n, T_label, np.asarray(s_q), 6)(s))
+            miss = float(np.abs(np.abs(iota_fit(seq, state.B_n, np.asarray(s_q), 6)(s))
                                 - np.abs(np.asarray(iota_star(s)))).max())
             if miss >= AT_TARGET * iota_max:
                 return state, False

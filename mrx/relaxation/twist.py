@@ -56,7 +56,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction
 from mrx.flux_label import ANISOTROPY, enclosed_flux, flux_label
 from mrx.operators import _mass, _mass_model
 from mrx.precision import DTYPE, to_working
@@ -72,74 +71,17 @@ FIT_SAMPLES = 1024
 AT_TARGET = 1e-2
 
 
-def label_axis(seq, T, n_r=48, n_t=64, newton_steps=8, h=2e-3):
-    """``(x_a, y_a, dx_a, dy_a)``, each ``(n_zeta_q,)``: the magnetic axis on every quadrature plane ``zeta = const``
-    in the logical disc coordinates ``x + i y = r exp(2 pi i theta)``, and its derivative in ``zeta``. It is the
-    maximum of the label's temperature ``T``, where ``s = 0``: the label's own axis, wherever it sits on the mesh.
-
-    The start is the largest sample of ``T`` on a polar grid of the whole disc (``n_r`` by ``n_t``), then Newton on
-    the gradient of ``T``, with the step halved until ``T`` rises. Gradient and Hessian in ``(x, y)`` are central
-    differences of the values of ``T`` at the distance ``h``, since derivatives through the chart ``(x, y) -> (r,
-    theta)`` cancel large terms next to the logical axis and lose all digits there in float32. The derivative of the
-    axis is that of the stationary point, ``-H^-1 d grad T / d zeta``, with the ``zeta`` derivative of ``T`` exact.
-    The planes are the quadrature's: the poloidal flux density (:func:`poloidal_density`) is needed there."""
-    import mrx
-    T_fn = DiscreteFunction(T, seq.basis_0, seq.even.E(0))
-
-    def T_at(p, z):
-        return T_fn(jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2 * jnp.pi) % 1.0, z]))[0]
-    T_z = jax.grad(T_at, argnums=1)
-    ex, ey = jnp.asarray([h, 0.0], T.dtype), jnp.asarray([0.0, h], T.dtype)
-
-    def model(p, z):
-        """The gradient and the Hessian of T at p by central differences."""
-        t0, xp, xm, yp, ym = (T_at(p + d, z) for d in (0.0 * ex, ex, -ex, ey, -ey))
-        pp, pm, mp, mm = (T_at(p + a + b, z) for a, b in ((ex, ey), (ex, -ey), (-ex, ey), (-ex, -ey)))
-        g = jnp.stack([xp - xm, yp - ym]) / (2 * h)
-        hxy = (pp - pm - mp + mm) / (4 * h * h)
-        H = jnp.stack([jnp.stack([xp - 2 * t0 + xm, hxy * h * h]), jnp.stack([hxy * h * h, yp - 2 * t0 + ym])]) / (h * h)
-        return g, H
-
-    zz = jnp.asarray(seq.quad.x_z)
-    r = (np.arange(n_r) + 0.5) / n_r
-    th = np.arange(n_t) / n_t
-    rr, tt = np.meshgrid(r, th, indexing="ij")
-    disc = jnp.asarray(np.stack([rr * np.cos(2 * np.pi * tt), rr * np.sin(2 * np.pi * tt)], -1).reshape(-1, 2))
-    vals = jax.lax.map(lambda z: jax.vmap(lambda p: T_at(p, z))(disc), zz, batch_size=mrx.MAP_BATCH_SIZE_INNER)
-    p = disc[jnp.argmax(vals, axis=1)]
-    T_v = jax.jit(jax.vmap(T_at))
-
-    @jax.jit
-    def step(p):
-        def one(q, z):
-            g, H = model(q, z)
-            return -jnp.linalg.solve(H, g)
-        return jax.vmap(one)(p, zz)
-    for _ in range(newton_steps):
-        t0, d = T_v(p, zz), step(p)
-        lam = jnp.ones(zz.shape, T.dtype)
-        for _ in range(6):
-            lam = jnp.where(T_v(p + lam[:, None] * d, zz) >= t0, lam, 0.5 * lam)
-        p = jnp.where((T_v(p + lam[:, None] * d, zz) >= t0)[:, None], p + lam[:, None] * d, p)
-
-    @jax.jit
-    def slope(p):
-        def one(q, z):
-            gz = jnp.stack([T_z(q + ex, z) - T_z(q - ex, z), T_z(q + ey, z) - T_z(q - ey, z)]) / (2 * h)
-            return -jnp.linalg.solve(model(q, z)[1], gz)
-        return jax.vmap(one)(p, zz)
-    dp = slope(p)
-    p, dp = np.asarray(p), np.asarray(dp)
-    return p[:, 0], p[:, 1], dp[:, 0], dp[:, 1]
-
-
-def _axis_angle_gradient(seq, T):
+def _axis_angle_gradient(seq, B):
     """``(d_r, d_t, d_z)`` at the quadrature points: the logical components of ``grad theta_a``, ``theta_a`` the
-    angle about the label's own axis (:func:`label_axis`) over 2 pi, so that ``J B . grad theta_a`` is
-    ``B^r d_r + B^theta d_t + B^zeta d_z`` in the 2-form's components."""
+    angle about the magnetic axis of ``B`` (:func:`mrx.relaxation.mesh_motion.magnetic_axis`, a curve from a weak
+    residual) over 2 pi, so that ``J B . grad theta_a`` is ``B^r d_r + B^theta d_t + B^zeta d_z`` in the 2-form's
+    components. The axis and its ``zeta`` derivative come from its Fourier series at the quadrature planes."""
+    from mrx.relaxation.mesh_motion import _series, magnetic_axis
+    c, _ = magnetic_axis(seq, B)
+    V, dV = _series(c.shape[2] - 1, np.asarray(seq.quad.x_z, dtype=np.float64))
+    (xa, ya), (dxa, dya) = np.einsum("ckn,qkn->cq", c, V), np.einsum("ckn,qkn->cq", c, dV)
     xq = np.asarray(seq.quad.x)
     r, th = xq[:, 0], 2 * np.pi * xq[:, 1]
-    xa, ya, dxa, dya = label_axis(seq, T)
     k = np.broadcast_to(np.arange(xa.size), seq.quad.shape).ravel()
     u, v = r * np.cos(th) - xa[k], r * np.sin(th) - ya[k]
     rho2 = u * u + v * v
@@ -150,24 +92,24 @@ def _axis_angle_gradient(seq, T):
     return d_r, d_t, d_z
 
 
-def poloidal_density(seq, B, T):
+def poloidal_density(seq, B):
     """The density of the poloidal flux at the quadrature points: ``J B . grad theta_a`` with ``theta_a`` the angle
-    about the label's own axis (:func:`label_axis`), from the 2-form's components. Summed over the region inside a
-    level set of the label it is the poloidal flux enclosed by that surface, for any position of the logical axis.
-    The logical ``theta`` would not do: its cut ends on the logical axis, so it counts no flux inside a surface that
-    does not enclose the logical axis and misses the flux between the two axes in every other. Where the magnetic axis
-    is the logical one ``theta_a = theta``."""
+    about the magnetic axis of ``B`` (:func:`_axis_angle_gradient`), from the 2-form's components. Summed over the
+    region inside a level set of the label it is the poloidal flux enclosed by that surface, for any position of the
+    logical axis. The logical ``theta`` would not do: its cut ends on the logical axis, so it counts no flux inside a
+    surface that does not enclose the logical axis and misses the flux between the two axes in every other. Where the
+    magnetic axis is the logical one ``theta_a = theta``."""
     Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2))
-    d_r, d_t, d_z = _axis_angle_gradient(seq, T)
+    d_r, d_t, d_z = _axis_angle_gradient(seq, B)
     return Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z, Bq
 
 
-def iota_fit(seq, B, T, s_q, degree):
+def iota_fit(seq, B, s_q, degree):
     """The transform per full turn as a smooth function of the label ``s``: the poloidal flux enclosed by the label's
     level sets (:func:`poloidal_density`) against the toroidal flux they enclose, cumulative volume sums over the
     points sorted by ``s``, fitted by a polynomial of ``degree + 1`` without constant in the enclosed toroidal flux
     fraction and differentiated."""
-    dens, Bq = poloidal_density(seq, B, T)
+    dens, Bq = poloidal_density(seq, B)
     w = np.asarray(seq.quad.w)
     order = np.argsort(np.asarray(s_q))
     psi = np.cumsum((w * dens)[order])
@@ -294,15 +236,15 @@ def build_slips(seq, B, T, mu_star):
     return Slips(T_slip, g, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), mu
 
 
-def iota_residual(seq, T, s_q, iota, n_mu):
+def iota_residual(seq, B0, s_q, iota, n_mu):
     """The weak residual of the target transform ``iota(s)`` (per full turn, its magnitude taken with the sign of the
-    field's transform) on the label of the temperature ``T``, ``s_q`` at the quadrature points: the function
+    field's transform) on the flux label ``s_q`` (at the quadrature points) of the field ``B0``: the function
     ``B -> (r, Phi)`` of a 2-form ``B`` with
 
         r_j = int_0^1 (iota_B - iota*) M_j ds = int M_j(s) (nfp B . grad theta_a - iota*(s) B . grad zeta) dV / (Z Phi),
 
     ``M_j`` the ``n_mu`` unit-integral derivative splines of the profile space, ``theta_a`` the angle about the
-    label's own axis (:func:`poloidal_density`), ``Phi`` the toroidal flux per unit ``zeta`` inside the label's
+    magnetic axis of ``B0`` (:func:`poloidal_density`), ``Phi`` the toroidal flux per unit ``zeta`` inside the label's
     outermost level set and ``Z`` the ``zeta`` extent of the integrals.
 
     ``r_j`` is the local mean of the transform's miss over the support of ``M_j``. The ``M_j`` span the changes of
@@ -311,10 +253,10 @@ def iota_residual(seq, T, s_q, iota, n_mu):
     By the coarea formula the volume integral is the integral of ``M_j`` against ``nfp dpsi - iota* dPhi`` over the
     level sets of the label: it needs neither the points sorted by ``s`` nor a derivative of the sampled flux nor a
     division by ``s``. ``B`` enters linearly through the fluxes, ``1 / Phi`` aside, and the label and the axis are
-    those of ``T``, held, so a derivative in ``B`` is the change of the fluxes through the label's level sets. In an
+    those of ``B0``, held, so a derivative in ``B`` is the change of the fluxes through the label's level sets. In an
     island band those level sets cross the islands: the residual there is that of the flux through them."""
     s = jnp.asarray(s_q)
-    d_r, d_t, d_z = (jnp.asarray(c) for c in _axis_angle_gradient(seq, T))
+    d_r, d_t, d_z = (jnp.asarray(c) for c in _axis_angle_gradient(seq, B0))
     M = jnp.asarray(basis_table(_derivatives(n_mu), s))
     i_star = jnp.asarray(np.abs(np.asarray(iota(np.asarray(s_q)), dtype=float)))
     w = jnp.asarray(np.asarray(seq.quad.w) / np.sum(np.asarray(seq.quad.w_z)))
@@ -395,7 +337,7 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
     mu_star = jnp.asarray(mu_star, dtype=T.dtype)
     L = int(mu_star.size)
     slips, mu = build_slips(seq, B, T, mu_star)
-    residual = iota_residual(seq, T, s_q, iota, L)
+    residual = iota_residual(seq, B, s_q, iota, L)
     r = np.asarray(residual(B)[0], dtype=np.float64)
     R = slip_transform(residual, B, slips.maps(seq)[0], L)
     d_N, C, info = (np.asarray(v) for v in _slip_responses(ts, B, slips))
