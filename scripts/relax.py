@@ -42,9 +42,11 @@ pole moves only at a chunk boundary where the field is at an equilibrium (its sq
 onto the moved map by the relaxation's induction (:func:`mrx.relaxation.mesh_motion.transfer`). A move happens before
 the shells and the slips are rebuilt and does not change the targets. With ``--iota.target`` the loop takes its step
 at such an equilibrium before the move and holds its current target from a move until the field is below the bar
-again. The checkpoints keep that hold. The moves keep the preconditioners, which are built again on the installed map
-when the chunk's mean MINRES count of the Newton solve exceeds ``--mesh.rebuild-factor`` times that of the first chunk
-after their last build, or a Newton solve stopped at its iteration cap while the field is above the bar.
+again. A fresh start onto a moved map is held the same way: its vacuum is the equilibrium of no target, so the loop
+keeps the start's current until the field is first below the bar. The checkpoints keep that hold. The moves keep the
+preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve
+exceeds ``--mesh.rebuild-factor`` times that of the first chunk after their last build, or a Newton solve stopped at
+its iteration cap while the field is above the bar.
 
     python -u scripts/relax.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 16 32 32
 
@@ -137,8 +139,8 @@ def main(cfg, fit=None):
     ts = cfg.stepper(seq)
     if cfg.mesh:
         results["mesh"] = dict(moves=[], checks=[], chunks=[], builds=[])
-    # with --mesh.align: whether the iota loop holds its target since the last move, and the field's residual at this
-    # chunk boundary
+    # with --mesh.align: whether the iota loop holds its target since the last move or the start, and the field's
+    # residual at this chunk boundary
     schedule = dict(hold=False, resid=None)
     iota_target = None              # the iota loop's current target, set at its first chunk
     if cfg.output.restart:
@@ -171,6 +173,10 @@ def main(cfg, fit=None):
             else:
                 start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut)
             results["mesh"]["start"] = start
+            # the vacuum on the moved map is no equilibrium of the targets: the pressure's rise moves its axis by the
+            # Shafranov shift, as a move would. The iota loop holds the start's current until the field is first
+            # below the bar
+            schedule["hold"] = True
             ts = cfg.stepper(seq)
             onto = f"the curve of {axis_from}" if axis_from else "the vacuum's axis"
             print(f"[mesh] start: the pole onto {onto} in {len(start['rounds'])} rounds, axis "
@@ -394,7 +400,8 @@ def main(cfg, fit=None):
         """The state and the stepper of the chunk from step ``it``."""
         nonlocal ts, seed_pending, iota_target
         updated = False
-        if mm and cfg.iota and float(initial_state(state.B_n, ts).best.resid) < mm.bar:
+        at_start = it == 0 and "start" in results.get("mesh", {})    # the vacuum of a fresh start, held
+        if mm and cfg.iota and not at_start and float(initial_state(state.B_n, ts).best.resid) < mm.bar:
             # at an equilibrium the loop reads the field before the mesh moves: the move would kick it off
             s_q, info = label_of(state)
             if iota_target is None:     # the loop starts from the current the field carries
@@ -429,12 +436,12 @@ def main(cfg, fit=None):
             if iota_target is None:     # the loop starts from the current the field carries
                 iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, pr.cells), dtype=np.float64)
             if updated or schedule["hold"]:
-                # updated before the move, or held since the last move until the field is below the bar again
+                # updated before the move, or held since the last move or the start until the field is below the bar
                 slips = build_slips(seq, state.B_n, T_label, jnp.asarray(iota_target, dtype=T_label.dtype))[0]
                 if not updated:
                     results["iota"].setdefault("held", []).append(it)
-                    print(f"[iota] step {it}: target held since the last move, residual {schedule['resid']:.3e} above "
-                          f"the bar", flush=True)
+                    print(f"[iota] step {it}: target held since the last move or the start, residual "
+                          f"{schedule['resid']:.3e} above the bar", flush=True)
             else:
                 slips, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
                 record_iota(it, rec, info)
