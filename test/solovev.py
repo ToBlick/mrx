@@ -19,22 +19,22 @@ Cerfon and Freidberg's right-hand side with their ``A``, the share of ``F F'``. 
 where ``psi`` is zero, ``kappa`` is the elongation of the surfaces next to it (``a + d = 1``), ``F0 / R`` the toroidal
 field there, and the poloidal field turns counter-clockwise in the ``(R, Z)`` plane.
 
-The surfaces are found on elliptic rays from the axis, ``R = 1 + ell cos u``, ``Z = e ell sin u``, with
-``ell(psi, u)`` the root of ``psi(1 + ell cos u, e ell sin u) = psi``. The wout's angle is ``u`` with ``e = kappa``, the
-elliptic angle of the surfaces next to the axis (``angle="elliptic"``, the default), or the straight-field-line angle
-``theta*`` (``angle="straight"``, lambda zero). With ``e`` the Jacobian of ``(ell, u) -> (R, Z)`` is ``e ell``, so the
-toroidal flux per poloidal flux is the loop integral
+The surfaces are found on elliptic rays from the axis, ``R = 1 + ell cos u``, ``Z = kappa ell sin u``, with
+``ell(psi, u)`` the root of ``psi(1 + ell cos u, kappa ell sin u) = psi``, and ``u`` is the wout's angle, the elliptic
+angle of the surfaces next to the axis. The Jacobian of ``(ell, u) -> (R, Z)`` is ``kappa ell``, so the toroidal flux
+per poloidal flux is the loop integral
 
-    Phi'(psi) = F(psi) e int_0^2pi ell / (R d psi / d ell) du,
+    Phi'(psi) = F(psi) kappa int_0^2pi ell / (R d psi / d ell) du,
 
-the transform is ``iota = 2 pi / Phi'``, and ``theta*`` grows by ``iota F e ell / (R d psi / d ell)`` per unit ``u``. In
-the elliptic angle that rate is constant at the axis, so lambda vanishes there, as the reader assumes, and the map is
-smooth there: the ``m != 1`` content of ``(X - X_axis) / r`` falls like ``r``. ``theta*`` is smooth at the axis too, but
-on solovev20 its map carries 3.7 times the elliptic angle's ``m != 1`` content, and MRX's projected field has twice its
-error and 70 times its force residual at (14,24,10) (2026-11-21). The polar angle (``e = 1``) is not smooth: on
-elongated surfaces it differs from ``theta*`` at the axis itself. Every integral in ``u`` is a trapezoidal sum of a
-smooth periodic function and every function of ``psi`` a Chebyshev interpolant, so the wout's data are exact to
-round-off up to its radial and Fourier truncation. Like VMEC's, its angles are left-handed and MRX reads them reversed.
+the transform is ``iota = 2 pi / Phi'``, and the straight-field-line angle ``theta* = u + lambda`` grows by
+``iota F kappa ell / (R d psi / d ell)`` per unit ``u``. That rate is constant at the axis, so lambda vanishes there, as
+the reader assumes, and the map is smooth there: the ``m != 1`` content of ``(X - X_axis) / r`` falls like ``r``.
+``theta*`` itself is no choice for the wout's angle: on the boundary it runs up to 17 times faster in some places than
+in others (low aspect ratio, ``F F'``-driven current), and the spline map at (18,32,6) folds there (2026-11-21). The
+polar angle is not smooth at the axis: on elongated surfaces it differs from ``theta*`` at the axis itself. Every
+integral in ``u`` is a trapezoidal sum of a smooth periodic function and every function of ``psi`` a Chebyshev
+interpolant, so the wout's data are exact to round-off up to its radial and Fourier truncation. Like VMEC's, its
+angles are left-handed and MRX reads them reversed.
 """
 from __future__ import annotations
 
@@ -49,14 +49,12 @@ N_U, DEG_PSI = 512, 48
 
 class Solovev:
     """The equilibrium with the share ``A`` of ``F F'`` in the current (Cerfon and Freidberg's ``A``), elongation
-    ``kappa`` next to the axis, the boundary through ``(1 + x_b, 0)`` and ``F0 = F(0)``, written in the ``angle``
-    ``"elliptic"`` or ``"straight"``. The defaults (``A = 0``) give a transform of 0.8 on the axis and 0.65 on the
+    ``kappa`` next to the axis, the boundary through ``(1 + x_b, 0)`` and ``F0 = F(0)``. The defaults (``A = 0``) give a transform of 0.8 on the axis and 0.65 on the
     boundary and 10 % beta on the axis."""
 
-    def __init__(self, A=0.0, kappa=1.5, x_b=0.2, F0=3.75, angle="elliptic"):
+    def __init__(self, A=0.0, kappa=1.5, x_b=0.2, F0=3.75):
         self.A, self.F0 = float(A), float(F0)
-        self.e = {"elliptic": float(kappa), "straight": 1.0}[angle]
-        self.straight = angle == "straight"
+        self.kappa = float(kappa)
         self.b = kappa ** 2 / 4.0
         self.a = 1.0 - A * (1.0 + kappa ** 2)
         self.d = A * (1.0 + kappa ** 2)
@@ -123,11 +121,11 @@ class Solovev:
         return 2.0 * np.pi / self._dphi_c(self.psi_of_s(s))
 
     def _ray(self, psi, u=None):
-        """``(ell, ell / (d psi / d ell), R)`` on the rays ``(1 + ell cos u, e ell sin u)`` (``u`` of shape
+        """``(ell, ell / (d psi / d ell), R)`` on the rays ``(1 + ell cos u, kappa ell sin u)`` (``u`` of shape
         ``(len(psi), n)``, by default the uniform ``self.u`` on every surface) of the surfaces ``psi``."""
         psi = np.atleast_1d(np.asarray(psi, dtype=float))[:, None]
         u = self.u[None, :] if u is None else u
-        cu, su = np.cos(u), self.e * np.sin(u)
+        cu, su = np.cos(u), self.kappa * np.sin(u)
         a, b, d = self.a, self.b, self.d
 
         def g(ell):                     # psi = ell^2 g(ell) along the ray
@@ -143,32 +141,24 @@ class Solovev:
         return ell, 1.0 / (2.0 * g(ell) + ell * dg(ell)), 1.0 + ell * cu
 
     def _dphi(self, psi):
-        """``Phi'(psi) = F e int ell / (R d psi / d ell) du`` (the toroidal flux, not divided by 2 pi, per ``psi``)."""
+        """``Phi'(psi) = F kappa int ell / (R d psi / d ell) du`` (the toroidal flux, not divided by 2 pi, per ``psi``)."""
         _, l_over_dl, R = self._ray(psi)
-        return self.F(np.atleast_1d(psi)) * self.e * np.mean(l_over_dl / R, axis=1) * 2.0 * np.pi
+        return self.F(np.atleast_1d(psi)) * self.kappa * np.mean(l_over_dl / R, axis=1) * 2.0 * np.pi
 
     def surfaces(self, s, mpol):
         """``(rmnc, zmns, lmns)`` of the surfaces ``s`` in the wout's angle, modes ``m = 0 .. mpol - 1``."""
         s = np.asarray(s, dtype=float)
         psi, iota = self.psi_of_s(s), self.iota(s)
-        rate_scale = (iota * self.F(psi) * self.e)[:, None]         # d theta* / du = iota F e ell / (R d psi / d ell)
+        rate_scale = (iota * self.F(psi) * self.kappa)[:, None]     # d theta* / du = iota F kappa ell / (R d psi / d ell)
         m = np.arange(mpol)
         k = np.arange(1, N_U // 2)
-        # theta*(u) - u as a sine series in u, from its rate on the uniform rays
-        _, l_over_dl, R = self._ray(psi)
+        # lambda = theta*(u) - u as a sine series in u, from its rate on the uniform rays
+        ell, l_over_dl, R = self._ray(psi)
         lam = 2.0 * (rate_scale * l_over_dl / R - 1.0) @ np.cos(np.outer(self.u, k)) / N_U / k
-        u = np.broadcast_to(self.u, (s.size, N_U)).copy()
-        if self.straight:
-            # u at uniform theta*, by Newton's method with the rate as derivative
-            for _ in range(30):
-                _, l_over_dl, R = self._ray(psi, u)
-                theta_star = u + np.einsum("jk,jnk->jn", lam, np.sin(u[..., None] * k))
-                u = u - (theta_star - self.u[None, :]) / (rate_scale * l_over_dl / R)
-        ell, _, R = self._ray(psi, u)
-        Z = self.e * ell * np.sin(u)
+        Z = self.kappa * ell * np.sin(self.u)[None, :]
         cos, sin = np.cos(np.outer(self.u, m)), np.sin(np.outer(self.u, m))
         w = np.where(m == 0, 1.0, 2.0) / N_U
-        lmns = np.zeros((s.size, mpol)) if self.straight else np.pad(lam, ((0, 0), (1, 0)))[:, :mpol]
+        lmns = np.pad(lam, ((0, 0), (1, 0)))[:, :mpol]
         return (R @ cos) * w, (Z @ sin) * w, lmns
 
     def point(self, rho, theta, phi, mpol=40):
