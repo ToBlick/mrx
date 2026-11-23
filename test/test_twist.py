@@ -12,17 +12,21 @@ is affine in the field along the slips, which keep the toroidal flux: one update
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.flux_label import ANISOTROPY
+from mrx.flux_label import ANISOTROPY, label_condition, radius_flux
 from mrx.precision import eps
-from mrx.relaxation.physics import compute_divergence_norm
+from mrx.relaxation.initial_conditions import toroidal_flux, vacuum_field
+from mrx.relaxation.physics import compute_divergence_norm, compute_force
 from mrx.relaxation.shells import label, profile_cells
-from mrx.relaxation.twist import (build_slips, current_on_label, current_target, enclosed_current, iota_residual,
-                                  slip_transform)
+from mrx.relaxation.twist import (_slip_parts, build_slips, current_error, current_on_label, current_start,
+                                  current_target, enclosed_current, iota_residual, slip_changes, slip_transform)
 
 #: The moments of the slips against the profile-space means of the weak current, on the sequence's profile space
 #: (:func:`mrx.relaxation.shells.profile_cells`, 5 cells on the tokamak): 2.08e-4 of the largest in float64 and float32
 #: (2026-11-23).
 SLIP_WEAK_J = 4e-4
+#: The current start on the tokamak's vacuum: the moments of the slips of ``B_J`` against the target's, as
+#: :func:`mrx.relaxation.twist.current_error`, 3.7e-5 in float64 (2026-11-23).
+START_MOMENTS = 1e-4
 
 
 def test_slip_move_and_derivative(seq, b0):
@@ -95,3 +99,32 @@ def test_one_slip_update_zeroes_the_weak_iota_residual(eq, seq, b0):
     r1 = np.asarray(residual(b0 + move(jnp.asarray(d, dtype=b0.dtype)))[0], dtype=float)
     print(f"\n  |r| {np.abs(r0).max():.3e} -> {np.abs(r1).max():.3e} after the update, cond R {np.linalg.cond(R):.2e}")
     assert np.abs(r1).max() < 1e4 * eps() * np.abs(r0).max()
+
+
+def test_current_start(seq):
+    """The current start (:func:`mrx.relaxation.twist.current_start`) on the tokamak's vacuum field, the harmonic
+    2-form, with the label of the logical surfaces (:func:`mrx.flux_label.radius_flux`) and the target
+    ``mu0 I*(s) = s (2 - s)``. ``B_J`` has no toroidal flux to round-off. The slip moments of ``B_J`` on that label,
+    ``-(B_J, T_j)_M / Z``, are the target's within START_MOMENTS: the enclosed current of ``B_J`` is ``I*`` in the
+    weak sense. ``J = sigma B`` is along the vacuum field, so ``B + eps B_J`` is force free to first order in ``eps``:
+    doubling ``eps`` multiplies the force by 4 within 5 %. The vacuum has no poloidal component, so its mean transform
+    (:func:`mrx.flux_label.label_condition`) is zero to round-off, and with ``B_J`` it is not."""
+    B = vacuum_field(seq, 1.0)
+    iota_vac = label_condition(seq, seq.odd.evaluate_at_quadrature(B, 2))[0]
+    s_q = radius_flux(seq, seq.odd.evaluate_at_quadrature(B, 2))
+    mu_star = current_target(lambda s: s * (2.0 - s), profile_cells(seq))
+    B_J, info = current_start(seq, B, s_q, mu_star)
+    flux = abs(float(toroidal_flux(seq, B_J)))
+    mu = _slip_parts(seq, B_J, slip_changes(seq, s_q, int(mu_star.size) + 1))[0]
+    err = current_error(np.asarray(mu), np.asarray(mu_star))
+    odd = seq.odd
+    eps_ = 1e-2 * float(odd.l2_norm(B, 2) / odd.l2_norm(B_J, 2))
+    F1, F2 = (float(seq.even.l2_norm(compute_force(B + e * B_J, seq)[0], 2)) for e in (eps_, 2 * eps_))
+    iota_start = label_condition(seq, seq.odd.evaluate_at_quadrature(B + B_J, 2))[0]
+    print(f"\n  Hodge solve {int(info)}, toroidal flux of B_J {flux:.1e}, moments {err:.3e}, force ratio {F2 / F1:.4f}, "
+          f"mean transform {iota_vac:.1e} -> {iota_start:.3e}")
+    assert info > 0
+    assert flux < 1e3 * eps()
+    assert err < START_MOMENTS
+    assert abs(F2 / F1 - 4.0) < 0.2
+    assert abs(iota_vac) < 1e3 * eps() < abs(iota_start)

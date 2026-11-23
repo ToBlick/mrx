@@ -43,6 +43,8 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
   and toroidal fluxes (:func:`transform_moments`),
   :func:`project_iota_target` a target transform projected onto the same splines, and
   :func:`enclosed_current` the current inside the label's level sets.
+- :func:`current_start` adds the current of a target to a vacuum field along the field, a start with the target's
+  current and the vacuum's surfaces.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
 
@@ -187,6 +189,29 @@ def load_iota_target(path):
         raise ValueError(f"{path}: NCURR = 1 prescribes the current, a target of the relaxation (--current.target), "
                          "not a transform")
     return nl.iota
+
+
+def current_start(seq, B, s_q, mu_star):
+    """``(B_J, info)``: the field ``B_J`` of the current ``J = sigma(s) B`` along the field ``B`` (a vacuum field) on the
+    label ``s_q`` (at the quadrature points), with ``sigma = (mu0 I*)'(s) / Phi`` so that the toroidal current inside
+    every surface is ``I*(s)``, ``Phi`` the toroidal flux per unit ``zeta``. ``mu0 I*`` is the target with the moments
+    ``mu_star`` (:func:`current_target`) projected onto the profile space (:func:`_l2_projection`), its derivative
+    taken in ``s``.
+
+    ``B_J = curl a`` with ``a`` the Dirichlet 1-form of ``L_1 a = (mu0 J, .)``, the 1-form Hodge Laplacian, one
+    Hodge split. ``curl a`` sees only the co-exact part of the load, so the current of ``B_J``
+    (:func:`mrx.relaxation.physics.current`) is the divergence-free part of ``J`` in the 1-forms: the gradient part,
+    from ``B . grad sigma``, of a label that is not exactly a flux function, drops out. ``a`` has no tangential trace,
+    so ``B_J`` has no flux through the wall, no harmonic part and no toroidal flux through a section. ``J x B`` is
+    ``sigma B x B_J``, second order in the current: ``B + B_J`` is force free to first order and has the vacuum's
+    topology to first order. ``info`` is the signed count of the solve."""
+    odd = seq.odd
+    Bq = odd.evaluate_at_quadrature(B, 2)
+    phi = jnp.sum(seq.quad.w * Bq[:, 2]) / jnp.sum(seq.quad.w_z)
+    slope = _l2_projection(int(mu_star.size), np.asarray(mu_star, dtype=np.float64)).derivative()
+    sigma = jnp.asarray(slope(np.asarray(s_q, dtype=np.float64)), dtype=Bq.dtype) / phi
+    a, info = odd.L[1].solve(odd.vector_load_values(sigma[:, None] * Bq, 2, 1), return_info=True)
+    return odd.G[1] @ a, info
 
 
 class Slips(eqx.Module):
@@ -382,7 +407,7 @@ def _slip_responses(ts, B, slips):
     return d, C.T, jnp.concatenate([info[None], infos])
 
 
-def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
+def iota_newton(seq, B, T, s_q, iota, ts, mu_star, shift=None):
     """``(slips, mu_new, record)``: the outer loop's Newton step on the current target's moments ``mu_star`` for the
     target transform ``iota(s)`` at the field ``B`` (label temperature ``T``, label ``s_q`` at the quadrature points),
     for the stepper ``ts`` (its Newton settings and shells), and the slips of the new target for the next chunk
@@ -399,7 +424,10 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
     the next but the target. The Gauss-Newton matrix leaves out the second variation's terms in the current, so near a
     current-carrying equilibrium the step is a quasi-Newton step.
 
-    ``record`` holds ``r`` (local means of ``iota - iota*`` with the field's sign), its largest magnitude and rms in
+    ``shift`` (moments, optional) is subtracted from ``r``: the loop then aims at the transform whose weak residual
+    is ``shift``, the target of a continuation from the start field's transform.
+
+    ``record`` holds ``r`` (local means of ``iota - iota*`` with the field's sign, less ``shift``), its largest magnitude and rms in
     ``s``, ``mu`` (the moments of ``B``), ``lam`` (the new target), ``delta``, ``r_eq = r + R d_N``, the MINRES
     counts."""
     mu_star = jnp.asarray(mu_star, dtype=T.dtype)
@@ -407,6 +435,9 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
     slips, mu = build_slips(seq, B, T, mu_star)
     residual = iota_residual(seq, B, s_q, iota, L)
     r = np.asarray(residual(B)[0], dtype=np.float64)
+    if shift is not None:
+        # a continuation's target: the transform whose weak residual is ``shift``
+        r = r - np.asarray(shift, dtype=np.float64)
     R = slip_transform(residual, B, slips.maps(seq)[0], L)
     d_N, C, info = (np.asarray(v) for v in _slip_responses(ts, B, slips))
     r_eq = r + R @ d_N.astype(np.float64)

@@ -37,6 +37,12 @@ class Method(StrEnum):
     GRADIENT = "gradient"           # gradient descent on the smoothed force
 
 
+class CurrentStart(StrEnum):
+    """The label of the start that adds the target current along the start field (--current.start)."""
+    LABEL = "label"                 # the flux label of the start field (mrx.flux_label)
+    RADIUS = "radius"               # the toroidal flux inside the logical surfaces r = const (mrx.flux_label.radius_flux)
+
+
 @dataclass(frozen=True)
 class Geometry:
     """Geometry, initial condition and discretisation."""
@@ -163,6 +169,8 @@ class Budget:
     """The number of steps per chunk. Diagnostics, checkpoints and the stopping test run once per chunk, and --budget.steps must be a multiple of it. Unset, it is 10 for Newton and 200 for gradient descent."""
     floor_tol: float = 1e-10
     """Stop when the mean squared normalised force residual over the last chunk is below this."""
+    stages: int = 1
+    """Bring the targets (the pressure of --pressure.target, the current of --current.target, the transform of --iota.target) in over this many stages from the start field's own values, one stage per chunk boundary: the targets at stage k are (1 - t) times the start's plus t times the prescribed ones, t = k / stages. 1 puts them on at once."""
 
 
 @dataclass(frozen=True)
@@ -222,6 +230,12 @@ class Current:
     """The current to reach: file (the current of the geometry file's field on its flux label) or a VMEC input namelist with NCURR = 1 (CURTOR times its PCURR_TYPE profile of AC, or of AC_AUX_S and AC_AUX_F). Unset, the run keeps the start's poloidal fluxes."""
     scale: float = 1.0
     """Multiply the target by this factor."""
+    start: Optional[CurrentStart] = None
+    """Add the target current to the start field along the field, J = sigma(s) B with sigma = (mu0 I*)'(s) / Phi, by one 1-form Hodge solve (mrx.relaxation.twist.current_start): the start carries the target current and keeps the surfaces of the file's field to first order. The sum is the start field, whose magnetic axis the first move of --mesh.align puts the pole on. The current part of the stages of --budget.stages is then at its target from the first. label takes s from the start field's flux label, radius from the toroidal flux inside the mesh's logical surfaces, for an axisymmetric vacuum, whose flux label is degenerate. With --iota.target the current target is the start's only: the iota loop starts from it and holds it until the field is first at an equilibrium. Unset, the file's field is the start field."""
+
+    def __post_init__(self):
+        if self.start is not None and self.target is None:
+            raise ValueError("--current.start needs --current.target")
 
     def __bool__(self):
         return self.target is not None
@@ -289,8 +303,9 @@ class RelaxConfig:
         if self.iota and (not d.newton or self.drive):
             raise ValueError("--iota.target needs Newton steps (--descent.method newton) and goes without "
                              "--drive.resistivity")
-        if self.current and self.iota:
-            raise ValueError("--iota.target and --current.target both set the current: give one")
+        if self.current and self.iota and not self.current.start:
+            raise ValueError("--iota.target and --current.target both set the current: give one, or the current "
+                             "target as the start's with --current.start")
         m = self.mesh
         if m and self.drive:
             raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the mesh it "

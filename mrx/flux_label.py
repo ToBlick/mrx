@@ -197,18 +197,21 @@ def label_spline(seq, T, B_jk):
     of the flux over ``T`` on the cells: where the level sets meet the hottest value (the magnetic axis) the
     distribution ends with a jump inside the last cell, and there the projection is accurate to about a cell's share
     of the flux."""
-    nc = seq.basis_0.Lambda[0].n - seq.p
-    basis = SplineBasis(nc + 3, 3, "clamped")
-    d = DerivativeSpline(basis)
     c = seq.even.E(0).T @ T
     a, b = jnp.min(c), jnp.max(c)
-    T_q = seq.even.evaluate_at_quadrature(T, 0)[:, 0]
+    return a, b, _flux_spline(seq, seq.even.evaluate_at_quadrature(T, 0)[:, 0], a, b, B_jk)
+
+
+def _flux_spline(seq, T_q, a, b, B_jk):
+    """The coefficients ``e`` of the spline ``sigma`` of :func:`label_spline` for the values ``T_q`` at the quadrature
+    points of a function with the bounds ``a <= T_q <= b``."""
+    nc = seq.basis_0.Lambda[0].n - seq.p
+    d = DerivativeSpline(SplineBasis(nc + 3, 3, "clamped"))
     f = seq.quad.w * jnp.asarray(B_jk)[:, 2]
     values, indices = jax.vmap(d.evaluate_local)((T_q - a) / (b - a))
     m = -jnp.zeros(d.n, f.dtype).at[indices].add(values * f[:, None]) / jnp.sum(f)
     slope = jnp.asarray(_gram_inverse(nc), dtype=f.dtype) @ m
-    e = -jnp.concatenate([jnp.cumsum(slope[::-1])[::-1], jnp.zeros(1, f.dtype)])
-    return a, b, e
+    return -jnp.concatenate([jnp.cumsum(slope[::-1])[::-1], jnp.zeros(1, f.dtype)])
 
 
 @functools.cache
@@ -229,6 +232,18 @@ def enclosed_flux(seq, T, B_jk):
     """The label ``s`` at the quadrature points: the toroidal flux inside the level set of ``T`` through each
     quadrature point, over the total toroidal flux (:func:`label_spline`)."""
     return enclosed_flux_map(seq, T, B_jk)(seq.even.evaluate_at_quadrature(T, 0)[:, 0])
+
+
+def radius_flux(seq, B_jk):
+    """The label ``s`` at the quadrature points of the logical surfaces ``r = const`` of the mesh: the toroidal flux
+    inside the surface through each quadrature point over the total flux, the spline of :func:`label_spline` with
+    ``1 - r^2`` in place of the temperature. It is the label of a field whose flux label is degenerate, an
+    axisymmetric vacuum with no rotational transform, on a mesh built from nested surfaces."""
+    r = jnp.asarray(seq.quad.x)[:, 0]
+    T_q = 1.0 - r * r
+    e = _flux_spline(seq, T_q, 0.0, 1.0, B_jk)
+    values, indices = jax.vmap(SplineBasis(e.size, 3, "clamped").evaluate_local)(T_q)
+    return jnp.sum(values * e[indices], axis=1)
 
 
 def enclosed_flux_map(seq, T, B_jk):
