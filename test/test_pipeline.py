@@ -45,9 +45,9 @@ NESTED_AXIS = LENGTH
 BAR, MOVE_TOL = 1e-8, 0.1
 #: The Newton steps and the chunk of the run.
 STEPS, CHUNK = 60, 10
-#: The end state against shearedE: the field error over the projection's error on the fixture's own mesh, beta
+#: The end state against the exact equilibrium: the field error over the projection's error on the fixture's own mesh, beta
 #: relative to the exact beta, the magnetic axis as a fraction of the minor radius, the traced transform relative to
-#: the exact one: PENDING measured.
+#: the exact one: to be measured once the target ramp exists.
 FIELD_FACTOR, BETA, AXIS, IOTA = 3.0, 5e-2, LENGTH, 1e-2
 
 
