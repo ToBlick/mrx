@@ -7,19 +7,26 @@ every radial quadrature layer up to the anisotropy and falls from the axis to th
 
 The prescribed pressure takes the label as its radial coordinate, solved to a loose tolerance and warm-started from
 the label of the field before. Neither may move it by more than a small multiple of that tolerance.
+
+The mean transform of the label's condition is the poloidal over the toroidal flux, the mean of the transform over
+the toroidal flux, and zero for the vacuum of the axisymmetric domain.
 """
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.flux_label import ANISOTROPY, enclosed_flux_map, flux_label, label_spline
+from mrx.flux_label import ANISOTROPY, enclosed_flux_map, flux_label, label_condition, label_spline
 from mrx.precision import eps
+from mrx.relaxation.initial_conditions import vacuum_field
 from mrx.relaxation.shells import LABEL_TOL, label
 
 #: The angular spread of ``T`` on a radial layer over its maximum at ``kperp = 1e-5``, and the volume rms of the label
 #: against the exact ``s`` at the production anisotropy and 1e-9: 5.8e-5 (the second solve, 6.3e-4 solved once) and 9.3e-4
 #: measured in float64 and float32 on the tokamak (12,16,8), 2026-11-22.
 SPREAD, S_RMS = 1e-4, 1.4e-3
+#: The mean transform of the label's condition against the exact ``int_0^1 iota ds``, relative: 1.8e-10 in float64 on the
+#: tokamak (12,16,8) (2026-11-23).
+MEAN_IOTA = 1e-5
 
 
 def test_flux_label_is_the_toroidal_flux(eq, seq, b0):
@@ -67,3 +74,17 @@ def test_label_at_the_shells_tolerance(seq, b0):
     print(f"\n  max |s - s_ref| cold {cold:.2e} (CG {int(info_cold)}), warm {warm:.2e} (CG {int(info_warm)})")
     assert int(info_cold) > 0 and int(info_warm) > 0
     assert cold < 2 * LABEL_TOL and warm < 2 * LABEL_TOL
+
+
+def test_mean_transform(eq, seq, b0):
+    """The mean transform of :func:`mrx.flux_label.label_condition` is ``int_0^1 iota ds`` of the exact field within
+    :data:`MEAN_IOTA` on the projected field, the pole being its magnetic axis, and zero to round-off on the vacuum
+    of the domain, which has no poloidal component."""
+    x, w = np.polynomial.legendre.leggauss(20)
+    exact = float(np.sum(0.5 * w * eq.iota(0.5 * (x + 1.0))))
+    iota = abs(label_condition(seq, seq.odd.evaluate_at_quadrature(b0, 2))[0])
+    iota_vac = label_condition(seq, seq.odd.evaluate_at_quadrature(vacuum_field(seq, 1.0), 2))[0]
+    err = abs(iota - exact) / exact
+    print(f"\n  mean transform {iota:.6f} against {exact:.6f} ({err:.2e}), vacuum {iota_vac:.1e}")
+    assert err < MEAN_IOTA
+    assert abs(iota_vac) < 1e3 * eps()

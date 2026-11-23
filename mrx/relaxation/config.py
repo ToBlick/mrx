@@ -202,6 +202,8 @@ class Pressure:
     """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
     label_tol: float = LABEL_TOL
     """The relative tolerance of that label's solve."""
+    label_check: bool = True
+    """Stop a fresh run that needs the flux label (targets or a seed) when its start field's transform is too small for it: (iota a / R)^2 below 100 kperp (mrx.flux_label.label_condition), the vacuum of an axisymmetric domain for one. --pressure.no-label-check makes it a warning."""
     cells: Optional[int] = None
     """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). Unset, half the mesh's radial cells (mrx.relaxation.shells.profile_cells)."""
 

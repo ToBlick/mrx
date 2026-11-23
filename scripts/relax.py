@@ -103,7 +103,7 @@ def main(cfg, fit=None):
     from mrx.relaxation.seeding import energy_seed
     from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_newton, iota_residual,
                                       load_current_target, load_iota_target, project_iota_target, spline_centres)
-    from mrx.flux_label import ANISOTROPY
+    from mrx.flux_label import ANISOTROPY, LABEL_MARGIN, label_condition
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
@@ -134,6 +134,27 @@ def main(cfg, fit=None):
         elif g.zeta != "phi":
             raise ValueError(f"{cfg.output.restart} holds no map, so it was written on the file's sections: restart "
                              "it with --geometry.zeta phi")
+
+    def start_field(sq):
+        """``(B, ic)``: the geometry file's field on the installed map of ``sq``, with the numbers of the flux label's
+        condition (:func:`mrx.flux_label.label_condition`) in ``ic`` when the run needs the label, which stops a run
+        whose start field's transform is too small for it."""
+        B, ic = initial_field(sq)
+        pr = cfg.pressure
+        if not (pr or cfg.current or cfg.iota or cfg.seed):
+            return B, ic
+        iota_m, a_m, R_m = label_condition(sq, sq.odd.evaluate_at_quadrature(B, 2))
+        margin = (iota_m * a_m / R_m) ** 2 / pr.anisotropy
+        ic["label_condition"] = dict(iota=iota_m, a=a_m, R=R_m, margin=margin)
+        what = f"(iota a / R)^2 = ({iota_m:.3e} x {a_m:.3g} / {R_m:.3g})^2 = {margin:.3g} kperp (kperp {pr.anisotropy:g})"
+        print(f"[label] start field: {what}", flush=True)
+        if margin < LABEL_MARGIN:
+            msg = (f"the start field's transform is too small for the flux label: {what}, below {LABEL_MARGIN:g} "
+                   "kperp. Start from a VMEC or VMEX wout")
+            if pr.label_check:
+                raise ValueError(msg)
+            print(f"[label] WARNING {msg}", flush=True)
+        return B, ic
 
     # --- the start field: the initial condition or a restart, then the seed ---
     h_r_sq = radial_cell_sq(seq)
@@ -175,7 +196,7 @@ def main(cfg, fit=None):
                 with np.load(axis_from) as z:
                     start = mesh_motion.curve_start(seq, z["zetas"], z["points"], recut)
             else:
-                start = mesh_motion.vacuum_start(seq, lambda sq: initial_field(sq)[0], recut)
+                start = mesh_motion.vacuum_start(seq, lambda sq: start_field(sq)[0], recut)
             results["mesh"]["start"] = start
             # the vacuum on the moved map is no equilibrium of the targets: the pressure's rise moves its axis by the
             # Shafranov shift, as a move would. The iota loop holds the start's current until the field is first
@@ -187,11 +208,11 @@ def main(cfg, fit=None):
                   + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
                   + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
                   + f"), {start['axis_cells']:.2e} cells on the final map, {start['seconds']:.0f} s", flush=True)
-        B0, ic = initial_field(seq)
+        B0, ic = start_field(seq)
         results["ic"] = ic
         print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
-                          for k, v in ic.items() if k != "kind"), flush=True)
+                          for k, v in ic.items() if not isinstance(v, dict)), flush=True)
         state, it0 = initial_state(B0, ts), 0
     T_label = None                     # the flux label's temperature, solved once for the seed and the targets
     if cfg.iota or cfg.seed:

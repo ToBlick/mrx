@@ -51,6 +51,9 @@ from mrx.spline_bases import DerivativeSpline, SplineBasis, basis_table
 #: The default ``kperp``: ten times better aligned with the surfaces than 1e-5 at about 1.8 times the CG iterations
 #: (li383 (16,32,32)), far from the spurious maxima below about 1e-9.
 ANISOTROPY = 1e-6
+#: The margin of the label's condition (:func:`label_condition`): a start field with ``(iota a / R)^2`` below this
+#: many ``kperp`` has no flux label.
+LABEL_MARGIN = 100.0
 #: The iteration cap of the label solve. A mesh whose logical surfaces are far from the flux surfaces needs more
 #: iterations: the vacuum's label on li383 graded (48,64,24) at the tolerance 1e-5 takes 1624 on the wout's mesh and
 #: 4191 on the mesh filled from the boundary alone, 2965 and 6544 at 1e-8 (one H200, 2026-11-18).
@@ -239,3 +242,26 @@ def enclosed_flux_map(seq, T, B_jk):
         values, indices = jax.vmap(basis.evaluate_local)(jnp.ravel((T0 - a) / (b - a)))
         return jnp.sum(values * e[indices], axis=1).reshape(jnp.shape(T0))
     return sigma
+
+
+def label_condition(seq, B_jk):
+    """``(iota, a, R)``: the mean transform of the field with the reference components ``B_jk`` at the quadrature
+    points with the radii of its domain, the numbers of the
+    condition ``(iota a / R)^2 >> kperp`` of the flux label. Along a surface of minor radius ``a`` the parallel
+    conduction of the ``m = 1`` harmonic of the temperature goes as ``(iota / R)^2``, the perpendicular one as
+    ``kperp / a^2``: the label is a flux function only when the first dominates (shearedE's vacuum about 1, W7-X 1e4,
+    Starlite 1e3 times ``kperp = 1e-6``).
+
+    ``iota = nfp int B . grad theta dV / int B . grad zeta dV``, one global ratio of the field's own components with
+    the logical angle ``theta``, the angle about the pole, as the iota loop's integrand
+    (:func:`mrx.relaxation.twist.iota_residual`) has it about the magnetic axis: after the start move of
+    ``--mesh.align`` the pole is the start field's axis. A field with no poloidal component, the vacuum of an
+    axisymmetric domain, has ``iota = 0`` whatever the label. ``R`` is the mean distance of the pole from the axis
+    of the torus, ``a = sqrt(V / (2 pi^2 R))`` from the volume ``V`` of the domain."""
+    Bq = jnp.asarray(B_jk)
+    iota = seq.nfp * jnp.sum(seq.quad.w * Bq[:, 1]) / jnp.sum(seq.quad.w * Bq[:, 2])
+    z, w_z = jnp.asarray(seq.quad.x_z), jnp.asarray(seq.quad.w_z)
+    pole = jax.vmap(seq.map)(jnp.stack([jnp.zeros_like(z), jnp.zeros_like(z), z], axis=1))
+    R = jnp.sum(w_z * jnp.hypot(pole[:, 0], pole[:, 1])) / jnp.sum(w_z)
+    V = seq.nfp * jnp.sum(seq.quad.w * seq.jacobian_j) / jnp.sum(w_z)
+    return float(iota), float(jnp.sqrt(V / (2.0 * jnp.pi ** 2 * R))), float(R)
