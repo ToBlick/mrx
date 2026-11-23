@@ -48,7 +48,7 @@ second mesh, are measured outside the suite.
 The suite's time goes into compiling and solving. Compiled programs
 are cached on disk (`MRX_XLA_CACHE`, default `$MRX_DATA/cache/xla`, or
 `outputs/xla_cache` in the checkout without `MRX_DATA`). On 8 cluster CPU
-cores from a cold cache the suite takes 13 minutes in float64 and 18 in float32 (2026-11-22).
+cores from a cold cache the suite takes 12 minutes in float64 and 17 in float32 (2026-11-22).
 
 ## What a test asserts
 
