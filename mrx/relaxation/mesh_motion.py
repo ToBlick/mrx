@@ -307,21 +307,23 @@ def _section_values(seq, Phi, delta):
 
 
 @eqx.filter_jit
-def _det_ratio(seq, Phi):
-    """``det DPhi`` of ``Phi`` over that of the installed map at the quadrature points."""
-    return frame_geometry(seq, Phi).jacobian_j / seq.jacobian_j
+def _det_ratio(seq, Phi, reference=None):
+    """``det DPhi`` of ``Phi`` over that of the installed map at the quadrature points, or over ``reference``, the
+    ``det DPhi`` of another map there."""
+    return frame_geometry(seq, Phi).jacobian_j / (seq.jacobian_j if reference is None else reference)
 
 
-def _backtrack(seq, base, delta):
+def _backtrack(seq, base, delta, reference=None):
     """``(lam, ratio)``: the largest ``lam`` of ``1, 1/2, ..., 2^-8`` for which no cell of ``base + lam delta``
-    loses more than :data:`MIN_DET_RATIO` of its volume, or 0, and the ratio of ``det DPhi`` there."""
+    loses more than :data:`MIN_DET_RATIO` of its volume, against the installed map or the ``det DPhi`` ``reference``
+    of another, or 0, and the ratio of ``det DPhi`` there."""
     lam = 1.0
     for _ in range(9):
-        ratio = _det_ratio(seq, moved(seq.map, base + lam * delta))
+        ratio = _det_ratio(seq, moved(seq.map, base + lam * delta), reference)
         if float(jnp.min(ratio)) >= MIN_DET_RATIO:
             return lam, ratio
         lam *= 0.5
-    return 0.0, _det_ratio(seq, moved(seq.map, base))
+    return 0.0, _det_ratio(seq, moved(seq.map, base), reference)
 
 
 def install_map(seq, Phi, keep_preconditioners=False):
@@ -355,14 +357,14 @@ def axis_offset(seq, c):
     return y - np.asarray(jax.vmap(seq.map.section)(ax)), h1
 
 
-def _displacement(seq, dz, d, h1):
+def _displacement(seq, dz, d, h1, reference=None):
     """``(Phi_new, record)``: the map of the move of the pole of ``seq`` by the in-plane displacement with the ``zeta``
     spline coefficients ``dz`` (step 2 of the module docstring), halved against folds. ``d`` are the offsets on the
     planes of :func:`_planes`. ``record`` holds their largest (``axis_m`` in metres, ``axis_cells`` in first radial
     cells of size ``h1``), the backtracking factor ``lam``, the largest move in metres and the range of the ratio of
-    ``det DPhi`` after and before."""
+    ``det DPhi`` after and before, or after and of ``reference``, the ``det DPhi`` the volume bound holds against."""
     delta = tangent(seq, axis_step(seq, dz))
-    lam, ratio = _backtrack(seq, jnp.zeros_like(delta), delta)
+    lam, ratio = _backtrack(seq, jnp.zeros_like(delta), delta, reference)
     off = float(np.max(np.linalg.norm(d, axis=1)))
     return moved(seq.map, lam * delta), dict(
         axis_m=off, axis_cells=off / h1, h1_m=h1, lam=lam,
@@ -442,16 +444,24 @@ def _start(seq, offset, recut):
     """Move the pole of ``seq`` in rounds onto the curve whose offsets ``offset(seq) = (dz, d, h_1, info)`` gives on the
     installed map (:func:`_displacement`), with no field carried, and return the record. The rounds repeat while the
     distance falls by half or more, or the last move was halved against a fold, so a move of any size is made in
-    rounds. They stop when a move is halved to nothing. With ``recut`` the moved map is cut again by the planes normal
-    to its axis (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its
-    preconditioners and harmonic forms. The record holds the offset in first radial cells, the backtracking factor,
-    the largest move and ``info`` of every round, the offset on the final map and the wall time."""
+    rounds. They stop when a move is halved to nothing. The volume bound of :data:`MIN_DET_RATIO` holds against the map
+    the rounds start from, for the rounds together. Per round it compounds: on li383 (24,48,24) twenty rounds towards
+    the vacuum's axis, halved from the first, left ``det DPhi`` at 2e-4 at the quadrature points (1e-2 on the move
+    onto the nested axis), the Newton solves unconverged and the run at NaN (2026-11-23). What is left of the way is
+    the moves' at the bar. With ``recut`` the moved map is cut again by the planes normal to its axis
+    (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its preconditioners and
+    harmonic forms. The record holds the offset in first radial cells, the backtracking factor,
+    the largest move, the smallest ratio of ``det DPhi`` to the start map's and ``info`` of every round, the offset
+    on the final map and the wall time."""
     t0 = time.perf_counter()
     rounds = []
+    # the volume bound of a move holds against the map the rounds start from: per round it would compound
+    J0 = seq.jacobian_j
     while True:
         dz, d, h1, info = offset(seq)
-        Phi, rec = _displacement(seq, dz, d, h1)
-        rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"], axis=info))
+        Phi, rec = _displacement(seq, dz, d, h1, J0)
+        rounds.append(dict(axis_cells=rec["axis_cells"], lam=rec["lam"], move_m=rec["move_m"],
+                           det_ratio_min=rec["det_ratio_min"], axis=info))
         print(f"[mesh] start round {len(rounds)}: axis {rec['axis_cells']:.3e} first cells off the pole, "
               f"move {rec['move_m']:.3e} m x{rec['lam']:g}, {info}", flush=True)
         # a move halved to nothing against a fold changes nothing: the next round would find the same offset
