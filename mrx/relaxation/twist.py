@@ -39,7 +39,8 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
   :func:`current_error` the current's error against them.
 - :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
   its change along the slips and :func:`iota_newton` the outer Newton step with them.
-- :func:`iota_fit` is the transform as a spline in ``s``, the L2 projection of its weak moments,
+- :func:`iota_fit` is the transform as a spline in ``s``, the L2 projection of the ratios of its weighted poloidal
+  and toroidal fluxes (:func:`transform_moments`),
   :func:`project_iota_target` a target transform projected onto the same splines, and
   :func:`enclosed_current` the current inside the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
@@ -132,12 +133,17 @@ def iota_fit(seq, B, s_q, n_mu=None):
     """The transform per full turn of ``B`` as a spline in the label ``s`` (``s_q`` at the quadrature points), with the
     sign of the field's transform: the L2 projection in ``s`` onto the ``n_mu`` derivative splines ``M_j`` of the
     profile space (of :func:`~mrx.relaxation.shells.profile_cells` of ``seq`` unless given), the space the iota loop
-    controls, from the weak moments ``int M_j iota ds``, the weak residual of the zero target (:func:`iota_residual`).
-    The moments are moments of the field against functions of the label: no sorting of points, no differentiation of
-    sampled fluxes, and one coefficient per spline, no free degree. A ``scipy.interpolate.BSpline`` of degree
+    controls, of the samples ``iota_j = m_j / w_j``. ``m_j`` and ``w_j`` are the poloidal and the toroidal flux of
+    ``B`` weighted by ``M_j(s)`` (:func:`transform_moments`), so ``iota_j`` is ``d Psi_pol / d Psi_tor`` over the
+    support of ``M_j``. That needs no exact flux label: ``m_j`` alone is a mean of the transform only where ``s`` is
+    exactly the normalised toroidal flux, and ``w_j`` is the measure of how far it is not (on W7-X 0.987 and 1.004 for
+    the first two splines, the rest within 2e-4 of 1). The iota loop's residual has the same form. The moments are
+    moments of the field against functions of the label: no sorting of points, no differentiation of sampled fluxes,
+    and one coefficient per spline, no free degree. A ``scipy.interpolate.BSpline`` of degree
     :data:`~mrx.relaxation.shells.PROFILE_DEGREE` ``- 1``, whose ``derivative()`` is ``d iota / ds``."""
     n_mu = profile_cells(seq) + PROFILE_DEGREE - 1 if n_mu is None else n_mu
-    return _l2_projection(n_mu, iota_residual(seq, B, s_q, np.zeros_like, n_mu)(B)[0])
+    m, w = (np.asarray(v, dtype=np.float64) for v in transform_moments(seq, B, s_q, n_mu)(B))
+    return _l2_projection(n_mu, m / w)
 
 
 def project_iota_target(target, n_mu):
@@ -274,6 +280,34 @@ def build_slips(seq, B, T, mu_star):
     return Slips(T_slip, g, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), mu
 
 
+def _flux_densities(seq, B0):
+    """The function ``B -> (dpsi, dphi)``: the poloidal and the toroidal flux densities of the 2-form ``B`` at the
+    quadrature points, ``J B . grad theta_a`` and ``J B . grad zeta`` times the quadrature weights over the ``zeta``
+    extent ``Z``, ``theta_a`` the angle about the magnetic axis of ``B0`` (:func:`_axis_angle_gradient`)."""
+    d_r, d_t, d_z = (jnp.asarray(c) for c in _axis_angle_gradient(seq, B0))
+    w = jnp.asarray(np.asarray(seq.quad.w) / np.sum(np.asarray(seq.quad.w_z)))
+
+    def densities(B):
+        Bq = seq.odd.evaluate_at_quadrature(B, 2)
+        return w * (Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z), w * Bq[:, 2]
+    return densities
+
+
+def transform_moments(seq, B0, s_q, n_mu):
+    """The function ``B -> (m, w)`` of a 2-form ``B``: ``m_j = int M_j(s) nfp B . grad theta_a dV / (Z Phi)`` and
+    ``w_j = int M_j(s) B . grad zeta dV / (Z Phi)``, the poloidal flux (times ``nfp``) and the toroidal flux weighted by
+    the ``n_mu`` splines ``M_j`` on the label ``s_q`` of ``B0``, in units of the toroidal flux ``Phi`` per unit
+    ``zeta`` (:func:`iota_residual`). ``m_j / w_j`` is the transform over the support of ``M_j``."""
+    M = jnp.asarray(basis_table(_derivatives(n_mu), jnp.asarray(s_q)))
+    densities = _flux_densities(seq, B0)
+
+    def moments(B):
+        dpsi, dphi = densities(B)
+        phi = jnp.sum(dphi)
+        return M @ (seq.nfp * dpsi) / phi, M @ dphi / phi
+    return moments
+
+
 def iota_residual(seq, B0, s_q, iota, n_mu):
     """The weak residual of the target transform ``iota(s)`` (per full turn, its magnitude taken with the sign of the
     field's transform) on the flux label ``s_q`` (at the quadrature points) of the field ``B0``: the function
@@ -293,16 +327,12 @@ def iota_residual(seq, B0, s_q, iota, n_mu):
     division by ``s``. ``B`` enters linearly through the fluxes, ``1 / Phi`` aside, and the label and the axis are
     those of ``B0``, held, so a derivative in ``B`` is the change of the fluxes through the label's level sets. In an
     island band those level sets cross the islands: the residual there is that of the flux through them."""
-    s = jnp.asarray(s_q)
-    d_r, d_t, d_z = (jnp.asarray(c) for c in _axis_angle_gradient(seq, B0))
-    M = jnp.asarray(basis_table(_derivatives(n_mu), s))
+    M = jnp.asarray(basis_table(_derivatives(n_mu), jnp.asarray(s_q)))
     i_star = jnp.asarray(np.abs(np.asarray(iota(np.asarray(s_q)), dtype=float)))
-    w = jnp.asarray(np.asarray(seq.quad.w) / np.sum(np.asarray(seq.quad.w_z)))
+    densities = _flux_densities(seq, B0)
 
     def residual(B):
-        Bq = seq.odd.evaluate_at_quadrature(B, 2)
-        dpsi = w * (Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z)
-        dphi = w * Bq[:, 2]
+        dpsi, dphi = densities(B)
         phi = jnp.sum(dphi)
         sign = jax.lax.stop_gradient(jnp.sign(jnp.sum(dpsi) / phi))
         return M @ (seq.nfp * dpsi - sign * i_star * dphi) / phi, phi
