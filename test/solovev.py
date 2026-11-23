@@ -45,6 +45,8 @@ from scipy.io import netcdf_file
 MU0 = 4e-7 * np.pi
 #: Points of the loop integrals in ``u`` and the degree of the interpolants in ``psi``.
 N_U, DEG_PSI = 512, 48
+#: The share of the exact poloidal field in the start of a relaxation (:meth:`Solovev.start`).
+START_LAM = 0.8
 
 
 class Solovev:
@@ -82,13 +84,35 @@ class Solovev:
         """``mu0 p`` in T^2."""
         return self.c * (self.psi_b - self.psi(R, Z))
 
-    def field(self, X):
-        """``B`` at the Cartesian points ``X`` (rows ``x, y, z``), Cartesian."""
+    def field(self, X, lam=1.0):
+        """``B`` at the Cartesian points ``X`` (rows ``x, y, z``), Cartesian, with its poloidal part scaled by ``lam``
+        (:meth:`start`)."""
         R, Z = np.hypot(X[:, 0], X[:, 1]), X[:, 2]
         cos, sin = X[:, 0] / R, X[:, 1] / R
         pR, pZ = self.grad_psi(R, Z)
-        B_R, B_phi, B_Z = -pZ / R, self.F(self.psi(R, Z)) / R, pR / R
+        B_R, B_phi, B_Z = -lam * pZ / R, self.F(self.psi(R, Z)) / R, lam * pR / R
         return np.stack([B_R * cos - B_phi * sin, B_R * sin + B_phi * cos, B_Z], axis=1)
+
+    def start(self, seq, lam=START_LAM):
+        """The start of a relaxation towards this equilibrium on the installed map of ``seq``, as the vacuum field is
+        for a stellarator: nested surfaces, a finite transform, out of balance with the pressure. It is the exact
+        field with its poloidal part scaled by ``lam``, ``B = F(psi) grad phi + lam grad psi x grad phi``: the surfaces
+        are the exact ones, so ``B . n = 0`` on the boundary, the field is divergence-free, and its transform and its
+        toroidal current are ``lam`` times the exact ones. The 2-form is the L2
+        projection of that field onto the divergence-free 2-forms with no flux through the wall, the harmonic field
+        and the curls of the Dirichlet 1-forms, one stiffness solve, on any map of the domain."""
+        import jax
+        import jax.numpy as jnp
+
+        from mrx.geometry import map_jacobian_at
+        from mrx.precision import lift
+        odd = seq.odd
+        X = np.asarray(jax.vmap(seq.map)(seq.quad.x))
+        cov = jnp.einsum("qji,qj->qi", map_jacobian_at(seq.map, seq.quad.x), jnp.asarray(self.field(X, lam)))
+        load = odd.vector_load_values(cov, 1, 2)
+        h = odd.nullspace(2)[0]
+        a = odd.S[1].solve(odd.G[1].T @ lift(load))
+        return h * ((h @ load) / (h @ (odd.M[2] @ h))) + odd.G[1] @ a
 
     def current(self, X):
         """``mu0 J = curl B`` at the Cartesian points ``X``, Cartesian."""

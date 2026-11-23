@@ -7,7 +7,8 @@ the transform of the namelist as targets), driven through the library:
    (:mod:`mrx.equilibria.nested_axis`),
 2. the namelist's fill, cut by the planes normal to its axis, is moved onto that axis and cut again
    (:func:`mrx.relaxation.mesh_motion.curve_start`),
-3. the vacuum field of the namelist's flux on that mesh is the start,
+3. the exact field with its poloidal part scaled by 0.8 (:meth:`test.solovev.Solovev.start`) on that mesh is the
+   start, as the vacuum field is for a stellarator: the tokamak's vacuum has no transform and no flux label,
 4. Newton steps with the shells of the exact pressure and the iota loop on the exact transform, rebuilt before every
    chunk, with the move rule: the pole moves onto the magnetic axis at a chunk boundary below the residual bar when
    the axis is more than the move tolerance off it, the field carried by the induction,
@@ -26,11 +27,9 @@ import pytest
 
 from mrx.diagnostics.poincare import poincare
 from mrx.equilibria import nested_axis, read_equilibrium, state_position
-from mrx.equilibria.indata import read_indata
-from mrx.flux_label import ANISOTROPY
+from mrx.flux_label import ANISOTROPY, LABEL_MARGIN, label_condition
 from mrx.precision import DTYPE
 from mrx.relaxation import mesh_motion as mm
-from mrx.relaxation.initial_conditions import vacuum_field
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
 from mrx.relaxation.seeding import energy_seed
@@ -88,8 +87,6 @@ def test_the_nested_axis_is_the_exact_axis(eq, nested, minor):
     assert off < NESTED_AXIS
 
 
-@pytest.mark.skip(reason="pending the gradual iota / current target ramp from the vacuum (another branch): the tokamak's "
-                         "vacuum has no flux surfaces, its iota loop matrix is singular")
 def test_the_pipeline_ends_at_the_exact_equilibrium(eq, seq, b0, files, nested, minor):
     """Steps 1 to 6 of the module docstring: the end field is the exact field within :data:`FIELD_FACTOR` times the
     projection's error of the fixture, its beta the exact beta within :data:`BETA`, its magnetic axis the exact axis
@@ -98,11 +95,12 @@ def test_the_pipeline_ends_at_the_exact_equilibrium(eq, seq, b0, files, nested, 
     _float64_only()
     projection = field_error(eq, seq, b0)
     st = read_equilibrium(files[1])
-    nl = read_indata(files[1])
     fill = mm.axis_normal_map(seq, state_position(st))[0]
     with map_installed(seq, fill):
         start = mm.curve_start(seq, *nested, True)
-        B0 = vacuum_field(seq, nl.phiedge)
+        B0 = eq.start(seq)
+        iota_m, a_m, R_m = label_condition(seq, seq.odd.evaluate_at_quadrature(B0, 2))
+        margin = (iota_m * a_m / R_m) ** 2 / ANISOTROPY
         ts = TimeStepper(seq=seq, newton=True)
         p_star = lambda s: jnp.asarray(eq.mu0_p_of_s(np.asarray(s)))   # noqa: E731
         loop = dict(target=None, moves=[])
@@ -147,10 +145,12 @@ def test_the_pipeline_ends_at_the_exact_equilibrium(eq, seq, b0, files, nested, 
     d_iota = float(np.abs(np.abs(np.asarray(trace["iota"])) - want)[shown].max() / want.max())
     r_hist = np.asarray(res.trace["resid"])
     print(f"\n  seeds {[(r['m'], r['n'], round(r['x'], 3), round(r['w'], 4)) for r in rows]}"
-          f"\n  start: pole onto the nested axis in {len(start['rounds'])} rounds, {start['axis_cells']:.2e} cells"
+          f"\n  start: pole onto the nested axis in {len(start['rounds'])} rounds, {start['axis_cells']:.2e} cells, "
+          f"label's condition {margin:.3g} kperp"
           f"\n  resid every chunk {' '.join(f'{r:.1e}' for r in r_hist[CHUNK - 1::CHUNK])}, moves {loop['moves']}"
           f"\n  end: resid {resid:.2e}, field {error:.3e} (projection {projection:.3e}), beta {beta:.5f} (exact "
           f"{beta_exact:.5f}), axis {axis:.2e} of a, traced iota {d_iota:.2e} ({int(shown.sum())} regular lines)")
+    assert margin > LABEL_MARGIN
     assert resid < BAR
     assert error < FIELD_FACTOR * projection
     assert abs(beta / beta_exact - 1.0) < BETA
