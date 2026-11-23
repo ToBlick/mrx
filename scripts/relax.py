@@ -22,13 +22,19 @@ With ``--current.target`` the poloidal flux slips between the flux surfaces are 
 relaxation ends at the target net toroidal current inside every surface, the geometry file's field's or a VMEC input
 namelist's with NCURR = 1, scaled by ``--current.scale`` (:class:`mrx.relaxation.twist.Slips`). The slips are rebuilt
 on the flux label before every chunk, the one label of both targets. Such a run takes all of ``--budget.steps`` too.
+``--current.start`` adds the target current to the geometry file's field along the field, ``J = sigma(s) B``
+(:func:`mrx.relaxation.twist.current_start`), so the run starts at the target current with that field's surfaces.
+The sum is the start field, also of ``--mesh.align``'s first move: the pole goes onto its axis (record in ``ic``).
+The targets go in over ``--budget.stages`` stages from the start field's own values, one per chunk boundary (1: at
+once), recorded under ``continuation`` in ``relax.json``.
 
 With ``--iota.target`` the relaxation ends at the rotational transform of a wout or of a VMEC input namelist with
 NCURR = 0. The transform is no control of the energy: it sets the target of the prescribed current in an outer loop.
 Before every chunk the transform's weak residual on the flux label is measured and the current target takes a Newton
 step, with its matrix from the Gauss-Newton step's response to the target (:func:`mrx.relaxation.twist.iota_newton`).
-The loop starts from the current the field carries. The target is kept in every checkpoint (attribute
-``iota_target``), so a restart goes on from it. A current target and ``--iota.target`` exclude each other. With
+The loop starts from the current the field carries. With ``--current.start`` it starts from ``--current.target``,
+the current the start adds, and owns it from then on: with ``--iota.target`` a current target is only the start's.
+The target is kept in every checkpoint (attribute ``iota_target``), so a restart goes on from it. With
 ``--iota.target`` the seed waits for the transform: it is applied at the first chunk boundary at which every local
 mean of the transform's miss, the weak residual, is below :data:`mrx.relaxation.twist.AT_TARGET` of the target's largest
 value.
@@ -65,6 +71,7 @@ Output (in ``--output.out``):
                                  checkpoint also holds its map (:func:`mrx.relaxation.mesh_motion.write_map`), which a
                                  restart and ``scripts/poincare_trace.py`` install, and ``moved_<step>.h5`` holds the
                                  field right after a move of the axis, on the moved map.
+    checkpoints/vacuum.h5        With ``--current.start``: the geometry file's field, without the current.
 """
 from __future__ import annotations
 
@@ -97,9 +104,10 @@ def main(cfg, fit=None):
     from mrx.relaxation.shells import (ERROR_BINS, build_shells, label, load_target, pressure_error, profile_cells,
                                       target_beta)
     from mrx.relaxation.seeding import energy_seed
-    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_newton, iota_residual,
-                                      load_current_target, load_iota_target, project_iota_target, spline_centres)
-    from mrx.flux_label import ANISOTROPY, LABEL_MARGIN, label_condition
+    from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, current_start,
+                                      iota_newton, iota_residual, load_current_target, load_iota_target,
+                                      project_iota_target, spline_centres)
+    from mrx.flux_label import ANISOTROPY, LABEL_MARGIN, label_condition, radius_flux
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
     print(f"[env] mrx from {mrx.__file__}  precision {mrx.DTYPE.name}  batch {g.max_batch or 'all'}", flush=True)
@@ -131,26 +139,51 @@ def main(cfg, fit=None):
             raise ValueError(f"{cfg.output.restart} holds no map, so it was written on the file's sections: restart "
                              "it with --geometry.zeta phi")
 
-    def start_field(sq):
-        """``(B, ic)``: the geometry file's field on the installed map of ``sq``, with the numbers of the flux label's
-        condition (:func:`mrx.flux_label.label_condition`) in ``ic`` when the run needs the label, which stops a run
-        whose start field's transform is too small for it."""
-        B, ic = initial_field(sq)
-        pr = cfg.pressure
-        if not (pr or cfg.current or cfg.iota or cfg.seed):
-            return B, ic
+    pr, cu = cfg.pressure, cfg.current
+    # the profile space of the targets and the loop: --pressure.cells, or half the mesh's radial cells
+    cells = profile_cells(seq) if pr.cells is None else pr.cells
+    params["profile_cells"] = cells
+
+    def label_check(sq, B, ic, key="label_condition"):
+        """``ic`` with the numbers of the flux label's condition on the field ``B`` under ``key``
+        (:func:`mrx.flux_label.label_condition`) when the run needs the label, which stops a run below it."""
+        if not (pr or cu or cfg.iota or cfg.seed):
+            return ic
         iota_m, a_m, R_m = label_condition(sq, sq.odd.evaluate_at_quadrature(B, 2))
         margin = (iota_m * a_m / R_m) ** 2 / pr.anisotropy
-        ic["label_condition"] = dict(iota=iota_m, a=a_m, R=R_m, margin=margin)
+        ic[key] = dict(iota=iota_m, a=a_m, R=R_m, margin=margin)
         what = f"(iota a / R)^2 = ({iota_m:.3e} x {a_m:.3g} / {R_m:.3g})^2 = {margin:.3g} kperp (kperp {pr.anisotropy:g})"
-        print(f"[label] start field: {what}", flush=True)
+        print(f"[label] {key}: {what}", flush=True)
         if margin < LABEL_MARGIN:
             msg = (f"the start field's transform is too small for the flux label: {what}, below {LABEL_MARGIN:g} "
-                   "kperp. Start from a VMEC or VMEX wout")
+                   "kperp. Start from a VMEC/VMEX wout, or add the target current (--current.start)")
             if pr.label_check:
                 raise ValueError(msg)
             print(f"[label] WARNING {msg}", flush=True)
-        return B, ic
+        return ic
+
+    def start_field(sq):
+        """``(B, ic, B_file)``: the start field on the installed map of ``sq``, the geometry file's field ``B_file``
+        with the target current along it with --current.start (the record of that in ``ic["start"]``)."""
+        B_file, ic = initial_field(sq)
+        if not cu.start:
+            return B_file, label_check(sq, B_file, ic), B_file
+        t1 = time.perf_counter()
+        mu = load_current_target(sq, cu.target, B_file, cu.scale, anisotropy=pr.anisotropy, label_tol=pr.label_tol,
+                                 cells=cells)
+        if cu.start == "radius":
+            s_q, info = radius_flux(sq, sq.odd.evaluate_at_quadrature(B_file, 2)), 0
+        else:
+            # the label of the file's field: it needs the condition too
+            label_check(sq, B_file, ic, "label_condition_file")
+            s_q, _, info = label(sq, B_file, pr.anisotropy, tol=pr.label_tol)
+        B_J, hodge_it = current_start(sq, B_file, s_q, mu)
+        rel = float(sq.odd.l2_norm(B_J, 2) / sq.odd.l2_norm(B_file, 2))
+        ic["start"] = dict(label=str(cu.start), label_it=int(info), hodge_it=int(hodge_it), B_J=rel,
+                           seconds=time.perf_counter() - t1)
+        print(f"[current] start: J = sigma(s) B on the {cu.start} label (CG {int(info)}), Hodge solve "
+              f"{int(hodge_it)}, ||B_J|| / ||B|| {rel:.4e}, {time.perf_counter() - t1:.1f}s", flush=True)
+        return B_file + B_J, label_check(sq, B_file + B_J, ic), B_file
 
     # --- the start field: the initial condition or a restart, then the seed ---
     h_r_sq = radial_cell_sq(seq)
@@ -184,11 +217,11 @@ def main(cfg, fit=None):
             # below the bar
             schedule["hold"] = True
             ts = cfg.stepper(seq)
-            print(f"[mesh] start: the pole onto the vacuum's axis in {len(start['rounds'])} rounds, axis "
+            print(f"[mesh] start: the pole onto the start field's axis in {len(start['rounds'])} rounds, axis "
                   + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
                   + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
                   + f"), {start['axis_cells']:.2e} cells on the final map, {start['seconds']:.0f} s", flush=True)
-        B0, ic = start_field(seq)
+        B0, ic, B_file = start_field(seq)
         results["ic"] = ic
         print(f"[ic] {ic['kind']} IC in {time.perf_counter() - t1:.1f}s: "
               + ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}"
@@ -218,6 +251,8 @@ def main(cfg, fit=None):
                 if iota_target is not None:
                     fh.attrs["iota_target"] = iota_target
     checkpoint(f"state_{it0:06d}.h5", state, it0)
+    if cu.start and not cfg.output.restart:
+        checkpoint("vacuum.h5", initial_state(B_file, ts, step=it0), it0)
 
     # --- the drive: resistive steps towards the reference current ---------
     if dr:
@@ -233,10 +268,6 @@ def main(cfg, fit=None):
               f"{dr.reference_smoothing:g} h_r^2, ||B - B*|| / ||B|| = "
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     # --- the prescribed pressure: the shell volumes as Newton unknowns, rebuilt every chunk ---
-    pr, cu = cfg.pressure, cfg.current
-    # the profile space of the targets and the loop: --pressure.cells, or half the mesh's radial cells
-    cells = profile_cells(seq) if pr.cells is None else pr.cells
-    params["profile_cells"] = cells
     targets = bool(pr or cu or cfg.iota)
 
     def label_of(state):
@@ -270,10 +301,13 @@ def main(cfg, fit=None):
             print(f"[pressure] step {it}: |p - p*| / |p*| {err:.3e} in the gauge <p> = <p*> (p = p_w + C, "
                   f"C {const:+.2e} max p*), beta {beta:.5e}, label CG {info}", flush=True)
             return p_q
-    # --- the prescribed current: the poloidal flux slips as Newton unknowns, rebuilt every chunk ---
+    # --- the prescribed current: the poloidal flux slips as Newton unknowns, rebuilt every chunk. With --iota.target
+    # the current target is the start's and the iota loop's first target, the loop's slips replace these
+    cu_slips = bool(cu) and not cfg.iota
     if cu:
         # "file" is the current of the geometry file's field, also on a restart
-        B_file = initial_field(seq)[0] if cfg.output.restart else B0
+        if cfg.output.restart:
+            B_file = initial_field(seq)[0]
         mu_star = load_current_target(seq, cu.target, B_file, cu.scale, anisotropy=pr.anisotropy,
                                       label_tol=pr.label_tol, cells=cells)
         results["current"] = dict(target=cu.target, x=spline_centres(mu_star.size).tolist(),
@@ -292,7 +326,9 @@ def main(cfg, fit=None):
                   f"{float(mu[-1]):+.4e} T m (target {float(mu_star[-1]):+.4e}), label CG {info}", flush=True)
     if cfg.iota:
         # the target transform: the current target takes a Newton step on the transform's weak residual before every
-        # chunk, from the current the field carries at the first
+        # chunk, from the current the field carries at the first, or from the start's current with --current.start
+        if cu and iota_target is None:
+            iota_target = np.asarray(mu_star, dtype=np.float64)
         # the target transform projected once onto the profile space, the space of the transform the loop measures
         iota_star = project_iota_target(load_iota_target(cfg.iota.target), cells + 2)
         results["iota"] = dict(target=cfg.iota.target, x=spline_centres(cells + 2).tolist(), rebuilds=[])
@@ -403,6 +439,15 @@ def main(cfg, fit=None):
 
     # --- the run, in one call: before every chunk the mesh moves when a move is due and the label, the shells and
     # the slips are rebuilt on the field (mrx.relaxation.loop.relax's rebuild)
+    # the continuation of the targets (--budget.stages): t, the stage k of the N stages, the start field's own
+    # pressure at the quadrature points, its transform's weak residual and its current's moments
+    cont = dict(t=0.0 if targets else 1.0, k=0, N=None, p0=None, r0=None, mu0=None)
+    results["continuation"] = []
+
+    def shift(tt):
+        """The iota loop's residual shift at the continuation's ``tt``: (1 - tt) times the start's residual."""
+        return None if tt >= 1.0 or cont["r0"] is None else (1.0 - tt) * cont["r0"]
+
     def rebuild(state, it):
         """The state and the stepper of the chunk from step ``it``."""
         nonlocal ts, seed_pending, iota_target
@@ -414,7 +459,8 @@ def main(cfg, fit=None):
             s_q, info = label_of(state)
             if iota_target is None:     # the loop starts from the current the field carries
                 iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64)
-            _, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
+            _, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target,
+                                              shift(cont["t"]))
             record_iota(it, rec, info)
             schedule["hold"], updated = False, True
         if mm:
@@ -429,31 +475,74 @@ def main(cfg, fit=None):
             if seeded:
                 seed_pending = False
                 s_q, info = label_of(state)
+        first = cont["N"] is None
+        if first:
+            # the continuation starts from the start field's own values
+            if pr:
+                p_w = weak_pressure(current(state.B_n, seq), state.B_n, seq)
+                cont["p0"] = np.asarray(seq.even.evaluate_at_quadrature(p_w, 0))[:, 0]
+            if cfg.iota:
+                cont["r0"] = np.asarray(iota_residual(seq, state.B_n, s_q, iota_star, cells + 2)(state.B_n)[0],
+                                        dtype=np.float64)
+            if cu_slips:
+                # a start with the target's current has the current part at t = 1 from the start
+                cont["mu0"] = (np.asarray(mu_star, dtype=np.float64) if cu.start else
+                               np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64))
+        p_full = measure(state, it, s_q, info) if pr else None
+        if first:
+            cont["N"] = b.stages
+            results["stages"] = cont["N"]
+            print(f"[continuation] {cont['N']} stages", flush=True)
+        if cfg.iota and iota_target is None:     # the loop starts from the current the field carries
+            iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64)
+
+        def build(tt):
+            """The stepper with the targets at the continuation's ``tt`` and what to record once it is taken."""
+            ts_, todo = ts, dict(iota_target=iota_target)
+            if pr:
+                p_q = p_full if tt >= 1.0 else (1.0 - tt) * jnp.asarray(cont["p0"]) + tt * p_full
+                shells, shell_it = build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, cells)
+                todo["shell_it"] = np.asarray(shell_it).tolist()
+                ts_ = ts_.with_shells(shells)
+            if cu_slips:
+                mu_t = mu_star if tt >= 1.0 else (1.0 - tt) * jnp.asarray(cont["mu0"]) + tt * jnp.asarray(mu_star)
+                slips, mu = build_slips(seq, state.B_n, T_label, jnp.asarray(mu_t, dtype=T_label.dtype))
+                todo["mu"] = mu
+                ts_ = ts_.with_slips(slips)
+            if cfg.iota:
+                if updated or schedule["hold"]:
+                    # updated before the move, or held since the last move or the start until the field is below the bar
+                    slips = build_slips(seq, state.B_n, T_label, jnp.asarray(iota_target, dtype=T_label.dtype))[0]
+                else:
+                    slips, todo["iota_target"], todo["iota_rec"] = iota_newton(seq, state.B_n, T_label, s_q, iota_star,
+                                                                              ts_, iota_target, shift(tt))
+                ts_ = ts_.with_slips(slips)
+            return ts_, todo
+
+        if cont["k"] < cont["N"]:
+            # the next stage of the continuation
+            cont["k"] += 1
+            cont["t"] = cont["k"] / cont["N"]
+            ts_try, todo = build(cont["t"])
+            results["continuation"].append(dict(step=it, t=cont["t"]))
+            print(f"[continuation] step {it}: stage {cont['k']} of {cont['N']}, t {cont['t']:.4g}", flush=True)
+        else:
+            ts_try, todo = build(1.0)
+        ts = ts_try
         if pr:
-            p_q = measure(state, it, s_q, info)
-            shells, shell_it = build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, cells)
-            shell_it = np.asarray(shell_it).tolist()
-            results["pressure"]["rebuilds"][-1]["shell_it"] = shell_it
-            print(f"[pressure] step {it}: shell gradients, Poisson CG {min(shell_it)} .. {max(shell_it)}", flush=True)
-            ts = ts.with_shells(shells)
-        if cu:
-            slips, mu = build_slips(seq, state.B_n, T_label, mu_star)
-            record_current(it, mu, info)
-            ts = ts.with_slips(slips)
+            results["pressure"]["rebuilds"][-1]["shell_it"] = todo["shell_it"]
+            print(f"[pressure] step {it}: shell gradients, Poisson CG {min(todo['shell_it'])} .. "
+                  f"{max(todo['shell_it'])}", flush=True)
+        if cu_slips:
+            record_current(it, todo["mu"], info)
         if cfg.iota:
-            if iota_target is None:     # the loop starts from the current the field carries
-                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64)
-            if updated or schedule["hold"]:
-                # updated before the move, or held since the last move or the start until the field is below the bar
-                slips = build_slips(seq, state.B_n, T_label, jnp.asarray(iota_target, dtype=T_label.dtype))[0]
-                if not updated:
-                    results["iota"].setdefault("held", []).append(it)
-                    print(f"[iota] step {it}: target held since the last move or the start, residual "
-                          f"{schedule['resid']:.3e} above the bar", flush=True)
-            else:
-                slips, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
-                record_iota(it, rec, info)
-            ts = ts.with_slips(slips)
+            iota_target = todo["iota_target"]
+            if "iota_rec" in todo:
+                record_iota(it, todo["iota_rec"], info)
+            elif not updated:
+                results["iota"].setdefault("held", []).append(it)
+                print(f"[iota] step {it}: target held since the last move or the start, residual "
+                      f"{schedule['resid']:.3e}", flush=True)
         # the cost of the rebuild of the label, the shells and the slips, outside the steps
         results.setdefault("rebuild_wall", []).append(time.perf_counter() - t_rebuild)
         return state, ts
