@@ -39,7 +39,8 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
   :func:`current_error` the current's error against them.
 - :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
   its change along the slips and :func:`iota_newton` the outer Newton step with them.
-- :func:`iota_fit` is the transform as a spline in ``s``, the L2 projection of its weak moments, and
+- :func:`iota_fit` is the transform as a spline in ``s``, the L2 projection of its weak moments,
+  :func:`project_iota_target` a target transform projected onto the same splines, and
   :func:`enclosed_current` the current inside the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
@@ -65,6 +66,9 @@ from mrx.relaxation.shells import LABEL_TOL, PROFILE_DEGREE, profile_basis, prof
 from mrx.solvers import solve_singular_cg
 from mrx.spline_bases import DerivativeSpline, basis_table
 
+#: Gauss-Legendre points per profile cell of the projection of a target transform given as a function
+#: (:func:`project_iota_target`): exact for a polynomial target of degree up to 13.
+TARGET_POINTS = 8
 #: The transform is at its target when every local mean of its miss, the weak residual of :func:`iota_residual`, is
 #: below this fraction of the target's largest magnitude: ``relax.py --seed`` waits for it with ``--iota.target``.
 AT_TARGET = 1e-2
@@ -95,6 +99,35 @@ def _axis_angle_gradient(seq, B):
     return d_r, d_t, d_z
 
 
+def _spline_space(n_mu, points):
+    """``(d, x, w, M)``: the ``n_mu`` derivative splines ``M_j`` of the profile space (:func:`_derivatives`), a
+    Gauss-Legendre rule of ``points`` points on every cell of their knots (nodes ``x``, weights ``w``) and the table
+    ``M`` ``(n_mu, len(x))`` of the ``M_j`` there."""
+    d = _derivatives(n_mu)
+    knots = np.unique(np.asarray(d.T, dtype=np.float64))
+    g, wg = np.polynomial.legendre.leggauss(points)
+    h = np.diff(knots)
+    x = (knots[:-1, None] + 0.5 * h[:, None] * (g[None, :] + 1.0)).ravel()
+    w = (0.5 * h[:, None] * wg[None, :]).ravel()
+    return d, x, w, np.asarray(basis_table(d, jnp.asarray(x)), dtype=np.float64)
+
+
+def _spline(d, c):
+    """The function ``sum_j c_j M_j(s)`` as a ``scipy.interpolate.BSpline`` (``M_j`` is the B-spline ``N_j`` of
+    degree ``d.p`` times its unit-integral scale), whose ``derivative()`` is its derivative in ``s``."""
+    from scipy.interpolate import BSpline
+    T = np.asarray(d.T, dtype=np.float64)
+    return BSpline(T, np.asarray(c) * (d.p + 1) / (T[d.p + 1:d.p + 1 + d.n] - T[:d.n]), d.p)
+
+
+def _l2_projection(n_mu, moments):
+    """The L2 projection in ``s`` onto the span of the ``n_mu`` splines ``M_j`` of the function with the moments
+    ``int M_j f ds`` (:func:`_spline`). The Gram matrix ``int M_i M_j ds`` is exact by Gauss-Legendre with
+    ``p + 1`` points per cell."""
+    d, _, w, M = _spline_space(n_mu, PROFILE_DEGREE)
+    return _spline(d, np.linalg.solve((M * w) @ M.T, np.asarray(moments, dtype=np.float64)))
+
+
 def iota_fit(seq, B, s_q, n_mu=None):
     """The transform per full turn of ``B`` as a spline in the label ``s`` (``s_q`` at the quadrature points), with the
     sign of the field's transform: the L2 projection in ``s`` onto the ``n_mu`` derivative splines ``M_j`` of the
@@ -103,21 +136,24 @@ def iota_fit(seq, B, s_q, n_mu=None):
     The moments are moments of the field against functions of the label: no sorting of points, no differentiation of
     sampled fluxes, and one coefficient per spline, no free degree. A ``scipy.interpolate.BSpline`` of degree
     :data:`~mrx.relaxation.shells.PROFILE_DEGREE` ``- 1``, whose ``derivative()`` is ``d iota / ds``."""
-    from scipy.interpolate import BSpline
     n_mu = profile_cells(seq) + PROFILE_DEGREE - 1 if n_mu is None else n_mu
-    r = np.asarray(iota_residual(seq, B, s_q, np.zeros_like, n_mu)(B)[0], dtype=np.float64)
+    return _l2_projection(n_mu, iota_residual(seq, B, s_q, np.zeros_like, n_mu)(B)[0])
+
+
+def project_iota_target(target, n_mu):
+    """The target transform ``target`` (:func:`load_iota_target`) projected once in L2(ds) onto the span of the
+    ``n_mu`` splines ``M_j`` the iota loop controls (:func:`_spline`): a function of ``s`` is integrated against
+    them by Gauss-Legendre with :data:`TARGET_POINTS` points per cell, exact for a polynomial of degree up to
+    ``2 TARGET_POINTS - 1 - (PROFILE_DEGREE - 1)``, and point data ``(s_k, iota_k)`` are fitted by least squares in the
+    discrete L2 norm of the points, with no interpolant between them. The loop's residual then has the target in the
+    space of the measured transform, so it can vanish wherever the slips reach it."""
+    if callable(target):
+        _, x, w, M = _spline_space(n_mu, TARGET_POINTS)
+        return _l2_projection(n_mu, M @ (w * np.asarray(target(x), dtype=np.float64)))
+    s, iota = (np.asarray(v, dtype=np.float64) for v in target)
     d = _derivatives(n_mu)
-    T = np.asarray(d.T, dtype=np.float64)
-    # the Gram matrix int M_i M_j ds, exact by Gauss-Legendre with p + 1 points on every cell of the knots
-    knots = np.unique(T)
-    g, wg = np.polynomial.legendre.leggauss(d.p + 1)
-    h = np.diff(knots)
-    x = (knots[:-1, None] + 0.5 * h[:, None] * (g[None, :] + 1.0)).ravel()
-    w = (0.5 * h[:, None] * wg[None, :]).ravel()
-    M = np.asarray(basis_table(d, jnp.asarray(x)), dtype=np.float64)
-    c = np.linalg.solve((M * w) @ M.T, r)
-    scale = (d.p + 1) / (T[d.p + 1:d.p + 1 + d.n] - T[:d.n])      # M_j is the B-spline N_j times this
-    return BSpline(T, c * scale, d.p)
+    A = np.asarray(basis_table(d, jnp.asarray(s)), dtype=np.float64).T
+    return _spline(d, np.linalg.lstsq(A, iota, rcond=None)[0])
 
 
 def enclosed_current(seq, B, s_q, edges):
@@ -130,13 +166,15 @@ def enclosed_current(seq, B, s_q, edges):
 
 
 def load_iota_target(path):
-    """The target transform in a file, a function of ``s``: the transform of a wout (``.nc``, its
-    ``iotaf``) or of a VMEC input namelist with ``NCURR = 0``. A namelist with ``NCURR = 1`` prescribes the current,
-    a target of the relaxation (:func:`load_current_target`)."""
+    """The target transform in a file: the points ``(s, iota)`` of a wout (``.nc``, its ``iotaf`` on its full mesh
+    ``s_j = j / (ns - 1)``), or the function of ``s`` of a VMEC input namelist with ``NCURR = 0``. A namelist with
+    ``NCURR = 1`` prescribes the current, a target of the relaxation (:func:`load_current_target`). The loop takes it
+    projected onto its profile space (:func:`project_iota_target`)."""
     if path.endswith(".nc"):
-        from mrx.equilibria.vmec import read_wout
-        f = read_wout(path)["profiles"]["iota"]                          # a function of r = sqrt(s)
-        return lambda s: np.asarray(f(np.sqrt(np.asarray(s))))
+        from scipy.io import netcdf_file
+        with netcdf_file(path, "r", mmap=False) as f:
+            iota = np.array(f.variables["iotaf"].data, dtype=np.float64)
+        return np.arange(iota.size) / (iota.size - 1), iota
     from mrx.equilibria.indata import read_indata
     nl = read_indata(path)
     if nl.ncurr == 1:

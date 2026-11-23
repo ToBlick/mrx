@@ -21,7 +21,7 @@ from mrx.precision import DTYPE, eps
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
 from mrx.relaxation.shells import ERROR_BINS, build_shells, label, pressure_error, profile_cells
-from mrx.relaxation.twist import current_on_label, iota_fit, iota_newton, iota_residual
+from mrx.relaxation.twist import current_on_label, iota_fit, iota_newton, iota_residual, project_iota_target
 from test.conftest import field_error
 
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
@@ -29,9 +29,9 @@ from test.conftest import field_error
 #: projection: 2.3e-3, 1.95e-2, 9.7e-3, 3.6e-5 and PENDING (the degree-6 fit 9.6e-5) measured on the tokamak (12,16,8), 5 profile cells, in float64 and
 #: float32 (2026-11-23).
 BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=7e-5, iota_fit=1e-3)
-#: The end of the run with the exact targets: the pressure and the transform's weak residual, 9.2e-3 and 3.0e-5
-#: measured after 10 steps in float64 (2026-11-23).
-TARGET_BANDS = dict(p=1.3e-2, iota=6e-5)
+#: The end of the run with the exact targets: the pressure and the transform's weak residual against the projected
+#: target, 9.2e-3 and PENDING after 10 steps in float64 (3.0e-5 against the exact target, 2026-11-23).
+TARGET_BANDS = dict(p=1.3e-2, iota=1e-3)
 #: The size of the smooth perturbation of the Newton run, relative to the field.
 PERTURBATION = 1e-3
 #: Newton steps of the runs: the perturbed field is below the bar after 3 (9.3e-9), the exact targets after 3 with one
@@ -140,22 +140,24 @@ def test_newton_returns_to_the_discrete_equilibrium(eq, seq, b0):
 
 
 def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
-    """Newton steps from ``b0`` in two chunks with the exact pressure as the shells' target and the exact transform
-    as the target of the iota loop (:func:`mrx.relaxation.twist.iota_newton` before each chunk, from the current
-    ``b0`` carries), both on the field's label rebuilt before each chunk: they descend, end below :data:`BAR`, at the
-    pressure and the transform within :data:`TARGET_BANDS` and as close to the exact field as the projection, within
-    1.1 times the error of ``b0``: residual 7e-13 after 20 steps, error 2.3e-3 -> 1.9e-3 (tokamak (12,16,6), float64, 2026-11-22)."""
+    """Newton steps from ``b0`` in two chunks with the exact pressure as the shells' target and the exact transform,
+    projected onto the profile space as production does (:func:`mrx.relaxation.twist.project_iota_target`), as the
+    target of the iota loop (:func:`mrx.relaxation.twist.iota_newton` before each chunk, from the current ``b0``
+    carries), both on the field's label rebuilt before each chunk: they descend, end below :data:`BAR`, at the
+    pressure and the projected transform within :data:`TARGET_BANDS` and as close to the exact field as the
+    projection, within 1.1 times the error of ``b0``."""
     _float64_only()
     ts = TimeStepper(seq=seq, newton=True)
     p_star = _p_star(eq)
     _, T0, _ = label(seq, b0, ANISOTROPY)
     target = [np.asarray(current_on_label(seq, b0, T0, profile_cells(seq)), dtype=np.float64)]
+    iota_star = project_iota_target(eq.iota, profile_cells(seq) + 2)
 
     def rebuild(state, it):
         s_q, T, _ = label(seq, state.B_n, ANISOTROPY)
-        shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol, profile_cells(seq))
+        shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol)
         ts_k = ts.with_shells(shells)
-        slips, target[0], rec = iota_newton(seq, state.B_n, T, s_q, eq.iota, ts_k, target[0])
+        slips, target[0], rec = iota_newton(seq, state.B_n, T, s_q, iota_star, ts_k, target[0])
         return state, ts_k.with_slips(slips)
     res = relax(initial_state(b0, ts), ts, steps=2 * STEPS, chunk=STEPS, rebuild=rebuild, verbose=False)
     resid = _descends(res, 1e3 * eps() ** 2)
@@ -163,7 +165,7 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     s_q, _, _ = label(seq, B, ANISOTROPY)
     X, _ = _points(seq)
     e_p, _ = pressure_error(seq, weak_pressure(current(B, seq), B, seq), s_q, jnp.asarray(_mu0_p(eq, X)), ERROR_BINS)
-    r = np.asarray(iota_residual(seq, B, s_q, eq.iota, profile_cells(seq) + 2)(B)[0])
+    r = np.asarray(iota_residual(seq, B, s_q, iota_star, profile_cells(seq) + 2)(B)[0])
     miss = float(np.abs(r).max() / eq.iota(0.0))
     start, end = field_error(eq, seq, b0), field_error(eq, seq, B)
     print(f"  pressure {e_p:.3e}, transform's weak residual {miss:.3e}, field {start:.3e} -> {end:.3e}")

@@ -102,7 +102,7 @@ def main(cfg, fit=None):
                                       target_beta)
     from mrx.relaxation.seeding import energy_seed
     from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_newton, iota_residual,
-                                      load_current_target, load_iota_target, spline_centres)
+                                      load_current_target, load_iota_target, project_iota_target, spline_centres)
     from mrx.flux_label import ANISOTROPY
 
     g, d, n, b, dr = cfg.geometry, cfg.descent, cfg.newton, cfg.budget, cfg.drive
@@ -292,7 +292,8 @@ def main(cfg, fit=None):
     if cfg.iota:
         # the target transform: the current target takes a Newton step on the transform's weak residual before every
         # chunk, from the current the field carries at the first
-        iota_star = load_iota_target(cfg.iota.target)
+        # the target transform projected once onto the profile space, the space of the transform the loop measures
+        iota_star = project_iota_target(load_iota_target(cfg.iota.target), cells + 2)
         results["iota"] = dict(target=cfg.iota.target, x=spline_centres(cells + 2).tolist(), rebuilds=[])
 
         def record_iota(it, rec, info):
