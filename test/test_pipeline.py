@@ -41,7 +41,8 @@ BAR, MOVE_TOL = 1e-8, 0.1
 STEPS, CHUNK = 60, 10
 #: The end state against the exact equilibrium: the field error over the projection's error on the fixture's own mesh, beta
 #: relative to the exact beta, the magnetic axis as a fraction of the minor radius, the traced transform relative to
-#: the exact one: to be measured once the target ramp exists.
+#: the exact one: 0.87, beta to 4 digits, 6.5e-5 and 6.6e-4 measured with the pole on the start field's axis (float64,
+#: 2026-11-23).
 FIELD_FACTOR, BETA, AXIS, IOTA = 3.0, 5e-2, LENGTH, 1e-2
 
 
@@ -59,7 +60,8 @@ def test_the_pipeline_ends_at_the_exact_equilibrium(eq, seq, b0, files, minor):
     projection = field_error(eq, seq, b0)
     st = read_equilibrium(files[1])
     fill = mm.axis_normal_map(seq, state_position(st))[0]
-    with map_installed(seq, fill):
+    # the start field is solved on the fill with its harmonic field, as every round's map has it
+    with map_installed(seq, fill, harmonic=True):
         start = mm.vacuum_start(seq, eq.start, True)
         B0 = eq.start(seq)
         iota_m, a_m, R_m = label_condition(seq, seq.odd.evaluate_at_quadrature(B0, 2))
