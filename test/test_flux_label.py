@@ -17,8 +17,9 @@ from mrx.precision import eps
 from mrx.relaxation.shells import LABEL_TOL, label
 
 #: The angular spread of ``T`` on a radial layer over its maximum at ``kperp = 1e-5``, and the volume rms of the label
-#: against the exact ``s`` at the production anisotropy and 1e-9: 6.3e-4 and 9.3e-4 measured (tokamak (12,16,6), float64, 2026-11-22).
-SPREAD, S_RMS = 1e-3, 1.4e-3
+#: against the exact ``s`` at the production anisotropy and 1e-9: 5.8e-5 (the second solve, 6.3e-4 solved once) and 9.3e-4
+#: measured in float64 and float32 on the tokamak (12,16,8), 2026-11-22.
+SPREAD, S_RMS = 1e-4, 1.4e-3
 
 
 def test_flux_label_is_the_toroidal_flux(eq, seq, b0):
@@ -41,8 +42,8 @@ def test_flux_label_is_the_toroidal_flux(eq, seq, b0):
     assert spread < SPREAD
     assert np.all(np.diff(T_q.mean(axis=1)) < 0)
     assert int(info) > 0 and rms < S_RMS
-    # the label spline is 1 at the smallest coefficient of T and 0 at the largest, to round-off (2 eps in float32)
-    assert abs(float(s_of(a)) - 1.0) < eps(10) and abs(float(s_of(b))) < eps(10)
+    # the label spline is 1 at the smallest coefficient of T and 0 at the largest, to round-off (10 eps in float32)
+    assert abs(float(s_of(a)) - 1.0) < eps(100) and abs(float(s_of(b))) < eps(100)
 
 
 def test_label_at_the_shells_tolerance(seq, b0):

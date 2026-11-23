@@ -28,8 +28,8 @@ from test.conftest import field_error
 CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
 #: exact pressure, and the largest local mean of the transform's miss over the largest transform: 2.3e-3, 1.95e-2,
-#: 9.7e-3 and 2.4e-4 measured (tokamak (12,16,6), float64, 2026-11-22).
-BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=3.5e-4, iota_fit=1e-3)
+#: 9.7e-3 and 5.9e-5 with the second label solve (2.4e-4 before), the degree-6 fit 2.5e-4, measured (tokamak (12,16,6), float64, 2026-11-22).
+BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=1e-4, iota_fit=4e-4)
 #: The end of the run with the exact targets: the pressure and the transform's weak residual, 9.2e-3 and 1.1e-4
 #: measured after 20 steps (tokamak (12,16,6), float64, 2026-11-22).
 TARGET_BANDS = dict(p=1.3e-2, iota=1.6e-4)
