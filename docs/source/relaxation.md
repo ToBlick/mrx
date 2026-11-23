@@ -180,7 +180,7 @@ pressure (`mrx.relaxation.shells`, `mrx.relaxation.newton.target_direction`).
 The shells are the splines of the profile space, $s$ the flux label of the
 field. The profile space is its own, shared by the pressure and the current:
 cubic splines in $s$ on `--pressure.cells` cells (16 by default) whose
-breakpoints are uniform in $\sqrt{s}$. It does not refer to the mesh, which
+breakpoints are uniform in $s$. It does not refer to the mesh, which
 has only to resolve it. A spline in $s$ is smooth in space next to the
 magnetic axis, where $s$ goes as the squared distance from it, so every
 profile is regular there. Each shell's volume change is carried by a

@@ -203,7 +203,7 @@ class Pressure:
     label_tol: float = LABEL_TOL
     """The relative tolerance of that label's solve."""
     cells: int = PROFILE_CELLS
-    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
+    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in s, shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
 
     def __post_init__(self):
         if self.beta is not None and self.scale != 1.0:

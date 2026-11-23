@@ -79,10 +79,13 @@ def label(seq, B, anisotropy, guess=None, tol=LABEL_TOL):
 
 
 def profile_knots(n):
-    """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` whose
-    breakpoints are uniform in ``sqrt(s)``, ``s_i = (i / cells)^2``. A float64 numpy array."""
+    """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` with the
+    breakpoints uniform in ``s``, ``s_i = i / cells``. A polynomial in ``s`` is even in the distance from the axis, so
+    the profiles are smooth there. Breakpoints uniform in ``sqrt(s)`` made the innermost cells (``s < 0.004`` at 16)
+    finer than the label resolves next to the axis, and the projections onto them amplified its error. A float64
+    numpy array."""
     cells = n - PROFILE_DEGREE
-    return knot_vector((np.arange(cells + 1) / cells) ** 2, PROFILE_DEGREE, False)
+    return knot_vector(np.arange(cells + 1) / cells, PROFILE_DEGREE, False)
 
 
 def profile_basis(n):
