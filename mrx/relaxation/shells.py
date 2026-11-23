@@ -8,7 +8,7 @@ The velocity of a step is then
 
 with ``phi_k`` the splines of the profile space (:func:`profile_basis`) and ``s`` the flux label of the field
 (:mod:`mrx.flux_label`). The profile space is its own: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints
-are uniform in ``sqrt(s)``. It does not refer to the mesh, which has only to resolve it. A spline in ``s`` is a smooth
+are uniform in ``s``, with the measure ``ds``. It does not refer to the mesh, which has only to resolve it. A spline in ``s`` is a smooth
 function in space next to the magnetic axis, where ``s`` goes as the squared distance, so every profile of the space
 is regular there, ``p = p0 + p1 s + ...``. A spline in ``sqrt(s)`` would be a cone at the axis.
 
