@@ -26,12 +26,12 @@ from test.conftest import field_error
 
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
 #: exact pressure, the largest local mean of the transform's miss over the largest transform and the spline
-#: projection: 2.3e-3, 1.95e-2, 9.7e-3, 3.6e-5 and PENDING (the degree-6 fit 9.6e-5) measured on the tokamak (12,16,8), 5 profile cells, in float64 and
+#: projection: 2.3e-3, 1.95e-2, 9.7e-3, 3.6e-5 and 6.9e-4 measured on the tokamak (12,16,8), 5 profile cells, in float64 and
 #: float32 (2026-11-23).
-BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=7e-5, iota_fit=1e-3)
+BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=7e-5, iota_fit=9e-4)
 #: The end of the run with the exact targets: the pressure and the transform's weak residual against the projected
-#: target, 9.2e-3 and PENDING after 10 steps in float64 (3.0e-5 against the exact target, 2026-11-23).
-TARGET_BANDS = dict(p=1.3e-2, iota=1e-3)
+#: target, 9.2e-3 and 3.0e-5 after 10 steps in float64 (2026-11-23).
+TARGET_BANDS = dict(p=1.3e-2, iota=4e-5)
 #: The size of the smooth perturbation of the Newton run, relative to the field.
 PERTURBATION = 1e-3
 #: Newton steps of the runs: the perturbed field is below the bar after 3 (9.3e-9), the exact targets after 3 with one
