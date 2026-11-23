@@ -7,8 +7,8 @@ The velocity of a step is then
     u = curl a + sum_k c_k xi_k,        div xi_k ~ phi_k(s) - <phi_k>,
 
 with ``phi_k`` the splines of the profile space (:func:`profile_basis`) and ``s`` the flux label of the field
-(:mod:`mrx.flux_label`). The profile space is its own: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints
-are uniform in ``s``, with the measure ``ds``. It does not refer to the mesh, which has only to resolve it. A spline in ``s`` is a smooth
+(:mod:`mrx.flux_label`). The profile space: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints are
+uniform in ``sqrt(s)``, half as many as the mesh's radial cells (:func:`profile_cells`), with the measure ``ds``. A spline in ``s`` is a smooth
 function in space next to the magnetic axis, where ``s`` goes as the squared distance, so every profile of the space
 is regular there, ``p = p0 + p1 s + ...``. A spline in ``sqrt(s)`` would be a cone at the axis.
 
@@ -57,8 +57,6 @@ from mrx.spline_bases import SplineBasis, knot_vector
 
 #: The degree of the splines of the profile space (:func:`profile_basis`).
 PROFILE_DEGREE = 3
-#: The default number of cells of the profile space.
-PROFILE_CELLS = 16
 #: The number of bins uniform in ``sqrt(s)`` on which :func:`pressure_error` compares the pressure with its target.
 ERROR_BINS = 48
 
@@ -78,14 +76,22 @@ def label(seq, B, anisotropy, guess=None, tol=LABEL_TOL):
     return enclosed_flux(seq, T, B_jk), T, info
 
 
+def profile_cells(seq):
+    """The number of cells of the profile space on ``seq``: half its radial cells. The breakpoints
+    ``s_k = (k / cells)^2`` (:func:`profile_knots`) are then every second radial knot ``r_k`` carried into the label
+    by ``s = r^2``, the label of the nested-surface map a mesh is built from: every profile cell spans two radial
+    cells, and the profile space refines with the mesh. On W7-X standard (24,48,28) p = 2, 11 cells reach the
+    residual bar at step 59 as 16 did, with the traced transform's ripple next to the axis 4.1e-3 against 5.6e-3, and
+    (32,64,36) with 15 cells 3.1e-3 against 3.9e-3. Breakpoints uniform in ``s`` (16 cells) made the outermost cells
+    narrower than the radial cells and never reached the bar (2026-11-23)."""
+    return (seq.basis_0.Lambda[0].n - seq.p) // 2
+
+
 def profile_knots(n):
     """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` with the
-    breakpoints uniform in ``s``, ``s_i = i / cells``. A polynomial in ``s`` is even in the distance from the axis, so
-    the profiles are smooth there. Breakpoints uniform in ``sqrt(s)`` made the innermost cells (``s < 0.004`` at 16)
-    finer than the label resolves next to the axis, and the projections onto them amplified its error. A float64
-    numpy array."""
+    breakpoints ``s_k = (k / cells)^2``, uniform in ``sqrt(s)`` (:func:`profile_cells`). A float64 numpy array."""
     cells = n - PROFILE_DEGREE
-    return knot_vector(np.arange(cells + 1) / cells, PROFILE_DEGREE, False)
+    return knot_vector((np.arange(cells + 1) / cells) ** 2, PROFILE_DEGREE, False)
 
 
 def profile_basis(n):
@@ -161,15 +167,15 @@ def _shell_parts(seq, B, Xi, p_q, kappa, mass_tol):
     return g_p, 0.5 * (D + D.T)
 
 
-def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
+def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=None):
     """``(shells, info)``: the :class:`Shells` at the field ``B``, with the flux label ``s_q`` and the target ``p_q``
     (mu0 p) at the quadrature points, the penalty ``kappa`` and mass-solve tolerance of the Newton operator, on the
-    profile space of ``cells`` cells, and the signed counts of the ``K - 1`` Poisson solves of
+    profile space of ``cells`` cells (:func:`profile_cells` of ``seq`` unless given), and the signed counts of the ``K - 1`` Poisson solves of
     :func:`shell_gradients`. Those solves are most of the cost, 200 to 420 conjugate gradients each, then one
     Hessian apply per shell for the block. The pressure part is ``int p* div xi_k dV``, the target's work along
     ``xi_k``."""
     even = seq.even
-    K = cells + PROFILE_DEGREE
+    K = (profile_cells(seq) if cells is None else cells) + PROFILE_DEGREE
     Q = jnp.asarray(np.linalg.qr(np.eye(K) - 1.0 / K)[0][:, :K - 1])
     m = even._scalar_load_values(jnp.ones_like(s_q), 3)          # the integrals of the basis functions
     e = even.M[3].solve(m)

@@ -179,9 +179,11 @@ volumes become unknowns of every Newton step and the run ends at the target
 pressure (`mrx.relaxation.shells`, `mrx.relaxation.newton.target_direction`).
 The shells are the splines of the profile space, $s$ the flux label of the
 field. The profile space is its own, shared by the pressure and the current:
-cubic splines in $s$ on `--pressure.cells` cells (16 by default) whose
-breakpoints are uniform in $s$. It does not refer to the mesh, which
-has only to resolve it. A spline in $s$ is smooth in space next to the
+cubic splines in $s$ on `--pressure.cells` cells whose breakpoints are
+uniform in $\sqrt{s}$, by default half the mesh's radial cells
+(`mrx.relaxation.shells.profile_cells`): every second radial knot $r_k$
+carried into the label by $s = r^2$, so every profile cell spans two
+radial cells and the space refines with the mesh. A spline in $s$ is smooth in space next to the
 magnetic axis, where $s$ goes as the squared distance from it, so every
 profile is regular there. Each shell's volume change is carried by a
 gradient $\xi_k = \nabla \chi_k$ with $\nabla \cdot \xi_k = f_k$ and

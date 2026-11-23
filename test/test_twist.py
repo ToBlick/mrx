@@ -15,16 +15,12 @@ import numpy as np
 from mrx.flux_label import ANISOTROPY
 from mrx.precision import eps
 from mrx.relaxation.physics import compute_divergence_norm
-from mrx.relaxation.shells import label
+from mrx.relaxation.shells import label, profile_cells
 from mrx.relaxation.twist import (build_slips, current_on_label, current_target, enclosed_current, iota_residual,
                                   slip_transform)
 
-#: The cells of the profile space on the fixture. Its 14 radial cells resolve 8 cells of the profile space, not the
-#: default 16 of finer meshes: with 16 the slip block's condition is 1.1e7 and the moments miss the weak current by
-#: 7.4e-3, with 8 the condition is 59 and the miss 1.55e-3 (2026-11-18).
-CELLS = 8
-#: The moments of the slips against the profile-space means of the weak current: 1.55e-3 of the largest in float64
-#: and in float32, on CELLS cells (2026-11-18).
+#: The moments of the slips against the profile-space means of the weak current, on the sequence's profile space
+#: (:func:`mrx.relaxation.shells.profile_cells`): PENDING measured.
 SLIP_WEAK_J = 2e-3
 
 
@@ -38,7 +34,7 @@ def test_slip_move_and_derivative(seq, b0):
     73.2, the slip at the first spline included. 7 s on four CPU cores after the fixture, 16 s in float32
     (2026-11-18)."""
     _, T, _ = label(seq, b0, ANISOTROPY)
-    mu_file = current_on_label(seq, b0, T, CELLS)
+    mu_file = current_on_label(seq, b0, T, profile_cells(seq))
     slips, mu = build_slips(seq, b0, T, 0.9 * mu_file)
     move, move_t = slips.maps(seq)
     odd = seq.odd
@@ -66,7 +62,7 @@ def test_slip_move_and_derivative(seq, b0):
     x = np.linspace(0.0, 1.0, 1001)
     s_q, _, _ = label(seq, b0, ANISOTROPY, T)
     I_enc = np.concatenate([[0.0], enclosed_current(seq, b0, np.asarray(s_q), x[1:] ** 2)])
-    mu_enc = np.asarray(current_target(lambda s: np.interp(s, x ** 2, I_enc), CELLS))
+    mu_enc = np.asarray(current_target(lambda s: np.interp(s, x ** 2, I_enc), profile_cells(seq)))
     weak = float(np.abs(np.asarray(mu) - mu_enc).max() / np.abs(mu_enc).max())
     ev = np.linalg.eigvalsh(D)
     print(f"\n  adjoint {adjoint:.1e}, div {div:.1e}, zeta {zeta:.1e}, first difference {fd:+.10e} vs {grad:+.10e}, "
@@ -83,12 +79,12 @@ def test_slip_move_and_derivative(seq, b0):
 
 def test_one_slip_update_zeroes_the_weak_iota_residual(eq, seq, b0):
     """The weak residual of the exact transform as the target on the fixture's field and label, on
-    :data:`CELLS` cells: with ``R`` its derivatives along the slips (:func:`mrx.relaxation.twist.slip_transform`)
+    :func:`~mrx.relaxation.shells.profile_cells` cells: with ``R`` its derivatives along the slips (:func:`mrx.relaxation.twist.slip_transform`)
     the field ``B + T d``, ``d = -R^-1 r``, has the residual zero to round-off relative to ``r``. The slips have no
     ``zeta`` component, so the toroidal flux in the residual's denominator does not change: the identity is exact up
     to the condition of ``R``: PENDING measured."""
     s_q, T, _ = label(seq, b0, ANISOTROPY)
-    slips, mu = build_slips(seq, b0, T, current_on_label(seq, b0, T, CELLS))
+    slips, mu = build_slips(seq, b0, T, current_on_label(seq, b0, T, profile_cells(seq)))
     move = slips.maps(seq)[0]
     residual = iota_residual(seq, b0, s_q, eq.iota, mu.size)
     r0 = np.asarray(residual(b0)[0], dtype=float)

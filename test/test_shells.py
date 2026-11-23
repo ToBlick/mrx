@@ -17,7 +17,7 @@ import numpy as np
 from mrx.precision import eps
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_PENALTY
 from mrx.relaxation.physics import compute_force
-from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, build_shells, shell_table
+from mrx.relaxation.shells import PROFILE_DEGREE, build_shells, profile_cells, shell_table
 from test.conftest import energy_derivatives, ideal_flow
 
 
@@ -37,7 +37,7 @@ def test_shell_velocity_and_row(seq, b0):
     p_q = even.evaluate_at_quadrature(p3, 3)[:, 0] / seq.jacobian_j
     shells, info = build_shells(seq, b0, s, p_q, NEWTON_PENALTY, NEWTON_MASS_SOLVE_TOL)
     Xi = shells.Xi
-    K = PROFILE_CELLS + PROFILE_DEGREE
+    K = profile_cells(seq) + PROFILE_DEGREE
     Q = jnp.asarray(np.linalg.qr(np.eye(K) - 1.0 / K)[0][:, :K - 1])     # the combinations of build_shells
     values, indices = shell_table(K, s)
     e = even.M[3].solve(even._scalar_load_values(jnp.ones_like(s), 3))          # the 3-form of the constant 1

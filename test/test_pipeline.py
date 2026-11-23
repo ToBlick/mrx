@@ -34,15 +34,13 @@ from mrx.relaxation.initial_conditions import vacuum_field
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
 from mrx.relaxation.seeding import energy_seed
-from mrx.relaxation.shells import build_shells, label, target_beta
+from mrx.relaxation.shells import build_shells, label, profile_cells, target_beta
 from mrx.relaxation.twist import current_on_label, iota_newton
 from test.conftest import LENGTH, field_error, map_installed
 
 #: The nested axis against the exact axis, as a fraction of the minor radius: 6.3e-3 measured on the tokamak at
 #: :data:`NESTED` (2026-11-22).
 NESTED_AXIS = LENGTH
-#: The cells of the profile space of the targets.
-CELLS = 6
 #: The residual bar and the move tolerance of the move rule (``--mesh.bar``, ``--mesh.move-tol``).
 BAR, MOVE_TOL = 1e-8, 0.1
 #: The Newton steps and the chunk of the run.
@@ -120,10 +118,10 @@ def test_the_pipeline_ends_at_the_exact_equilibrium(eq, seq, b0, files, nested, 
                     state = initial_state(B, ts, step=it)
             s_q, T, _ = label(seq, state.B_n, ANISOTROPY)
             shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol,
-                                     CELLS)
+                                     profile_cells(seq))
             ts_k = ts.with_shells(shells)
             if loop["target"] is None:
-                loop["target"] = np.asarray(current_on_label(seq, state.B_n, T, CELLS), dtype=np.float64)
+                loop["target"] = np.asarray(current_on_label(seq, state.B_n, T, profile_cells(seq)), dtype=np.float64)
             slips, loop["target"], _ = iota_newton(seq, state.B_n, T, s_q, eq.iota, ts_k, loop["target"])
             return state, ts_k.with_slips(slips)
         res = relax(initial_state(B0, ts), ts, steps=STEPS, chunk=CHUNK, rebuild=rebuild)

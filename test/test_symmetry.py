@@ -21,12 +21,10 @@ from mrx.relaxation.loop import TimeStepper, initial_state
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_PENALTY
 from mrx.relaxation.physics import compute_force, compute_helicity, weak_pressure, beta_vol
 from mrx.relaxation.seeding import parallel_seed
-from mrx.relaxation.shells import build_shells, label
+from mrx.relaxation.shells import build_shells, label, profile_cells
 from mrx.relaxation.twist import build_slips, current_on_label, iota_residual, slip_transform
 from test.conftest import SHEARED_NS, energy_derivatives
 
-#: The cells of the profile space.
-CELLS = 6
 #: The tolerance of the label solve here.
 LABEL_TOL = 1e-12
 
@@ -56,7 +54,7 @@ def _functionals(eq, seq):
     a, b, e = label_spline(seq, T, odd.evaluate_at_quadrature(B, 2))
     out["label_bounds"] = np.array([a, b])
     out["label_moments"] = np.asarray(e)
-    mu = current_on_label(seq, B, T, CELLS)
+    mu = current_on_label(seq, B, T, profile_cells(seq))
     out["current_moments"] = np.asarray(mu)
     slips = build_slips(seq, B, T, mu)[0]
     residual = iota_residual(seq, B, s_q, eq.iota, mu.size)
@@ -64,7 +62,7 @@ def _functionals(eq, seq):
     out["iota_residual"] = np.concatenate([np.asarray(residual(B)[0]), [float(eq.iota(0.0))]])
     out["iota_jacobian"] = slip_transform(residual, B, slips.maps(seq)[0], mu.size)
     shells, _ = build_shells(seq, B, s_q, jnp.asarray(eq.mu0_p_of_s(np.asarray(s_q))), NEWTON_PENALTY,
-                             NEWTON_MASS_SOLVE_TOL, CELLS)
+                             NEWTON_MASS_SOLVE_TOL, profile_cells(seq))
     out["shell_means"] = np.asarray(shells.g_p)
     c, _ = mm.magnetic_axis(seq, B)
     out["axis_moments"] = np.asarray(c)

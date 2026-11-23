@@ -62,7 +62,7 @@ import scipy.linalg as sl
 from scipy.interpolate import BSpline
 
 from mrx.geometry import map_jacobian_at
-from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, profile_basis, profile_knots, shell_table
+from mrx.relaxation.shells import PROFILE_DEGREE, profile_basis, profile_cells, profile_knots, shell_table
 from mrx.spline_bases import basis_table
 
 MU0 = 4e-7 * np.pi
@@ -134,7 +134,7 @@ class ProfileFit(NamedTuple):
                     data=self.d.tolist(), observed=(self.A @ self.a).tolist())
 
 
-def posterior(A_i, p_i, sigma=None, cells=PROFILE_CELLS):
+def posterior(A_i, p_i, cells, sigma=None):
     """The posterior of the profile ``p(s)`` in the profile space of ``cells`` cells, given the data ``p_i`` with the
     observations ``A_i`` ``(n, K)`` of the ``K`` splines (row ``i`` the functional of datum ``i`` applied to each
     spline: :func:`kernel_rows`, or the splines' values on a datum's flux surface), as a :class:`ProfileFit`.
@@ -213,7 +213,7 @@ def surface_normals(seq, T):
     return g / jnp.linalg.norm(g, axis=1, keepdims=True)
 
 
-def kernel_rows(seq, s_q, n_q, X_q, y, width, cells=PROFILE_CELLS):
+def kernel_rows(seq, s_q, n_q, X_q, y, width, cells):
     """``(A, record)``: the observations ``A_ik = int K_i phi_k(s) dV / int K_i dV`` of the ``K`` splines of the
     profile space by the instrument kernels of the data, ``K_i`` the Gaussian about the point ``y_i`` (Cartesian,
     ``(n, 3)``) with the standard deviations ``width`` ``(n, 2)`` across the flux surfaces (along their normal ``n_q``
@@ -242,23 +242,22 @@ def kernel_rows(seq, s_q, n_q, X_q, y, width, cells=PROFILE_CELLS):
 
 
 class DataFit:
-    """The fit of the data in the JSON file ``path`` (times ``scale``, on the profile space of ``cells`` cells) as
+    """The fit of the data in the JSON file ``path`` (times ``scale``, on the profile space of ``cells`` cells,
+    :func:`mrx.relaxation.shells.profile_cells` of the sequence unless given) as
     relax.py's pressure target: called with the field ``B`` and its label temperature ``T`` it returns the posterior
     (:class:`ProfileFit`, which is the profile) and the record ``{"fit": ...}``. Data at points are observed by their
     kernels on the field's label (:func:`kernel_rows`), data on flux surfaces are fitted once."""
 
-    def __init__(self, path, scale=1.0, cells=PROFILE_CELLS):
+    def __init__(self, path, scale=1.0, cells=None):
         with open(path) as fh:
             f = json.load(fh)
         self.path, self.cells = path, cells
         self.d = scale * MU0 * np.asarray(f["p_pa"], dtype=float)
         self.sigma = scale * MU0 * np.asarray(f["sigma_pa"], dtype=float) if "sigma_pa" in f else None
-        self.surfaces = None
+        self.surfaces, self.rho = None, None
         if "rho" in f:
-            rho = np.asarray(f["rho"], dtype=float)
-            K = cells + PROFILE_DEGREE
-            self.surfaces = posterior(_splines(K, rho ** 2), self.d - np.interp(1.0, rho, self.d), self.sigma, cells)
-            self.labels = (rho ** 2).tolist()
+            self.rho = np.asarray(f["rho"], dtype=float)
+            self.labels = (self.rho ** 2).tolist()
             return
         pts = np.asarray(f["points"], dtype=float)
         phi = np.radians(pts[:, 2])
@@ -268,16 +267,19 @@ class DataFit:
 
     def __call__(self, seq, B, T):
         from mrx.flux_label import enclosed_flux
-        fit = self.surfaces
-        if fit is not None:
-            rec = dict(labels=self.labels)
+        cells = profile_cells(seq) if self.cells is None else self.cells
+        if self.rho is not None:
+            if self.surfaces is None:       # data on flux surfaces are fitted once
+                self.surfaces = posterior(_splines(cells + PROFILE_DEGREE, self.rho ** 2),
+                                          self.d - np.interp(1.0, self.rho, self.d), cells, self.sigma)
+            fit, rec = self.surfaces, dict(labels=self.labels)
         else:
             if self.map is not seq.map:
                 # the physical quadrature points of the installed map, again after every move of the mesh
                 self.X_q, self.map = jax.vmap(seq.map)(seq.quad.x), seq.map
             s_q = enclosed_flux(seq, T, seq.odd.evaluate_at_quadrature(B, 2))
-            A, rec = kernel_rows(seq, s_q, surface_normals(seq, T), self.X_q, self.y, self.width, cells=self.cells)
-            fit = posterior(A, self.d, self.sigma, self.cells)
+            A, rec = kernel_rows(seq, s_q, surface_normals(seq, T), self.X_q, self.y, self.width, cells)
+            fit = posterior(A, self.d, cells, self.sigma)
         print(f"[fit] tau {fit.tau:.3e}, sigma {fit.sigma[0] / MU0:.3e} Pa, chi^2 {fit.chi2():.3f} per point"
               + (f", kernel points >= {min(rec['kernel_points']):.1f}" if "kernel_points" in rec else ""), flush=True)
         return fit, dict(fit=dict(fit.record(), **rec))

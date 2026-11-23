@@ -98,7 +98,8 @@ def main(cfg, fit=None):
     from mrx.relaxation import mesh_motion
     from mrx.relaxation.mesh_motion import install_checkpoint_map, write_map
     from mrx.relaxation.physics import current, resistive_step, weak_pressure
-    from mrx.relaxation.shells import ERROR_BINS, build_shells, label, load_target, pressure_error, target_beta
+    from mrx.relaxation.shells import (ERROR_BINS, build_shells, label, load_target, pressure_error, profile_cells,
+                                      target_beta)
     from mrx.relaxation.seeding import energy_seed
     from mrx.relaxation.twist import (AT_TARGET, build_slips, current_error, current_on_label, iota_newton, iota_residual,
                                       load_current_target, load_iota_target, spline_centres)
@@ -232,6 +233,9 @@ def main(cfg, fit=None):
               f"{float(seq.odd.l2_norm(state.B_n - B_star, 2) / seq.odd.l2_norm(state.B_n, 2)):.3e}", flush=True)
     # --- the prescribed pressure: the shell volumes as Newton unknowns, rebuilt every chunk ---
     pr, cu = cfg.pressure, cfg.current
+    # the profile space of the targets and the loop: --pressure.cells, or half the mesh's radial cells
+    cells = profile_cells(seq) if pr.cells is None else pr.cells
+    params["profile_cells"] = cells
     targets = bool(pr or cu or cfg.iota)
 
     def label_of(state):
@@ -270,7 +274,7 @@ def main(cfg, fit=None):
         # "file" is the current of the geometry file's field, also on a restart
         B_file = initial_field(seq)[0] if cfg.output.restart else B0
         mu_star = load_current_target(seq, cu.target, B_file, cu.scale, anisotropy=pr.anisotropy,
-                                      label_tol=pr.label_tol, cells=pr.cells)
+                                      label_tol=pr.label_tol, cells=cells)
         results["current"] = dict(target=cu.target, x=spline_centres(mu_star.size).tolist(),
                                   target_moments=np.asarray(mu_star).tolist(), rebuilds=[])
         print(f"[current] target {cu.target}" + (f" x {cu.scale:g}" if cu.scale != 1.0 else "")
@@ -289,7 +293,7 @@ def main(cfg, fit=None):
         # the target transform: the current target takes a Newton step on the transform's weak residual before every
         # chunk, from the current the field carries at the first
         iota_star = load_iota_target(cfg.iota.target)
-        results["iota"] = dict(target=cfg.iota.target, x=spline_centres(pr.cells + 2).tolist(), rebuilds=[])
+        results["iota"] = dict(target=cfg.iota.target, x=spline_centres(cells + 2).tolist(), rebuilds=[])
 
         def record_iota(it, rec, info):
             results["iota"]["rebuilds"].append(dict(step=it, label_it=info, **rec))
@@ -304,7 +308,7 @@ def main(cfg, fit=None):
             which the first chunks still move. The field is seeded at the first chunk boundary at which every local
             mean of the miss, the weak residual on the label, is below AT_TARGET of the target's largest value.
             Returns the state and whether it seeded."""
-            r = iota_residual(seq, state.B_n, s_q, iota_star, pr.cells + 2)(state.B_n)[0]
+            r = iota_residual(seq, state.B_n, s_q, iota_star, cells + 2)(state.B_n)[0]
             miss = float(np.abs(np.asarray(r)).max())
             if miss >= AT_TARGET * iota_max:
                 return state, False
@@ -407,7 +411,7 @@ def main(cfg, fit=None):
             # at an equilibrium the loop reads the field before the mesh moves: the move would kick it off
             s_q, info = label_of(state)
             if iota_target is None:     # the loop starts from the current the field carries
-                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, pr.cells), dtype=np.float64)
+                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64)
             _, iota_target, rec = iota_newton(seq, state.B_n, T_label, s_q, iota_star, ts, iota_target)
             record_iota(it, rec, info)
             schedule["hold"], updated = False, True
@@ -425,7 +429,7 @@ def main(cfg, fit=None):
                 s_q, info = label_of(state)
         if pr:
             p_q = measure(state, it, s_q, info)
-            shells, shell_it = build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, pr.cells)
+            shells, shell_it = build_shells(seq, state.B_n, s_q, p_q, n.penalty, n.mass_solve_tol, cells)
             shell_it = np.asarray(shell_it).tolist()
             results["pressure"]["rebuilds"][-1]["shell_it"] = shell_it
             print(f"[pressure] step {it}: shell gradients, Poisson CG {min(shell_it)} .. {max(shell_it)}", flush=True)
@@ -436,7 +440,7 @@ def main(cfg, fit=None):
             ts = ts.with_slips(slips)
         if cfg.iota:
             if iota_target is None:     # the loop starts from the current the field carries
-                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, pr.cells), dtype=np.float64)
+                iota_target = np.asarray(current_on_label(seq, state.B_n, T_label, cells), dtype=np.float64)
             if updated or schedule["hold"]:
                 # updated before the move, or held since the last move or the start until the field is below the bar
                 slips = build_slips(seq, state.B_n, T_label, jnp.asarray(iota_target, dtype=T_label.dtype))[0]
@@ -506,10 +510,10 @@ def main(cfg, fit=None):
             results["summary"].update(beta=end["beta"], pressure_error=end["error"],
                                       pressure_constant=end["constant"])
         if cu:
-            record_current(it, current_on_label(seq, state.B_n, T_label, pr.cells), info)
+            record_current(it, current_on_label(seq, state.B_n, T_label, cells), info)
             results["summary"].update(current_error=results["current"]["rebuilds"][-1]["error"])
         if cfg.iota:
-            r = np.asarray(iota_residual(seq, state.B_n, s_q, iota_star, pr.cells + 2)(state.B_n)[0], dtype=np.float64)
+            r = np.asarray(iota_residual(seq, state.B_n, s_q, iota_star, cells + 2)(state.B_n)[0], dtype=np.float64)
             results["iota"]["end"] = dict(step=it, label_it=info, r=r.tolist(), r_max=float(np.abs(r).max()))
             print(f"[iota] step {it}: weak residual max {np.abs(r).max():.3e} at the end", flush=True)
             results["summary"].update(iota_r_max=float(np.abs(r).max()))

@@ -12,7 +12,10 @@ import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 
-from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, profile_knots
+from mrx.relaxation.shells import PROFILE_DEGREE, profile_knots
+
+#: The cells of the profile space of these fits.
+PROFILE_CELLS = 16
 
 _spec = importlib.util.spec_from_file_location(
     "pressure_fit", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "pressure_fit.py")
@@ -37,7 +40,8 @@ def _posterior_draws(s_i, truth, level, draws, seed=0):
     rng = np.random.default_rng(seed)
     sigma = level * truth(0.0)
     A = BSpline(profile_knots(PROFILE_CELLS + PROFILE_DEGREE), np.eye(PROFILE_CELLS + PROFILE_DEGREE), PROFILE_DEGREE)(s_i)
-    return [pf.posterior(A, truth(s_i) + sigma * rng.standard_normal(s_i.size), sigma) for _ in range(draws)]
+    return [pf.posterior(A, truth(s_i) + sigma * rng.standard_normal(s_i.size), PROFILE_CELLS, sigma)
+            for _ in range(draws)]
 
 
 def test_profile_posterior():

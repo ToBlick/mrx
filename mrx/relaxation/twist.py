@@ -61,7 +61,7 @@ from mrx.flux_label import ANISOTROPY, enclosed_flux, flux_label
 from mrx.operators import _mass, _mass_model
 from mrx.precision import DTYPE, to_working
 from mrx.relaxation.physics import current as weak_current
-from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS, PROFILE_DEGREE, profile_basis
+from mrx.relaxation.shells import LABEL_TOL, PROFILE_DEGREE, profile_basis, profile_cells
 from mrx.solvers import solve_singular_cg
 from mrx.spline_bases import DerivativeSpline, basis_table
 
@@ -95,9 +95,10 @@ def _axis_angle_gradient(seq, B):
     return d_r, d_t, d_z
 
 
-def iota_fit(seq, B, s_q, degree, n_mu=PROFILE_CELLS + PROFILE_DEGREE - 1):
+def iota_fit(seq, B, s_q, degree, n_mu=None):
     """The transform per full turn as a polynomial of ``degree`` in the label ``s``: the one whose weak residual
-    (:func:`iota_residual`) on the ``n_mu`` derivative splines of the profile space is least in the mean square,
+    (:func:`iota_residual`) on the ``n_mu`` derivative splines of the profile space (of :func:`profile_cells` of
+    ``seq`` unless given) is least in the mean square,
 
         min_c sum_j (int M_j(s) (nfp B . grad theta_a - sum_i c_i s^i B . grad zeta) dV)^2,
 
@@ -109,6 +110,7 @@ def iota_fit(seq, B, s_q, degree, n_mu=PROFILE_CELLS + PROFILE_DEGREE - 1):
     dens = Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z
     s = np.asarray(s_q, dtype=np.float64)
     w = np.asarray(seq.quad.w, dtype=np.float64)
+    n_mu = profile_cells(seq) + PROFILE_DEGREE - 1 if n_mu is None else n_mu
     M = np.asarray(basis_table(_derivatives(n_mu), jnp.asarray(s)), dtype=np.float64)       # (n_mu, n_q)
     rhs = M @ (seq.nfp * w * dens)
     A = M @ ((w * Bq[:, 2])[:, None] * s[:, None] ** np.arange(degree + 1))
@@ -349,9 +351,10 @@ def iota_newton(seq, B, T, s_q, iota, ts, mu_star):
 
 
 @eqx.filter_jit
-def current_on_label(seq, B, T, cells=PROFILE_CELLS):
+def current_on_label(seq, B, T, cells=None):
     """The moments ``mu`` (:func:`current_moments`) of the field ``B`` on the label of the temperature ``T``, on the
-    profile space of ``cells`` cells."""
+    profile space of ``cells`` cells (:func:`~mrx.relaxation.shells.profile_cells` of ``seq`` unless given)."""
+    cells = profile_cells(seq) if cells is None else cells
     return _slip_parts(seq, B, slip_changes(seq, _label_of(seq, B, T), cells + PROFILE_DEGREE))[0]
 
 
@@ -360,7 +363,7 @@ def _derivatives(n_mu):
     return DerivativeSpline(profile_basis(n_mu + 1))
 
 
-def current_target(current, cells=PROFILE_CELLS, samples=20001):
+def current_target(current, cells, samples=20001):
     """The moments ``mu*_j = int M_j(s) mu0 I*(s) ds`` of the target ``current`` (``mu0 I*(s)`` in T m along
     ``+zeta``, a function of ``s``) on the profile space of ``cells`` cells, by the trapezoidal rule on ``samples``
     points of ``sqrt(s)``. They do not depend on the field: a rebuild on a new label keeps them."""
@@ -401,8 +404,9 @@ def spline_centres(n_mu):
 
 
 def load_current_target(seq, spec, B_file, scale=1.0, T=None, anisotropy=ANISOTROPY, label_tol=LABEL_TOL,
-                        cells=PROFILE_CELLS):
-    """The moments ``mu*`` (:func:`current_target`) on the profile space of ``cells`` cells of the current target
+                        cells=None):
+    """The moments ``mu*`` (:func:`current_target`) on the profile space of ``cells`` cells
+    (:func:`~mrx.relaxation.shells.profile_cells` of ``seq`` unless given) of the current target
     ``spec``, times ``scale``: ``"file"``, the
     current of the geometry file's field ``B_file`` on its flux label (temperature ``T``, solved if not given with
     ``anisotropy`` to ``label_tol``), or a VMEC input namelist with ``NCURR = 1`` (its ``mu0 I(s)`` along ``phi``,
@@ -418,4 +422,4 @@ def load_current_target(seq, spec, B_file, scale=1.0, T=None, anisotropy=ANISOTR
     if nl.ncurr == 0:
         raise ValueError(f"{spec}: NCURR = 0 prescribes iota, a target of the twist (--iota.target), not a current")
     sign = float(np.sign(nl.phiedge) * np.sign(jnp.sum(seq.quad.w * B_jk[:, 2])))
-    return current_target(lambda s: scale * sign * nl.current(s), cells)
+    return current_target(lambda s: scale * sign * nl.current(s), profile_cells(seq) if cells is None else cells)

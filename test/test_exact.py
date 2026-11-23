@@ -20,12 +20,10 @@ from mrx.flux_label import ANISOTROPY
 from mrx.precision import DTYPE, eps
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
-from mrx.relaxation.shells import ERROR_BINS, build_shells, label, pressure_error
+from mrx.relaxation.shells import ERROR_BINS, build_shells, label, pressure_error, profile_cells
 from mrx.relaxation.twist import current_on_label, iota_fit, iota_newton, iota_residual
 from test.conftest import field_error
 
-#: The cells of the profile space of the targets on the shared sequence's 10 radial cells.
-CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
 #: exact pressure, and the largest local mean of the transform's miss over the largest transform: 2.3e-3, 1.95e-2,
 #: 9.7e-3 and 5.9e-5 with the second label solve (2.4e-4 before), the degree-6 fit 2.5e-4, measured (tokamak (12,16,6), float64, 2026-11-22).
@@ -91,12 +89,12 @@ def test_projections(eq, seq, b0):
 
 def test_observation_error_of_the_transform(eq, seq, b0):
     """The weak residual of ``b0`` against the exact transform on its label (:func:`mrx.relaxation.twist
-    .iota_residual`, :data:`CELLS` cells): every local mean of the miss is within :data:`BANDS` of the largest
+    .iota_residual`, :func:`~mrx.relaxation.shells.profile_cells` cells): every local mean of the miss is within :data:`BANDS` of the largest
     transform, the error with which the iota loop sees the exact transform on this mesh, and the degree-6 polynomial
     fitted to the weak moments (:func:`mrx.relaxation.twist.iota_fit`) is the exact transform on ``s`` in 0.05 .. 0.95
     within ``BANDS["iota_fit"]``."""
     s_q, _, _ = label(seq, b0, ANISOTROPY)
-    r = np.asarray(iota_residual(seq, b0, s_q, eq.iota, CELLS + 2)(b0)[0])
+    r = np.asarray(iota_residual(seq, b0, s_q, eq.iota, profile_cells(seq) + 2)(b0)[0])
     miss = float(np.abs(r).max() / eq.iota(0.0))
     S = np.linspace(0.05, 0.95, 19)
     fit = float(np.abs(np.abs(iota_fit(seq, b0, s_q, 6)(S)) - eq.iota(S)).max() / eq.iota(0.0))
@@ -150,11 +148,11 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     ts = TimeStepper(seq=seq, newton=True)
     p_star = _p_star(eq)
     _, T0, _ = label(seq, b0, ANISOTROPY)
-    target = [np.asarray(current_on_label(seq, b0, T0, CELLS), dtype=np.float64)]
+    target = [np.asarray(current_on_label(seq, b0, T0, profile_cells(seq)), dtype=np.float64)]
 
     def rebuild(state, it):
         s_q, T, _ = label(seq, state.B_n, ANISOTROPY)
-        shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol, CELLS)
+        shells, _ = build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty, ts.newton_mass_solve_tol, profile_cells(seq))
         ts_k = ts.with_shells(shells)
         slips, target[0], rec = iota_newton(seq, state.B_n, T, s_q, eq.iota, ts_k, target[0])
         return state, ts_k.with_slips(slips)
@@ -164,7 +162,7 @@ def test_the_exact_targets_are_a_fixed_point(eq, seq, b0):
     s_q, _, _ = label(seq, B, ANISOTROPY)
     X, _ = _points(seq)
     e_p, _ = pressure_error(seq, weak_pressure(current(B, seq), B, seq), s_q, jnp.asarray(_mu0_p(eq, X)), ERROR_BINS)
-    r = np.asarray(iota_residual(seq, B, s_q, eq.iota, CELLS + 2)(B)[0])
+    r = np.asarray(iota_residual(seq, B, s_q, eq.iota, profile_cells(seq) + 2)(B)[0])
     miss = float(np.abs(r).max() / eq.iota(0.0))
     start, end = field_error(eq, seq, b0), field_error(eq, seq, B)
     print(f"  pressure {e_p:.3e}, transform's weak residual {miss:.3e}, field {start:.3e} -> {end:.3e}")

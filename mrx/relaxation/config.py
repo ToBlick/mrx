@@ -21,7 +21,7 @@ import tyro
 from mrx.flux_label import ANISOTROPY
 from mrx.paths import data_file
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
-from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS
+from mrx.relaxation.shells import LABEL_TOL
 
 
 class Symmetry(StrEnum):
@@ -202,8 +202,8 @@ class Pressure:
     """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
     label_tol: float = LABEL_TOL
     """The relative tolerance of that label's solve."""
-    cells: int = PROFILE_CELLS
-    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in s, shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
+    cells: Optional[int] = None
+    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). Unset, half the mesh's radial cells (mrx.relaxation.shells.profile_cells)."""
 
     def __post_init__(self):
         if self.beta is not None and self.scale != 1.0:
