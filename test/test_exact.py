@@ -21,7 +21,7 @@ from mrx.precision import DTYPE, eps
 from mrx.relaxation.loop import TimeStepper, initial_state, relax
 from mrx.relaxation.physics import current, weak_pressure
 from mrx.relaxation.shells import ERROR_BINS, build_shells, label, pressure_error
-from mrx.relaxation.twist import current_on_label, iota_newton, iota_residual
+from mrx.relaxation.twist import current_on_label, iota_fit, iota_newton, iota_residual
 from test.conftest import field_error
 
 #: The cells of the profile space of the targets on the shared sequence's 10 radial cells.
@@ -29,7 +29,7 @@ CELLS = 6
 #: The projections: the field, the weak current against the projected exact current, the weak pressure against the
 #: exact pressure, and the largest local mean of the transform's miss over the largest transform: 2.3e-3, 1.95e-2,
 #: 9.7e-3 and 2.4e-4 measured (tokamak (12,16,6), float64, 2026-11-22).
-BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=3.5e-4)
+BANDS = dict(B=3e-3, J=2.5e-2, p=1.3e-2, iota=3.5e-4, iota_fit=1e-3)
 #: The end of the run with the exact targets: the pressure and the transform's weak residual, 9.2e-3 and 1.1e-4
 #: measured after 20 steps (tokamak (12,16,6), float64, 2026-11-22).
 TARGET_BANDS = dict(p=1.3e-2, iota=1.6e-4)
@@ -92,12 +92,17 @@ def test_projections(eq, seq, b0):
 def test_observation_error_of_the_transform(eq, seq, b0):
     """The weak residual of ``b0`` against the exact transform on its label (:func:`mrx.relaxation.twist
     .iota_residual`, :data:`CELLS` cells): every local mean of the miss is within :data:`BANDS` of the largest
-    transform, the error with which the iota loop sees the exact transform on this mesh."""
+    transform, the error with which the iota loop sees the exact transform on this mesh, and the degree-6 polynomial
+    fitted to the weak moments (:func:`mrx.relaxation.twist.iota_fit`) is the exact transform on ``s`` in 0.05 .. 0.95
+    within ``BANDS["iota_fit"]``."""
     s_q, _, _ = label(seq, b0, ANISOTROPY)
     r = np.asarray(iota_residual(seq, b0, s_q, eq.iota, CELLS + 2)(b0)[0])
     miss = float(np.abs(r).max() / eq.iota(0.0))
-    print(f"\n  weak residual {' '.join(f'{v:+.1e}' for v in r)}, largest {miss:.3e} of iota")
-    assert miss < BANDS["iota"]
+    S = np.linspace(0.05, 0.95, 19)
+    fit = float(np.abs(np.abs(iota_fit(seq, b0, s_q, 6)(S)) - eq.iota(S)).max() / eq.iota(0.0))
+    print(f"\n  weak residual {' '.join(f'{v:+.1e}' for v in r)}, largest {miss:.3e} of iota, the degree-6 fit of the "
+          f"weak moments {fit:.3e}")
+    assert miss < BANDS["iota"] and fit < BANDS["iota_fit"]
 
 
 def _descends(res, floor):
