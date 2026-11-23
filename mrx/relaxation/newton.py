@@ -1,10 +1,13 @@
 """The Newton step of the relaxation: the Hessian of the magnetic energy and the Newton direction.
 
-The relaxation moves the field ``B`` (a 2-form) with a divergence-free velocity ``u``, so that ``B_t = curl(u x
-B_t)``. With ``Q = curl(u x B)`` and ``R = curl(u x Q)`` the energy is ``||B + Q + R/2||_M^2 / 2`` to second order
-in ``u``. Its gradient is ``-load(J x B)`` and its symmetric Hessian is
+The relaxation moves the field ``B`` (a 2-form) with a divergence-free velocity ``u``, so that ``B_t = curl E``,
+``E = Pi_1(u x H)`` with ``H = Pi_1 B_t`` (:func:`mrx.relaxation.physics.induction_field`). With ``Q = curl Pi_1(u x
+h)`` and ``R = curl Pi_1(u x Pi_1 Q)`` the energy is ``||B + Q + R/2||_M^2 / 2`` to second order in ``u``. Its
+gradient is ``-load(J x H)`` and its symmetric Hessian is
 
-    (u, H v) = (Q_u, Q_v)_M + [(B, curl(u x Q_v))_M + (B, curl(v x Q_u))_M] / 2.
+    (u, H v) = (Q_u, Q_v)_M + [(J, u x Pi_1 Q_v) + (J, v x Pi_1 Q_u)] / 2,
+
+the bracket from ``(B, curl Y)_M = (J, Y)_{M_1}``.
 
 At an equilibrium ``H`` is minus the ideal-MHD force operator at zero pressure.
 
@@ -31,7 +34,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.operators import _mass_solve
+from mrx.optimization.shape_ad import map_jacobian
+from mrx.quadrature import evaluate_at_xq
+from mrx.relaxation.physics import induction_field
 from mrx.solvers import minres
+from mrx.spline_bases import basis_derivative_table
 
 #: Production defaults: the weight of the parallel-flow penalty (in units of the field's strain), the relative
 #: tolerance of the Newton solve in the norm of its preconditioner, the maximum number of MINRES iterations per
@@ -50,34 +57,51 @@ NEWTON_MAXITER = 300
 NEWTON_MASS_SOLVE_TOL = 1e-6
 
 
-def _ddx(f, x, axis, periodic):
-    """Central difference of ``f`` along ``axis`` on the grid ``x``, periodic on ``[0, 1)`` or one-sided at the
-    ends. A half-period grid covers only ``zeta`` in ``[0, 1/2]`` and is not periodic."""
-    f = jnp.moveaxis(f, axis, 0)
-    if periodic:
-        df = jnp.roll(f, -1, axis=0) - jnp.roll(f, 1, axis=0)
-        dx = (jnp.roll(x, -1) - jnp.roll(x, 1)) % 1.0
-    else:
-        df = jnp.concatenate([f[1:2] - f[0:1], f[2:] - f[:-2], f[-1:] - f[-2:-1]])
-        dx = jnp.concatenate([x[1:2] - x[0:1], x[2:] - x[:-2], x[-1:] - x[-2:-1]])
-    return jnp.moveaxis(df / dx.reshape((-1,) + (1,) * (f.ndim - 1)), 0, axis)
+def _derivatives_at_quadrature(view, dofs, k):
+    """The logical derivatives ``d_c`` of the reference components of the k-form ``dofs`` (k = 1, 2) at the
+    quadrature points, ``(n_q, 3, 3)`` with ``[q, c, i]`` the derivative of component ``i`` along ``c``: the form
+    evaluated with the derivatives of its 1-D splines on the axis ``c``, exact."""
+    form = view.basis_1 if k == 1 else view.basis_2
+    x = (view.quad.x_x, view.quad.x_y, view.quad.x_z)
+    c_dofs = view.E(k).T @ dofs
+    out = []
+    for c in range(3):
+        info = []
+        for comp in range(3):
+            deriv = form.derivative_axes(comp)
+            tables = []
+            for a in range(3):
+                if a != c:
+                    tables.append((view.d_basis_jk if a in deriv else view.basis_jk)[a])
+                else:
+                    tables.append(view.dd_basis_jk[a] if a in deriv
+                                  else basis_derivative_table(view.basis_0.Lambda[a], x[a]))
+            info.append((comp, *tables))
+        out.append(evaluate_at_xq(c_dofs, info, list(form.shape), view.quad.shape, 3))
+    return jnp.stack(out, axis=1)
 
 
 def atom_profiles(seq, field):
     """Radial profiles of a 2-form ``field``, on the radial quadrature points, used to build the preconditioner.
 
     Returns ``(prof_t, prof_z, strain)``. ``prof_t`` and ``prof_z`` are the averages over ``theta`` and ``zeta``
-    of the field's logical ``theta`` and ``zeta`` components. ``strain`` has shape ``(nq_r, 3)`` and holds, for
-    each logical direction ``c``, the angle average of ``sum_i (d_c field^i)^2``, i.e. how fast the field
-    varies along that direction.
+    of the field's logical ``theta`` and ``zeta`` components ``f = Bh / J``. ``strain`` has shape ``(nq_r, 3)`` and
+    holds, for each logical direction ``c``, the angle average of ``sum_i (d_c f^i)^2``, i.e. how fast the field
+    varies along that direction. The derivatives are exact: those of the 2-form's splines and of the map's
+    Jacobian determinant, ``d_c f = (d_c Bh - f d_c J) / J`` with ``d_c J / J = tr(DPhi^-1 d_c DPhi)``.
     """
     shape = tuple(int(v) for v in seq.quad.shape)
-    f_jk = (seq.odd.evaluate_at_quadrature(field, 2) / seq.jacobian_j[:, None]).reshape(shape + (3,))
+    J = seq.jacobian_j
+    B_jk = seq.odd.evaluate_at_quadrature(field, 2)
+    f_jk = B_jk / J[:, None]
+    D, dD, _ = map_jacobian(seq, seq.map, second=True)
+    dlogJ = jnp.einsum("qij,qkji->qk", jnp.linalg.inv(D), dD)
+    grads = (_derivatives_at_quadrature(seq.odd, field, 2) - f_jk[:, None, :] * dlogJ[:, :, None] * J[:, None, None]
+             ) / J[:, None, None]
+    f_jk = f_jk.reshape(shape + (3,))
     prof_t = f_jk[..., 1].mean(axis=(1, 2))
     prof_z = f_jk[..., 2].mean(axis=(1, 2))
-    periodic = (False, True, not seq.half_period)
-    grads = [_ddx(f_jk, x, ax, periodic[ax]) for ax, x in enumerate((seq.quad.x_x, seq.quad.x_y, seq.quad.x_z))]
-    strain = jnp.stack([(g ** 2).sum(axis=-1).mean(axis=(1, 2)) for g in grads], axis=-1)
+    strain = (grads ** 2).sum(axis=-1).reshape(shape + (3,)).mean(axis=(1, 2))
     return prof_t, prof_z, strain
 
 
@@ -195,25 +219,27 @@ class SplineAtom(eqx.Module):
 def gauss_newton_parts(seq, B, penalty=None, mass_tol=None):
     """``(change, change_t, parallel)``: the pieces of the Gauss-Newton part of the Hessian at ``B``.
 
-    ``change(u_jk)`` is the field change ``Q = curl M_1^-1 load(u x B)`` (a 2-form of ``seq.odd``) of the velocity
+    ``change(u_jk)`` is the field change ``Q = curl M_1^-1 load(u x H)`` (a 2-form of ``seq.odd``) of the velocity
     with the values ``u_jk`` at the quadrature points, ``change_t(X)`` is ``Q^T M_2 X`` (a dual 2-form of
     ``seq.even``) and ``parallel(u_jk)`` the parallel-flow penalty of :func:`second_variation` (zero for
     ``penalty=None``). So ``change_t(change(u_jk)) + parallel(u_jk)`` is ``H u`` without the terms in ``J``. Each of
-    ``change`` and ``change_t`` costs one 1-form mass solve to the relative tolerance ``mass_tol``."""
+    ``change`` and ``change_t`` costs one 1-form mass solve to the relative tolerance ``mass_tol``, and ``H`` one free
+    1-form mass solve, once."""
     odd, even = seq.odd, seq.even
     B_jk = odd.evaluate_at_quadrature(B, 2)
-    curl = odd.G[1]
     tol = seq.tol if mass_tol is None else mass_tol
+    H_jk = induction_field(B, seq, tol)
+    curl = odd.G[1]
 
     def m1_inv(x):
         return _mass_solve(odd, x, 1, tol=tol)
 
     def change(u_jk):
-        return curl @ m1_inv(odd.cross_product_load_values(u_jk, B_jk, 1, 2, 2))
+        return curl @ m1_inv(odd.cross_product_load_values(u_jk, H_jk, 1, 2, 1))
 
     def change_t(X):
         Y = m1_inv(odd.D[1].T @ X)
-        return even.cross_product_load_values(B_jk, odd.evaluate_at_quadrature(Y, 1), 2, 2, 1)
+        return even.cross_product_load_values(H_jk, odd.evaluate_at_quadrature(Y, 1), 2, 1, 1)
 
     if penalty is None:
         return change, change_t, lambda u_jk: 0.0
@@ -230,7 +256,8 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
     """The map ``u -> H u`` that applies the energy Hessian at ``B`` to a velocity 2-form ``u``.
 
     ``J`` is the weak curl of ``B``. The result is a dual 2-form. Each application costs two 1-form mass solves,
-    to the relative tolerance ``mass_tol`` (``seq.tol`` if ``None``). ``J=None`` leaves out the two terms in ``J``.
+    to the relative tolerance ``mass_tol`` (``seq.tol`` if ``None``), and with ``J`` two more free 1-form mass solves
+    (``Pi_1 Q`` and ``Pi_1(J x u)``). ``J=None`` leaves out the two terms in ``J``.
     What remains is the Gauss-Newton part ``(u, H v) = (Q_u, Q_v)_M``, which is positive semidefinite.
     Flows along the field, ``u = f B``, do not change ``B`` and form a null space of ``H``. ``penalty`` (the
     weight ``w(r)`` of :func:`parallel_penalty_profile`) removes it by adding
@@ -247,21 +274,24 @@ def second_variation(seq, B, J=None, penalty=None, mass_tol=None):
             return Hu if penalty is None else Hu + parallel(u_jk)
         return apply
 
-    B_jk = odd.evaluate_at_quadrature(B, 2)
     curl = odd.G[1]
+    free = odd.free
     J_jk = odd.evaluate_at_quadrature(J, 1)
     tol = seq.tol if mass_tol is None else mass_tol
+    H_jk = induction_field(B, seq, tol)
 
     def apply(u):
         u_jk = even.evaluate_at_quadrature(u, 2)
         Q = change(u_jk)
-        Q_jk = odd.evaluate_at_quadrature(Q, 2)
-        JxU = odd.cross_product_load_values(J_jk, u_jk, 2, 1, 2)
-        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T (J x u), in one solve
-        Y = _mass_solve(odd, odd.D[1].T @ Q + 0.5 * (curl.T @ JxU), 1, tol=tol)
+        HQ_jk = induction_field(Q, seq, tol)
+        # (J, u x Pi_1 Q_v) = (Pi_1(J x u), Q_v): the free projection z of J x u, tested against the 2-forms
+        z = _mass_solve(free, free.cross_product_load_values(J_jk, u_jk, 1, 1, 2), 1, tol=tol)
+        Jxu = odd.vector_load_values(free.evaluate_at_quadrature(z, 1), 1, 2)
+        # dJ + W / 2 with dJ = M_1^-1 D_1^T Q and W = M_1^-1 curl^T Pi_1(J x u), in one solve
+        Y = _mass_solve(odd, odd.D[1].T @ Q + 0.5 * (curl.T @ Jxu), 1, tol=tol)
         Y_jk = odd.evaluate_at_quadrature(Y, 1)
-        Hu = (even.cross_product_load_values(B_jk, Y_jk, 2, 2, 1)
-              + 0.5 * even.cross_product_load_values(Q_jk, J_jk, 2, 2, 1))
+        Hu = (even.cross_product_load_values(H_jk, Y_jk, 2, 1, 1)
+              + 0.5 * even.cross_product_load_values(HQ_jk, J_jk, 2, 1, 1))
         return Hu if penalty is None else Hu + parallel(u_jk)
 
     return apply
@@ -273,7 +303,7 @@ def newton_direction(seq, B, load, a_guess, kappa=NEWTON_PENALTY, tol=NEWTON_TOL
 
     It is the step of a domain whose flows hold no harmonic field, the even flows of a stellarator-symmetric
     sequence. Otherwise :func:`target_direction` adds the harmonic flow.
-    ``load`` is the Lorentz force ``J x B`` as a dual 2-form. It need not be projected: the right-hand side
+    ``load`` is the Lorentz force ``J x H`` as a dual 2-form. It need not be projected: the right-hand side
     ``curl^T load`` is blind to its gradient and harmonic parts. ``a_guess`` is the warm start for the potential
     ``a`` (pass the previous step's ``a``) and ``kappa`` the weight of the parallel-flow penalty. The operator is
     the Gauss-Newton part of the Hessian (:func:`second_variation` without ``J``) with its mass solves to
@@ -303,7 +333,7 @@ def target_direction(seq, B, load, a_guess, harmonic=None, shells=None, slips=No
     """The Gauss-Newton direction with scalar borders: the amplitudes of the harmonic flows ``harmonic``, the shell
     volumes (:mod:`mrx.relaxation.shells`) and the poloidal flux slips (:class:`mrx.relaxation.twist.Slips`). Returns
     ``(u, a, info, c_h, c, d, dB_slip)``: the velocity ``u = curl a + h^T c_h + W c``, the field change of the slips
-    ``dB_slip = T d``, so that the step's field change is ``curl(u x B) + T d``, and the coefficients ``c_h``, ``c`` and
+    ``dB_slip = T d``, so that the step's field change is ``curl Pi_1(u x H) + T d``, and the coefficients ``c_h``, ``c`` and
     ``d`` (``None`` for what is not given).
 
     ``harmonic`` holds the harmonic 2-forms ``h`` of the flows as rows (``seq.even.nullspace(2)``), the one of a solid
@@ -323,7 +353,7 @@ def target_direction(seq, B, load, a_guess, harmonic=None, shells=None, slips=No
     blocks: ``h H h^T`` (one apply of the system per harmonic form) and the dense blocks of the shells and the slips.
     The curls do not reach ``h``, and the harmonic row ``h load`` is the harmonic part of the force, which the
     potential alone cannot remove. The rows of the shells and the slips are the derivatives of the energy less the
-    targets' work along them. ``load`` is the unprojected Lorentz force ``J x B``: along the shells its gradient
+    targets' work along them. ``load`` is the unprojected Lorentz force ``J x H``: along the shells its gradient
     part is what counts. The slip block ``T_t M T`` is the energy's own second derivative along the slips, since the
     field is linear in ``d``."""
     even = seq.even

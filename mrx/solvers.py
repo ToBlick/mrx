@@ -21,9 +21,10 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 import mrx.double_single as ds
-from mrx.precision import DTYPE, LOW_DTYPE, MAX_PASSES, lift, low, to_working
+from mrx.precision import DTYPE, LOW_DTYPE, MAX_PASSES, eps, lift, low, to_working
 
 
 def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
@@ -91,13 +92,20 @@ def preconditioned_cg(A_matvec, b, M, tol, maxiter, x0=None, norm=None):
     return x, jnp.where(converged, k, -k)
 
 
+#: The preconditioned residual, relative to the first, at which :func:`lanczos_bounds` takes PCG as converged to
+#: round-off: a few epsilons of the working precision.
+LANCZOS_TOL = eps(10)
+
+
 def lanczos_bounds(A_matvec, b, M, steps):
-    """The extreme Ritz values ``(lmin, lmax)`` of ``M A`` after ``steps`` iterations of PCG on ``A x = b``.
+    """The extreme Ritz values ``(lmin, lmax)`` of ``M A`` after at most ``steps`` iterations of PCG on ``A x = b``.
 
     The Lanczos matrix is read off the PCG coefficients. Both values lie inside the spectrum of ``M A``,
     ``lmax`` close to the top already after a few iterations and ``lmin`` approaching the bottom more
-    slowly. The loop has a fixed length, so ``steps`` must stay below the iteration count at which PCG
-    converges to round-off.
+    slowly. The tridiagonal is cut at the first iteration whose preconditioned residual ``sqrt(r M r)`` is below
+    :data:`LANCZOS_TOL` of the first: past PCG's convergence to round-off the coefficients are noise, and on a
+    well-conditioned operator they read as spurious extreme values (a slab-preconditioned 1-form mass converged in
+    10 iterations read kappa 264 at 40, against 1.31 measured densely, 2026-11-22).
     """
     z = M(b)
     rz = jnp.dot(b, z)
@@ -110,14 +118,18 @@ def lanczos_bounds(A_matvec, b, M, steps):
         z_new = M(r)
         rz_new = jnp.dot(r, z_new)
         beta = rz_new / rz
-        return (r, z_new, z_new + beta * p, rz_new), (alpha, beta)
+        return (r, z_new, z_new + beta * p, rz_new), (alpha, beta, rz_new)
 
-    _, (alpha, beta) = jax.lax.scan(body, (b, z, z, rz), None, length=steps)
-    beta_prev = jnp.concatenate([jnp.zeros(1), beta[:-1]])
-    alpha_prev = jnp.concatenate([jnp.ones(1), alpha[:-1]])
+    _, (alpha, beta, rzs) = jax.lax.scan(body, (b, z, z, rz), None, length=steps)
+    alpha, beta, rzs = (np.asarray(v, dtype=np.float64) for v in (alpha, beta, rzs))
+    done = np.flatnonzero(np.sqrt(np.abs(rzs / float(rz))) < LANCZOS_TOL)
+    n = int(done[0]) + 1 if done.size else steps
+    alpha, beta = alpha[:n], beta[:n]
+    beta_prev = np.concatenate([np.zeros(1), beta[:-1]])
+    alpha_prev = np.concatenate([np.ones(1), alpha[:-1]])
     diag = 1 / alpha + beta_prev / alpha_prev
-    off = jnp.sqrt(beta[:-1]) / alpha[:-1]
-    ritz = jnp.linalg.eigvalsh(jnp.diag(diag) + jnp.diag(off, 1) + jnp.diag(off, -1))
+    off = np.sqrt(beta[:-1]) / alpha[:-1]
+    ritz = np.linalg.eigvalsh(np.diag(diag) + np.diag(off, 1) + np.diag(off, -1))
     return ritz[0], ritz[-1]
 
 

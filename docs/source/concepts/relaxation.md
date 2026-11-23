@@ -3,7 +3,9 @@
 `mrx/relaxation/` (`loop.py`, `physics.py`) descends the magnetic energy `E = ||B||^2_{M_2} / 2` of a
 divergence-free Dirichlet 2-form `B` (`B . n = 0`) along an incompressible,
 wall-tangent flow, which conserves the helicity up to grid-scale effects. The fixed point is
-`J x B = grad p` with `p` the Lagrange multiplier: a finite-beta equilibrium.
+`J x H = grad p` with `p` the Lagrange multiplier: a finite-beta equilibrium. Here `H = Pi_1 B` is the
+L2 projection of `B` onto the free 1-forms (`physics.induction_field`), the field the induction and the force
+use (see The induction field, below).
 `scripts/relax.py` is the driver ([Solve a relaxation problem](../relaxation.md)).
 On a half-period sequence `B`, `J` and `E` live on `seq.odd`, the velocity,
 the force and the pressures on `seq.even` ([Architecture](architecture.md)).
@@ -13,12 +15,12 @@ the force and the pressures on `seq.even` ([Architecture](architecture.md)).
 The relaxation forms the force by the potential route:
 
 1. `J = seq.M[1].solve(seq.D[1].T @ B)`, the weak curl: one k = 1 mass solve.
-2. `load(J x B)`, the Lorentz force tested against the 2-form basis, not projected.
-3. `S_1 a = curl^T load(J x B)`: one curl-curl solve for the force potential `a`
+2. `load(J x H)`, the Lorentz force tested against the 2-form basis, not projected.
+3. `S_1 a = curl^T load(J x H)`: one curl-curl solve for the force potential `a`
    (`seq.S[1].solve(b)`). The force is `F = curl a + c h`, with `c h` its harmonic part (zero for
    the even force of a half-period sequence). `a` is fixed only up to a gradient, which `curl` removes.
 
-`F` is the divergence-free projection of `J x B`, the Riesz representative of `-grad E` among
+`F` is the divergence-free projection of `J x H`, the Riesz representative of `-grad E` among
 divergence-free fields, with no pressure solve. Every solve is warm-started from the previous step's value.
 `compute_force(B, seq, p_guess, JxB_guess, J_guess, F_guess)` returns the same projection by the Leray
 route, the k = 3 Hodge split, which also gives the strong pressure `p`. The relaxation does not call it.
@@ -28,7 +30,7 @@ route, the k = 3 Hodge split, which also gives the strong pressure `p`. The rela
 `TimeStepper(seq, newton, newton_penalty, newton_tol, newton_maxiter, newton_mass_solve_tol, resistivity,
 resistive_reference)`
 is an `eqx.Module` (`ts.with_reference(B)` sets the reference of the drive). `relaxation_step(state)` carries
-the field along a fixed velocity `u` for a time `dt`, `dB/ds = curl(u x B)`, and returns `B_{n+1}`, the warm
+the field along a fixed velocity `u` for a time `dt`, `dB/ds = curl E`, `E = Pi_1(u x H)`, and returns `B_{n+1}`, the warm
 starts of the next step and the step's scalars:
 
 1. **Direction** `u`. With `newton`, the Newton direction (below). Without,
@@ -40,7 +42,8 @@ starts of the next step and the step's scalars:
    `(M_1 + mu L_1)^{-1}` and `(M_1 + mu S_1)^{-1}` differ by an exact form,
    so it is one solve of `M_1 + mu S_1`
    (`seq.shifted_stiffness(1, mu).solve(...)`).
-2. **Electric field** `E = M_1^{-1} load(u x B)`, one k = 1 mass solve.
+2. **Electric field** `E = M_1^{-1} load(u x H)`, one k = 1 mass solve and one free k = 1 mass solve
+   for `H`.
 3. **Increment** `dB = G_1 E`, the topological curl: `div B` is conserved
    exactly and the helicity to the solves.
 4. **Step size**. `dt_star = <F, u>_M / ||dB||^2_M` minimises the energy
@@ -55,7 +58,7 @@ starts of the next step and the step's scalars:
    from a vacuum start (25 of the 33 steps to a squared residual of 1e-8 on
    W7-X, 47 of 68 on li383), the substeps halve those runs (14 and 37,
    2026-11-19). The first substep's increment is the one of step 3, so one
-   loop holds the only mass solve of `u x B`.
+   loop holds the only mass solves of `H` and `u x H`.
 6. **Resistive step**, with `resistivity > 0`: `resistive_step` below,
    towards `resistive_reference`.
 
@@ -66,13 +69,30 @@ substeps the field follows the flow of `u` further than the linear
 increment, and `dE` differs from `dE_ls` by the higher orders. The force
 residual is not monotone.
 
+### The induction field
+
+The electric field is `E = Pi_1(u x H)` with `H = Pi_1 B`, the L2 projection of `B`
+onto the free 1-forms, and the force is `J x H`. Then
+`(B, curl E)_M = (J, E)_{M_1} = -(u, J x H)`: the force is the exact
+derivative of the energy along the flow. With `E = Pi_1(u x B)` the second
+variation at the exact equilibrium shearedE of Landreman (2026), (32,48,32)
+graded p = 2, has a negative direction, a checkerboard in zeta of flows
+mostly along `B` carried by the terms in the current (Rayleigh value -0.25
+against the mass, current part -0.57), and the relaxation leaves the
+equilibrium along it. With `H` the same direction has +0.33 and a current
+part of about zero (2026-11-21). `H` has no boundary condition: `B` is
+tangential to the wall, where the Dirichlet 1-forms have no tangential
+trace, and the Dirichlet projection puts a layer there (Gauss-Newton part 40
+times larger on that direction. As the auxiliary field of 2026-09 it raised
+the force floor fivefold and stalled the Newton steps).
+
 ### Newton
 
 Along the flow of a divergence-free `u` the energy expands to second order
-with the gradient `-load(J x B)` and the symmetric Hessian
+with the gradient `-load(J x H)` and the symmetric Hessian
 
 ```
-(u, H v) = (Q_u, Q_v)_M + [(B, curl(u x Q_v))_M + (B, curl(v x Q_u))_M] / 2,    Q_u = curl(u x B),
+(u, H v) = (Q_u, Q_v)_M + [(J, u x Pi_1 Q_v) + (J, v x Pi_1 Q_u)] / 2,    Q_u = curl Pi_1(u x H),
 ```
 
 at an equilibrium minus the ideal-MHD force operator at `p = 0`
@@ -85,12 +105,12 @@ construction, with `h` the harmonic 2-form of the domain (`seq.even.nullspace(2)
 Gauss-Newton system with that part of `H` for `a` and `c`,
 
 ```
-[ curl^T H curl    curl^T H h ] [a]   [ curl^T load(J x B) ]
-[ h^T H curl       h^T H h    ] [c] = [ h^T load(J x B)    ].
+[ curl^T H curl    curl^T H h ] [a]   [ curl^T load(J x H) ]
+[ h^T H curl       h^T H h    ] [c] = [ h^T load(J x H)    ].
 ```
 
 The right-hand side needs no projection. `curl^T` annihilates the gradient
-part of the force exactly (`G_2 G_1 = 0`), and `h^T load(J x B)` is the
+part of the force exactly (`G_2 G_1 = 0`), and `h^T load(J x H)` is the
 harmonic part of the force, the derivative of the energy along `h`. The force
 `F` and the residual hold that part too. With stellarator symmetry `h` is odd
 and the force even, so the harmonic part vanishes. The even flows of a
@@ -164,7 +184,7 @@ first, which discards its normal component, so `dp/dn = 0` on the wall and
 `p` is defined up to a constant. It is the right multiplier for the
 descent and blind to the wall force.
 
-**Weak** `p_w` (from `weak_pressure`, a Dirichlet 0-form): `J x B` is
+**Weak** `p_w` (from `weak_pressure`, a Dirichlet 0-form): `J x H` is
 projected onto the natural 1-forms, which keep its normal component, and
 split as `v = F_w + grad p_w` with `p_w = 0` on the wall (one k = 0 Dirichlet
 solve). At a fixed point `F_w` vanishes and `dp_w/dn` is the wall force.

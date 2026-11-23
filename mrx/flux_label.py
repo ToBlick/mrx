@@ -8,9 +8,10 @@ anisotropic heat diffusion along it still has a well-defined steady state. With 
 
 with the parallel conductivity 1 and the perpendicular one ``kperp``, the ``anisotropy``. As ``kperp -> 0`` the
 temperature becomes constant along the field lines wherever they cover a surface, so on nested surfaces it is a
-function of the enclosed flux: on the li383 VMEC field its spread around a radial layer is 1.1e-3 of its maximum at
-``kperp = 1e-5`` and 1.2e-4 at ``1e-6``. :func:`enclosed_flux` turns it into the label ``s``, the toroidal flux inside
-the level set of ``T`` over the total flux. On a VMEC field this is VMEC's ``s``.
+function of the enclosed flux: on the li383 VMEC field its spread around a radial layer, solved once, is 1.1e-3 of
+its maximum at ``kperp = 1e-5`` and 1.2e-4 at ``1e-6``, and 3.7e-4 at ``1e-5`` with the second solve below.
+:func:`enclosed_flux` turns it into the label ``s``, the toroidal flux inside the level set of ``T`` over the total
+flux, a spline in ``T`` fixed by weak moments (:func:`label_spline`). On a VMEC field this is VMEC's ``s``.
 
 Across an island ``T`` stays smooth and falls through it as across nested surfaces, so ``s`` there is about the flux
 of the surfaces around it. It is not flat: an island flattens only when it is wider than about
@@ -19,9 +20,25 @@ a seeded (6,1) chain 0.2 wide in ``r`` keeps 13 % of the drop of ``T`` across it
 and 1 % at ``1e-8``. The uniform source does not give such an island a maximum of its own at any ``kperp`` tried
 (down to 1e-12). Below ``kperp`` of about 1e-9 the discrete equation has spurious local maxima.
 
+Solved once, the temperature is a flux function only to first order in ``kperp``. Expanded as
+``T = T0 / kperp + T1 + ...``, ``T0`` is a flux function and ``T1`` solves ``div(b b.grad T1) = -(1 + div grad T0)``.
+The part of ``div grad T0`` that varies over a flux surface drives a parallel gradient of ``T1`` of order one, so
+``|B.grad T|`` is ``kperp`` times ``|B| |grad T|`` up to a factor of the geometry. At a magnetic axis that is not
+straight and round this factor grows like ``1 / r``: next to the axis ``T0`` is a quadratic form in the distance, its
+Laplacian (twice the trace of the form) varies along the axis, ``T1`` there is a function of the position along the
+axis, and ``grad T0`` vanishes. :func:`flux_label` therefore solves twice with the same operator. The second source is
+the perpendicular flux divergence of the first temperature, ``-div(kperp grad T1)``. To leading order it has the
+same flux function, and the term of first order cancels, so its defect is of second order in ``kperp``. The defect
+``int |M_j'(s)| |B.grad s| dV`` of the innermost profile cell (normalised by the toroidal flux) falls from 5.4e-3 to
+1.8e-6 on the Solov'ev field (18,32,6), from 3.3e-2 to 4.2e-4 on Landreman's sheared ellipse (24,32,24) and from
+4.8e-2 to 1.5e-4 on the W7-X VMEX field (24,48,28) (2026-11-22). On exact fields the part of ``s`` that is not a
+flux function is then that of the L2 projection of the exact label onto the label's space.
+
 The field enters only through its values at the quadrature points. On a stellarator-symmetric sequence ``T`` is
 even and lives on ``seq.even``. All functions trace, so they can run inside a compiled relaxation step.
 """
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,10 +46,14 @@ import numpy as np
 from mrx.mass import sumfact_apply
 from mrx.precision import to_working
 from mrx.solvers import preconditioned_cg
+from mrx.spline_bases import DerivativeSpline, SplineBasis, basis_table
 
 #: The default ``kperp``: ten times better aligned with the surfaces than 1e-5 at about 1.8 times the CG iterations
 #: (li383 (16,32,32)), far from the spurious maxima below about 1e-9.
 ANISOTROPY = 1e-6
+#: The margin of the label's condition (:func:`label_condition`): a start field with ``(iota a / R)^2`` below this
+#: many ``kperp`` has no flux label.
+LABEL_MARGIN = 100.0
 #: The iteration cap of the label solve. A mesh whose logical surfaces are far from the flux surfaces needs more
 #: iterations: the vacuum's label on li383 graded (48,64,24) at the tolerance 1e-5 takes 1624 on the wout's mesh and
 #: 4191 on the mesh filled from the boundary alone, 2965 and 6544 at 1e-8 (one H200, 2026-11-18).
@@ -129,66 +150,118 @@ def flux_label_preconditioner(seq, B_jk, anisotropy=ANISOTROPY, radial_wavenumbe
 
 
 def flux_label(seq, B_jk, anisotropy=ANISOTROPY, guess=None, tol=None, maxiter=MAXITER):
-    """Return ``(T, info)``, the temperature of :func:`flux_label_operator` with the source 1 per volume.
+    """Return ``(T, info)``, the temperature of :func:`flux_label_operator` with the source 1 per volume, corrected
+    to second order in ``kperp``.
 
-    ``T`` is a 0-form on ``seq.even``. It scales like ``1 / kperp``. The solve is preconditioned conjugate
-    gradients with :func:`flux_label_preconditioner`, warm-started from ``guess``. ``tol`` is relative, in the
-    preconditioner's norm, and defaults to the solve tolerance of the sequence (``seq.tol``).
-    ``info`` is the signed iteration count (positive when converged).
+    With ``A = A_par + kperp A_perp`` the operator and ``b`` the load of the source 1, the first solve is
+    ``A T1 = b`` and the second ``A T = kperp A_perp T1``, written ``b - A_par T1``. The second source is the
+    perpendicular flux divergence of ``T1``. ``T`` has the level sets of ``T1`` without their part of first order in
+    ``kperp`` (module docstring).
+
+    ``T`` is a 0-form on ``seq.even``. It scales like ``1 / kperp``. Both solves are preconditioned conjugate
+    gradients with :func:`flux_label_preconditioner`, the first warm-started from ``guess`` and the second from
+    ``T1``. ``tol`` is relative, in the preconditioner's norm, and defaults to the solve tolerance of the sequence
+    (``seq.tol``). ``info`` is the signed sum of the two iteration counts (positive when both converged).
     """
     even = seq.even
     A = flux_label_operator(seq, B_jk, anisotropy)
+    A_par = flux_label_operator(seq, B_jk, 0.0)
     P = flux_label_preconditioner(seq, B_jk, anisotropy)
     b = even._scalar_load_values(jnp.ones(seq.quad.w.shape), 0)
     tol = even.tol if tol is None else tol
-    T, info = preconditioned_cg(A, b, M=P, tol=tol, maxiter=maxiter, x0=guess)
+    T1, info1 = preconditioned_cg(A, b, M=P, tol=tol, maxiter=maxiter, x0=guess)
+    # the perpendicular flux divergence of T1, kperp A_perp T1 = A T1 - A_par T1 = b - A_par T1 to the tolerance,
+    # in the accurate precision: T1 ~ 1 / kperp and A_par T1 is the small difference of large terms
+    T, info2 = preconditioned_cg(A, b - A_par(T1), M=P, tol=tol, maxiter=maxiter, x0=T1)
+    info = jnp.where((info1 > 0) & (info2 > 0), info1 + info2, -jnp.abs(info1) - jnp.abs(info2))
     return to_working(T), info
 
 
-def label_knots(seq, T, B_jk):
-    """``(T_knots, s_knots)``: the label ``s(T)`` as a piecewise linear function, ``T_knots`` ascending from
-    ``T = 0`` on the wall (``s = 1``) to the hottest quadrature point (``s = 0``).
+def label_spline(seq, T, B_jk):
+    """``(a, b, e)``: the label ``s = sigma(T)`` as a cubic spline in ``T`` on ``[a, b]``, ``a`` and ``b`` the smallest
+    and the largest tensor coefficient of ``T`` (bounds of its values, ``a <= 0`` since ``T`` vanishes on the wall),
+    ``e`` the coefficients of ``sigma`` in the clamped cubic splines of ``u = (T - a) / (b - a)`` on as many uniform
+    cells as ``seq`` has radial cells.
 
-    The flux through a ``zeta = const`` plane is ``int Bh^zeta dr dtheta``, and its average over ``zeta`` is the
-    quadrature sum of ``Bh^zeta`` (exact on a half-period quadrature too). Each quadrature point carries its share
-    ``w_q Bh^zeta_q`` of the flux. Sorted by falling ``T``, the flux of all hotter points gives ``s`` at the
-    samples, but only to one radial layer of samples, whose points have nearly the same ``T``. So the sorted
-    samples are cut into as many groups as there are radial quadrature layers, and the knots are the group means
-    of ``T`` and ``s``. Points of equal ``T`` have equal ``s``, and a layer's points get about the flux at its
-    middle.
-    """
+    ``sigma(t)`` is the toroidal flux inside the level set ``T = t`` over the total flux. The flux through a plane
+    ``zeta = const`` is ``int Bh^zeta dr dtheta``, its mean over ``zeta`` the volume integral of ``Bh^zeta`` over
+    the logical cube over the ``zeta`` extent ``Z``. By the coarea formula the derivative of ``sigma`` has the moments
+
+        int sigma'(u) M_k(u) du = -(1 / (Z Phi)) int M_k(u(T)) Bh^zeta dx
+
+    against every derivative spline ``M_k`` (:class:`~mrx.spline_bases.DerivativeSpline`, quadratic): a volume
+    integral of the field's own component and of the 0-form ``T`` at the quadrature points. ``sigma'`` is their L2
+    projection onto the ``M_k`` (one Gram solve of the quadratic splines) and ``sigma`` its integral with
+    ``sigma(b) = 0``. The constants lie in the span of the ``M_k``, so ``sigma(a) = 1`` exactly. Nothing is sorted,
+    binned or read off at a point. Points of equal ``T`` have equal ``s``. The projection resolves the distribution
+    of the flux over ``T`` on the cells: where the level sets meet the hottest value (the magnetic axis) the
+    distribution ends with a jump inside the last cell, and there the projection is accurate to about a cell's share
+    of the flux."""
+    nc = seq.basis_0.Lambda[0].n - seq.p
+    basis = SplineBasis(nc + 3, 3, "clamped")
+    d = DerivativeSpline(basis)
+    c = seq.even.E(0).T @ T
+    a, b = jnp.min(c), jnp.max(c)
     T_q = seq.even.evaluate_at_quadrature(T, 0)[:, 0]
-    zero, one = jnp.zeros(1, T_q.dtype), jnp.ones(1, T_q.dtype)
-    layers = int(seq.quad.shape[0])
     f = seq.quad.w * jnp.asarray(B_jk)[:, 2]
-    order = jnp.argsort(-T_q)                                                    # descending T
-    s_sorted = (jnp.cumsum(f[order]) - 0.5 * f[order]) / f.sum()
-    group = jnp.arange(T_q.size) * layers // T_q.size
-    count = jax.ops.segment_sum(jnp.ones_like(T_q), group, layers)
-    T_mean = jax.ops.segment_sum(T_q[order], group, layers) / count
-    s_mean = jax.ops.segment_sum(s_sorted, group, layers) / count
-    T_knots = jnp.concatenate([T_q[order][:1], T_mean, zero])[::-1]                           # ascending
-    s_knots = jnp.concatenate([zero, s_mean, one])[::-1]
-    return T_knots, s_knots
+    values, indices = jax.vmap(d.evaluate_local)((T_q - a) / (b - a))
+    m = -jnp.zeros(d.n, f.dtype).at[indices].add(values * f[:, None]) / jnp.sum(f)
+    slope = jnp.asarray(_gram_inverse(nc), dtype=f.dtype) @ m
+    e = -jnp.concatenate([jnp.cumsum(slope[::-1])[::-1], jnp.zeros(1, f.dtype)])
+    return a, b, e
+
+
+@functools.cache
+def _gram_inverse(cells):
+    """The inverse of the Gram matrix of the derivative splines of the clamped cubic splines on ``cells`` uniform
+    cells of ``[0, 1]`` (quadratic, unit integral), by three Gauss points per cell, float64."""
+    x, w = np.polynomial.legendre.leggauss(3)
+    edges = np.linspace(0.0, 1.0, cells + 1)
+    xq = (0.5 * (edges[1:] - edges[:-1])[:, None] * (x + 1.0) + edges[:-1, None]).ravel()
+    wq = (0.5 * (edges[1:] - edges[:-1])[:, None] * w).ravel()
+    with jax.ensure_compile_time_eval():          # called inside the compiled label
+        M = np.asarray(basis_table(DerivativeSpline(SplineBasis(cells + 3, 3, "clamped")), jnp.asarray(xq)),
+                       dtype=np.float64)
+    return np.linalg.inv((M * wq) @ M.T)
 
 
 def enclosed_flux(seq, T, B_jk):
     """The label ``s`` at the quadrature points: the toroidal flux inside the level set of ``T`` through each
-    quadrature point, over the total toroidal flux."""
+    quadrature point, over the total toroidal flux (:func:`label_spline`)."""
     return enclosed_flux_map(seq, T, B_jk)(seq.even.evaluate_at_quadrature(T, 0)[:, 0])
 
 
 def enclosed_flux_map(seq, T, B_jk):
     """The map ``T0 -> s`` of :func:`enclosed_flux` as a function, which also takes values of ``T`` off the
-    quadrature points (a field line's, for example). It is monotone, 0 at the hottest point and 1 at ``T = 0``."""
-    T_knots, s_knots = label_knots(seq, T, B_jk)
-    return lambda T0: jnp.interp(T0, T_knots, s_knots)
+    quadrature points (a field line's, for example): the spline :func:`label_spline`, 1 at the smallest coefficient
+    of ``T`` and 0 at the largest."""
+    a, b, e = label_spline(seq, T, B_jk)
+    basis = SplineBasis(e.size, 3, "clamped")
+
+    def sigma(T0):
+        values, indices = jax.vmap(basis.evaluate_local)(jnp.ravel((T0 - a) / (b - a)))
+        return jnp.sum(values * e[indices], axis=1).reshape(jnp.shape(T0))
+    return sigma
 
 
-def label_axis(seq, T):
-    """The logical point of the largest ``T`` on each zeta plane of the quadrature, ``(n_zeta_q, 3)``: where the
-    flux label puts the magnetic axis."""
-    nx, ny, nz = (int(v) for v in seq.quad.shape)
-    T_q = seq.even.evaluate_at_quadrature(T, 0)[:, 0].reshape(nx * ny, nz)
-    x = seq.quad.x.reshape(nx * ny, nz, 3)
-    return x[jnp.argmax(T_q, axis=0), jnp.arange(nz)]
+def label_condition(seq, B_jk):
+    """``(iota, a, R)``: the mean transform of the field with the reference components ``B_jk`` at the quadrature
+    points with the radii of its domain, the numbers of the
+    condition ``(iota a / R)^2 >> kperp`` of the flux label. Along a surface of minor radius ``a`` the parallel
+    conduction of the ``m = 1`` harmonic of the temperature goes as ``(iota / R)^2``, the perpendicular one as
+    ``kperp / a^2``: the label is a flux function only when the first dominates (shearedE's vacuum about 1, W7-X 1e4,
+    Starlite 1e3 times ``kperp = 1e-6``).
+
+    ``iota = nfp int B . grad theta dV / int B . grad zeta dV``, one global ratio of the field's own components with
+    the logical angle ``theta``, the angle about the pole, as the iota loop's integrand
+    (:func:`mrx.relaxation.twist.iota_residual`) has it about the magnetic axis: after the start move of
+    ``--mesh.align`` the pole is the start field's axis. A field with no poloidal component, the vacuum of an
+    axisymmetric domain, has ``iota = 0`` whatever the label. ``R`` is the mean distance of the pole from the axis
+    of the torus, ``a = sqrt(V / (2 pi^2 R))`` from the volume ``V`` of the domain."""
+    Bq = jnp.asarray(B_jk)
+    iota = seq.nfp * jnp.sum(seq.quad.w * Bq[:, 1]) / jnp.sum(seq.quad.w * Bq[:, 2])
+    z, w_z = jnp.asarray(seq.quad.x_z), jnp.asarray(seq.quad.w_z)
+    pole = jax.vmap(seq.map)(jnp.stack([jnp.zeros_like(z), jnp.zeros_like(z), z], axis=1))
+    R = jnp.sum(w_z * jnp.hypot(pole[:, 0], pole[:, 1])) / jnp.sum(w_z)
+    V = seq.nfp * jnp.sum(seq.quad.w * seq.jacobian_j) / jnp.sum(w_z)
+    return float(iota), float(jnp.sqrt(V / (2.0 * jnp.pi ** 2 * R))), float(R)

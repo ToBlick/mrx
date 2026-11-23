@@ -10,7 +10,9 @@ where ``Psi`` is the toroidal flux and ``lambda`` the angle shift to straight fi
 ``B^r = 0``, ``div B = 0`` and ``B . n = 0`` for any ``lambda`` and any geometry.
 
 The discrete field is the discrete curl of a vector potential, so ``div B = 0`` holds exactly
-(:func:`potential_two_form`).
+(:func:`potential_two_form`). On a map re-sectioned into the planes normal to its axis
+(:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the default of :func:`mrx.geometry.build_sequence`) ``lambda``
+is that of the new toroidal coordinate, so the field is the file's (:func:`_clebsch_potential`).
 
 A state without a field, the map of a VMEC input namelist filled from its boundary (``kind`` ``"indata"``), starts
 from the vacuum field instead: the harmonic 2-form with the namelist's toroidal flux ``PHIEDGE``
@@ -26,23 +28,39 @@ from mrx.equilibria import StateField
 from mrx.relaxation.physics import compute_divergence_norm
 
 
-def _clebsch_potential(st, nfp):
-    """The vector potential ``A' = (-lambda Psi', 2 pi Psi, -(2 pi / nfp) chi)`` of the state ``st`` as a
-    function of logical coordinates, with ``Psi(0) = chi(0) = 0`` and ``chi`` the poloidal flux.
+def _clebsch_potential(st, nfp, basis):
+    """The vector potential ``A' = (-lambda' Psi', 2 pi Psi, -(2 pi / nfp) chi)`` of the state ``st`` as a
+    function of the logical coordinates of the map, with ``Psi(0) = chi(0) = 0`` and ``chi`` the poloidal flux.
 
     ``st`` is in GVEC units with ``lambda`` in radians. The curl of ``A'`` is the state's field up to a common
-    factor ``2 pi``. Only the values of ``lambda`` are used. Its derivatives come from the discrete curl."""
+    factor ``2 pi``. Only the values of ``lambda`` are used. Its derivatives come from the discrete curl.
+
+    On the file's sections ``lambda' = lambda``. On a map re-sectioned by
+    :func:`mrx.relaxation.mesh_motion.axis_normal_map` the point ``(r, theta, zeta)`` is the file's point
+    ``(r, theta, zeta + f)``, with the shift ``f`` the tensor coefficients ``st["zeta_shift"]`` in ``basis``, and
+    ``lambda'(r, theta, zeta) = lambda(r, theta, zeta + f) - iota(r) (2 pi / nfp) f``. The straight-field-line angles
+    of the file, ``theta + lambda`` and the file's toroidal angle, become ``theta + lambda'`` and ``zeta``: they
+    differ by ``iota`` times the same shift of the toroidal angle, which moves no field line. So the field is the
+    file's, not dragged by the slide of the points."""
     psi, iota = st["profiles"]["phi"], st["profiles"]["iota"]
     r = np.linspace(0.0, 1.0, 2001)
     dPsi = psi.derivative()(r)
     Psi = jnp.asarray(psi(r) - psi(0.0))
     chi = jnp.asarray(CubicSpline(r, iota(r) * dPsi).antiderivative()(r))
+    io = jnp.asarray(iota(r))
     r, dPsi = jnp.asarray(r), jnp.asarray(dPsi)
     lam = StateField(st["LA"], nfp)
+    shift = st.get("zeta_shift")
     two_pi = 2.0 * jnp.pi
 
+    def lam_mesh(x):
+        if shift is None:
+            return lam(x)
+        f = basis.contract(shift, x)
+        return lam(x.at[2].add(f)) - jnp.interp(x[0], r, io) * two_pi / nfp * f
+
     def A_ref(x):
-        return jnp.array([-lam(x) * jnp.interp(x[0], r, dPsi),
+        return jnp.array([-lam_mesh(x) * jnp.interp(x[0], r, dPsi),
                           two_pi * jnp.interp(x[0], r, Psi),
                           -two_pi / nfp * jnp.interp(x[0], r, chi)])
     return A_ref
@@ -58,7 +76,7 @@ def potential_two_form(seq):
     seq = seq.odd
     free = seq.free
     # interpolate A' without a boundary condition: its tangential part on the wall carries the toroidal flux
-    A = free.interpolate(_clebsch_potential(seq.equilibrium, seq.nfp), 1)
+    A = free.interpolate(_clebsch_potential(seq.equilibrium, seq.nfp, seq.basis_0.bases[0]), 1)
     B_full = free.G[1] @ A
     B = seq.restrict(B_full, 2)
     n_full, norm = float(free.l2_norm(B_full, 2)), float(seq.l2_norm(B, 2))

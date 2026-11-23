@@ -21,7 +21,7 @@ import tyro
 from mrx.flux_label import ANISOTROPY
 from mrx.paths import data_file
 from mrx.relaxation.newton import NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL
-from mrx.relaxation.shells import LABEL_TOL, PROFILE_CELLS
+from mrx.relaxation.shells import LABEL_TOL
 
 
 class Symmetry(StrEnum):
@@ -64,8 +64,8 @@ class Geometry:
     """The relative residual tolerance of every linear solve. Unset, it is 1e-8."""
     solve_maxiter: int = 2000
     """The maximum number of iterations of every linear solve."""
-    zeta: Literal["phi", "harmonic"] = "phi"
-    """The toroidal coordinate of the first mesh: phi, the cylindrical angle (the surfaces zeta = const are the planes phi = const), or harmonic, the angle of the vacuum field (they are the level sets of its potential, the map moved there by mrx.relaxation.mesh_motion.harmonic_build). harmonic needs a VMEC input namelist, whose start is the vacuum field."""
+    zeta: Literal["axis-normal", "phi", "harmonic"] = "axis-normal"
+    """The toroidal coordinate of the first mesh. axis-normal: the surfaces zeta = const are the planes normal to the axis of the file's map, each point slid along its flux surface and the file's field carried (mrx.relaxation.mesh_motion.axis_normal_map). phi: the file's own sections (the planes phi = const of a VMEC or DESC file). harmonic: the angle of the vacuum field (the level sets of its potential, the map moved there from the file's sections by mrx.relaxation.mesh_motion.harmonic_build). harmonic needs a VMEC input namelist, whose start is the vacuum field."""
     max_batch: int = 262144
     """The number of points evaluated at once in the quadrature loops. 0 evaluates all of them at once. Lower it when one of these loops runs out of device memory."""
 
@@ -85,7 +85,7 @@ class Geometry:
 
     def build(self):
         """Build the de Rham sequence of this geometry and return it, see :func:`mrx.geometry.build_sequence`, with its
-        map re-sectioned onto the harmonic angle for ``zeta = harmonic``.
+        map re-sectioned as ``zeta`` says.
         ``max_batch`` becomes the batch of the loops over quadrature points (:data:`mrx.MAP_BATCH_SIZE_INNER`)."""
         import mrx
         from mrx.geometry import build_sequence
@@ -97,7 +97,7 @@ class Geometry:
 
 @dataclass(frozen=True)
 class Iota:
-    """Target rotational transform: an outer loop sets the current of the prescribed current (mrx.relaxation.twist.iota_current) before every chunk, from the transform the field has on its flux label. With --mesh.align the loop starts once the mesh is aligned or out of moves. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
+    """Target rotational transform: an outer loop updates the target of the prescribed current by a Newton step on the transform's weak residual (mrx.relaxation.twist.iota_newton) before every chunk, from the transform the field has on its flux label. Its flux label is the one of --pressure.anisotropy and --pressure.label-tol."""
     target: Optional[str] = None
     """A wout or a VMEC input namelist with NCURR = 0 whose transform the relaxation ends at. A namelist with NCURR = 1 prescribes the current, see --current.target. Unset, the run keeps the start's poloidal fluxes."""
 
@@ -198,14 +198,14 @@ class Pressure:
     """Multiply the target by this factor."""
     beta: Optional[float] = None
     """Instead of --pressure.scale, scale the target's profile to this volume beta, int p* dV / int B^2/2 dV, on the field of every rebuild. It is the beta of the run's pressure in the gauge <p> = <p*>. beta_vol, of the weak pressure that vanishes on the wall, differs from it by the pressure's constant."""
-    plateau_margin: float = 1.0
-    """With --seed, the target is made constant across each seeded chain, sqrt(s) in r +- margin w / 2 from the seeding's estimate of its radius r and width w: a pressure that falls across an island cannot be met. 0 leaves the target as it is."""
     anisotropy: float = ANISOTROPY
     """The perpendicular conductivity kperp of the flux label the shells and the target are functions of (mrx.flux_label)."""
     label_tol: float = LABEL_TOL
     """The relative tolerance of that label's solve."""
-    cells: int = PROFILE_CELLS
-    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). It does not depend on the mesh."""
+    label_check: bool = True
+    """Stop a fresh run that needs the flux label (targets or a seed) when its start field's transform is too small for it: (iota a / R)^2 below 100 kperp (mrx.flux_label.label_condition), the vacuum of an axisymmetric domain for one. --pressure.no-label-check makes it a warning."""
+    cells: Optional[int] = None
+    """The number of cells of the profile space, cubic splines in s with breakpoints uniform in sqrt(s), shared by the pressure (the shells), the current (the slips), the transform's loop and the fit of scripts/pressure_fit.py (mrx.relaxation.shells.profile_basis). Unset, half the mesh's radial cells (mrx.relaxation.shells.profile_cells)."""
 
     def __post_init__(self):
         if self.beta is not None and self.scale != 1.0:
@@ -229,19 +229,15 @@ class Current:
 
 @dataclass(frozen=True)
 class Mesh:
-    """Motion of the mesh towards the flux surfaces of the field between chunks (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
+    """Motion of the mesh's axis onto the magnetic axis (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
     align: bool = False
-    """Move the mesh towards the flux surfaces until it is aligned."""
-    tol: float = 1e-2
-    """The volume rms of s - S(r), the flux label against its mean on each logical surface, below which the mesh is aligned (with the magnetic axis within a quarter of the first radial cell of the mesh axis). Then the run only relaxes."""
-    moves: int = 8
-    """The largest number of moves."""
-    start: int = 20
-    """The step from which on a move may happen: the label of the start field may be far from that of the relaxed field. A multiple of --budget.chunk."""
-    every: int = 20
-    """The steps between two moves, with which the relaxation removes the error of the carried field. A multiple of --budget.chunk."""
-    axis_only: bool = False
-    """Move only the mesh axis onto the magnetic axis (the axis step of a move), not the points between it and the wall. The mesh is then aligned once the axis is within a quarter of the first radial cell, whatever --mesh.tol."""
+    """Keep the pole of the mesh on the magnetic axis: a run from the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis (mrx.relaxation.mesh_motion.vacuum_start), and at a chunk boundary where the field is at an equilibrium (its squared force residual below --mesh.bar) and its magnetic axis more than --mesh.move-tol first radial cells off the pole, the pole moves onto that axis with the field carried onto the moved map (mrx.relaxation.mesh_motion.axis_move). The moves keep the preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve exceeds --mesh.rebuild-factor times that of the first chunk after their last build, or a Newton solve stopped at --newton.maxiter while the field is above the bar."""
+    rebuild_factor: float = 1.5
+    """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
+    bar: float = 1e-8
+    """The squared force residual below which the field is at an equilibrium: only there the pole moves. During a ramp the field's axis is not that of the equilibrium it relaxes to."""
+    move_tol: float = 0.1
+    """The distance of the magnetic axis from the pole, in first radial cells, above which the pole moves at an equilibrium."""
 
     def __bool__(self):
         return self.align
@@ -295,12 +291,10 @@ class RelaxConfig:
                              "--drive.resistivity")
         if self.current and self.iota:
             raise ValueError("--iota.target and --current.target both set the current: give one")
-        if self.mesh:
-            if self.drive:
-                raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the "
-                                 "mesh it was written on")
-            if self.mesh.start % chunk or self.mesh.every % chunk or self.mesh.every < chunk:
-                raise ValueError("--mesh.start and --mesh.every must be multiples of --budget.chunk")
+        m = self.mesh
+        if m and self.drive:
+            raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the mesh it "
+                             "was written on")
 
     def stepper(self, seq):
         """Return the :class:`~mrx.relaxation.loop.TimeStepper` for this configuration on the sequence ``seq``."""

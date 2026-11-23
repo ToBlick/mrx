@@ -38,27 +38,56 @@ iterations on the vacuum and 1700 to 3300 later (one H200, float64, 4.7
 minutes for the operators and 5.7 for the 257 steps, 2026-11-19).
 
 The toroidal coordinate of the first mesh is set by `--geometry.zeta`. With
-`phi`, the default, the surfaces $\zeta = $ const are the planes
-$\phi = $ const of the cylindrical angle, as in the files. With `harmonic`
-they are the level sets of the potential of the vacuum field of the domain,
+`axis-normal`, the default, the surfaces $\zeta = $ const are the planes
+normal to the axis of the file's map, as in GVEC's G-frame. With `phi` they
+are the file's own sections, the planes $\phi = $ const of the cylindrical
+angle for a VMEC or DESC file. The planes $\phi = $ const are tilted
+against the axis of a stellarator, by up to 11 degrees on li383, 18 on
+W7-X and 35 on HSX. On a tilted plane the metric couples the field along the
+axis to the components across it in the first radial cell. A field made by
+a metric projection, a vacuum field above all, then has a rotational
+transform near the axis that is off by an amount that does not fall with the
+mesh (HSX vacuum, (24,48,48): 1.000 within 5 mm of the axis against 1.042
+outside). On planes normal to the axis the coupling vanishes there, and the
+same vacuum has 1.042 down to 5 mm.
+
+The cut (`mrx.relaxation.mesh_motion.axis_normal_map`) takes the planes
+normal to the axis of the file's map, in the frame of that axis: the axis,
+the radial direction made normal to the axis, and the third direction. Every
+point of the mesh slides along its line of constant $r$ and $\theta$ into
+the plane of its $\zeta$. So every surface $r = $ const of the file, the
+wall among them, only slides along itself, and the poloidal angle stays. The
+new coordinates in the plane are interpolated by the splines of the map.
+The file's field is carried exactly: the new point $(r, \theta, \zeta)$ is
+the file's point $(r, \theta, \zeta + f)$, and with
+$\lambda'(r, \theta, \zeta) = \lambda(r, \theta, \zeta + f) - \iota(r)
+(2\pi / N_{\rm fp}) f$ the field of the potential is the file's field, not
+the field dragged along with the points. On li383 (48,64,24), W7-X
+(24,48,28) and HSX (32,64,36) the cut takes 5 to 8 s on 8 CPU cores, the
+sections at the axis are normal to it to 3e-4 degrees, the map is at most
+0.08, 0.13 and 0.02 mm from the exact cut, and the field on the cut map is
+the file's to 1.1e-3, 1.6e-3 and 6.7e-4 relative rms. Dragged with the
+points it would be off by 2.0e-2, 2.9e-2 and 3.4e-2 (2026-11-20).
+
+With `harmonic` the surfaces $\zeta = $ const are the level sets of the
+potential of the vacuum field of the domain,
 so that $\nabla \zeta$ is the harmonic 1-form $h$, the direction of the
 vacuum field, fixed by the boundary alone. The planes are not: on li383, W7-X
 and HSX $\|\nabla \zeta - h\| / \|h\|$ is 0.29, 0.35 and 0.65 on the
-planes. The map gets there by moves of the same kind as the alignment with
-the flux surfaces (see Mesh motion below), with a different misfit.
+planes. The map gets there by moves of its points along their lines of
+constant $r$ and $\theta$.
 
 The misfit is a scalar $q$ on the mesh. One Neumann solve for the Laplacian
 on the map gives the harmonic angle $\zeta + q$
 (`mrx.nullspace.harmonic_angle`), so $q$ says how far the logical $\zeta$
 is from the harmonic angle at each point. The mesh is aligned in $\zeta$
-when $q = 0$, as it is aligned radially when the flux label is a function
-of $r$. A move slides every point along its line of constant $r$ and
+when $q = 0$. A move slides every point along its line of constant $r$ and
 $\theta$, from $\zeta$ to the point the map has at
 $\zeta - q / (1 + \partial_\zeta q)$
 (`mrx.relaxation.mesh_motion.harmonic_displacement`). The surfaces
 $r = $ const and the poloidal angle stay, and the wall slides along
 itself. The change of the map is projected onto its spline space and halved
-if a cell would fold, as in a flux move. On the moved map $q$ is solved
+if a cell would fold, as in a move of the pole. On the moved map $q$ is solved
 again. The shift is the Newton step of $q = 0$ along each line, so each
 move about squares the error until the tolerance of the solves. From the planes the distance
 $\|\nabla \zeta - h\| / \|h\|$ (`mrx.nullspace.zeta_harmonic_distance`) falls
@@ -73,11 +102,11 @@ The moves are made before the field exists, so they only change the map and
 nothing is carried. Each costs one Neumann solve, a fraction of a second
 after the first. The solves need only the preconditioners of the 0-forms,
 so the others are built once, on the final map, and the vacuum field is
-computed there. On one H200 at the resolutions of the mesh motion below the
+computed there. On one H200 on li383 (48,64,24), W7-X (24,48,28) and HSX (32,64,36) the
 setup takes 35 to 55 s longer than with `phi`, which takes 240 to 285 s,
 and the relaxation is the same (2026-11-19). The harmonic choice
-needs a VMEC input namelist, whose start is the vacuum field. A file's field
-lives on the file's sections.
+needs a VMEC input namelist, whose start is the vacuum field: the harmonic
+moves start from the file's sections and do not carry a file's field.
 
 ```python
 from mrx.geometry import build_sequence
@@ -117,9 +146,9 @@ the pair `--seed` / `--no-seed`:
 | newton | `--newton.penalty`, `--newton.tol`, `--newton.maxiter`, `--newton.mass-solve-tol` |
 | budget | `--budget.steps`, `--budget.chunk`, `--budget.floor-tol` |
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
-| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.plateau-margin`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
+| pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.axis-only`, `--mesh.tol`, `--mesh.moves`, `--mesh.start`, `--mesh.every` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -150,9 +179,11 @@ volumes become unknowns of every Newton step and the run ends at the target
 pressure (`mrx.relaxation.shells`, `mrx.relaxation.newton.target_direction`).
 The shells are the splines of the profile space, $s$ the flux label of the
 field. The profile space is its own, shared by the pressure and the current:
-cubic splines in $s$ on `--pressure.cells` cells (16 by default) whose
-breakpoints are uniform in $\sqrt{s}$. It does not refer to the mesh, which
-has only to resolve it. A spline in $s$ is smooth in space next to the
+cubic splines in $s$ on `--pressure.cells` cells whose breakpoints are
+uniform in $\sqrt{s}$, by default half the mesh's radial cells
+(`mrx.relaxation.shells.profile_cells`): every second radial knot $r_k$
+carried into the label by $s = r^2$, so every profile cell spans two
+radial cells and the space refines with the mesh. A spline in $s$ is smooth in space next to the
 magnetic axis, where $s$ goes as the squared distance from it, so every
 profile is regular there. Each shell's volume change is carried by a
 gradient $\xi_k = \nabla \chi_k$ with $\nabla \cdot \xi_k = f_k$ and
@@ -189,11 +220,10 @@ fixed wall, so no move changes the pressure's constant. It is fixed by the
 gauge $\langle p \rangle = \langle p^* \rangle$ of the volume means: the
 run's pressure is $p_w + C$, with $p_w$ the weak pressure, which vanishes on
 the wall, and $C = \langle p^* - p_w \rangle$. A target is set to zero on the
-wall. And a pressure that falls across an island chain cannot be met, since
-the two branches of its separatrix are one surface. With `--seed` the target
-is made constant across each seeded chain, over $\sqrt{s} \in x \pm m\, w/2$
-from the seeding's estimate of its resonant surface $x = \sqrt{s}$ and width $w$
-(`--pressure.plateau-margin` $m$).
+wall. The target is evaluated at the label of every quadrature point. An
+island chain wider than the label's flattening width is one level set of the
+label, so the target has one value on it, as the two branches of the
+separatrix are one surface.
 
 The `pressure` record has the error of $p_w + C$ against the target, $C$ and
 `beta`, the volume beta of the target and so of $p_w + C$. `beta_vol` is that
@@ -303,175 +333,65 @@ rotational transform of the start field. With `--iota.target <file>` it ends
 at the transform of a wout or of a VMEC input namelist with `NCURR = 0`. The
 transform is no control of the energy, the current is. So the transform sets
 the target of the prescribed current in an outer loop, before every chunk
-({func}`mrx.relaxation.twist.iota_current`):
+({func}`mrx.relaxation.twist.iota_newton`):
 
-1. the poloidal flux $\psi(s)$ inside the flux label's level sets is measured
-   and compared with the target's, $\psi^*(s) = \Phi/n_{fp} \int_0^s \iota^*$.
-   It is the volume integral of $B \cdot \nabla\theta_a$ over the region inside
-   each level set, with $\theta_a$ an angle about the label's own axis, so it
-   depends on $s$ alone, wherever the magnetic axis sits on the mesh,
-2. the slips that close the miss with the rest of the field frozen are a
-   least-squares fit to it, in the mean transform inside each surface,
-3. one Newton solve with the slips held there lets the ideal part and the
-   shells follow, and the current the field then carries is the current
-   target of the chunk.
+1. the miss is the weak residual on the profile space,
+   $r_j = \int_0^1 (\iota - \iota^*) M_j \, ds$, with $M_j$ the derivative
+   splines of the profile space, the local mean of the miss over each spline
+   ({func}`mrx.relaxation.twist.iota_residual`). By the coarea formula it is
+   the volume integral of $M_j(s)$ against the poloidal flux density
+   $n_{fp} B \cdot \nabla\theta_a$ less $\iota^*$ times the toroidal one, with
+   $\theta_a$ the angle about the magnetic axis
+   (`mrx.relaxation.mesh_motion.magnetic_axis`). It needs no sorting by
+   $s$, no derivative of a sampled flux and no division by $s$,
+2. the target enters only the slip rows, so the derivative of the state along
+   the target's moments is the Gauss-Newton step's solution for the slip rows'
+   derivative, one MINRES solve per moment,
+3. ideal moves keep the poloidal flux of every flux surface as a function of
+   its toroidal flux, so only the slips change $r$. A twist $F$ changes the
+   transform by $-n_{fp} F'(s)/\Phi$, and the change is taken from the
+   discrete twists, which resolve the innermost steps poorly
+   ({func}`mrx.relaxation.twist.slip_transform`),
+4. the target takes the joint Newton step on the field and the target, a
+   square system on the profile space that includes the slips of the Newton
+   direction at the old target.
 
-The current's response to a slip with the ideal part relaxed is 0.6 to 0.9
-times the slip block's, so the slip block alone would overshoot and the
-update would oscillate. Nothing is carried from one chunk to the next, so a
-restart recomputes the target from the field. With `--seed` the seed is applied at the first chunk boundary at which
-the transform misses its target by less than 1 % of its largest value, since
-the seed resonates with the field's own transform. With `--mesh.align` the
-loop starts at the first chunk after the mesh is aligned or out of moves:
-its first slips sit next to the magnetic axis, which a mesh resolves only
-once its axis is there. The `iota` record has,
-before every chunk, the transform's miss, the slips asked for and the current
-target.
+The loop starts from the current the field carries, and every checkpoint
+keeps the target, so a restart goes on from it. With `--seed` the seed is applied at the first chunk boundary at which
+every local mean of the weak residual is below 1 % of the target's largest
+value, since the seed resonates with the field's own transform. The `iota` record has,
+before every chunk, the weak residual, the step and the current target.
 
-On li383 (48,64,24), graded, with 0.95 times the file's transform from the
-file's field, the label's transform misses by 3.3e-2 at the start, 7.9e-4
-after 10 Newton steps and 4.1e-4 after 200, the floor of the label's fit. `dW`
-is negative on every step and the force residual reaches 1.4e-10 after 200
-steps. A step costs what a step without targets costs, the update 1.6 s per
-chunk, about one Newton step (one H200, 2026-11-18).
+On li383 (48,64,24), graded, on the file's sections, with 0.95 times the
+file's transform from the file's field after 80 Newton steps, the largest weak residual falls from 0.18 to
+1.5e-2 after the first update, 1.3e-3 after the third and 2.7e-5 at step 300,
+the target near the wall settles within three updates and the force residual
+reaches 1.1e-9. The 19 MINRES solves cost 256 s over the 22 updates (one H200,
+2026-11-20, with the induction through $B$ of that date). The transform keeps an oscillation at the scale of the profile
+cells, 1.5e-3 at most, which the current-prescribed relaxation has too
+(4.4e-3): it is orthogonal to the $M_j$, so no target reaches it.
+On W7-X standard (24,48,28), graded, p = 2, with the polynomial transform and
+pressure of a namelist, from the namelist alone, the start puts the pole on
+the vacuum's axis, 2.9 first cells off the fill's, in 8 rounds and 96 s. The
+pole stays at step 0. The pressure carries the field's axis 2.9 first cells
+back, the field first reaches the bar at step 80, and the pole moves there.
+The transfer changes the physical field at fixed points by 0.15 and the
+residual from 9e-9 to 3e-5. The field stays below the bar from step 90, the
+axis ends 0.013 first cells off the pole, and the preconditioners are never
+built again. The traced transform within rho 0.3 of the axis is within 5.5e-4
+of the target, the largest weak residual 6.2e-6 (one H200, 2026-11-23).
 
-## Outer loops
-
-The pressure and the current targets are the controls of the energy. An
-outer loop sets them from the field between chunks of Newton steps. The
-transform's loop above is one.
-A loop of your own is a function `rebuild(state, it)` that
-{func}`mrx.relaxation.loop.relax` calls before every chunk. It returns the
-state and the stepper the chunk runs with:
-
-```python
-def rebuild(state, it):
-    s_q, T, _ = label(seq, state.B_n, ANISOTROPY)               # the flux label of the field
-    ...                                                         # read the field, set p_star and mu_star
-    ts_k = ts.with_shells(build_shells(seq, state.B_n, s_q, p_star(s_q), ts.newton_penalty,
-                                       ts.newton_mass_solve_tol, cells))
-    ts_k = ts_k.with_slips(build_slips(seq, state.B_n, T, mu_star)[0])
-    return state, ts_k
-
-res = relax(initial_state(B0, ts), ts, steps, chunk, rebuild=rebuild)
-```
-
-What the loop can read on the label: the label $s$ at the quadrature points
-and its temperature `T` ({func}`mrx.relaxation.shells.label`), the label at
-points in space ({func}`mrx.relaxation.shells.logical_points` once, then
-{func}`mrx.relaxation.shells.point_labels`), the current's moments
-({func}`mrx.relaxation.twist.current_on_label`), the transform
-({func}`mrx.relaxation.twist.iota_fit`) and the pressure, the weak pressure
-({func}`mrx.relaxation.physics.weak_pressure`) against $s$ at the quadrature
-points, with its constant fixed against a target by
-{func}`mrx.relaxation.shells.pressure_error`. What it sets: the pressure
-target as a function of $s$ (mu0 p in T^2), whose values at the quadrature
-points the shells take, and the current target as moments on the profile space
-({func}`mrx.relaxation.twist.current_target` turns a function of $s$ into
-them). The shells and the slips hold the label of one field, so they are
-rebuilt every chunk whether the targets change or not.
-
-`scripts/pressure_fit.py` is a loop written outside the library. It fits a
-pressure profile to measured data, at points in space or on flux surfaces, as
-a Bayesian posterior whose prior weight the evidence sets, refits data at
-points on their labels before every chunk and writes the posterior's band. It
-runs `scripts/relax.py` with its fit as the pressure target (relax.py's `main`
-takes it as `fit`), so it takes every flag of relax.py, with the data file as
-`--pressure.target`. Its docstring states the model.
-
-```bash
-python -u scripts/pressure_fit.py --geometry.path data/wout_li383_1.4m.nc --geometry.resolution 48 64 24 \
-    --geometry.graded --budget.steps 300 --pressure.target data.json
-```
-
-with `data.json` = `{"points": [[R, Z, phi_deg], ...], "p_pa": [...], "sigma_pa": ...}`
-or `{"rho": [...], "p_pa": [...], "sigma_pa": ...}` (`"sigma_pa"` optional).
-
-## Mesh motion
-
-A mesh filled from the boundary alone (`--geometry.path input.<name>`) is
-not aligned with the flux surfaces of the field, and its axis is where the
-fill's guess puts it, not on the magnetic axis. The relaxation
-converges more slowly on it. With `--mesh.align` the mesh moves towards the
-flux surfaces between chunks (`mrx.relaxation.mesh_motion`). A move is a
-property of the mesh only. The physical field stays, and the pressure and
-current targets, functions of the flux label, do not see it.
-
-Every point moves within its surface $\zeta = $ const and the wall stays, so
-a harmonic $\zeta$ stays harmonic: $\|\nabla \zeta - h\| / \|h\|$ is
-recorded after every move. A
-move first puts the mesh axis on the magnetic axis, the maximum of the flux
-label's temperature in each plane, by the shift with which the fill places
-its axis, $d(\zeta)(1 - r^2)$. Then it moves the points so that the label
-$s$ comes closer to its volume mean $S(r)$ on each logical surface, by a
-velocity from one weighted Helmholtz solve per component of the plane,
-smoothed over two radial cells. Both parts are halved until no cell loses
-more than half its volume. With `--mesh.axis-only` a move is the axis step
-alone, and the mesh counts as aligned once its axis is on the magnetic axis.
-
-The field keeps its coefficients, which moves the physical field with the
-mesh and keeps every flux through every face of the mesh. The drag is then
-undone by the relaxation's ideal update with the mesh's velocity in place of
-the flow's, on the maps between the old and the new one, in SSP-RK3 substeps
-that cross at most half a cell, the relaxation's own substep, the cheapest
-explicit method that is stable for this advection, which nothing corrects
-afterwards
-(`mrx.relaxation.mesh_motion.undrag`). $\nabla \cdot B = 0$, $B \cdot n = 0$ and
-the toroidal flux hold exactly. The fluxes inside the other surfaces and the
-topology are kept to the accuracy of the transport. One move changes the
-physical field by the transport's spatial error, 2.6e-3 for the 9.9 cm first
-move on W7-X graded (24,48,28), in 27 substeps and 2 s on one H200. Twelve
-moves there and back return the field to 2.5e-5, and a seeded island chain
-on li383 keeps its width (2026-11-18). The new map is data of the sequence:
-the compiled relaxation is reused and the preconditioners of the start map
-are kept. Once the mesh is aligned or out of moves the preconditioners of
-the final map are built, in about a minute of host assembly at the sizes
-above. The kept ones precondition the moved operators with the same Newton
-and label counts, but the mass solves inside every step take more
-iterations, which made the steps on the moved meshes of li383, W7-X and HSX
-12 to 26 % slower (2026-11-19).
-
-A move happens before the shells and the slips are rebuilt, from step
-`--mesh.start` on and every `--mesh.every` steps, at most `--mesh.moves`
-times. The motion stops for good once the volume rms of $s - S(r)$ is below
-`--mesh.tol` and the label's maximum is within a quarter of the first radial
-cell of the mesh axis. Every move kicks the force residual up by the error
-of the carried field, so a few moves while the field is far from its
-equilibrium cost little and moves late in a run delay it.
-
-    python -u scripts/relax.py --geometry.path input.li383 --geometry.graded --geometry.resolution 48 64 24 \
-        --budget.steps 400 --pressure.target input.li383 --mesh.align
-
-From the vacuum on li383's fill with the namelist's pressure, as above, four
-moves at steps 20 to 80 align the mesh. The rms of $s - S(r)$ falls from
-5.0e-2 to 8.5e-3, and the mesh axis, 5.5 radial cells off at first, ends on
-the magnetic axis. The squared force residual stays below 1e-8 from step 90
-on, against step 257 without the motion. A move costs 5 to 8 s after the
-first, which compiles (106 s). The steps on the moved mesh cost more, 10 s per
-chunk of ten against 6 s, so both runs reach a residual of 1e-8 in about ten
-minutes with the build of the operators (one H200, float64, 2026-11-19).
-
-    python -u scripts/relax.py --geometry.path input.w7x --geometry.graded --geometry.resolution 24 48 28 \
-        --budget.steps 200 --pressure.target input.w7x --current.target input.w7x --mesh.align
-
-From the fill and the vacuum with both targets of one namelist, the squared
-force residual stays below 1e-8 from step 63 on W7-X graded (24,48,28) (14
-on the nested solver's mesh), from step 64 on li383 graded (48,64,24) against
-239 without the motion (40), and from step 24 on HSX graded (32,64,36) (8),
-after three, three and one moves (one H200, 2026-11-19). A tighter `--mesh.tol`
-costs steps, since every move after the residual is low delays it.
-
-The `mesh` record of `relax.json` holds every move: the step, the alignment
-error before and after it, the axis offset in first radial cells, the
-largest move, the range of the change of $\det D\Phi$, the change of the
-physical field at fixed physical points and of the energy, the substeps of
-the transport and the label's
-CG counts, and `preconditioners`, the step and the wall time of the build on
-the final map. Every checkpoint of such a run holds its map, which a restart and
-`scripts/poincare_trace.py` install. It also holds the state of the schedule
-(the moves made, the step of the last move and the step the mesh was aligned
-at), so a restart moves on the steps the run would have moved on. `best.h5` is
-the best field since the last move.
+The `mesh` record of `relax.json` holds the rounds
+of the start, every move (the step, the axis offset in first radial cells, the
+axis finder's record, the largest move and its backtracking factor, the range
+of the change of $\det D\Phi$, the transfer's substeps, the relative change of
+the coefficients and of the energy, the force residual right before and right
+after the move and the wall time), the checks without a move and why, the
+chunks' mean MINRES counts against the reference and the builds of the
+preconditioners with their reason and wall time. Every checkpoint of such a
+run holds its map, which a restart and `scripts/poincare_trace.py` install,
+and `moved_<step>.h5` holds the field right after a move. `best.h5` is the
+best field since the last move.
 
 ## Stopping
 
@@ -497,9 +417,10 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target, its plateaus and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`, with `--iota.target` `iota_r_max`. `iota`: the target, the centres `x` of the moments, `rebuilds` before every chunk at which the loop steps (`r`, the weak residual, `r_max`, `r_rms`, `mu` and `lam`, the field's moments and the new target, `delta`, `r_eq`, `minres`), `held` (the boundaries at which the target was held after a move), `end` (the weak residual at the end) and `seed_step`. `mesh`, with `--mesh.align`: `start` (the rounds of the first move), `moves` and `checks` (the chunk boundaries with and without a move), `chunks` and `builds` (the preconditioners). |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
+| `checkpoints/moved_<step>.h5` | with `--mesh.align`, the state right after a move of the pole, on the moved map |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
 leaves its trace and its last state. A healthy ideal run has `dE < 0` at
@@ -521,11 +442,13 @@ To evaluate a checkpoint's field:
 ```python
 from mrx.differential_forms import DiscreteFunction, Pushforward
 from mrx.relaxation.loop import checkpoint_attrs, read_field
+from mrx.relaxation.mesh_motion import install_checkpoint_map
 
 path = "<run>/checkpoints/best.h5"
 a = checkpoint_attrs(path)
 seq = build_sequence("data/wout_li383_1.4m.nc", a["ns"], a["p"], knots=a["knots"], symmetry=a["symmetry"],
                      graded=a["graded"], map_theta=a["map_theta"])
+install_checkpoint_map(seq, path)     # the map of a run with a moving mesh, if the checkpoint holds one
 B, step = read_field(path, seq)
 odd = seq.odd                     # B is odd under the stellarator symmetry
 B_phys = Pushforward(DiscreteFunction(B, odd.basis_2, odd.E(2)), seq.map, 2)
@@ -564,13 +487,14 @@ justifies the step count. `poincare_many` traces several fields at once.
 A step costs about the same for one line as for ten thousand on a GPU, so
 eight fields take about as long as one.
 
-The sections are the map's planes `zeta = const` by default. They cost
-nothing extra, and on a G-frame state their coordinates are `(X1, X2)` in
-the plane of the frame. `sections="phi"` (`--sections phi`) cuts at the
-planes of the physical toroidal angle instead, in cylindrical `(R, Z)`. On
-VMEC and DESC maps the two are the same planes. On a G-frame map every
-crossing is then found by Newton's method on a partial step, and each line
-must cross each plane once per period.
+The sections are the planes $\phi = $ const of the physical toroidal angle
+by default, in cylindrical `(R, Z)`, as people expect them. On the default
+mesh, whose sections are normal to the axis, and on a G-frame state every
+crossing is found by Newton's method on a partial step, and each line must
+cross each plane once per period. `sections="zeta"` (`--sections zeta`)
+cuts at the map's own planes `zeta = const` instead. They cost nothing
+extra, and their coordinates are `(X1, X2)` in the plane of the frame. On a
+file's map with `--geometry.zeta phi` the two are the same planes.
 
 `poincare` also takes a free 2-form (`seq.odd.free`), a field with a flux
 through the wall such as that of a free-boundary run. Its lines can leave

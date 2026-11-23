@@ -6,43 +6,49 @@ in float64, and `MRX_DTYPE=float32 pytest` in float32 with 64-bit mode off
 and the GitHub workflow runs both on a CPU. The suite reads only files
 tracked in the repository.
 
-## Four statements
+## The statements
 
-The suite tests four mathematical statements about the discretisation, which between them run most of
-the code, plus the prescribed pressure and current in one run of `relax.py`, the Bayesian fit of pressure data, the field-line tracer, the shape derivative, the readers, the profiles of a
-VMEC input namelist, the map from a boundary alone, the mesh motion and the flux label:
+A test states a mathematical fact about the discretisation or the method, an
+equation whose two sides come from different code: a solve and an apply, a
+flow and a formula, a closed form and a reader, a difference quotient and a
+derivative. A feature is covered by the statements it depends on, not by a
+file of its own, and no test runs `scripts/relax.py`.
 
 | file | statement |
 |---|---|
-| `test_derham.py` | the spaces form a de Rham complex: `G_{k+1} G_k = 0` on every space and parity view, the mass matrices are SPD with `D_k = M_{k+1} G_k` and adjoint projection pairs, the extracted derivatives are the raw ones, interpolation commutes with the derivative, axis included, and the harmonic forms span the cohomology `(1, 1, 0, 0)` of the solid torus, and the distance of `grad zeta` from the harmonic 1-form vanishes on an axisymmetric torus |
-| `test_solvers.py` | every solve inverts its operator: a known solution, mapped to its right-hand side by the operator's apply, comes back from `M[k]`, `L[k]` (every `part`), `S[k]`, `shifted(k, eps)`, `shifted_stiffness(k, eps)` and the Leray projection to a multiple of `seq.tol`, on the production spaces. Conjugate gradients and MINRES stop on the given norm of the true residual |
-| `test_poisson.py` | the Hodge Laplacians k = 0..3 recover manufactured solutions within measured bands, with the same error on the two representations of the domain (below), preconditioners kept across a change of map still precondition the new operators, and the slab model conditions `M_1` |
-| `test_newton.py` | the second variation reproduces the energy along the ideal flow, `E'(0) = -(u, J x B)` and `E''(0) = (u, H u)` with the bilinear form by polarisation, the Chebyshev mass inverse keeps the Hessian symmetric, and a short run takes positive steps, lowers the energy and the force, keeps `div B` at round-off and the helicity up to grid-scale effects, and checkpoints, and a few gradient-descent steps descend too |
-| `test_shells.py` | a shell velocity of the prescribed pressure has the projection of its shell function less the mean as its divergence to the tolerance of the Poisson solve and is orthogonal to every curl to round-off, the energy changes along its flow at the rate `-(xi, J x B)`, and the pressure part of its row is `int p* div xi dV` |
-| `test_pressure_fit.py` | the Bayesian fit of `scripts/pressure_fit.py`, loaded from its path: with the evidence's weight the posterior covers the truth as a Gaussian does, it is the least-squares fit when the noise vanishes and the prior where no data lie, and a data file at points reaches it through the map inversion and the labels of the field |
-| `test_twist.py` | the slips of the current target change the field by a divergence-free form without a `zeta` component, their map's transpose is its transpose to round-off, the energy along a slip is quadratic with the assembled derivative and block to the round-off of the energy, the moments are the spline means of the weak current to the discretisation and the block is positive definite |
-| `test_poincare.py` | the field-line tracer measures the file's rotational transform on the equilibrium's own field, whose lines stay on their logical surfaces, the padding lines stay on their surfaces both ways, the crossings of a closed-form field are its exact lines forwards and backwards, a lost line is cut at the boundary, and on a map in the cylindrical frame the sections `phi = const` are the sections `zeta = const` |
-| `test_shape_ad.py` | the vacuum field of the shape derivative is harmonic, its derivative in the map coefficients matches central differences, and on a frame that changes along zeta with points out of its planes the hand-derived metric and `det DPhi` are those of the map's Jacobian |
-| `test_readers.py` | the GVEC and DESC readers reproduce synthetic states, the VMEC reader reads li383, DESC's conversion of it agrees with the wout, non-symmetric files read as shifted symmetric ones, and the angles are right-handed after reading |
-| `test_indata.py` | every profile type of a VMEC input namelist is its closed form, or its density's integral for a current, the current is `CURTOR` at the edge, the pressure is `mu0 p` in T^2, and a namelist that tabulates the geometry file's pressure gives the file's target |
-| `test_fill.py` | the map filled from a namelist's boundary is the axis at `rho = 0` and the boundary at `rho = 1` mode by mode, and the guessed axis leaves the fill unfolded and moving it by 1 cm lowers the guess's objective |
-| `test_mesh_motion.py` | a move hardly moves the li383 file mesh, whose surfaces are the flux surfaces. On that mesh with its axis displaced by 4 cm the undo transport onto a moved map and back returns the field to its time error with `div B` and the toroidal flux at round-off, and the harmonic section brings `zeta` onto the harmonic angle and a move keeps it there |
-| `test_relax_run.py` | one `scripts/relax.py` run with the mesh motion and the pressure and current targets from a namelist alone, and one with the same targets on the wout: the fill meets the boundary with a positive Jacobian, the vacuum start has the namelist's flux and no divergence or current, both runs descend and end at the targets, the moves keep `div B` and the flux and put the axis on the mesh axis, and the two runs end at the same field and transform (the runs in float64 only) |
-| `test_flux_label.py` | the flux label of the equilibrium's field is constant on its logical surfaces up to the anisotropy, falls from the axis to the wall and encloses the flux `r^2`, and the label at the shells' tolerance, solved cold or warm-started from the label of another field, is the converged one to twice that tolerance |
+| `test_double_single.py` | the error-free transformations of double-single arithmetic are exact under the compiler and its kernels match float64 on the host |
+| `test_derham.py` | on shearedE: the spaces form a de Rham complex on every space and parity view, the mass matrices are SPD with `D_k = M_{k+1} G_k`, the extracted derivatives are the raw ones, interpolation commutes with the derivative, the harmonic forms span `(1, 1, 0, 0)`, and `grad zeta` is harmonic on an axisymmetric torus |
+| `test_symmetry.py` | on shearedE: every production functional of a symmetric state is the same on the half period and on the whole period, and an odd integrand is not |
+| `test_readers.py`, `test_indata.py` | the GVEC, DESC and VMEC readers reproduce synthetic states and li383 with right-handed angles, and every profile of a VMEC input namelist is its closed form |
+| `test_fill.py` | on shearedE: the fill from a namelist's boundary is the axis and the boundary mode by mode, the guessed axis maximises its objective, and the fill cut by the planes normal to its axis meets the boundary within 1 % of the minor radius |
+| `test_shape_ad.py` | on shearedE: the vacuum field of the shape derivative is harmonic, its derivative matches central differences, and the frame metric is that of the map's Jacobian |
+| `test_solvers.py` | every solve inverts its operator to a multiple of `seq.tol`, and conjugate gradients and MINRES stop on the given norm of the true residual |
+| `test_poisson.py` | the Hodge Laplacians recover manufactured solutions within measured bands, and the preconditioners of a map precondition a nearby one |
+| `test_exact.py` | on the Solov'ev tokamak: the projected field, current and pressure against the exact ones, the observation error of the transform, Newton steps from a perturbed state back to the discrete equilibrium, and the exact pressure and transform as targets are a fixed point next to the exact state |
+| `test_flux_label.py` | the label is the exact normalised toroidal flux to the discretisation, and the label at the shells' tolerance is the converged one |
+| `test_poincare.py` | the tracer follows closed-form lines exactly, gives the exact transform, and its sections `phi = const` are those of the map's sections |
+| `test_seeding.py` | the energy seed at `iota = 3/4` runs: it finds the (4, 3) chain and keeps `div B` at round-off |
+| `test_pressure_fit.py` | the posterior of `scripts/pressure_fit.py` is calibrated |
+| `test_newton.py` | the second variation reproduces the energy along the ideal flow with `E'(0) = -(u, J x H)`, the spline atom is SPD, gradient-descent steps descend and keep `div B` and the helicity, and the resistive step satisfies its energy identity |
+| `test_shells.py` | a shell velocity is a gradient with its divergence, its row is the derivative of the energy less the target pressure's work |
+| `test_twist.py` | the slips are divergence-free without a `zeta` part, the energy along them is quadratic with a positive block, the moments are the weak current's, and one slip update zeroes the weak iota residual of the exact transform |
+| `test_mesh_motion.py` | the axis finder finds the exact axis on the pole, the transfer by the induction returns there and back to its time error, one move puts the pole on the axis, and on shearedE the cut by the planes normal to the axis keeps the surfaces and carries the field |
+| `test_pipeline.py` | the whole pipeline from a namelist, with the pole on the start field's axis, ends at the exact equilibrium |
 
-The fixtures of `test/conftest.py` build the li383 equilibrium
-(`data/wout_li383_low_res_reference.nc`) at `(16, 32, 12)` per field period,
-`p = 2` on the graded polar space of production, in two representations with the same mesh: `half`
-(the production sequence, stellarator symmetry, half a period integrated)
-and `period` (one field period without the reflection). `seq` is `half`,
-`b0` the equilibrium's own field on it. A manufactured solution with the
-period and parity of li383 must give the same error on both, which tests the
-half-period quadrature and the parity views end to end.
+The fixtures of `test/conftest.py`: the Solov'ev tokamak of `test/solovev.py`,
+an exact axisymmetric equilibrium written as a wout and a namelist, on one
+session-scoped sequence at `(12, 16, 8)`, `p = 2`, graded, and the exact
+stellarator shearedE of `test/landreman.py` at `(12, 16, 12)` for the
+statements that need a non-axisymmetric domain. No test builds another
+sequence, except the whole-period twin of shearedE in `test_symmetry.py`. A
+statement on another map installs it on a fixture with the fixture's
+preconditioners (`map_installed`). The convergence orders, which need a
+second mesh, are measured outside the suite.
 
-The suite is XLA-compile-bound: a test costs the distinct solves it
-compiles, not the mesh. Compiled programs are cached on disk
-(`MRX_XLA_CACHE`, default `$MRX_DATA/cache/xla`, or `outputs/xla_cache` in
-the checkout without `MRX_DATA`).
+The suite's time goes into compiling and solving. Compiled programs
+are cached on disk (`MRX_XLA_CACHE`, default `$MRX_DATA/cache/xla`, or
+`outputs/xla_cache` in the checkout without `MRX_DATA`). On 8 cluster CPU
+cores from a cold cache the suite takes 12 minutes in float64 and 18 in float32 (2026-11-23).
 
 ## What a test asserts
 
@@ -54,6 +60,9 @@ wrong and not when an implementation detail moves:
 - measured bands, a fixed factor above a measured error, stated next to
   the value. A wrong metric factor or a broken preconditioner moves these
   by a factor, run-to-run noise by a few percent.
+- lengths as a fraction of the device's minor radius (VMEC's
+  `sqrt(<A> / pi)`, `test.conftest.minor_radius`), 1 % unless a tighter
+  measured bound is stated, so that a bound carries over between devices.
 
 A new test states which mathematical claim it checks at which tolerance class, on the
 fixtures above.

@@ -1,35 +1,23 @@
-"""The map from a boundary alone (:mod:`mrx.equilibria.fill`) and the vacuum start on it.
+"""The map from a boundary alone (:mod:`mrx.equilibria.fill`).
 
-The boundary is that of the tracked li383 wout, written as a VMEC input namelist with no axis, so the reader fills it
-about the axis :func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly, and
-the guessed axis is a maximum of its objective and leaves the fill unfolded. The sequence of the fill and its vacuum
-start are checked in test_relax_run.py, whose run starts there.
+The boundary is that of shearedE in its namelist, with no axis, so the reader fills it about the axis
+:func:`~mrx.equilibria.fill.guess_axis` places. The fill reaches the boundary and the axis exactly, and the guessed axis
+is a maximum of its objective and leaves the fill unfolded. The fill's spline map on the shearedE spaces, cut by the
+planes normal to its axis as every map of a sequence is, meets the boundary to the projection error with a positive
+Jacobian.
 """
+import jax
+import jax.numpy as jnp
 import numpy as np
-from scipy.io import netcdf_file
 
+from mrx.equilibria import read_equilibrium, state_position
 from mrx.equilibria.fill import fill_rows, guess_axis
 from mrx.equilibria.indata import read_indata
-from mrx.paths import data_file
+from mrx.relaxation.mesh_motion import axis_normal_map
+from test.conftest import LENGTH, minor_radius
 
-WOUT = "data/wout_li383_low_res_reference.nc"
-NS, P = (16, 32, 12), 2
-
-
-def _write_namelist(tmp_path, profiles=("AM = 0.0",), name="input.li383_boundary"):
-    """The boundary of :data:`WOUT` and its total toroidal flux as a namelist ``name``, without an axis, with the lines
-    ``profiles``. Returns its path and the boundary rows ``(m, n, R_mn, Z_mn)`` with ``n`` in the wout's convention
-    (times nfp), nfp and PHIEDGE."""
-    with netcdf_file(data_file(WOUT), "r", mmap=False) as f:
-        nfp = int(f.variables["nfp"].data)
-        xm, xn = f.variables["xm"].data.astype(int), f.variables["xn"].data.astype(int)
-        R, Z = f.variables["rmnc"].data[-1].copy(), f.variables["zmns"].data[-1].copy()
-        phiedge = float(f.variables["phi"].data[-1])
-    lines = [f"NFP = {nfp}", f"PHIEDGE = {phiedge!r}", *profiles]
-    lines += [f"RBC({n // nfp},{m}) = {float(r)!r}  ZBS({n // nfp},{m}) = {float(z)!r}" for m, n, r, z in zip(xm, xn, R, Z)]
-    path = tmp_path / name
-    path.write_text("&INDATA\n" + "\n".join(lines) + "\n/\n")
-    return str(path), np.stack([xm, xn, R, Z], axis=1), nfp, phiedge
+#: The move of the guessed axis point that must lower the guess's objective, as a fraction of the minor radius.
+AXIS_STEP = 0.03
 
 
 def _section_jacobian(boundary, axis_point, v, n_rho=200, n_u=400):
@@ -49,17 +37,16 @@ def _section_jacobian(boundary, axis_point, v, n_rho=200, n_u=400):
     return J * np.sign(np.mean(J))
 
 
-def test_fill_meets_boundary_and_axis(tmp_path):
-    """The namelist's rows read back as the wout's boundary, and the fill is the axis at rho = 0 and the boundary at
-    rho = 1 to round-off, mode by mode (numpy, milliseconds)."""
-    path, boundary, nfp, _ = _write_namelist(tmp_path)
-    rows, axis = read_indata(path).boundary_rows()
-    rows = np.asarray(rows)
-    assert axis == []
-    order = np.lexsort((boundary[:, 1], boundary[:, 0]))
-    assert np.array_equal(rows[:, :2], boundary[order, :2])
-    assert np.max(np.abs(rows[:, 2:] - boundary[order, 2:])) == 0.0
-    axis = np.array([[0, 1.45, 0.0], [nfp, 0.05, -0.02]])
+def _rows(sheared):
+    """The namelist's boundary rows ``(m, n, R_mn, Z_mn)``, ``n`` times nfp, and nfp."""
+    nl = read_indata(sheared[2])
+    return np.asarray(nl.boundary_rows()[0]), nl.nfp
+
+
+def test_fill_meets_boundary_and_axis(sheared):
+    """The fill is the axis at rho = 0 and the boundary at rho = 1 to round-off, mode by mode (numpy, milliseconds)."""
+    rows, nfp = _rows(sheared)
+    axis = np.array([[0, 0.75, 0.0], [nfp, 0.01, -0.005]])
     m, n, R, Z = fill_rows(rows, axis, np.array([0.0, 1.0]))
     on_axis = np.where(m == 0, 1.0, 0.0)
     ax_R = on_axis * np.array([dict((int(k), r) for k, r, _ in axis).get(int(k), 0.0) for k in n])
@@ -71,19 +58,42 @@ def test_fill_meets_boundary_and_axis(tmp_path):
     assert np.max(np.abs(Z[1] - [table.get((int(a), int(b)), (0.0, 0.0))[1] for a, b in zip(m, n)])) <= 4 * eps
 
 
-def test_guessed_axis_is_the_best_unfolded_fill(tmp_path):
+def test_guessed_axis_is_the_best_unfolded_fill(sheared):
     """In each of four planes per field period the fill about the guessed axis is unfolded (``J / rho`` positive on a
-    fine grid), and moving the axis point by 1 cm in R or Z lowers the mean of ``log(J / rho)``, the objective the
-    guess maximises (li383, minor radius about 0.3 m: the axis of the Fourier fit is within the grid search's
-    resolution of the planes' maxima). 11 s, numpy."""
-    path, _, nfp, _ = _write_namelist(tmp_path)
-    rows = np.asarray(read_indata(path).boundary_rows()[0])
+    fine grid), and moving the axis point by :data:`AXIS_STEP` of the minor radius in R or Z lowers the mean of
+    ``log(J / rho)``, the objective the guess maximises (the axis of the Fourier fit is within the grid search's
+    resolution of the planes' maxima). Numpy."""
+    rows, nfp = _rows(sheared)
+    step = AXIS_STEP * minor_radius(rows, nfp)
     axis = guess_axis(rows, nfp)
     for v in 2.0 * np.pi / nfp * np.arange(4) / 4:
         point = np.array([np.cos(axis[:, 0] * v) @ axis[:, 1], -np.sin(axis[:, 0] * v) @ axis[:, 2]])
         J = _section_jacobian(rows, point, v)
         assert J.min() > 0.0
         best = np.mean(np.log(J))
-        for d in ((0.01, 0.0), (-0.01, 0.0), (0.0, 0.01), (0.0, -0.01)):
+        for d in ((step, 0.0), (-step, 0.0), (0.0, step), (0.0, -step)):
             J_d = _section_jacobian(rows, point + np.array(d), v)
             assert J_d.min() <= 0.0 or np.mean(np.log(J_d)) < best
+
+
+def test_the_fill_map_meets_the_boundary(sheared):
+    """The namelist's exact fill (:func:`mrx.equilibria.state_position`) cut by the planes normal to its axis on the
+    shearedE spaces (:func:`mrx.relaxation.mesh_motion.axis_normal_map`, the map of every sequence) has a positive
+    Jacobian at every quadrature point, and at ``r = 1`` lies on the namelist's boundary at its own ``phi`` within
+    :data:`~test.conftest.LENGTH` of the minor radius. A point of the wall keeps its ``theta`` and slides along the
+    boundary. 0.63 % measured on (12,16,12)."""
+    boundary, nfp = _rows(sheared)
+    seq = sheared[3]
+    eq = read_equilibrium(sheared[2])
+    Phi, _, cut = axis_normal_map(seq, state_position(eq))
+    t, z = np.meshgrid(np.arange(64) / 64, np.arange(12) / 12, indexing="ij")
+    X = np.asarray(jax.vmap(Phi)(jnp.asarray(np.stack([np.ones(t.size), t.ravel(), z.ravel()], axis=1))))
+    u = 2.0 * np.pi * t.ravel() * (-1.0 if eq["theta_reversed"] else 1.0)
+    v = np.arctan2(X[:, 1], X[:, 0])
+    arg = boundary[:, 0][None, :] * u[:, None] - boundary[:, 1][None, :] * v[:, None]
+    miss = np.hypot(np.hypot(X[:, 0], X[:, 1]) - np.cos(arg) @ boundary[:, 2], X[:, 2] - np.sin(arg) @ boundary[:, 3])
+    a = minor_radius(boundary, nfp)
+    print(f"\n  min det DPhi {cut['det_range'][0]:.3e}, max distance from the boundary at r = 1 {miss.max():.2e} m = "
+          f"{miss.max() / a:.2%} of the minor radius {a:.3f} m")
+    assert cut["det_range"][0] > 0.0
+    assert miss.max() < LENGTH * a

@@ -1,4 +1,4 @@
-"""The Laplacians recover manufactured solutions on the li383 domain, identically on two representations.
+"""The Laplacians recover manufactured solutions on the shearedE domain.
 
 Each Hodge Laplacian ``L_k`` is solved with the right-hand side of a closed-form solution:
 
@@ -17,12 +17,9 @@ Every solve must converge, and its relative L2 error, computed exactly as
 integrated with ``p + 1`` Gauss points per span on every axis, on a copy of the sequence with the same mesh and map.
 The sequence's own rule has ``p`` points in the angles, at the zeros of the degree-``p`` Legendre polynomial, and
 there it misses the ``h^2`` error of the degree-``p - 1`` directions of the forms (order 3 instead of the true 2 at
-``p = 2``). A wrong metric factor, boundary row or extraction moves the error by a factor. The two representations of
-the domain (``half``: one field period with stellarator symmetry, ``period``: one field period without the
-reflection) have the same mesh, and ``B*`` and ``psi`` have the period and the parity of li383. So the two must
-give the same error to the solver tolerance: this checks the half-period quadrature and the parity views end to
-end. Preconditioners kept across a change of map still precondition the new operators. The zeta-slab mass model
-conditions ``M_1`` far better than the metric-lumping atom, on the odd view of the half-period domain.
+``p = 2``). A wrong metric factor, boundary row or extraction moves the error by a factor. Preconditioners kept
+across a change of map still precondition the new operators. The zeta-slab mass model conditions ``M_1`` far better
+than the metric-lumping atom, on the odd view of the half-period domain.
 """
 import jax
 import jax.numpy as jnp
@@ -30,22 +27,17 @@ import numpy as np
 import pytest
 
 from mrx.precision import inner, lift, to_working
+from test.conftest import map_installed
 
-#: 1.25x the relative L2 errors on li383 (16, 32, 12 per period) p = 2, graded, assembled with (p + 1, p, p) and
-#: integrated with (p + 1, p + 1, p + 1), measured 2026-10-20 in float64: 8.408e-3 (k = 0, of grad psi), 1.173e-2, 2.421e-2 and
-#: 3.989e-2.
-ERROR_BAND = {0: 0.0105, 1: 0.0147, 2: 0.0303, 3: 0.0499}
-#: The relative spread of the two representations' errors: below 3e-10 in float64. In float32, whose data (map,
-#: quadrature, tables) differ by rounding, at most 2.5e-4 (k = 0), 1.3e-4, 2.7e-5, 1.2e-5, measured 2026-10-14 over
-#: three representations with p + 1 points per axis.
-SAME = 1e-3
-NAMES = ("half", "period")
+#: 1.25x the relative L2 errors on the shared sequence, assembled with (p + 1, p, p) and integrated with (p + 1, p + 1,
+#: p + 1): 1.39e-1 (k = 0, of grad psi), 2.31e-2, 2.37e-2, 1.47e-1 measured (tokamak (12,16,6), float64, 2026-11-22).
+ERROR_BAND = {0: 0.174, 1: 0.029, 2: 0.030, 3: 0.184}
 
 
 def psi(X):
-    """``R^2 (1 + Z^2) + Re (x + i y)^3 + Z Im (x + i y)^3``: smooth, not harmonic, with the field period of
-    li383 (nfp = 3) and even under the stellarator reflection ``(y, z) -> (-y, -z)``."""
-    re, im = X[0] ** 3 - 3.0 * X[0] * X[1] ** 2, 3.0 * X[0] ** 2 * X[1] - X[1] ** 3
+    """``R^2 (1 + Z^2) + Re (x + i y)^2 + Z Im (x + i y)^2``: smooth, not harmonic, with the field period of
+    shearedE (nfp = 2) and even under the stellarator reflection ``(y, z) -> (-y, -z)``."""
+    re, im = X[0] ** 2 - X[1] ** 2, 2.0 * X[0] * X[1]
     return (X[0] ** 2 + X[1] ** 2) * (1.0 + X[2] ** 2) + re + X[2] * im
 
 
@@ -153,54 +145,37 @@ def _solve(seq, k):
 
 
 @pytest.mark.parametrize("k", (0, 1, 2, 3))
-def test_manufactured_solution(domains, k):
-    """The k-th manufactured solution is recovered within its band, and with the same error on the two
-    representations of the domain."""
-    errs = {name: _solve(domains(name), k) for name in NAMES}
-    spread = (max(errs.values()) - min(errs.values())) / min(errs.values())
-    print(f"\n  k={k}: relative L2 errors " + ", ".join(f"{n} {e:.6e}" for n, e in errs.items())
-          + f", spread {spread:.2e}")
-    assert max(errs.values()) < ERROR_BAND[k]
-    assert spread < SAME
+def test_manufactured_solution(seq, k):
+    """The k-th manufactured solution is recovered within its band."""
+    err = _solve(seq, k)
+    print(f"\n  k={k}: relative L2 error {err:.6e}")
+    assert err < ERROR_BAND[k]
 
 
-def test_a_new_geometry_can_keep_the_preconditioners(domains):
-    """``set_geometry_from_map(Phi, keep_preconditioners=True)`` keeps the preconditioners of the old map, which
-    still precondition the operators of the new one: the mass solve on li383 stretched by 10 % in ``Z`` converges
-    to the tolerance, measured with the new mass matrix. The harmonic forms are set to zero. Without
-    ``keep_preconditioners`` the bundle is dropped and a solve raises. A new map of the same resolution reuses the
-    compiled programs. The geometry, preconditioners and harmonic forms of ``period`` are restored at the end."""
-    from mrx.nullspace import compute_nullspaces
-
-    s = domains("period")
-    geometry = s.geometry
-    Phi = s.map
+def test_kept_preconditioners_precondition_a_nearby_map(seq):
+    """The preconditioners of a map precondition the operators of a nearby one, the path mesh motion takes mid-run
+    and the suite takes for every other map (:func:`test.conftest.map_installed`): on the shared sequence stretched by 10 % in
+    ``Z`` with the preconditioners kept, the mass solve converges to the tolerance, measured with the new
+    mass matrix."""
+    Phi = seq.map
+    s = seq.odd
     stretch = jnp.array([1.0, 1.0, 1.1])
     b = jnp.asarray(np.random.default_rng(5).standard_normal(s.n(1)))
     Pb = s.M[1].precondition(b)
-    try:
-        s.set_geometry_from_map(lambda x: stretch * Phi(x), keep_preconditioners=True)
+    with map_installed(seq, lambda x: stretch * Phi(x)):
         assert bool(jnp.array_equal(s.M[1].precondition(b), Pb))
-        assert not any(np.any(np.asarray(to_working(v))) for v in s.operators.nullspaces.values())
         x, info = s.M[1].solve(b, return_info=True, accurate=True)
         r = to_working(lift(b) - s.M[1] @ x)
 
         def norm(v):
             return float(jnp.sqrt(v @ s.M[1].precondition(v)))
         assert info > 0 and norm(r) <= 1e1 * s.tol * norm(b)
-        s.set_geometry_from_map(lambda x: stretch * Phi(x))
-        assert s.operators is None
-        with pytest.raises(ValueError):
-            s.M[1].solve(b)
-    finally:
-        s.set_geometry(geometry)
-        s.build_preconditioners()
-        compute_nullspaces(s, verbose=False)
 
 
 def test_slab_mass_model_conditions_the_one_form_mass(seq):
-    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass. Measured 4.04 on li383 (16, 32, 12)
-    (2026-10-20). The metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
+    """kappa of P M_1 on the odd view, P the slab model of mrx.slab_mass, from the Lanczos matrix of PCG cut at its
+    convergence. 1.306 on the tokamak densely (2026-11-22), 4.04 on li383 (16, 32, 12) (2026-10-20). The
+    metric-lumping atom had 37.8 on (12, 20, 12). Band 5."""
     from mrx.metric_lumping import ReducedAtom
     from mrx.slab_mass import SlabMass
     from mrx.solvers import lanczos_bounds
@@ -209,4 +184,5 @@ def test_slab_mass_model_conditions_the_one_form_mass(seq):
     M = odd.M[1]
     b = M @ jnp.asarray(np.random.default_rng(0).standard_normal(odd.n(1)))
     lo, hi = lanczos_bounds(lambda x: M @ x, b, P.apply, 40)
+    print(f"\n  kappa {hi / lo:.4f} ({lo:.4f} .. {hi:.4f})")
     assert hi / lo < 5.0

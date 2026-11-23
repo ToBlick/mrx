@@ -22,10 +22,12 @@ in the plane of an axis-following frame instead of ``R``, ``Z``, and the frame i
 (:func:`mrx.equilibria.gvec.read_frame`). A stellarator-symmetric state (:func:`is_stellarator_symmetric`) has
 ``X1`` as a cosine series and ``X2``, lambda as sine series.
 
-Every map is a :class:`FrameMap`, in the frame the file supplies: GVEC's G-frame for a state that has one, the
-cylindrical frame (:func:`cylindrical_frame`) for every other file (VMEC, DESC, a cylindrical GVEC state), whose
-planes are the planes ``phi = const``. No file is cut into another frame. The third coordinate ``X3`` of the map, out
-of the frame's plane, is zero for every file. It is there for a moving mesh and for a shape optimisation.
+Every map is a :class:`FrameMap`. :func:`build_map` gives it in the frame the file supplies: GVEC's G-frame for a
+state that has one, the cylindrical frame (:func:`cylindrical_frame`) for every other file (VMEC, DESC, a cylindrical
+GVEC state), whose planes are the planes ``phi = const``, with the third coordinate ``X3``, out of the frame's plane,
+zero. :func:`mrx.geometry.build_sequence` by default re-sections the file's map into the planes normal to its axis
+(:func:`mrx.relaxation.mesh_motion.axis_normal_map`), the frame of that axis, again with ``X3 = 0``. ``X3`` is there
+for a moving mesh and for a shape optimisation.
 
 The logical coordinates ``(r, theta, zeta)`` of a state are right-handed: the map
 ``(R cos phi, R sin phi, Z)`` has a positive Jacobian. A file whose angles are left-handed, as in a VMEC
@@ -273,11 +275,38 @@ class FrameMap(eqx.Module):
         """The map with the same frame and the coefficients ``raw_X1``, ``raw_X2``, ``raw_X3``."""
         return eqx.tree_at(lambda m: (m.raw_X1, m.raw_X2, m.raw_X3), self, (raw_X1, raw_X2, raw_X3))
 
+    def with_frame(self, frame_cos, frame_sin, frame_n):
+        """The map with the same coefficients of ``X1``, ``X2``, ``X3`` in the frame ``frame_cos``, ``frame_sin``,
+        ``frame_n``. Coordinates belong to their frame, so a map whose coordinates come from another map takes that
+        map's frame with them: ``Phi.with_coordinates(*X).with_frame(...)``."""
+        return eqx.tree_at(lambda m: (m.frame_cos, m.frame_sin, m.frame_n), self, (frame_cos, frame_sin, frame_n))
+
     def scaled(self, factor):
         """The map ``factor Phi``: ``X1``, ``X2``, ``X3`` and the axis ``a`` times ``factor``, ``N`` and ``B`` kept."""
         return eqx.tree_at(lambda m: (m.raw_X1, m.raw_X2, m.raw_X3, m.frame_cos, m.frame_sin), self,
                            (factor * self.raw_X1, factor * self.raw_X2, factor * self.raw_X3,
                             self.frame_cos.at[0].multiply(factor), self.frame_sin.at[0].multiply(factor)))
+
+
+def polar_projection(seq):
+    """The projection of the tensor coefficients ``(n_r, n_theta, n_zeta)`` of a scalar spline of ``seq.basis_0`` onto
+    the polar 0-forms of ``seq`` that may be nonzero on the wall, the space of the map's coordinates, as a function
+    of a float64 array. It is ``E^T (E E^T)^-1 E`` with ``E`` the extraction of those 0-forms: the coefficients of
+    the radial rings at the axis become those of a function that is smooth (C1) there, all others stay."""
+    free = seq.free                   # the map's coefficients are not zero on the wall
+    # The projection v = (E E^T)^-1 E c (DeRhamSequence.conforming) and E^T v run on the host in float64 and are
+    # rounded once, so every build has the same map bit for bit, in both precisions. On a GPU the sparse applies are
+    # a scatter, which adds in an order the device chooses, and near the axis the metric turns a few units in the
+    # last place of R into 1e-3 of the inverse metric in float32.
+    e = free.E(0)
+    rows, cols, vals = e.entries()
+    E = sp.csr_matrix((vals, (rows, cols)), shape=e.forward_shape)
+    gram_inv = gram_inverse(e, free.core_rows(0), free._gram[(0, False)])
+    shape = seq.basis_0.shape[0]
+
+    def project(C):
+        return (E.T @ (gram_inv @ (E @ np.asarray(C, dtype=np.float64).reshape(-1)))).reshape(shape)
+    return project
 
 
 def build_map(st, seq, nfp=None, stellarator_symmetric=False):
@@ -299,15 +328,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
         raise ValueError("the state is not stellarator-symmetric: the projection would drop its asymmetric part")
     nfp = st["nfp"] if nfp is None else int(nfp)
     br, bt, bz = seq.basis_0.Lambda
-    free = seq.free                   # the map's coefficients are not zero on the wall
-    # The projection v = (E E^T)^-1 E c (DeRhamSequence.conforming) and E^T v run on the host in float64 and are
-    # rounded once, so every build has the same map bit for bit, in both precisions. On a GPU the sparse applies are
-    # a scatter, which adds in an order the device chooses, and near the axis the metric turns a few units in the
-    # last place of R into 1e-3 of the inverse metric in float32.
-    e = free.E(0)
-    rows, cols, vals = e.entries()
-    E = sp.csr_matrix((vals, (rows, cols)), shape=e.forward_shape)
-    gram_inv = gram_inverse(e, free.core_rows(0), free._gram[(0, False)])
+    polar = polar_projection(seq)
 
     def raw(block):
         # the map's nfp, not the file's: with an override logical zeta spans nfp_file / nfp periods
@@ -319,7 +340,7 @@ def build_map(st, seq, nfp=None, stellarator_symmetric=False):
                  * np.conj(_angular_coefficients(bz, n_per))[:, None, :])   # exp(2 pi i (m theta - n zeta))
         C = (np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["cos"], br), modes.real)
              + np.einsum("ik,kjl->ijl", _radial_coefficients(block, block["sin"], br), modes.imag))
-        return jnp.asarray(E.T @ (gram_inv @ (E @ C.reshape(-1))), dtype=DTYPE).reshape(seq.basis_0.shape[0])
+        return jnp.asarray(polar(C), dtype=DTYPE)
 
     raw_X1, raw_X2 = raw(st["X1"]), raw(st["X2"])
     if stellarator_symmetric:

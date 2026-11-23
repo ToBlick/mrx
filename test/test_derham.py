@@ -11,7 +11,7 @@
 - interpolation commutes with the derivative, ``G_k Pi_k f = Pi_{k+1} df``, for fields with the regularity of a smooth
   form at the axis, axis rows included.
 
-The spaces are the graded polar ones of production.
+The spaces are the graded polar ones of production, on the shearedE sequence of the suite.
 
 Every statement is an identity of the discretisation, so it holds to round-off, or to the solver tolerance
 where a stored solve result enters.
@@ -24,6 +24,12 @@ import pytest
 import mrx
 from mrx.nullspace import harmonic_rayleigh
 from mrx.precision import eps
+
+@pytest.fixture(scope="module")
+def seq(sheared):
+    """The shearedE sequence (:func:`test.conftest.sheared`)."""
+    return sheared[3]
+
 
 # The polar derivative involves an inverse near the axis, which costs accuracy:
 # 1e4 eps (2.2e-12).
@@ -149,24 +155,24 @@ def test_interpolation_commutes_with_the_derivative(seq):
 
 def test_zeta_harmonic_distance(seq):
     """:func:`mrx.nullspace.zeta_harmonic_distance` is zero to round-off on an axisymmetric torus with ``zeta`` the
-    cylindrical angle, where ``grad zeta`` is harmonic: the fixture's map averaged over ``zeta``. On the fixture
-    itself (li383, ``zeta`` the cylindrical angle of the wout) it is 0.297 in the mass norm and 0.62 at worst, next to
-    the wall (2026-11-18), the poloidal part of the vacuum field, which ``grad phi`` lacks: checked against the band
-    0.25 to 0.35. 30 s on four CPU cores after the fixture."""
+    cylindrical angle, where ``grad zeta`` is harmonic: the file's map on its own sections (:func:`mrx.equilibria
+    .build_map`) averaged over ``zeta``. On the file's map itself (shearedE, ``zeta`` the cylindrical angle) it is the
+    poloidal part of the vacuum field, which ``grad phi`` lacks: 0.395 in the mass norm, 0.76 at worst, checked against
+    the band 0.3 to 0.5 (2026-11-22). Both maps are installed on the
+    sequence with its preconditioners."""
     import dataclasses
 
-    from mrx.geometry import build_sequence
+    from mrx.equilibria import build_map
     from mrx.nullspace import zeta_harmonic_distance
-    from test.conftest import GEOMETRY, NS, P
-    rel, worst, _ = zeta_harmonic_distance(seq)
-    ax = build_sequence(GEOMETRY, NS, P, symmetry="stellarator", graded=True)
-    Phi = seq.map
+    from test.conftest import map_installed
+    Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
 
     def avg(raw):
         return jnp.broadcast_to(jnp.mean(raw, axis=2, keepdims=True), raw.shape)
-    ax.set_geometry_from_map(dataclasses.replace(Phi, raw_X1=avg(Phi.raw_X1), raw_X2=avg(Phi.raw_X2)))
-    ax.build_preconditioners()
-    rel_ax, worst_ax, _ = zeta_harmonic_distance(ax)
-    print(f"\n  li383 {rel:.3e} (worst {worst:.3e}), axisymmetric {rel_ax:.1e} (worst {worst_ax:.1e})")
+    with map_installed(seq, Phi):
+        rel, worst, _ = zeta_harmonic_distance(seq)
+    with map_installed(seq, dataclasses.replace(Phi, raw_X1=avg(Phi.raw_X1), raw_X2=avg(Phi.raw_X2))):
+        rel_ax, worst_ax, _ = zeta_harmonic_distance(seq)
+    print(f"\n  shearedE {rel:.3e} (worst {worst:.3e}), axisymmetric {rel_ax:.1e} (worst {worst_ax:.1e})")
     assert rel_ax < 1e3 * eps() and worst_ax < 1e3 * eps()
-    assert 0.25 < rel < 0.35
+    assert 0.3 < rel < 0.5

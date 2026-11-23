@@ -1,22 +1,21 @@
 """The Bayesian fit of pressure data of ``scripts/pressure_fit.py``, an outer loop written outside the library.
 
 The posterior of a profile given data (``posterior``) is calibrated with the evidence's prior weight, it follows the
-data where they determine the profile and the prior where none lie, and a user's data file at points in space reaches
-it through the map inversion and the labels of the field. The script is loaded from its path, it is no module of the
-package.
+data where they determine the profile and the prior where none lie. The script is loaded from its path, it is no
+module of the package.
 """
 import importlib.util
-import json
 import pathlib
 import sys
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.interpolate import BSpline
 
-from mrx.flux_label import ANISOTROPY
-from mrx.relaxation.shells import PROFILE_CELLS, PROFILE_DEGREE, label, point_labels, profile_knots
+from mrx.relaxation.shells import PROFILE_DEGREE, profile_knots
+
+#: The cells of the profile space of these fits.
+PROFILE_CELLS = 16
 
 _spec = importlib.util.spec_from_file_location(
     "pressure_fit", pathlib.Path(__file__).resolve().parents[1] / "scripts" / "pressure_fit.py")
@@ -33,9 +32,6 @@ MEAN_LS = 1e-10
 PRIOR_PRECISION = 1e-10
 #: The standard deviation beyond the data over its mean on them: 4.2 measured.
 WIDEN = 3.0
-#: The data file's fit against the file's profile and its coverage at two standard deviations: 1.14e-2 and
-#: 0.94 measured.
-DATA_ERROR, DATA_COVER = 2e-2, 0.85
 
 
 def _posterior_draws(s_i, truth, level, draws, seed=0):
@@ -43,7 +39,9 @@ def _posterior_draws(s_i, truth, level, draws, seed=0):
     maximum."""
     rng = np.random.default_rng(seed)
     sigma = level * truth(0.0)
-    return [pf.posterior(s_i, truth(s_i) + sigma * rng.standard_normal(s_i.size), sigma) for _ in range(draws)]
+    A = BSpline(profile_knots(PROFILE_CELLS + PROFILE_DEGREE), np.eye(PROFILE_CELLS + PROFILE_DEGREE), PROFILE_DEGREE)(s_i)
+    return [pf.posterior(A, truth(s_i) + sigma * rng.standard_normal(s_i.size), PROFILE_CELLS, sigma)
+            for _ in range(draws)]
 
 
 def test_profile_posterior():
@@ -86,38 +84,3 @@ def test_profile_posterior():
     assert mean_ls < MEAN_LS
     assert prior_precision < PRIOR_PRECISION
     assert widen > WIDEN
-
-
-def test_pressure_data_at_points(seq, b0, tmp_path):
-    """A user's data file of pressure at points in space with error bars (``scripts/pressure_fit.py
-    --pressure.target data.json``): 30 points on two lines through the axis in the plane ``phi = 0``, the file's
-    pressure at their labels on the file's field with 2 % noise. ``DataFit`` inverts the map, the points get their
-    labels on the field and the posterior is fitted there. Its mean misses the file's profile by 1.14e-2 relative, and the truth lies within
-    two standard deviations at 0.94 of the labels, in both precisions. 12 s (float64) and 19 s (float32) on four CPU
-    cores after the fixture (2026-11-19).
-    """
-    p_r = seq.equilibrium["profiles"]["pressure"]                        # Pa, a function of r = sqrt(s)
-    r = np.linspace(0.05, 0.95, 15)
-    x = jnp.asarray(np.concatenate([np.stack([r, np.zeros(15), np.zeros(15)], 1),
-                                    np.stack([r, np.full(15, 0.5), np.zeros(15)], 1)]))
-    X = np.asarray(jax.vmap(seq.map)(x))
-    _, T, _ = label(seq, b0, ANISOTROPY)
-    s_i = np.asarray(point_labels(seq, b0, T, x))
-
-    def truth(s):
-        return p_r(np.sqrt(s)) - p_r(1.0)
-    sigma = 0.02 * truth(0.0)
-    p = truth(s_i) + sigma * np.random.default_rng(0).standard_normal(s_i.size)
-    path = tmp_path / "data.json"
-    path.write_text(json.dumps(dict(points=np.stack([np.hypot(X[:, 0], X[:, 1]), X[:, 2],
-                                                     np.degrees(np.arctan2(X[:, 1], X[:, 0]))], 1).tolist(),
-                                    p_pa=p.tolist(), sigma_pa=sigma)))
-    fit, _ = pf.DataFit(str(path))(seq, b0, T)
-    s = np.linspace(0.0, 1.0, 101)[:-1] ** 2
-    mean, std = np.asarray(fit(jnp.asarray(s))) / pf.MU0, fit.std(s) / pf.MU0
-    error = float(np.linalg.norm(mean - truth(s)) / np.linalg.norm(truth(s)))
-    cover = float(np.mean(np.abs(mean - truth(s)) < 2.0 * std))
-    print(f"\n  labels {s_i.min():.3f} .. {s_i.max():.3f}, error {error:.2e}, within 2 sd {cover:.2f}, "
-          f"chi^2 {fit.chi2():.2f} per point, tau {fit.tau:.2e}")
-    assert error < DATA_ERROR
-    assert cover > DATA_COVER

@@ -1,7 +1,8 @@
 """The relaxation loop, which lowers the magnetic energy of ``B`` towards an MHD equilibrium.
 
-Each step carries the field along a velocity ``u`` for a time ``dt``, ``dB / ds = curl(u x B)``, in forward Euler
-substeps of at most :data:`CFL` logical cells. This keeps ``div B = 0`` and the helicity fixed, so only the energy
+Each step carries the field along a velocity ``u`` for a time ``dt``, ``dB / ds = curl E``, ``E = Pi_1(u x H)`` with
+``H = Pi_1 B`` (:func:`mrx.relaxation.physics.induction_field`), in forward Euler substeps of at most :data:`CFL`
+logical cells. This keeps ``div B = 0`` and the helicity fixed, so only the energy
 changes. The velocity ``u`` is either a Newton direction or a smoothed Lorentz force.
 
 A typical run builds a :class:`TimeStepper` for a sequence, makes the start state with :func:`initial_state`
@@ -32,8 +33,8 @@ from mrx.derham_sequence import DeRhamSequence
 from mrx.precision import DTYPE, inner, lift
 from mrx.relaxation.newton import (NEWTON_MASS_SOLVE_TOL, NEWTON_MAXITER, NEWTON_PENALTY, NEWTON_TOL,
                                    newton_direction, target_direction)
-from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, resistive_step,
-                                   weak_pressure)
+from mrx.relaxation.physics import (beta_vol, compute_divergence_norm, compute_helicity, current, electric_field,
+                                   induction_field, resistive_step, weak_pressure)
 from mrx.relaxation.shells import Shells
 from mrx.relaxation.twist import Slips
 
@@ -81,7 +82,7 @@ def logical_cfl_weights(seq: DeRhamSequence) -> jnp.ndarray:
 class WarmStarts(eqx.Module):
     """The solutions of the last step's linear solves, kept as starting guesses for the next step.
 
-    ``J`` is the current, ``E = u x B`` the electric field, ``a`` the vector potential of the step's direction,
+    ``J`` is the current, ``E = Pi_1(u x H)`` the electric field, ``a`` the vector potential of the step's direction,
     ``a_F`` the vector potential of the force (the same as ``a`` for gradient descent), ``A`` the vector potential
     of the helicity (updated only when diagnostics are sampled) and ``resistive_a`` the 1-form whose curl was the
     last resistive increment.
@@ -146,7 +147,8 @@ SMOOTHING_C = 0.075
 class TimeStepper(eqx.Module):
     """One step of the energy descent: ``B`` carried along the velocity ``u`` for the time ``dt``.
 
-    The force is ``F = curl a + c h``, the divergence-free part of ``J x B`` computed from a vector potential
+    The force is ``F = curl a + c h``, the divergence-free part of ``J x H`` (``H = Pi_1 B``,
+    :func:`mrx.relaxation.physics.induction_field`) computed from a vector potential
     ``a`` (one 1-form Laplacian solve) and the harmonic 2-forms ``h``, with no pressure solve.
     With ``newton=True`` the velocity ``u`` is the Gauss-Newton direction ``curl a + c h``
     (:func:`mrx.relaxation.newton.target_direction`), with ``c`` the amplitude of the harmonic flow, controlled by
@@ -155,8 +157,8 @@ class TimeStepper(eqx.Module):
     :func:`mrx.relaxation.newton.newton_direction`, ``curl a`` alone.
     Otherwise ``u`` is the smoothed force ``(M_2 + mu L_2)^-1 M_2 F`` with ``mu = SMOOTHING_C h_r^2``, where ``M_2`` is the
     2-form mass matrix and ``L_2`` the 2-form Laplacian. The step length ``dt`` minimises the energy along the increment
-    ``curl(u x B_n)``, for Newton at most 1, the full Newton step. The field is carried for that time by
-    ``dB / ds = curl(u x B)`` with ``u`` held, in the fewest forward Euler substeps of equal length that cross at most
+    ``curl Pi_1(u x H_n)``, for Newton at most 1, the full Newton step. The field is carried for that time by
+    ``dB / ds = curl Pi_1(u x H)`` with ``u`` held, in the fewest forward Euler substeps of equal length that cross at most
     :data:`CFL` logical cells each, one mass solve per substep. The step is a descent that the next Newton step
     corrects, so the first-order substeps suffice, while the cap of a single step on the CFL limit held back many
     early steps (25 of 33 on W7-X, 47 of 68 on li383, 2026-11-19).
@@ -229,12 +231,12 @@ class TimeStepper(eqx.Module):
         return eqx.tree_at(lambda t: t.resistive_reference, self, B_ref, is_leaf=lambda x: x is None)
 
     def _lorentz(self, B: jnp.ndarray, J_guess: jnp.ndarray):
-        """Return ``(J, (J x B)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
+        """Return ``(J, (J x H)_dual)``: the current and the Lorentz force as a dual 2-form (tested against the
         2-form basis), not projected."""
         odd, even = self.seq.odd, self.seq.even
         J = current(B, self.seq, J_guess)
-        return J, even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1),
-                                                 odd.evaluate_at_quadrature(B, 2), 2, 1, 2)
+        return J, even.cross_product_load_values(odd.evaluate_at_quadrature(J, 1), induction_field(B, self.seq),
+                                                 2, 1, 1)
 
     def _force(self, JxB_dual: jnp.ndarray, a_guess: jnp.ndarray):
         """Return ``(F, M F, a)``: the divergence-free force ``F = curl a + c h`` of the Lorentz force
@@ -267,7 +269,7 @@ class TimeStepper(eqx.Module):
         work, dB_slip, d, c_h = 0.0, None, None, None
         harmonic = self.harmonic_flows
         if self.newton and (harmonic is not None or self.shells is not None or self.slips is not None):
-            # along the shells the gradient part of the load counts: the slope is <J x B, u> plus the targets' work
+            # along the shells the gradient part of the load counts: the slope is <J x H, u> plus the targets' work
             # c . g_p and d . g, less the energy's own rate (B, T d) along the slips, not <F, u>
             u, a, newton_it, c_h, c, d, dB_slip = target_direction(
                 seq, B, JxB_dual, w.a, harmonic, self.shells, self.slips, self.newton_penalty, self.newton_tol,
@@ -310,16 +312,15 @@ class TimeStepper(eqx.Module):
         norm of the harmonic part of the force, a part of ``F``, and ``c_h`` the norm of the harmonic displacement
         ``dt c h`` the step took.
 
-        The substeps run in one loop whose first pass also sets the step: its increment ``curl(u x B_n)`` gives
-        ``dt`` and the number of substeps. So the mass solve of ``u x B`` is compiled once."""
+        The substeps run in one loop whose first pass also sets the step: its increment ``curl Pi_1(u x H_n)`` gives
+        ``dt`` and the number of substeps. So the mass solves of ``H`` and ``u x H`` are compiled once."""
         w = state.warm
         d = self._direction(state.B_n, w)
         odd = self.seq.odd
 
         def substep(c):
             k, B, E, E0, dt, dt_star, n = c
-            E = odd.M[1].solve(odd.cross_product_load_values(d.u_jk, odd.evaluate_at_quadrature(B, 2), 1, 2, 2),
-                               guess=E)
+            E = electric_field(d.u_jk, B, self.seq, guess=E)
             # the topological curl: div B is conserved exactly, no mass solve
             dB = odd.G[1] @ E
             first = k == 0

@@ -7,8 +7,8 @@ The velocity of a step is then
     u = curl a + sum_k c_k xi_k,        div xi_k ~ phi_k(s) - <phi_k>,
 
 with ``phi_k`` the splines of the profile space (:func:`profile_basis`) and ``s`` the flux label of the field
-(:mod:`mrx.flux_label`). The profile space is its own: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints
-are uniform in ``sqrt(s)``. It does not refer to the mesh, which has only to resolve it. A spline in ``s`` is a smooth
+(:mod:`mrx.flux_label`). The profile space: cubic B-splines in ``s`` on ``cells`` cells whose breakpoints are
+uniform in ``sqrt(s)``, half as many as the mesh's radial cells (:func:`profile_cells`), with the measure ``ds``. A spline in ``s`` is a smooth
 function in space next to the magnetic axis, where ``s`` goes as the squared distance, so every profile of the space
 is regular there, ``p = p0 + p1 s + ...``. A spline in ``sqrt(s)`` would be a cone at the axis.
 
@@ -37,10 +37,10 @@ pressure cannot move a fixed wall. The pressure's constant, which no move change
 (:func:`pressure_error`): with it all ``K`` moments of ``p - p*`` vanish at an equilibrium.
 
 The target is a profile ``p*(s)`` (mu0 p in T^2, from the geometry file or a VMEC input namelist,
-:func:`load_target`), made constant across seeded island chains (:func:`plateau_intervals`, :func:`flattened`). A
+:func:`load_target`), evaluated at the labels of the quadrature points. An island chain wider than the label's
+flattening width is one level set of the label, so the target has one value on it. A
 profile that an outer loop sets from the field, such as a fit of pressure data (``scripts/pressure_fit.py``), takes
-its place between chunks (:func:`mrx.relaxation.loop.relax`). The labels of points in space on a field are
-:func:`point_labels`, after :func:`logical_points` once.
+its place between chunks (:func:`mrx.relaxation.loop.relax`).
 """
 
 import equinox as eqx
@@ -48,8 +48,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from mrx.differential_forms import DiscreteFunction
-from mrx.flux_label import enclosed_flux, enclosed_flux_map, flux_label
+from mrx.flux_label import enclosed_flux, flux_label
 from mrx.operators import _hodge_split
 from mrx.precision import to_working
 from mrx.relaxation.newton import atom_profiles, parallel_penalty_profile, second_variation
@@ -58,8 +57,6 @@ from mrx.spline_bases import SplineBasis, knot_vector
 
 #: The degree of the splines of the profile space (:func:`profile_basis`).
 PROFILE_DEGREE = 3
-#: The default number of cells of the profile space.
-PROFILE_CELLS = 16
 #: The number of bins uniform in ``sqrt(s)`` on which :func:`pressure_error` compares the pressure with its target.
 ERROR_BINS = 48
 
@@ -79,9 +76,20 @@ def label(seq, B, anisotropy, guess=None, tol=LABEL_TOL):
     return enclosed_flux(seq, T, B_jk), T, info
 
 
+def profile_cells(seq):
+    """The number of cells of the profile space on ``seq``: half its radial cells. The breakpoints
+    ``s_k = (k / cells)^2`` (:func:`profile_knots`) are then every second radial knot ``r_k`` carried into the label
+    by ``s = r^2``, the label of the nested-surface map a mesh is built from: every profile cell spans two radial
+    cells, and the profile space refines with the mesh. On W7-X standard (24,48,28) p = 2, 11 cells reach the
+    residual bar at step 59 as 16 did, with the traced transform's ripple next to the axis 4.1e-3 against 5.6e-3, and
+    (32,64,36) with 15 cells 3.1e-3 against 3.9e-3. Breakpoints uniform in ``s`` (16 cells) made the outermost cells
+    narrower than the radial cells and never reached the bar (2026-11-23)."""
+    return (seq.basis_0.Lambda[0].n - seq.p) // 2
+
+
 def profile_knots(n):
-    """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` whose
-    breakpoints are uniform in ``sqrt(s)``, ``s_i = (i / cells)^2``. A float64 numpy array."""
+    """The knot vector of the ``n`` splines of the profile space: cubic, clamped, on ``n - 3`` cells of ``s`` with the
+    breakpoints ``s_k = (k / cells)^2``, uniform in ``sqrt(s)`` (:func:`profile_cells`). A float64 numpy array."""
     cells = n - PROFILE_DEGREE
     return knot_vector((np.arange(cells + 1) / cells) ** 2, PROFILE_DEGREE, False)
 
@@ -159,15 +167,15 @@ def _shell_parts(seq, B, Xi, p_q, kappa, mass_tol):
     return g_p, 0.5 * (D + D.T)
 
 
-def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
+def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=None):
     """``(shells, info)``: the :class:`Shells` at the field ``B``, with the flux label ``s_q`` and the target ``p_q``
     (mu0 p) at the quadrature points, the penalty ``kappa`` and mass-solve tolerance of the Newton operator, on the
-    profile space of ``cells`` cells, and the signed counts of the ``K - 1`` Poisson solves of
+    profile space of ``cells`` cells (:func:`profile_cells` of ``seq`` unless given), and the signed counts of the ``K - 1`` Poisson solves of
     :func:`shell_gradients`. Those solves are most of the cost, 200 to 420 conjugate gradients each, then one
     Hessian apply per shell for the block. The pressure part is ``int p* div xi_k dV``, the target's work along
     ``xi_k``."""
     even = seq.even
-    K = cells + PROFILE_DEGREE
+    K = (profile_cells(seq) if cells is None else cells) + PROFILE_DEGREE
     Q = jnp.asarray(np.linalg.qr(np.eye(K) - 1.0 / K)[0][:, :K - 1])
     m = even._scalar_load_values(jnp.ones_like(s_q), 3)          # the integrals of the basis functions
     e = even.M[3].solve(m)
@@ -178,82 +186,17 @@ def build_shells(seq, B, s_q, p_q, kappa, mass_tol, cells=PROFILE_CELLS):
     return Shells(Xi, g_p, jnp.asarray(np.linalg.inv(np.asarray(D, dtype=np.float64)))), info
 
 
-def plateau_intervals(rows, margin=1.0):
-    """The intervals of ``s`` that seeded island chains occupy, from the seeding's estimate (the rows of
-    :func:`mrx.relaxation.seeding.energy_seed`: the resonant surface ``x = sqrt(s)`` and the estimated full width
-    ``w`` in ``x``): ``sqrt(s)`` in ``x +- margin w / 2``, overlapping intervals merged. Ideal moves keep the toroidal
-    flux of every surface, so the intervals stay where the chains are."""
-    iv = sorted((max(row["x"] - 0.5 * margin * row["w"], 0.0) ** 2, min(row["x"] + 0.5 * margin * row["w"], 1.0) ** 2)
-                for row in rows)
-    merged = []
-    for lo, hi in iv:
-        if merged and lo <= merged[-1][1]:
-            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
-        else:
-            merged.append((lo, hi))
-    return merged
-
-
-def flattened(profile, intervals):
-    """The profile ``profile(s)`` made constant on each interval of ``s``: ``profile(sigma(s))`` with ``sigma`` the
-    label that counts only the flux outside the intervals. The values at the axis and the wall stay, the profile is
-    constant and continuous across each interval, and the rest of it gets steeper. The two branches of an island's
-    separatrix are one surface with one pressure, so a target that falls across an island cannot be met: the
-    relaxation then keeps a pressure that varies along the island's field lines and a residual that does not fall."""
-    s = np.linspace(0.0, 1.0, 4001)
-    inside = sum(np.clip(s, lo, hi) - lo for lo, hi in intervals)
-    total = sum(hi - lo for lo, hi in intervals)
-    values = jnp.asarray(profile(jnp.asarray((s - inside) / (1.0 - total))))
-    s = jnp.asarray(s)
-    return lambda x: jnp.interp(x, s, values)
-
-
-def logical_points(seq, X, newton_steps=8):
-    """``(x, miss)``: the logical points of the physical points ``X`` (Cartesian, ``(n, 3)``) and the distance
-    ``|Phi(x) - X|`` left. The nearest point of a coarse logical grid, then Newton in the chart ``(r cos 2 pi theta,
-    r sin 2 pi theta, zeta)``, which is smooth at the axis."""
-    def chart(p):
-        return jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2.0 * jnp.pi) % 1.0, p[2]])
-
-    r, t, z = np.meshgrid(np.linspace(0.02, 1.0, 25), np.linspace(0.0, 1.0, 64, endpoint=False),
-                          np.linspace(0.0, 1.0, 32, endpoint=False), indexing="ij")
-    grid = jnp.asarray(np.stack([r.ravel(), t.ravel(), z.ravel()], axis=1))
-    G = jax.lax.map(seq.map, grid, batch_size=4096)
-    X = jnp.asarray(X)
-    x0 = grid[jnp.argmin(jnp.sum((X[:, None, :] - G[None, :, :]) ** 2, axis=2), axis=1)]
-
-    def invert(x, Xi):
-        p = jnp.stack([x[0] * jnp.cos(2.0 * jnp.pi * x[1]), x[0] * jnp.sin(2.0 * jnp.pi * x[1]), x[2]])
-        for _ in range(newton_steps):
-            p = p - jnp.linalg.solve(jax.jacfwd(lambda q: seq.map(chart(q)))(p), seq.map(chart(p)) - Xi)
-        y = chart(p)
-        return y, jnp.linalg.norm(seq.map(y) - Xi)
-    return jax.vmap(invert)(x0, X)
-
-
-def point_labels(seq, B, T, x):
-    """The flux labels ``s`` at the logical points ``x`` (``(n, 3)``, from :func:`logical_points`) for the field
-    ``B`` with the label temperature ``T`` (:func:`label`): the toroidal flux fraction inside the level set of ``T``
-    through each point. The points stay, the labels move with the surfaces."""
-    B_jk = seq.odd.evaluate_at_quadrature(B, 2)
-    T_x = jax.vmap(DiscreteFunction(T, seq.basis_0, seq.even.E(0)))(x)[:, 0]
-    return enclosed_flux_map(seq, T, B_jk)(T_x)
-
-
 def load_target(seq, spec, scale=1.0):
     """The target profile ``p*(s)`` of ``spec``, mu0 p in T^2 as a function of the normalised toroidal flux times
     ``scale``: ``"file"`` (the geometry file's pressure) or a VMEC input namelist (its pressure profile,
-    :meth:`mrx.equilibria.indata.Indata.pressure`). The constant of a profile is removed so that it vanishes on the wall
-    (a uniform pressure does no work on a fixed wall)."""
+    :meth:`mrx.equilibria.indata.Indata.pressure`), evaluated at the labels it is given. The constant of a profile is
+    removed so that it vanishes on the wall (a uniform pressure does no work on a fixed wall)."""
     from mrx.equilibria.indata import read_indata
-    s = np.linspace(0.0, 1.0, 2001)
     if spec == "file":
         p_r = seq.equilibrium["profiles"]["pressure"]               # Pa, a function of r = sqrt(s)
-        values = jnp.asarray(scale * 4e-7 * np.pi * (p_r(np.sqrt(s)) - float(p_r(1.0))))
-    else:
-        indata = read_indata(spec)                                  # mu0 p in T^2
-        values = jnp.asarray(scale * (indata.pressure(s) - indata.pressure(1.0)))
-    return lambda x: jnp.interp(x, jnp.asarray(s), values)
+        return lambda s: jnp.asarray(scale * 4e-7 * np.pi * (p_r(np.sqrt(np.asarray(s))) - float(p_r(1.0))))
+    indata = read_indata(spec)                                      # mu0 p in T^2
+    return lambda s: jnp.asarray(scale * (indata.pressure(np.asarray(s)) - indata.pressure(1.0)))
 
 
 def target_beta(seq, B, p_q):

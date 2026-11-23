@@ -62,18 +62,22 @@ class SequenceGeometry(eqx.Module):
 #: ``"none"``: ``zeta`` in ``[0, 1]`` is the whole torus and ``nfp = 1``.
 SYMMETRIES = ("stellarator", "field-period", "none")
 
+#: The toroidal coordinates of :func:`build_sequence`.
+ZETAS = ("axis-normal", "phi", "harmonic")
+
 
 def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=None,
                    symmetry="stellarator", graded=False, mass_atom="slab", laplacian_atom="lumping",
-                   quad_points=None, map_theta=None, zeta="phi"):
+                   quad_points=None, map_theta=None, zeta="axis-normal"):
     """Build the de Rham sequence of the geometry file ``geometry`` and return it.
 
     The sequence has its map installed and its preconditioners built (``seq.operators``). The
     harmonic forms are not computed here. Call :func:`mrx.nullspace.compute_nullspaces` next if you need
     them. The parsed file is kept as ``seq.equilibrium`` (the output of
-    :func:`mrx.equilibria.read_equilibrium`). The map is a :class:`mrx.equilibria.FrameMap` in the frame the file
-    supplies: GVEC's G-frame for a GVEC state that has one, else the cylindrical frame, whose cross-sections are the
-    planes ``phi = const``.
+    :func:`mrx.equilibria.read_equilibrium`). The map is a :class:`mrx.equilibria.FrameMap`. By default (``zeta``) its
+    cross-sections are the planes normal to its axis, in the frame of the axis. With ``zeta="phi"`` it is in the frame
+    the file supplies: GVEC's G-frame for a GVEC state that has one, else the cylindrical frame, whose cross-sections
+    are the planes ``phi = const``.
 
     Args:
         ns: ``(n_r, n_theta, n_zeta)``, the number of splines per axis, also used for the map. An axis
@@ -100,13 +104,20 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
             by the field spaces, not by the map.
         laplacian_atom: the atoms alone, or with the multigrid of the co-closed 2-form solves, one of
             :data:`mrx.operators.LAPLACIAN_ATOMS`.
-        zeta: the toroidal coordinate, ``"phi"`` for the file's sections or ``"harmonic"`` for the level sets of the
-            vacuum field's potential (:func:`mrx.relaxation.mesh_motion.harmonic_build`). The map is moved there with
+        zeta: the toroidal coordinate. ``"axis-normal"``: the surfaces ``zeta = const`` are the planes normal to the
+            axis of the file's map, in the frame of that axis, each point slid along its surface ``r = const``
+            (:func:`mrx.relaxation.mesh_motion.axis_normal_map`). The record of the cut is ``seq.equilibrium
+            ["axis_normal"]``, and the shift of ``zeta`` that carries the file's field (see
+            :mod:`mrx.relaxation.initial_conditions`) is ``seq.equilibrium["zeta_shift"]``. ``"phi"``: the file's
+            own sections. ``"harmonic"``: the level sets of the vacuum field's potential
+            (:func:`mrx.relaxation.mesh_motion.harmonic_build`), from the file's sections. The map is moved there with
             the 0-form preconditioners alone, and all of them are built once, on the final map.
     """
     from mrx.derham_sequence import AXIS_TYPES, DeRhamSequence      # both import this module
-    from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium
+    from mrx.equilibria import build_map, is_stellarator_symmetric, read_equilibrium, state_position
 
+    if zeta not in ZETAS:
+        raise ValueError(f"zeta={zeta!r} is not one of {ZETAS}")
     t0 = time.perf_counter()
     eq = read_equilibrium(geometry)
     nfp = eq["nfp"] if nfp is None else int(nfp)
@@ -128,9 +139,23 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         (ns[0], m, ns[2]), p, nfp=nfp, symmetry=symmetry, knots=Ts, equilibrium=eq, tol=tol, maxiter=maxiter,
         quad_points=quad_points)
     # on a half-period sequence the map is projected onto the symmetry (see mrx.symmetry)
-    Phi, info = build_map(eq, map_seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
+    if zeta == "axis-normal":
+        # the file's own map is cut, not its spline: the cut of a spline is only C1 where a line crosses its knots
+        from mrx.relaxation.mesh_motion import axis_normal_map      # imports this module
+        position = state_position(eq)
+        Phi, shift, cut = axis_normal_map(map_seq, lambda x: position(x.at[2].multiply(eq["nfp"] / seq.nfp)))
+        eq["axis_normal"] = cut
+        info = dict(nfp=seq.nfp, det_range=cut["det_range"], symmetry_defect=cut["symmetry_defect"])
+        print(f"[geom] sections normal to the axis: tilt at the axis {cut['tilt_before']:.2f} -> "
+              f"{cut['tilt_after']:.1e} deg, shift up to {cut['shift_max']:.3f} periods, {cut['frame_modes']} frame "
+              f"modes (curve fit {cut['curve_rms']:.1e}), plane miss {cut['plane_miss']:.1e}, "
+              f"{cut['seconds']:.1f} s", flush=True)
+    else:
+        Phi, info = build_map(eq, map_seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
     if m != ns[1]:
         Phi = _prolong_map(Phi, seq, m)
+    if zeta == "axis-normal":
+        eq["zeta_shift"] = _prolonged(shift, seq, m)
     defect = f"defect {info['symmetry_defect']:.1e}"
     note = (f"map projected, {defect}, half-period quadrature" if seq.half_period
             else f"{defect}, not exploited: non-uniform angular knots" if symmetry == "stellarator"
@@ -150,14 +175,17 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
     return seq
 
 
-def _prolong_map(Phi, seq, m):
-    """The map ``Phi`` of the tensor basis with ``m`` theta cells written in the basis of ``seq`` (``n_theta = m 2^l``
-    cells) by dyadic knot insertion along theta, which represents the same function exactly."""
-    import dataclasses
+def _prolonged(raw, seq, m):
+    """The tensor coefficients ``raw`` of a scalar of the basis with ``m`` theta cells written in the basis of ``seq``
+    (``n_theta = m 2^l`` cells) by dyadic knot insertion along theta, which represents the same function exactly."""
     import jax.numpy as jnp
-    R = jnp.asarray(prolongation(m, seq.ns[1], seq.p, False))
+    if m == seq.ns[1]:
+        return raw
+    return jnp.einsum("jJ,...aJl->...ajl", jnp.asarray(prolongation(m, seq.ns[1], seq.p, False)), raw)
 
-    def lift(raw):
-        return jnp.einsum("jJ,...aJl->...ajl", R, raw)
-    return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], raw_X1=lift(Phi.raw_X1), raw_X2=lift(Phi.raw_X2),
-                               raw_X3=lift(Phi.raw_X3))
+
+def _prolong_map(Phi, seq, m):
+    """The map ``Phi`` of the tensor basis with ``m`` theta cells written in the basis of ``seq`` (:func:`_prolonged`)."""
+    import dataclasses
+    return dataclasses.replace(Phi, basis=seq.basis_0.bases[0], raw_X1=_prolonged(Phi.raw_X1, seq, m),
+                               raw_X2=_prolonged(Phi.raw_X2, seq, m), raw_X3=_prolonged(Phi.raw_X3, seq, m))
