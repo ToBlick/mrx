@@ -102,8 +102,8 @@ def energy_seed(seq, B, iotas=None, amplitudes=None, scale=1.0, verbose=True, T=
         if verbose:
             print(f"[seed] flux label CG {int(info)}", flush=True)
     s_q = enclosed_flux(seq, T, odd.evaluate_at_quadrature(B, 2))
-    iota_s = iota_fit(seq, B, s_q, 6)                         # per full turn, a polynomial in s
-    diota_s = iota_s.deriv()
+    iota_s = iota_fit(seq, B, s_q)                            # per full turn, a spline in s
+    diota_s = iota_s.derivative()
     rr = np.linspace(1e-3, 1.0, 40001)                        # x = sqrt(s)
     iota_rr = np.abs(iota_s(rr ** 2))
 

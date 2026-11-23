@@ -39,7 +39,7 @@ The step is taken before every chunk of Newton steps. The chunk then runs with t
   :func:`current_error` the current's error against them.
 - :func:`iota_residual` is the weak residual of a target transform on the profile space, :func:`slip_transform`
   its change along the slips and :func:`iota_newton` the outer Newton step with them.
-- :func:`iota_fit` is the transform as a polynomial in ``s`` fitted to its weak moments, and
+- :func:`iota_fit` is the transform as a spline in ``s``, the L2 projection of its weak moments, and
   :func:`enclosed_current` the current inside the label's level sets.
 - :func:`load_iota_target` reads a transform from a wout or a VMEC input namelist with ``NCURR = 0``,
   :func:`load_current_target` a current from a namelist with ``NCURR = 1``.
@@ -95,26 +95,29 @@ def _axis_angle_gradient(seq, B):
     return d_r, d_t, d_z
 
 
-def iota_fit(seq, B, s_q, degree, n_mu=None):
-    """The transform per full turn as a polynomial of ``degree`` in the label ``s``: the one whose weak residual
-    (:func:`iota_residual`) on the ``n_mu`` derivative splines of the profile space (of :func:`profile_cells` of
-    ``seq`` unless given) is least in the mean square,
-
-        min_c sum_j (int M_j(s) (nfp B . grad theta_a - sum_i c_i s^i B . grad zeta) dV)^2,
-
-    ``theta_a`` the angle about the magnetic axis of ``B`` (:func:`_axis_angle_gradient`). Both terms are moments of
-    the field against functions of the label, so the fit does not depend on how points of one level set are ordered,
-    and it needs no sorting and no differentiation of sampled fluxes."""
-    Bq = np.asarray(seq.odd.evaluate_at_quadrature(B, 2), dtype=np.float64)
-    d_r, d_t, d_z = _axis_angle_gradient(seq, B)
-    dens = Bq[:, 0] * d_r + Bq[:, 1] * d_t + Bq[:, 2] * d_z
-    s = np.asarray(s_q, dtype=np.float64)
-    w = np.asarray(seq.quad.w, dtype=np.float64)
+def iota_fit(seq, B, s_q, n_mu=None):
+    """The transform per full turn of ``B`` as a spline in the label ``s`` (``s_q`` at the quadrature points), with the
+    sign of the field's transform: the L2 projection in ``s`` onto the ``n_mu`` derivative splines ``M_j`` of the
+    profile space (of :func:`~mrx.relaxation.shells.profile_cells` of ``seq`` unless given), the space the iota loop
+    controls, from the weak moments ``int M_j iota ds``, the weak residual of the zero target (:func:`iota_residual`).
+    The moments are moments of the field against functions of the label: no sorting of points, no differentiation of
+    sampled fluxes, and one coefficient per spline, no free degree. A ``scipy.interpolate.BSpline`` of degree
+    :data:`~mrx.relaxation.shells.PROFILE_DEGREE` ``- 1``, whose ``derivative()`` is ``d iota / ds``."""
+    from scipy.interpolate import BSpline
     n_mu = profile_cells(seq) + PROFILE_DEGREE - 1 if n_mu is None else n_mu
-    M = np.asarray(basis_table(_derivatives(n_mu), jnp.asarray(s)), dtype=np.float64)       # (n_mu, n_q)
-    rhs = M @ (seq.nfp * w * dens)
-    A = M @ ((w * Bq[:, 2])[:, None] * s[:, None] ** np.arange(degree + 1))
-    return np.polynomial.Polynomial(np.linalg.lstsq(A, rhs, rcond=None)[0])
+    r = np.asarray(iota_residual(seq, B, s_q, np.zeros_like, n_mu)(B)[0], dtype=np.float64)
+    d = _derivatives(n_mu)
+    T = np.asarray(d.T, dtype=np.float64)
+    # the Gram matrix int M_i M_j ds, exact by Gauss-Legendre with p + 1 points on every cell of the knots
+    knots = np.unique(T)
+    g, wg = np.polynomial.legendre.leggauss(d.p + 1)
+    h = np.diff(knots)
+    x = (knots[:-1, None] + 0.5 * h[:, None] * (g[None, :] + 1.0)).ravel()
+    w = (0.5 * h[:, None] * wg[None, :]).ravel()
+    M = np.asarray(basis_table(d, jnp.asarray(x)), dtype=np.float64)
+    c = np.linalg.solve((M * w) @ M.T, r)
+    scale = (d.p + 1) / (T[d.p + 1:d.p + 1 + d.n] - T[:d.n])      # M_j is the B-spline N_j times this
+    return BSpline(T, c * scale, d.p)
 
 
 def enclosed_current(seq, B, s_q, edges):
