@@ -33,7 +33,7 @@ file of its own, and no test runs `scripts/relax.py`.
 | `test_shells.py` | a shell velocity is a gradient with its divergence, its row is the derivative of the energy less the target pressure's work |
 | `test_twist.py` | the slips are divergence-free without a `zeta` part, the energy along them is quadratic with a positive block, the moments are the weak current's, and one slip update zeroes the weak iota residual of the exact transform |
 | `test_mesh_motion.py` | the axis finder finds the exact axis on the pole, the transfer by the induction returns there and back to its time error, one move puts the pole on the axis, and on shearedE the cut by the planes normal to the axis keeps the surfaces and carries the field |
-| `test_pipeline.py` | the nested-surface solve finds the exact axis, and the whole pipeline from a namelist ends at the exact equilibrium (skipped until the target ramp from the vacuum exists) |
+| `test_pipeline.py` | the whole pipeline from a namelist, with the pole on the start field's axis, ends at the exact equilibrium |
 
 The fixtures of `test/conftest.py`: the Solov'ev tokamak of `test/solovev.py`,
 an exact axisymmetric equilibrium written as a wout and a namelist, on one

@@ -34,10 +34,7 @@ mean of the transform's miss, the weak residual, is below :data:`mrx.relaxation.
 value.
 
 With ``--mesh.align`` the pole of the mesh stays on the magnetic axis (:mod:`mrx.relaxation.mesh_motion`). A run from
-the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with ``--mesh.nested`` onto the
-finite-beta axis of the namelist's nested-surface solve (:mod:`mrx.equilibria.nested_axis`), or with
-``--mesh.axis-from`` onto the magnetic axis of a coarser run's equilibrium, with the vacuum solved on it. With
-``--mesh.axis-to`` the run is that coarse pass: it ends once its magnetic axis has settled and writes it. Then the
+the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis, with the vacuum solved on it. Then the
 pole moves only at a chunk boundary where the field is at an equilibrium (its squared force residual below
 ``--mesh.bar``) and its axis is more than ``--mesh.move-tol`` first radial cells off the pole. The field is carried
 onto the moved map by the relaxation's induction (:func:`mrx.relaxation.mesh_motion.transfer`). A move happens before
@@ -68,7 +65,6 @@ Output (in ``--output.out``):
                                  checkpoint also holds its map (:func:`mrx.relaxation.mesh_motion.write_map`), which a
                                  restart and ``scripts/poincare_trace.py`` install, and ``moved_<step>.h5`` holds the
                                  field right after a move of the axis, on the moved map.
-    nested_axis.npz              With ``--mesh.nested``: the axis of the nested-surface solve and its record.
 """
 from __future__ import annotations
 
@@ -178,33 +174,17 @@ def main(cfg, fit=None):
                 print(f"[restart] the iota loop's current target, near the wall {iota_target[-1]:+.4e} T m", flush=True)
     else:
         t1 = time.perf_counter()
-        if (cfg.mesh.nested or cfg.mesh.axis_from) and seq.equilibrium["kind"] != "indata":
-            raise ValueError("--mesh.nested and --mesh.axis-from start from the vacuum field of a VMEC input namelist")
         if cfg.mesh and seq.equilibrium["kind"] == "indata":
-            # the first move needs no transport: the pole goes onto the vacuum's axis, onto the nested solve's axis or
-            # onto the axis of a coarser run's equilibrium, and the vacuum is solved there
+            # the first move needs no transport: the pole goes onto the vacuum's axis, and the vacuum is solved there
             recut = g.zeta == "axis-normal"
-            axis_from = cfg.mesh.axis_from
-            if cfg.mesh.nested:
-                from mrx.equilibria import nested_axis
-                Phi_n, rec_n = nested_axis.solve(data_file(g.path))
-                zetas, points = nested_axis.axis_points(Phi_n)
-                axis_from = os.path.join(out, "nested_axis.npz")
-                np.savez(axis_from, zetas=zetas, points=points, record=json.dumps(rec_n))
-                results["mesh"]["nested"] = rec_n
-            if axis_from:
-                with np.load(axis_from) as z:
-                    start = mesh_motion.curve_start(seq, z["zetas"], z["points"], recut)
-            else:
-                start = mesh_motion.vacuum_start(seq, lambda sq: start_field(sq)[0], recut)
+            start = mesh_motion.vacuum_start(seq, lambda sq: start_field(sq)[0], recut)
             results["mesh"]["start"] = start
             # the vacuum on the moved map is no equilibrium of the targets: the pressure's rise moves its axis by the
             # Shafranov shift, as a move would. The iota loop holds the start's current until the field is first
             # below the bar
             schedule["hold"] = True
             ts = cfg.stepper(seq)
-            onto = f"the curve of {axis_from}" if axis_from else "the vacuum's axis"
-            print(f"[mesh] start: the pole onto {onto} in {len(start['rounds'])} rounds, axis "
+            print(f"[mesh] start: the pole onto the vacuum's axis in {len(start['rounds'])} rounds, axis "
                   + " -> ".join(f"{r['axis_cells']:.3g}" for r in start["rounds"]) + " first cells (moves "
                   + ", ".join(f"{r['move_m']:.2e} m x{r['lam']:g}" for r in start["rounds"])
                   + f"), {start['axis_cells']:.2e} cells on the final map, {start['seconds']:.0f} s", flush=True)
@@ -496,24 +476,6 @@ def main(cfg, fit=None):
                          best_step=int(res.state.best.step), best_resid=float(res.state.best.resid),
                          **last))
         write()
-        if mm and mm.axis_to and res.stop == "running":
-            return axis_settled(res.state, it)
-
-    def axis_settled(state, it):
-        """With --mesh.axis-to: the end of the run once the magnetic axis moved by less than --mesh.axis-tol first
-        cells over the chunk, with the axis written to --mesh.axis-to."""
-        y, h1 = mesh_motion.axis_sections(seq, mesh_motion.magnetic_axis(seq, state.B_n)[0])
-        moved_cells = float(np.max(np.linalg.norm(y - axis_last["y"], axis=1))) / h1 if "y" in axis_last else np.inf
-        axis_last["y"] = y
-        results["mesh"].setdefault("axis_moved", []).append(dict(step=it, cells=moved_cells))
-        print(f"[mesh] step {it}: the magnetic axis moved {moved_cells:.3e} first cells over the chunk", flush=True)
-        if not moved_cells < mm.axis_tol:
-            return None
-        zetas, points = mesh_motion.axis_curve(seq, state.B_n)
-        np.savez(mm.axis_to, zetas=zetas, points=points, step=it)
-        print(f"[mesh] step {it}: the axis has settled, written to {mm.axis_to}", flush=True)
-        return "axis"
-    axis_last = {}
 
     def write():
         with open(os.path.join(out, "relax.json"), "w") as fh:

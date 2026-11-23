@@ -18,7 +18,7 @@ from mrx.precision import eps
 from mrx.relaxation import mesh_motion as mm
 from mrx.relaxation.initial_conditions import _clebsch_potential, toroidal_flux
 from mrx.relaxation.physics import compute_divergence_norm
-from test.conftest import LENGTH, map_installed
+from test.conftest import LENGTH, axis_error, map_installed
 
 #: The displacement of the pole of the test map along X1, a fraction of the minor radius, about one first radial cell.
 SHIFT = 0.12
@@ -38,17 +38,22 @@ AXIS_ON_POLE = 2e-2
 AXIS_AFTER_MOVE = 4e-3
 
 
+def _chart(p, z):
+    """The logical point of the chart point ``p = (r cos 2 pi theta, r sin 2 pi theta)`` on the surface ``zeta = z``."""
+    return jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2.0 * jnp.pi) % 1.0, z])
+
+
 def _locate(Phi, X, x, steps=10):
     """``(x', miss)``: the logical points ``x'`` with ``Phi(x') = X`` (Cartesian, ``(n, 3)``) and ``|Phi(x') - X|``,
     by Newton from the logical points ``x`` in the chart ``(r cos 2 pi theta, r sin 2 pi theta, zeta)``, which is
     smooth at the axis. ``zeta`` of ``x'`` may leave ``[0, 1)`` by the move of a point out of its section."""
     def one(xq, Xq):
-        F = lambda p: mm.extended(Phi, mm._chart(p[:2], p[2])) - Xq   # noqa: E731
+        F = lambda p: mm.extended(Phi, _chart(p[:2], p[2])) - Xq   # noqa: E731
         t = 2.0 * jnp.pi * xq[1]
         p = jnp.stack([xq[0] * jnp.cos(t), xq[0] * jnp.sin(t), xq[2]])
         for _ in range(steps):
             p = p - jnp.linalg.solve(jax.jacfwd(F)(p), F(p))
-        return mm._chart(p[:2], p[2]), jnp.linalg.norm(F(p))
+        return _chart(p[:2], p[2]), jnp.linalg.norm(F(p))
     return jax.jit(jax.vmap(one))(x, X)
 
 
@@ -72,9 +77,7 @@ def test_the_axis_is_the_exact_axis_on_the_pole(eq, seq, b0, minor):
     than that, and the axis curve is the exact axis ``k = 0`` within :data:`~test.conftest.LENGTH` of the minor
     radius."""
     _, rec = mm.axis_displacement(seq, b0)
-    zetas, points = mm.axis_curve(seq, b0)
-    # the exact axis in the plane of each point's own azimuth: the cut map's zeta is not the azimuth
-    off = float(np.max(np.linalg.norm(points - eq.axis(np.arctan2(points[:, 1], points[:, 0])), axis=1))) / minor
+    off = axis_error(eq, seq, b0, minor)
     print(f"\n  axis {rec['axis_cells']:.2e} first cells off the pole ({rec['axis']['newton']} Newton steps), largest "
           f"move {rec['move_m']:.2e} m, first cell {rec['h1_m']:.2e} m, {off:.2e} of the minor radius off the exact axis")
     assert rec["axis_cells"] < AXIS_ON_POLE

@@ -231,21 +231,13 @@ class Current:
 class Mesh:
     """Motion of the mesh's axis onto the magnetic axis (mrx.relaxation.mesh_motion). The physical field and the targets stay, only the map moves."""
     align: bool = False
-    """Keep the pole of the mesh on the magnetic axis: a run from the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis (mrx.relaxation.mesh_motion.vacuum_start), or onto the axis of --mesh.nested or --mesh.axis-from, and at a chunk boundary where the field is at an equilibrium (its squared force residual below --mesh.bar) and its magnetic axis more than --mesh.move-tol first radial cells off the pole, the pole moves onto that axis with the field carried onto the moved map (mrx.relaxation.mesh_motion.axis_move). The moves keep the preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve exceeds --mesh.rebuild-factor times that of the first chunk after their last build, or a Newton solve stopped at --newton.maxiter while the field is above the bar."""
+    """Keep the pole of the mesh on the magnetic axis: a run from the vacuum field of a namelist starts on a mesh moved onto the vacuum's axis (mrx.relaxation.mesh_motion.vacuum_start), and at a chunk boundary where the field is at an equilibrium (its squared force residual below --mesh.bar) and its magnetic axis more than --mesh.move-tol first radial cells off the pole, the pole moves onto that axis with the field carried onto the moved map (mrx.relaxation.mesh_motion.axis_move). The moves keep the preconditioners, which are built again on the installed map when the chunk's mean MINRES count of the Newton solve exceeds --mesh.rebuild-factor times that of the first chunk after their last build, or a Newton solve stopped at --newton.maxiter while the field is above the bar."""
     rebuild_factor: float = 1.5
     """The growth of the chunk's mean MINRES count over that of the first chunk after the last build of the preconditioners at which they are built again."""
     bar: float = 1e-8
     """The squared force residual below which the field is at an equilibrium: only there the pole moves. During a ramp the field's axis is not that of the equilibrium it relaxes to."""
     move_tol: float = 0.1
     """The distance of the magnetic axis from the pole, in first radial cells, above which the pole moves at an equilibrium."""
-    nested: bool = False
-    """Start a run from the vacuum field of a namelist with the pole on the finite-beta axis of the namelist's nested-surface solve (mrx.equilibria.nested_axis, its default resolution), written to nested_axis.npz in the output directory. It replaces the vacuum's axis as the start's curve, as --mesh.axis-from does with a coarser run's axis."""
-    axis_from: Optional[str] = None
-    """An npz of the magnetic axis of a coarser run's equilibrium of the same domain and targets, Cartesian points at logical zetas (mrx.relaxation.mesh_motion.axis_curve): a run from the vacuum field of a namelist starts with the pole on that curve instead of on the vacuum's axis (mrx.relaxation.mesh_motion.curve_start), so the pressure carries the field's axis onto the pole instead of off it."""
-    axis_to: Optional[str] = None
-    """Make the run the coarse pass of --mesh.axis-from: it ends at the first chunk at whose end its magnetic axis has moved by less than --mesh.axis-tol since the end of the chunk before, and writes the axis there to this npz (mrx.relaxation.mesh_motion.axis_curve)."""
-    axis_tol: float = 0.01
-    """The largest move of the magnetic axis over a chunk, in first radial cells of this mesh, at which --mesh.axis-to ends the run. 0.01 on a mesh with half the radial cells of the fine one is 0.02 of the fine mesh's first cells."""
 
     def __bool__(self):
         return self.align
@@ -300,10 +292,6 @@ class RelaxConfig:
         if self.current and self.iota:
             raise ValueError("--iota.target and --current.target both set the current: give one")
         m = self.mesh
-        if (m.nested or m.axis_from or m.axis_to) and not m.align:
-            raise ValueError("--mesh.nested, --mesh.axis-from and --mesh.axis-to need --mesh.align")
-        if m.nested and m.axis_from:
-            raise ValueError("--mesh.nested and --mesh.axis-from both give the start's axis: give one")
         if m and self.drive:
             raise ValueError("--mesh.align goes without --drive.resistivity: the reference field lives on the mesh it "
                              "was written on")

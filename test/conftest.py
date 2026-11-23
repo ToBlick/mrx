@@ -7,7 +7,7 @@ Every statement about the approximation, the variations, the flows, the controls
 the exact solution on that sequence.
 
 Statements that need a three-dimensional, non-axisymmetric domain (the de Rham complex, the cut by the planes normal
-to a non-planar axis, the nested axis of a non-planar axis, the fill of a 3D boundary) use the sequence of the
+to a non-planar axis, the fill of a 3D boundary) use the sequence of the
 exact stellarator shearedE (:mod:`test.landreman`) at :data:`SHEARED_NS`, without a relaxation.
 
 No test builds a sequence or preconditioners of its own. A statement on another map installs that map on the fixture
@@ -115,6 +115,20 @@ def field_error(eq, seq, B):
     Bh = np.asarray(jax.vmap(Pushforward(DiscreteFunction(B, seq.odd.basis_2, seq.odd.E(2)), seq.map, 2))(seq.quad.x))
     Be = eq.field(X)
     return float(np.sqrt(np.sum(w[:, None] * (Bh - Be) ** 2) / np.sum(w[:, None] * Be ** 2)))
+
+
+def axis_error(eq, seq, B, minor, samples=8):
+    """The largest distance of the magnetic axis of the 2-form ``B`` (:func:`mrx.relaxation.mesh_motion.magnetic_axis`)
+    from the exact axis, in the plane of each point's own azimuth (the cut map's ``zeta`` is not the azimuth), as a
+    fraction of the minor radius ``minor``. The axis is sampled at ``samples`` planes per spline of ``zeta``."""
+    import jax.numpy as jnp
+
+    from mrx.relaxation import mesh_motion as mm
+
+    c, _ = mm.magnetic_axis(seq, B)
+    n = samples * seq.basis_0.Lambda[2].n
+    points = np.asarray(jax.vmap(seq.map)(jnp.asarray(mm.axis_points(c, np.arange(n) / n))))
+    return float(np.max(np.linalg.norm(points - eq.axis(np.arctan2(points[:, 1], points[:, 0])), axis=1))) / minor
 
 
 def minor_radius(rows, nfp, n_v=16, n_u=256):

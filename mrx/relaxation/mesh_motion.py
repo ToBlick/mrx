@@ -30,8 +30,7 @@ current map:
 ``scripts/relax.py --mesh.align`` moves the pole at a chunk boundary where the field is at an equilibrium and its
 axis is off the pole by more than a tolerance, and builds the preconditioners again when the Newton solve says that
 those of an older map no longer fit. A run from the vacuum field of a namelist starts on a
-mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`), or on a given curve, the axis of the
-namelist's nested-surface solve or of a coarser run (:func:`curve_start`): there the mesh moves first and the vacuum field
+mesh whose pole is on the vacuum field's axis (:func:`vacuum_start`): there the mesh moves first and the vacuum field
 is solved on it, so the first move, the largest, perturbs nothing. A moved map goes into the checkpoints
 (:func:`write_map`, :func:`install_checkpoint_map`).
 
@@ -84,14 +83,6 @@ AXIS_NEWTON_STEPS, AXIS_NEWTON_TOL = 20, 1e-10
 #: 2.5e-7 (li383 (48,64,24)), 0.35 -> 3.1e-2 -> 9.5e-5 -> 2.3e-7 (W7-X (24,48,28)), 0.65 -> 9.3e-2 -> 2.4e-3 -> 5.3e-6
 #: (HSX (32,64,36)), three moves each (2026-11-19).
 HARMONIC_TOL = 1e-5
-#: The Newton steps of :func:`curve_offset`.
-NEWTON_STEPS = 10
-
-
-def _chart(p, z):
-    """The logical point of the chart point ``p = (r cos 2 pi theta, r sin 2 pi theta)`` on the surface ``zeta = z``."""
-    return jnp.stack([jnp.hypot(p[0], p[1]), jnp.arctan2(p[1], p[0]) / (2.0 * jnp.pi) % 1.0, z])
-
 
 def extended(Phi, x):
     """The map ``Phi`` at a logical point whose ``zeta`` may leave ``[0, 1)``: one field period on is the point turned
@@ -382,48 +373,6 @@ def axis_displacement(seq, B):
     return Phi, record
 
 
-def axis_curve(seq, B, samples=8):
-    """``(zetas, points)``: the magnetic axis of ``B`` (:func:`magnetic_axis`) as Cartesian points ``(K, 3)`` at the
-    logical ``zetas`` of one field period, ``samples`` per spline of ``zeta``: a curve in space, which
-    :func:`curve_start` puts the pole of another mesh of the same domain on."""
-    c, _ = magnetic_axis(seq, B)
-    zetas = np.arange(samples * seq.basis_0.Lambda[2].n) / (samples * seq.basis_0.Lambda[2].n)
-    return zetas, np.asarray(jax.vmap(seq.map)(jnp.asarray(axis_points(c, zetas))))
-
-
-def curve_offset(seq, zetas, points):
-    """``(d, h_1)`` of :func:`axis_offset` for a closed curve in space given by the Cartesian ``points`` at the
-    logical ``zetas`` of one field period (:func:`axis_curve`): on every plane of :func:`_planes` the point where the
-    curve crosses the surface ``zeta = const`` of the installed map. The curve turned back by ``2 pi zeta / nfp``
-    about the ``z`` axis is periodic, its least-squares Fourier series has a quarter as many modes as samples. The
-    crossing solves ``Phi(r, theta, zeta_k) = X(t)`` for the chart point and the curve's parameter ``t`` by Newton's
-    method from half a first radial cell off the pole and ``t = zeta_k``."""
-    Phi, planes = seq.map, _planes(seq)
-    omega = 2.0 * np.pi / seq.nfp
-    p = np.asarray(points, dtype=np.float64)
-    c, s = np.cos(-omega * zetas), np.sin(-omega * zetas)
-    turned = np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
-    modes = (len(zetas) - 1) // 4
-    a_cos, a_sin, _ = _fourier_fit(np.asarray(zetas, dtype=np.float64), turned, modes)
-    k = jnp.arange(modes + 1)
-    a_cos, a_sin = jnp.asarray(a_cos), jnp.asarray(a_sin)
-
-    def X(t):
-        a = a_cos @ jnp.cos(-2.0 * jnp.pi * k * t) + a_sin @ jnp.sin(-2.0 * jnp.pi * k * t)
-        cz, sz = jnp.cos(omega * t), jnp.sin(omega * t)
-        return jnp.array([cz * a[0] - sz * a[1], sz * a[0] + cz * a[1], a[2]])
-
-    r1 = _first_knot(seq)
-
-    def one(z):
-        F = lambda q: Phi(_chart(q[:2], z)) - X(q[2])   # noqa: E731
-        q = jnp.array([0.5 * r1, 0.0, z])
-        for _ in range(NEWTON_STEPS):
-            q = q - jnp.linalg.solve(jax.jacfwd(F)(q), F(q))
-        return Phi.section(_chart(q[:2], z)) - Phi.section(jnp.array([0.0, 0.0, z]))
-    return np.asarray(jax.jit(jax.vmap(one))(jnp.asarray(planes))), first_cell(seq, Phi, planes)
-
-
 def axis_move(seq, B):
     """Move the pole of ``seq`` onto the magnetic axis of ``B`` (:func:`axis_displacement`), carry the field onto the
     new map (:func:`transfer`), install the map with the preconditioners kept and return ``(B', record)``. The record
@@ -446,8 +395,7 @@ def _start(seq, offset, recut):
     distance falls by half or more, or the last move was halved against a fold, so a move of any size is made in
     rounds. They stop when a move is halved to nothing. The volume bound of :data:`MIN_DET_RATIO` holds against the map
     the rounds start from, for the rounds together. Per round it compounds: on li383 (24,48,24) twenty rounds towards
-    the vacuum's axis, halved from the first, left ``det DPhi`` at 2e-4 at the quadrature points (1e-2 on the move
-    onto the nested axis), the Newton solves unconverged and the run at NaN (2026-11-23). What is left of the way is
+    the vacuum's axis, halved from the first, left ``det DPhi`` at 2e-4 at the quadrature points, the Newton solves unconverged and the run at NaN (2026-11-23). What is left of the way is
     the moves' at the bar. With ``recut`` the moved map is cut again by the planes normal to its axis
     (:func:`axis_normal_map`), which the pole stays on. The final map is installed with its preconditioners and
     harmonic forms. The record holds the offset in first radial cells, the backtracking factor,
@@ -486,20 +434,6 @@ def vacuum_start(seq, vacuum, recut):
     def offset(sq):
         c, found = magnetic_axis(sq, vacuum(sq))
         return (axis_coefficients(sq, c), *axis_offset(sq, c), found)
-    return _start(seq, offset, recut)
-
-
-def curve_start(seq, zetas, points, recut):
-    """Move the pole of ``seq`` onto a closed curve in space before a run starts, and return the record of
-    :func:`_start`: the magnetic axis of the equilibrium of a coarser run of the same domain and targets
-    (:func:`axis_curve`, Cartesian ``points`` at its logical ``zetas``), crossed with the surfaces ``zeta = const``
-    of every round's map (:func:`curve_offset`). The field of the run is solved on the final map afterwards. Its
-    vacuum axis is then off the pole by the shift the pressure makes, which the relaxation carries the field's axis
-    across."""
-    def offset(sq):
-        d, h1 = curve_offset(sq, zetas, points)
-        bz = sq.basis_0.Lambda[2]
-        return np.linalg.solve(np.asarray(bz.collocation_matrix(), dtype=np.float64), d), d, h1, "curve"
     return _start(seq, offset, recut)
 
 

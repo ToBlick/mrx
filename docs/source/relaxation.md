@@ -148,7 +148,7 @@ the pair `--seed` / `--no-seed`:
 | drive | `--drive.resistivity`, `--drive.reference`, `--drive.reference-smoothing`, `--drive.chain`, `--drive.eps` |
 | pressure | `--pressure.target`, `--pressure.scale`, `--pressure.beta`, `--pressure.anisotropy`, `--pressure.label-tol`, `--pressure.cells` |
 | current | `--current.target`, `--current.scale` |
-| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol`, `--mesh.nested`, `--mesh.axis-from`, `--mesh.axis-to`, `--mesh.axis-tol` |
+| mesh | `--mesh.align`, `--mesh.rebuild-factor`, `--mesh.bar`, `--mesh.move-tol` |
 | output | `--output.out`, `--output.restart` |
 
 The `params` of `relax.json` hold the same settings as one flat dict with
@@ -495,18 +495,18 @@ the planes normal to its axis.
 
 The pressure shifts the axis away from the vacuum's, on W7-X (32,64,36) by
 four first radial cells, so with the pole on the vacuum's axis the first
-equilibrium has its axis that far off the pole. With `--mesh.nested` the
-mesh is built around the finite-beta axis of a small nested-surface solve of
-the namelist instead (`mrx.equilibria.nested_axis`, on (6,12,10) cubic
-splines, 2.5 minutes on one H200, 0.5 mm from the axis of a coarse MRX run
-on W7-X): the pole goes onto that curve in rounds, the mesh is cut by the
-planes normal to it, and the vacuum is solved there
-(`mrx.relaxation.mesh_motion.curve_start`). The vacuum's axis is then off the
-pole, and the pressure carries the field's axis onto it. `--mesh.axis-from`
-takes the curve from an npz instead, the Cartesian points of
-`mrx.relaxation.mesh_motion.axis_curve`. A coarser MRX run of the same domain
-and targets writes it with `--mesh.axis-to`: it ends once its axis has moved
-by less than `--mesh.axis-tol` (0.01) of its first radial cell over a chunk.
+equilibrium has its axis that far off the pole, and the moves at the bar
+carry the pole onto it.
+
+A move is halved until no cell of the moved map has lost more than half its
+volume against the map the start began from. The bound holds for the rounds
+together. Per round it compounds: on li383 (24,48,24) with the pressure and
+current of a namelist, twenty rounds towards the vacuum's axis, each halved,
+left $\det D\Phi$ at 8e-4 of its start value at the quadrature points, the
+Newton solves unconverged from step 0 and the step at zero length by step 10.
+With the bound against the start map the rounds stop 1.8 first cells off the
+vacuum's axis, the field stays below the bar from step 244 of 300, and the
+moves at steps 230 and 240 put the pole on the axis (one H200, 2026-11-23).
 
 During the pressure's rise the field's axis is not that of the equilibrium it
 relaxes to. So the pole moves only at a chunk boundary where the squared force
@@ -538,7 +538,7 @@ preconditioners are never built again. The traced transform within 63 mm of
 the axis is within 0.009 of the target, the largest weak residual 1.0e-5
 (one H200, 2026-11-21).
 
-The `mesh` record of `relax.json` holds the nested solve's record, the rounds
+The `mesh` record of `relax.json` holds the rounds
 of the start, every move (the step, the axis offset in first radial cells, the
 axis finder's record, the largest move and its backtracking factor, the range
 of the change of $\det D\Phi$, the transfer's substeps, the relative change of
@@ -574,11 +574,10 @@ directory without `MRX_DATA` ([Running on a cluster](cluster.md)).
 
 | file | content |
 |---|---|
-| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`, with `--iota.target` `iota_r_max`. `iota`: the target, the centres `x` of the moments, `rebuilds` before every chunk at which the loop steps (`r`, the weak residual, `r_max`, `r_rms`, `mu` and `lam`, the field's moments and the new target, `delta`, `r_eq`, `minres`), `held` (the boundaries at which the target was held after a move), `end` (the weak residual at the end) and `seed_step`. `mesh`, with `--mesh.align`: `start` (the rounds of the first move), `nested` (with `--mesh.nested`), `moves` and `checks` (the chunk boundaries with and without a move), `chunks` and `builds` (the preconditioners). The stop reason `axis` ends a run of `--mesh.axis-to`. |
+| `relax.json` | `params`: the configuration, flat, plus `geometry_path`, `ic`, `resolution`, `nfp`, `h_r_sq`, `start_step`. `ic`: the initial field's numbers. `iota`, `seed`, `drive`: when used. `pressure`: the target and `rebuilds`, before every chunk and at the end of the run: `step`, `label_it`, `error` and `constant` (the pressure's error against the target and its constant $C$ over the target's maximum), `beta` (the target's), `scale` (its factor, with `--pressure.beta`) and, before every chunk, `shell_it` (the signed counts of the shells' Poisson solves), with `scripts/pressure_fit.py` also `fit`, the posterior. `current`: the target, the centres `x` (in $\sqrt{s}$) of the splines of the profile space and the target's moments `target_moments` ($\mu_0 I$ in T m), and `rebuilds`, before every chunk and at the end: `step`, `label_it`, `error` (the current's error against the target) and the field's `moments`. `trace`, per step: `dE`, `dE_ls`, `F` (the force residual), `resid`, `dt`, `dt_star`, `cfl` (`dt cfl` cells crossed by the step), `substeps`, `div`, `cos`, `newton_it`, `res_it`, `res_moved`, with a pressure or current target also `dW`, without stellarator symmetry also `F_h` (the norm of the harmonic part of the force, a part of `F`) and `c_h` (the norm of the step's harmonic displacement). `qoi`, per chunk: `it`, `wall`, `E`, `F`, `resid`, `helicity`, `JoverB`, `JB`, `beta_vol`. `summary`: the stopping reason and `best_step`, with a target also `W_removed`, with `--pressure.target` `beta`, `pressure_error` and `pressure_constant` at the end, with `--current.target` `current_error`, with `--iota.target` `iota_r_max`. `iota`: the target, the centres `x` of the moments, `rebuilds` before every chunk at which the loop steps (`r`, the weak residual, `r_max`, `r_rms`, `mu` and `lam`, the field's moments and the new target, `delta`, `r_eq`, `minres`), `held` (the boundaries at which the target was held after a move), `end` (the weak residual at the end) and `seed_step`. `mesh`, with `--mesh.align`: `start` (the rounds of the first move), `moves` and `checks` (the chunk boundaries with and without a move), `chunks` and `builds` (the preconditioners). |
 | `checkpoints/state_<step>.h5` | the descent state at step 0 and after every chunk (`mrx.relaxation.loop.write_checkpoint`): every leaf of `State` as a dataset (`B_n`, `warm.J`, ...), the discretisation as attributes |
 | `checkpoints/best.h5` | the field of lowest residual |
 | `checkpoints/moved_<step>.h5` | with `--mesh.align`, the state right after a move of the pole, on the moved map |
-| `nested_axis.npz` | with `--mesh.nested`, the axis of the nested-surface solve (`zetas`, `points`, `record`) |
 
 Both are rewritten at every chunk, so a run cut off by its time limit
 leaves its trace and its last state. A healthy ideal run has `dE < 0` at
