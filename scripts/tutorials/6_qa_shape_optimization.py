@@ -84,7 +84,6 @@ import numpy as np
 import scipy.optimize
 from mrx.diagnostics.plotting import plot_twin_axis
 from mrx.diagnostics.plotstyle import finish_figure
-from mrx.equilibria import frame_derivatives
 from mrx.optimization.shape_ad import (BoundaryShape, flux_seed, frame_geometry, mean_iota,
                                        normal_field_fraction, quasisymmetry_residual, section_moments,
                                        vacuum_two_form)
@@ -185,8 +184,7 @@ def boundary_points(Phi, theta, zeta):
     def ev(C, A, B):
         return jnp.einsum("jp,jk,kp->p", A, C[-1], B)[:, None]
     raws = (Phi.raw_X1, Phi.raw_X2, Phi.raw_X3)
-    (a, N, B), (da, dN, dB), _ = (tuple(f[:, i] for i in range(3)) for f in jax.vmap(
-        lambda zi: frame_derivatives(Phi.frame_cos, Phi.frame_sin, Phi.frame_n, zi))(z))
+    (a, N, B), (da, dN, dB), _ = (tuple(f[:, i] for i in range(3)) for f in jax.vmap(Phi.frame_derivatives)(z))
     E, dE = (N, B, jnp.cross(N, B)), (dN, dB, jnp.cross(dN, B) + jnp.cross(N, dB))
     c = 2.0 * np.pi / nfp
     P = a + sum(ev(C, Bt, Bz) * e for C, e in zip(raws, E))

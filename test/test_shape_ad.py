@@ -34,6 +34,7 @@ def test_vacuum_field_and_its_shape_derivative(sheared):
     seq = sheared[3]
     import mrx.optimization.shape_ad as sa
     from mrx.differential_forms import DiscreteFunction, Pushforward
+    from mrx.equilibria import axis_basis, axis_quadrature, project_curve
     from mrx.geometry import SequenceGeometry
     from mrx.operators import dual_norm
     from mrx.precision import eps as round_off
@@ -65,8 +66,7 @@ def test_vacuum_field_and_its_shape_derivative(sheared):
     fd = (4 * central(FD_EPS / 2) - central(FD_EPS)) / 3
     assert abs(jax.grad(mean_iota)(x) @ d - fd) <= 1e-6 * abs(fd)
 
-    # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off. The perturbation is
-    # small enough that the map does not fold (at 1e-2 det DPhi reached -1.3), so the vacuum solve below is well posed
+    # the volume and the aspect ratio of a perturbed shape are those asked for, to round-off
     aspect = 6.0
     held = sa.BoundaryShape.from_map(seq, seq.map, aspect=aspect)
     Phi = held.map_at(seq, 3e-3 * jnp.asarray(np.random.default_rng(2).standard_normal(var_shape)))
@@ -74,14 +74,18 @@ def test_vacuum_field_and_its_shape_derivative(sheared):
     assert abs(float(V - held.volume)) <= round_off(1e3) * float(V)
     assert abs(float(seq.nfp * V / (2.0 * np.sqrt(np.pi) * S ** 1.5)) - aspect) <= round_off(1e3) * aspect
 
-    # the frame moved by one more mode, with the parity of the stellarator symmetry: the axis and N with an even x
-    # and odd y, z component, B the opposite, here 0.03 m on the axis and 0.1 on N, B (no longer orthonormal, which
-    # the formulas do not assume)
-    k = jnp.concatenate([Phi.frame_n, jnp.ones(1)])
-    cos = jnp.concatenate([Phi.frame_cos, jnp.zeros((3, 3, 1)).at[0, 0, 0].set(0.03)], -1)
-    sin = jnp.concatenate([Phi.frame_sin, jnp.zeros((3, 3, 1)).at[0, 1, 0].set(0.03).at[0, 2, 0].set(0.03)
-                           .at[1, 2, 0].set(0.1).at[2, 0, 0].set(-0.1)], -1)
-    Phi = eqx.tree_at(lambda m: (m.frame_cos, m.frame_sin, m.frame_n), Phi, (cos, sin, k))
+    # the fixture's map with its frame moved by the first harmonic in zeta, projected onto its splines, with the parity
+    # of the stellarator symmetry: the axis and N with an even x and odd y, z component, B the opposite, here 0.03 m on
+    # the axis and 0.1 on N, B (no longer orthonormal, which the formulas do not assume). The perturbed shape above
+    # folds (det DPhi down to -1.8e-2 at the quadrature points, on main as well, 2026-11-23), and the vacuum solve on
+    # it converged or not with the frame's discretisation (at 1e-2 det DPhi reached -1.3)
+    basis = axis_basis(seq.basis_0.Lambda[2])
+    z, w = axis_quadrature(basis, 2 * basis.p + 4)
+    c, s = np.cos(2 * np.pi * z), np.sin(2 * np.pi * z)
+    zero = np.zeros_like(z)
+    move = np.stack([np.stack([0.03 * c, 0.03 * s, 0.03 * s], 1), np.stack([zero, zero, 0.1 * s], 1),
+                     np.stack([-0.1 * s, zero, zero], 1)], 1)
+    Phi = seq.map.with_frame(seq.map.frame + jnp.asarray(project_curve(basis, z, w, move), dtype=seq.map.frame.dtype))
     # and the points moved out of the frame's planes, X3 = X2 / 20, odd as the toroidal angle
     Phi = Phi.with_coordinates(Phi.raw_X1, Phi.raw_X2, 0.05 * Phi.raw_X2)
     hand, ad = sa.frame_geometry(seq, Phi), SequenceGeometry.from_map(Phi, seq.quad.x)

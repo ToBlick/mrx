@@ -84,12 +84,12 @@ def _axis_angle_gradient(seq, B):
     components. Summed over the region inside a level set of the label, ``J B . grad theta_a`` is the poloidal flux
     enclosed by that surface, for any position of the logical axis. The logical ``theta`` would not do: its cut ends
     on the logical axis, so it counts no flux inside a surface that does not enclose the logical axis and misses the
-    flux between the two axes in every other. The axis and its ``zeta`` derivative come from its Fourier series at the
+    flux between the two axes in every other. The axis and its ``zeta`` derivative come from its splines at the
     quadrature planes."""
-    from mrx.relaxation.mesh_motion import _series, magnetic_axis
+    from mrx.relaxation.mesh_motion import axis_curve, magnetic_axis
     c, _ = magnetic_axis(seq, B)
-    V, dV = _series(c.shape[2] - 1, np.asarray(seq.quad.x_z, dtype=np.float64))
-    (xa, ya), (dxa, dya) = np.einsum("ckn,qkn->cq", c, V), np.einsum("ckn,qkn->cq", c, dV)
+    y, dy = axis_curve(seq, c, np.asarray(seq.quad.x_z, dtype=np.float64))
+    (xa, ya), (dxa, dya) = y.T, dy.T
     xq = np.asarray(seq.quad.x)
     r, th = xq[:, 0], 2 * np.pi * xq[:, 1]
     k = np.broadcast_to(np.arange(xa.size), seq.quad.shape).ravel()

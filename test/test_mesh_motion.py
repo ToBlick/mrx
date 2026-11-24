@@ -28,9 +28,12 @@ ROUND_TRIP = 2e-6
 #: The axis-normal cut of the shearedE map: the largest tilt of the sections against the axis before (at least) and
 #: after (at most), in degrees, the largest move of a point off its surface ``r = const`` of the file's map (in ``r``,
 #: the first radial cell is 0.07) and the relative rms over random points of the file's field on the cut map against
-#: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 20.7, 4.9e-2,
-#: 6.5e-3, 5.8e-3 and 2.5e-2 measured in float64 (2026-11-22).
-CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 10.0, 8e-2, 1e-2, 9e-3, 1.5e-2
+#: that on the file's map, carried (at most) and dragged with the points (at least, the contrast): 20.7, 8.5e-2,
+#: 8.0e-3, 5.1e-3 and 2.5e-2 measured in float64 (2026-11-24). The map cut here is a spline, whose axis is only C1 at
+#: its zeta knots, and the frame's splines follow those kinks: on 480 planes the tilt after reaches 0.27 deg at those
+#: knots (0.08 to 0.28 on the other axis spaces), and the wall leaves the file's by up to 1.2e-2 in ``r`` there. The
+#: file's exact map cut by build_sequence leaves 8e-3 deg.
+CUT_TILT_BEFORE, CUT_TILT_AFTER, CUT_SURFACE, CUT_CARRIED, CUT_DRAGGED = 10.0, 0.4, 1.5e-2, 9e-3, 1.5e-2
 #: The distance of the file's axis from its pole in first radial cells.
 AXIS_ON_POLE = 2e-2
 #: The distance of the magnetic axis from the pole after one move from :data:`SHIFT`, in first radial cells: 2.1e-3
@@ -132,12 +135,13 @@ def test_axis_normal_sections(sheared):
     point stays on its surface ``r = const`` of the file's map to :data:`CUT_SURFACE` in ``r`` (the error of the
     splines of the cut), ``det DPhi > 0`` at the quadrature points, and the file's field on the cut map with the
     shift of ``zeta`` is the field on the file's map at the same points to :data:`CUT_CARRIED`. Without the shift it is
-    off by :data:`CUT_DRAGGED` or more: the points slide, the field must not."""
+    off by :data:`CUT_DRAGGED` or more: the points slide, the field must not. The points lie within ``r <= 1 -``
+    :data:`CUT_SURFACE`, so their points on the file's map stay inside its domain, where the file's field is defined."""
     seq = sheared[3]
     Phi = build_map(seq.equilibrium, seq, stellarator_symmetric=seq.half_period)[0]
     new, shift, info = mm.axis_normal_map(seq, Phi)
     rng = np.random.default_rng(0)
-    x = jnp.asarray(np.column_stack([rng.uniform(0.05, 1.0, 256), rng.uniform(0.0, 1.0, 256),
+    x = jnp.asarray(np.column_stack([rng.uniform(0.05, 1.0 - CUT_SURFACE, 256), rng.uniform(0.0, 1.0, 256),
                                      rng.uniform(0.0, 1.0, 256)]))
     f = jax.vmap(lambda y: new.basis.contract(shift, y))(x)
     x_old, _ = _locate(Phi, jax.vmap(new)(x), x.at[:, 2].add(f))

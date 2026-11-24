@@ -147,11 +147,15 @@ def build_sequence(geometry, ns, p, maxiter=10_000, tol=None, nfp=None, knots=No
         eq["axis_normal"] = cut
         info = dict(nfp=seq.nfp, det_range=cut["det_range"], symmetry_defect=cut["symmetry_defect"])
         print(f"[geom] sections normal to the axis: tilt at the axis {cut['tilt_before']:.2f} -> "
-              f"{cut['tilt_after']:.1e} deg, shift up to {cut['shift_max']:.3f} periods, {cut['frame_modes']} frame "
-              f"modes (curve fit {cut['curve_rms']:.1e}), plane miss {cut['plane_miss']:.1e}, "
+              f"{cut['tilt_after']:.1e} deg, shift up to {cut['shift_max']:.3f} periods, frame on {cut['frame_splines']} "
+              f"splines of degree {cut['frame_degree']} (axis error {cut['curve_error']:.1e}), plane miss "
+              f"{cut['plane_miss']:.1e}, "
               f"{cut['seconds']:.1f} s", flush=True)
     else:
         Phi, info = build_map(eq, map_seq, nfp=seq.nfp, stellarator_symmetric=seq.half_period)
+        if "frame" in eq:
+            print(f"[geom] G-frame projected onto {Phi.frame.shape[2]} splines in zeta: rms error of the axis "
+                  f"{info['frame_error'][0]:.1e}, of N, B {info['frame_error'][1]:.1e}", flush=True)
     if m != ns[1]:
         Phi = _prolong_map(Phi, seq, m)
     if zeta == "axis-normal":
