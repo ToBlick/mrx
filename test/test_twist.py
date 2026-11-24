@@ -85,20 +85,23 @@ def test_slip_move_and_derivative(seq, b0):
 def test_one_slip_update_zeroes_the_weak_iota_residual(eq, seq, b0):
     """The weak residual of the exact transform as the target on the fixture's field and label, on
     :func:`~mrx.relaxation.shells.profile_cells` cells: with ``R`` its derivatives along the slips (:func:`mrx.relaxation.twist.slip_transform`)
-    the field ``B + T d``, ``d = -R^-1 r``, has the residual zero to round-off relative to ``r``. The slips have no
-    ``zeta`` component, so the toroidal flux in the residual's denominator does not change: the identity is exact up
-    to the condition of ``R``: 2.9e-5 to 5.6e-17 in float64 and 1.2e-8 in float32, the condition of ``R`` 76
-    (2026-11-23)."""
+    the field ``B + T d``, ``d = -R^-1 r``, has the residual zero to round-off. The slips have no ``zeta`` component,
+    so the toroidal flux in the residual's denominator does not change: the identity is exact up to the condition of
+    ``R`` (76). ``r`` is the difference of the field's transform moments and the target's, so its round-off is that of
+    those moments, not of their difference: 2.9e-5 to 6.5e-17 in float64 and 1.1e-8 in float32 against moments of 0.80
+    (2026-11-24)."""
     s_q, T, _ = label(seq, b0, ANISOTROPY)
     slips, mu = build_slips(seq, b0, T, current_on_label(seq, b0, T, profile_cells(seq)))
     move = slips.maps(seq)[0]
     residual = iota_residual(seq, b0, s_q, eq.iota, mu.size)
     r0 = np.asarray(residual(b0)[0], dtype=float)
+    moments = np.abs(np.asarray(iota_residual(seq, b0, s_q, np.zeros_like, mu.size)(b0)[0], dtype=float)).max()
     R = slip_transform(residual, b0, move, mu.size)
     d = np.linalg.solve(R, -r0)
     r1 = np.asarray(residual(b0 + move(jnp.asarray(d, dtype=b0.dtype)))[0], dtype=float)
-    print(f"\n  |r| {np.abs(r0).max():.3e} -> {np.abs(r1).max():.3e} after the update, cond R {np.linalg.cond(R):.2e}")
-    assert np.abs(r1).max() < 1e4 * eps() * np.abs(r0).max()
+    print(f"\n  |r| {np.abs(r0).max():.3e} -> {np.abs(r1).max():.3e} after the update, transform moments "
+          f"{moments:.3e}, cond R {np.linalg.cond(R):.2e}")
+    assert np.abs(r1).max() < 1e2 * eps() * moments
 
 
 def test_current_start(seq):

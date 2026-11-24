@@ -13,8 +13,9 @@ order (:func:`tangent`, zero on planar sections). One move of the axis (:func:`a
 current map:
 
 1. The magnetic axis (:func:`magnetic_axis`), the field line that closes after one field period, as a whole curve: a
-   Fourier series in ``zeta`` of its point in the chart ``(r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane,
-   whose Galerkin residual of the field-line equation vanishes.
+   periodic spline in ``zeta`` on the mesh's knots (:func:`mrx.equilibria.axis_basis`) of its point in the chart
+   ``(r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane, whose Galerkin residual of the field-line equation
+   vanishes.
 2. Its in-plane distance ``d(zeta)`` from the pole, projected in L2 onto the ``zeta`` splines
    (:func:`axis_coefficients`), moves every point by ``d(zeta) (1 - r^2)`` (:func:`axis_step`): the pole goes onto the
    magnetic axis, the wall
@@ -41,7 +42,7 @@ map until ``zeta`` is harmonic (:func:`harmonic_build`). ``--geometry.zeta harmo
 before the field exists, so a move is only a change of the map.
 
 A third choice of the toroidal coordinate is a cut, not a move: the planes normal to the axis of the map
-(:func:`axis_normal_map`), in the frame of the axis, GVEC's G-frame, the default of
+(:func:`axis_normal_map`), in the frame of the axis, a spline frame of the G-frame's kind, the default of
 :func:`mrx.geometry.build_sequence` for every file. Every point slides along its line of constant ``r`` and
 ``theta`` into the plane of its ``zeta`` at once, by Newton's method along the line, and the map is in the new frame
 with ``X3 = 0``. The shift of ``zeta`` the cut returns carries a field given in the old logical coordinates, a file's
@@ -62,7 +63,7 @@ import numpy as np
 
 from mrx.diagnostics.poincare import logical_field, to_polar
 from mrx.differential_forms import det33, inv33
-from mrx.equilibria import FrameMap, frame_derivatives, polar_projection
+from mrx.equilibria import FrameMap, axis_basis, axis_quadrature, curve_tables, polar_projection, project_curve
 from mrx.geometry import SequenceGeometry, map_jacobian_at
 from mrx.nullspace import compute_nullspaces
 from mrx.optimization.shape_ad import frame_geometry
@@ -73,8 +74,6 @@ from mrx.symmetry import stellarator_symmetric_scalar, stellarator_symmetry_defe
 
 #: The smallest ratio of ``det DPhi`` after and before a move at any quadrature point.
 MIN_DET_RATIO = 0.5
-#: The Fourier modes per spline of ``zeta`` of the axis curve of :func:`magnetic_axis`.
-AXIS_MODES_PER_SPLINE = 1
 #: The largest number of Newton steps of :func:`magnetic_axis`, and the size of a Newton step, in first radial cells
 #: of the logical chart, below which it stops.
 AXIS_NEWTON_STEPS, AXIS_NEWTON_TOL = 20, 1e-10
@@ -115,46 +114,44 @@ def _first_knot(seq):
     return float(np.unique(T_r[(T_r > 0) & (T_r <= 1)])[0])
 
 
-def _series(modes, z):
-    """The values and the ``zeta`` derivatives ``(len(z), 2, modes + 1)`` of ``cos(2 pi k zeta)`` and
-    ``sin(2 pi k zeta)``, ``k = 0 .. modes``, at ``z``."""
-    k = 2.0 * np.pi * np.arange(modes + 1)
-    a = np.outer(z, k)
-    return (np.stack([np.cos(a), np.sin(a)], 1), np.stack([-k * np.sin(a), k * np.cos(a)], 1))
+def axis_curve(seq, c, zetas):
+    """``(y, dy)``: the points ``(len(zetas), 2)`` in the chart ``(r cos 2 pi theta, r sin 2 pi theta)`` of the axis
+    curve ``c`` of :func:`magnetic_axis` on the planes ``zetas``, and their ``zeta`` derivatives."""
+    V, dV = curve_tables(axis_basis(seq.basis_0.Lambda[2]), np.asarray(zetas, dtype=np.float64))
+    return V @ c.T, dV @ c.T
 
 
-def _zeta_quadrature(seq, modes):
-    """Gauss points and weights in ``zeta`` over one field period, on every cell of the ``zeta`` splines, enough of
-    them for the integrand of a spline field along a curve of ``modes`` Fourier modes."""
-    bp = np.unique(np.asarray(seq.basis_0.Lambda[2].T, dtype=np.float64).clip(0.0, 1.0))
-    g = seq.p + 1 + 4 * int(np.ceil(modes / (bp.size - 1)))
-    x, w = np.polynomial.legendre.leggauss(g)
-    a, b = bp[:-1, None], bp[1:, None]
-    return (0.5 * (b - a) * x + 0.5 * (a + b)).ravel(), (0.5 * (b - a) * w).ravel()
+def _axis_parity(seq, n):
+    """``(free, test)``: the matrices ``(2 n, k)`` whose orthonormal columns span the coefficients of an axis curve,
+    flat ``(component u, v of the chart, spline)``, and the test functions of its residual. On a half-period sequence
+    ``u`` is even in ``zeta`` and ``v`` odd, and the residual ``y' - f`` the other way round, so its ``u`` part is
+    tested with the odd splines, its ``v`` part with the even ones: the other parts vanish. The knots are symmetric
+    under ``zeta -> -zeta`` there (uniform), so the reflection maps every spline onto a spline, the one whose
+    Greville point is the reflected one, and the even and odd curves are the sums and differences of such pairs."""
+    if not seq.half_period:
+        return np.eye(2 * n), np.eye(2 * n)
+    g = np.asarray(axis_basis(seq.basis_0.Lambda[2]).greville_points(), dtype=np.float64)
+    d = (g[:, None] + g[None, :]) % 1.0
+    sigma = np.argmin(np.minimum(d, 1.0 - d), axis=1)
+    e = np.eye(n)
+    even = [e[i] if sigma[i] == i else (e[i] + e[sigma[i]]) / np.sqrt(2.0) for i in range(n) if i <= sigma[i]]
+    odd = [(e[i] - e[sigma[i]]) / np.sqrt(2.0) for i in range(n) if i < sigma[i]]
+    even, odd = np.array(even).T, np.array(odd).T
+
+    def blocks(u, v):
+        out = np.zeros((2 * n, u.shape[1] + v.shape[1]))
+        out[:n, :u.shape[1]], out[n:, u.shape[1]:] = u, v
+        return out
+    return blocks(even, odd), blocks(odd, even)
 
 
-def _axis_free(seq, modes):
-    """``(free, test)``: the flat indices into ``(2, 2, modes + 1)`` (component ``u``, ``v`` of the chart, cosine or
-    sine, mode) of the free coefficients of an axis curve and of the test functions of its residual. On a
-    stellarator-symmetric sequence ``u`` is even in ``zeta`` and ``v`` odd, and the residual ``y' - f`` the other way
-    round, so its ``u`` part is tested with the sines, its ``v`` part with the cosines: the other parts vanish."""
-    free = np.zeros((2, 2, modes + 1), dtype=bool)
-    if seq.symmetry != "stellarator":
-        free[:, 0, :], free[:, 1, 1:] = True, True
-        return np.flatnonzero(free), np.flatnonzero(free)
-    test = free.copy()
-    free[0, 0, :], free[1, 1, 1:] = True, True
-    test[0, 1, 1:], test[1, 0, :] = True, True
-    return np.flatnonzero(free), np.flatnonzero(test)
-
-
-def _axis_residual(field, coef, x, idx, tidx, z, w, V, dV):
-    """The Galerkin residual of :func:`magnetic_axis` at the free coefficients ``x`` (flat indices ``idx``), tested
-    with the functions of the flat indices ``tidx``. The integrand is ``Bt^zeta y' - (Bt^u, Bt^v)``, ``Bt`` the
-    field's density in the chart ``(u, v, zeta)``: the 2-form's logical components ``Bh`` carried to the chart and
-    divided by its Jacobian ``2 pi r``, finite and nonzero on the pole, where ``Bh`` vanishes with ``J``."""
-    c = jnp.zeros(2 * V.shape[1] * V.shape[2], dtype=x.dtype).at[idx].set(x).reshape(2, V.shape[1], V.shape[2])
-    y, dy = jnp.einsum("ckn,qkn->qc", c, V), jnp.einsum("ckn,qkn->qc", c, dV)
+def _axis_residual(field, coef, x, free, test, z, w, V, dV):
+    """The Galerkin residual of :func:`magnetic_axis` at the free coefficients ``x`` (the curve ``free @ x``), tested
+    with the columns of ``test``. The integrand is ``Bt^zeta y' - (Bt^u, Bt^v)``, ``Bt`` the field's density in the
+    chart ``(u, v, zeta)``: the 2-form's logical components ``Bh`` carried to the chart and divided by its Jacobian
+    ``2 pi r``, finite and nonzero on the pole, where ``Bh`` vanishes with ``J``."""
+    c = (free @ x).reshape(2, V.shape[1])
+    y, dy = V @ c.T, dV @ c.T
 
     def density(zq, yq, dyq):
         r, theta = to_polar(yq)
@@ -162,53 +159,56 @@ def _axis_residual(field, coef, x, idx, tidx, z, w, V, dV):
         cs, sn = jnp.cos(2.0 * jnp.pi * theta), jnp.sin(2.0 * jnp.pi * theta)
         uv = jnp.array([cs * b[0] - 2.0 * jnp.pi * r * sn * b[1], sn * b[0] + 2.0 * jnp.pi * r * cs * b[1]])
         return (b[2] * dyq - uv) / (2.0 * jnp.pi * r)
-    return jnp.einsum("q,qkn,qc->ckn", w, V, jax.vmap(density)(z, y, dy)).reshape(-1)[tidx]
+    return test.T @ ((V * w[:, None]).T @ jax.vmap(density)(z, y, dy)).T.reshape(-1)
 
 
 @partial(jax.jit, static_argnames=("field",))
-def _axis_newton(field, coef, x, idx, tidx, z, w, V, dV):
+def _axis_newton(field, coef, x, free, test, z, w, V, dV):
     """The Newton step of :func:`magnetic_axis` at ``x`` and the norm of the residual there."""
-    F = partial(_axis_residual, field, coef, idx=idx, tidx=tidx, z=z, w=w, V=V, dV=dV)
+    F = partial(_axis_residual, field, coef, free=free, test=test, z=z, w=w, V=V, dV=dV)
     R = F(x)
     return -jnp.linalg.solve(jax.jacfwd(F)(x), R), jnp.linalg.norm(R)
 
 
 @partial(jax.jit, static_argnames=("field",))
-def _axis_residual_norm(field, coef, x, idx, tidx, z, w, V, dV):
-    return jnp.linalg.norm(_axis_residual(field, coef, x, idx, tidx, z, w, V, dV))
+def _axis_residual_norm(field, coef, x, free, test, z, w, V, dV):
+    return jnp.linalg.norm(_axis_residual(field, coef, x, free, test, z, w, V, dV))
 
 
-def magnetic_axis(seq, B, modes=None):
+def magnetic_axis(seq, B):
     """``(c, info)``: the magnetic axis of the 2-form ``B`` on the installed map, the field line that closes after one
     field period, as a curve in logical coordinates.
 
-    The curve is ``y(zeta) = sum_k c[:, 0, k] cos(2 pi k zeta) + c[:, 1, k] sin(2 pi k zeta)``, ``k = 0 .. modes``,
-    in the chart ``y = (r cos 2 pi theta, r sin 2 pi theta)`` of each logical plane ``zeta``, which is smooth at the
-    pole (``modes`` :data:`AXIS_MODES_PER_SPLINE` per spline of ``zeta`` unless given). On a stellarator-symmetric
-    sequence its first component is a cosine series, its second a sine series. The field line satisfies
-    ``Bt^zeta dy/dzeta = (Bt^u, Bt^v)``, ``Bt`` the field's density in the chart (:func:`_axis_residual`), with no
-    division by the field's values and no bound on ``r``. ``c`` makes the Galerkin residual
-    ``int_0^1 phi(zeta) (Bt^zeta dy/dzeta - (Bt^u, Bt^v))(zeta, y(zeta)) dzeta`` vanish for every ``phi`` of the series (on a symmetric
-    sequence those of the residual's parity, the other way round from the curve's), integrated by Gauss points on the cells of the ``zeta`` splines: the residual is weak in ``zeta``, and the whole
-    curve is found at once. Newton's method with the exact Jacobian, from the curve half a first radial cell off the
-    pole (the chart's derivatives do not exist at the pole itself), each step halved until it lowers the norm of the
-    residual, until a step is below :data:`AXIS_NEWTON_TOL` first radial cells or after :data:`AXIS_NEWTON_STEPS`
-    steps. The solution is the axis of an elliptic field line,
-    whose period map has no eigenvalue 1.
+    The curve is ``y(zeta) = sum_j c[:, j] phi_j(zeta)`` in the chart ``y = (r cos 2 pi theta, r sin 2 pi theta)`` of
+    each logical plane ``zeta``, which is smooth at the pole, with ``phi_j`` the periodic splines of degree
+    ``max(3, p)`` on the mesh's ``zeta`` knots, each cell split in two (:func:`mrx.equilibria.axis_basis`), so it converges
+    with the mesh. On a half-period sequence its first component is even, its second odd in ``zeta``. The field line
+    satisfies ``Bt^zeta dy/dzeta = (Bt^u, Bt^v)``, ``Bt`` the field's density in the chart (:func:`_axis_residual`),
+    with no division by the field's values and no bound on ``r``. ``c`` makes the Galerkin residual
+    ``int_0^1 phi(zeta) (Bt^zeta dy/dzeta - (Bt^u, Bt^v))(zeta, y(zeta)) dzeta`` vanish for every ``phi`` of the same
+    splines (on a half-period sequence those of the residual's parity, the other way round from the curve's),
+    integrated by Gauss points on the cells of the ``zeta`` splines, the field's cells: the residual is weak in
+    ``zeta``, and the whole curve is found at once. Newton's method with the exact Jacobian, from the curve half a
+    first radial cell off the pole (the chart's derivatives do not exist at the pole itself), each step halved until
+    it lowers the norm of the residual, until a step is below :data:`AXIS_NEWTON_TOL` first radial cells or after
+    :data:`AXIS_NEWTON_STEPS` steps. The solution is the axis of an elliptic field line, whose period map has no
+    eigenvalue 1.
 
-    ``info`` holds the number of modes, the Newton steps, the halvings of all steps, the norms of the residual at the
-    start and the end, the last step in first radial cells and the wall time."""
+    ``c`` is ``(2, n_zeta)``. ``info`` holds the number of splines and their degree, the Newton steps, the halvings of
+    all steps, the norms of the residual at the start and the end, the last step in first radial cells and the wall
+    time."""
     t0 = time.perf_counter()
-    modes = AXIS_MODES_PER_SPLINE * seq.basis_0.Lambda[2].n if modes is None else int(modes)
+    basis = axis_basis(seq.basis_0.Lambda[2])
+    n = basis.n
     field = logical_field(seq, B)
     coef = field.coefficients(B)
-    z, w = _zeta_quadrature(seq, modes)
-    V, dV = _series(modes, z)
-    idx, tidx = _axis_free(seq, modes)
+    z, w = axis_quadrature(basis, seq.p + basis.p + 2)
+    V, dV = curve_tables(basis, z)
+    free, test = _axis_parity(seq, n)
     r1 = _first_knot(seq)
-    x = jnp.zeros(idx.size, dtype=DTYPE).at[0].set(0.5 * r1)        # idx[0] is the mean of u
-    args = (jnp.asarray(idx), jnp.asarray(tidx), jnp.asarray(z, dtype=DTYPE), jnp.asarray(w, dtype=DTYPE), jnp.asarray(V, dtype=DTYPE),
-            jnp.asarray(dV, dtype=DTYPE))
+    start = np.concatenate([np.full(n, 0.5 * r1), np.zeros(n)])          # the splines sum to one
+    x = jnp.asarray(free.T @ start, dtype=DTYPE)
+    args = tuple(jnp.asarray(a, dtype=DTYPE) for a in (free, test, z, w, V, dV))
     resid, halved = [], 0
     for k in range(AXIS_NEWTON_STEPS):
         dx, R = _axis_newton(field, coef, x, *args)
@@ -222,17 +222,16 @@ def magnetic_axis(seq, B, modes=None):
                and not float(_axis_residual_norm(field, coef, x + dx, *args)) < resid[-1]):
             dx, halved = 0.5 * dx, halved + 1
         x = x + dx
-    c = np.zeros(2 * 2 * (modes + 1))
-    c[idx] = np.asarray(x)
-    return c.reshape(2, 2, modes + 1), dict(modes=modes, newton=k + 1, halved=halved, resid_start=resid[0],
-                                            resid_end=resid[-1], step_cells=step, seconds=time.perf_counter() - t0)
+    c = (free @ np.asarray(x, dtype=np.float64)).reshape(2, n)
+    return c, dict(splines=n, degree=basis.p, newton=k + 1, halved=halved, resid_start=resid[0], resid_end=resid[-1],
+                   step_cells=step, seconds=time.perf_counter() - t0)
 
 
-def axis_points(c, zetas):
+def axis_points(seq, c, zetas):
     """The logical points ``(len(zetas), 3)`` of the axis curve ``c`` of :func:`magnetic_axis` on the planes
     ``zetas``."""
     zetas = np.asarray(zetas, dtype=np.float64)
-    y = np.einsum("ckn,qkn->qc", c, _series(c.shape[2] - 1, zetas)[0])
+    y = axis_curve(seq, c, zetas)[0]
     return np.stack([np.hypot(y[:, 0], y[:, 1]), np.arctan2(y[:, 1], y[:, 0]) / (2.0 * np.pi) % 1.0, zetas], 1)
 
 
@@ -261,12 +260,11 @@ def axis_coefficients(seq, c):
     ``c`` of :func:`magnetic_axis`: its L2 projection onto the ``zeta`` splines, one mass solve of the splines with the
     displacement at Gauss points of their cells."""
     bz = seq.basis_0.Lambda[2]
-    z, w = _zeta_quadrature(seq, c.shape[2] - 1)
-    N = np.asarray(bz.collocation_matrix(jnp.asarray(z)), dtype=np.float64)              # (n_q, n_z)
+    z, w = axis_quadrature(bz, seq.p + axis_basis(bz).p + 2)
     S = jax.vmap(seq.map.section)
     pole = jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, z[:, None]), -1).reshape(-1, 3))
-    d = np.asarray(S(jnp.asarray(axis_points(c, z))) - S(pole), dtype=np.float64)
-    return np.linalg.solve((N * w[:, None]).T @ N, (N * w[:, None]).T @ d)
+    d = np.asarray(S(jnp.asarray(axis_points(seq, c, z))) - S(pole), dtype=np.float64)
+    return project_curve(bz, z, w, d).T
 
 
 def moved(Phi, delta):
@@ -336,7 +334,7 @@ def axis_sections(seq, c):
     """``(y, h_1)``: the in-plane coordinates ``y`` ``(n_zeta, 2)`` of the axis curve ``c`` of :func:`magnetic_axis`
     on the planes of :func:`_planes`, and the size ``h_1`` of the first radial cell (:func:`first_cell`)."""
     Phi, zetas = seq.map, _planes(seq)
-    return np.asarray(jax.vmap(Phi.section)(jnp.asarray(axis_points(c, zetas)))), first_cell(seq, Phi, zetas)
+    return np.asarray(jax.vmap(Phi.section)(jnp.asarray(axis_points(seq, c, zetas)))), first_cell(seq, Phi, zetas)
 
 
 def axis_offset(seq, c):
@@ -512,59 +510,42 @@ def harmonic_build(seq):
           + " -> ".join(f"{d:.2e}" for d in rec["drift"]) + f", {rec['seconds']:.0f} s", flush=True)
 
 
-#: The samples of the mesh axis per spline of ``zeta`` from which :func:`axis_normal_map` fits its curve. The curve's
-#: series has half as many modes as the map has splines of ``zeta``, what the splines resolve: a spline axis also
-#: carries the kinks of its pieces, at the cell frequency, and a series that keeps them gives the frame's vectors
-#: wiggles there (HSX (24,48,48) with 48 modes: 1.8e-4 in ``N`` at mode 47, and a vacuum transform 3e-3 low, 2026-11-20).
-AXIS_SAMPLES_PER_SPLINE = 4
 #: The Newton steps of the cut of :func:`axis_normal_map` along every line ``(r, theta)``.
 CUT_NEWTON_STEPS = 12
 
 
-def _fourier_fit(zetas, values, n_modes):
-    """``(cos, sin, rms)``: the least-squares series ``sum_k cos_k cos(-2 pi k zeta) + sin_k sin(-2 pi k zeta)``,
-    ``k = 0 .. n_modes``, of the ``values`` ``(K, c)`` at the logical ``zetas``, ``(c, n_modes + 1)`` each, and the rms
-    of its residual at the samples."""
-    arg = -2.0 * np.pi * np.outer(zetas, np.arange(n_modes + 1))
-    A = np.concatenate([np.cos(arg), np.sin(arg[:, 1:])], axis=1)
-    coef = np.linalg.lstsq(A, values, rcond=None)[0]
-    rms = float(np.sqrt(np.mean(np.sum((A @ coef - values) ** 2, axis=1))))
-    sin = np.concatenate([np.zeros((1, values.shape[1])), coef[n_modes + 1:]])
-    return coef[:n_modes + 1].T, sin.T, rms
+def axis_frame(seq, position):
+    """``(frame, error)``: the frame of the planes normal to the axis ``position(0, theta, zeta)`` of a map, the
+    coefficients ``(3, 3, n_zeta)`` of a :class:`~mrx.equilibria.FrameMap`'s frame in the splines of
+    :func:`mrx.equilibria.axis_basis`, and the rms distance (in the map's units) of the frame's axis from the curve
+    over a field period.
 
-
-def curve_frame(zetas, points, nfp, n_modes):
-    """``(frame, rms)``: the frame of the planes normal to a closed curve, in the form of a state's ``frame``
-    (:func:`mrx.equilibria.gvec.read_frame`), and the rms distance (in the map's units) of the curve's series from
-    its samples.
-
-    ``points`` ``(K, 3)`` are Cartesian points of the curve at the logical ``zetas`` of one field period. Turned back
-    by ``2 pi zeta / nfp`` about the ``z`` axis they are periodic in ``zeta``, and their least-squares series with
-    ``n_modes`` modes per field period is the frame's axis ``a``. Its unit tangent ``t`` in space is ``a'`` plus the
-    turn ``(2 pi / nfp) e_z x a``. ``N`` is the radial unit vector ``e_R`` made normal to ``t``, ``B = N x t``, so
-    ``N x B = -t``, the orientation of the cylindrical frame (``N = e_R``, ``B = e_z``), and ``X1``, ``X2`` are
-    about ``R``, ``Z`` about the axis. ``N`` and ``B`` are the series with ``2 n_modes`` modes that interpolate them
-    at ``4 n_modes + 1`` angles. A curve symmetric under ``(x, y, z) -> (x, -y, -z)`` at ``-zeta`` gives a frame with
-    that symmetry, to round-off."""
-    omega = 2.0 * np.pi / nfp
-    c, s = np.cos(-omega * zetas), np.sin(-omega * zetas)
-    p = np.asarray(points, dtype=np.float64)
+    Turned back by ``2 pi zeta / nfp`` about the ``z`` axis the curve is periodic in ``zeta``, and its L2 projection
+    onto the splines is the frame's axis ``a``. Its unit tangent ``t`` in space is ``a'`` plus the turn
+    ``(2 pi / nfp) e_z x a``, so the planes are normal to the frame's own axis. ``N`` is the radial unit vector
+    ``e_R`` made normal to ``t``, ``B = N x t``, so ``N x B = -t``, the orientation of the cylindrical frame
+    (``N = e_R``, ``B = e_z``), and ``X1``, ``X2`` are about ``R``, ``Z`` about the axis. ``N`` and ``B`` are not
+    splines (``t`` is a ratio of splines), so they are projected in L2 onto the same splines, which keeps the frame a spline of degree ``max(3, p)``, twice continuously
+    differentiable: its planes turn continuously and ``dPhi/dzeta`` has no jump at the knots. The projections commute
+    with the reflection ``zeta -> -zeta`` (symmetric knots and nodes), so a curve symmetric under
+    ``(x, y, z) -> (x, -y, -z)`` at ``-zeta`` gives a frame with that symmetry, to round-off."""
+    basis = axis_basis(seq.basis_0.Lambda[2])
+    # the projected functions are smooth on every cell: twice the degree's Gauss points and a margin
+    z, w = axis_quadrature(basis, 2 * basis.p + 4)
+    omega = 2.0 * np.pi / seq.nfp
+    p = np.asarray(jax.vmap(position)(jnp.asarray(np.stack(np.broadcast_arrays(0.0, 0.0, z), 1), dtype=float)),
+                   dtype=np.float64)
+    c, s = np.cos(-omega * z), np.sin(-omega * z)
     turned = np.stack([c * p[:, 0] - s * p[:, 1], s * p[:, 0] + c * p[:, 1], p[:, 2]], 1)
-    a_cos, a_sin, rms = _fourier_fit(np.asarray(zetas, dtype=np.float64), turned, n_modes)
-    m = 2 * n_modes
-    cos, sin = np.zeros((3, 3, m + 1)), np.zeros((3, 3, m + 1))
-    cos[0, :, :n_modes + 1], sin[0, :, :n_modes + 1] = a_cos, a_sin
-    z = np.arange(2 * m + 1) / (2 * m + 1)
-    n_per = jnp.arange(m + 1, dtype=float)
-    a, da = (np.asarray(v[:, 0]) for v in jax.vmap(lambda q: frame_derivatives(jnp.asarray(cos), jnp.asarray(sin),
-                                                                                n_per, q)[:2])(jnp.asarray(z)))
-    t = da + omega * np.stack([-a[:, 1], a[:, 0], np.zeros_like(a[:, 0])], 1)
+    a = project_curve(basis, z, w, turned)                                       # (3, n)
+    V, dV = curve_tables(basis, z)
+    av, da = V @ a.T, dV @ a.T
+    t = da + omega * np.stack([-av[:, 1], av[:, 0], np.zeros_like(av[:, 0])], 1)
     t /= np.linalg.norm(t, axis=1, keepdims=True)
     N = np.array([1.0, 0.0, 0.0]) - t[:, :1] * t
     N /= np.linalg.norm(N, axis=1, keepdims=True)
-    NB_cos, NB_sin, _ = _fourier_fit(z, np.concatenate([N, np.cross(N, t)], 1), m)
-    cos[1:], sin[1:] = NB_cos.reshape(2, 3, -1), NB_sin.reshape(2, 3, -1)
-    return {"n": nfp * np.arange(m + 1), "cos": cos, "sin": sin}, rms
+    NB = project_curve(basis, z, w, np.stack([N, np.cross(N, t)], 1))            # (2, 3, n)
+    return np.concatenate([a[None], NB]), float(np.sqrt(np.sum(w[:, None] * (av - turned) ** 2)))
 
 
 def section_tilt(Phi, zetas):
@@ -625,8 +606,7 @@ def axis_normal_map(seq, position):
     ``position`` is a map from the logical points of ``seq`` (one field period of ``seq.nfp``) to Cartesian points:
     a :class:`~mrx.equilibria.FrameMap` on the 0-form splines of ``seq``, in any frame and with any ``X3``, or the
     exact map of a file's state (:func:`mrx.equilibria.state_position`). The curve is its axis ``position(0, theta,
-    zeta)``, sampled at :data:`AXIS_SAMPLES_PER_SPLINE` angles per spline of ``zeta``. Its frame is :func:`curve_frame`, with half as many modes as
-    the map has splines of ``zeta``, what they resolve.
+    zeta)``, and its frame is :func:`axis_frame`, a spline in ``zeta`` on the mesh's knots.
 
     Every point of ``Phi`` is the point of ``position`` on the same line ``(r, theta)`` that lies in the frame's plane
     at its ``zeta``: ``position(r, theta, zeta + f)``, with ``f`` found by Newton's method along the line. So every
@@ -645,7 +625,8 @@ def axis_normal_map(seq, position):
     e_zeta`` of ``position``. A field given in the logical coordinates of ``position`` is carried onto ``Phi`` with
     it (:mod:`mrx.relaxation.initial_conditions` does so for a file's field).
 
-    ``info`` holds the number of frame modes and the curve's fit error (``frame_modes``, ``curve_rms``), the tilt of
+    ``info`` holds the number and degree of the frame's splines and the rms error of its axis (``frame_splines``,
+    ``frame_degree``, ``curve_error``), the tilt of
     the surfaces ``zeta = const`` against the axis before and after, in degrees (:func:`section_tilt`, the largest
     over the Greville planes), the largest ``|f|`` in field periods, the largest distance of a cut point from its
     plane, the symmetry defect (:func:`mrx.symmetry.stellarator_symmetry_defect`), the range of ``det DPhi`` at the
@@ -654,15 +635,9 @@ def axis_normal_map(seq, position):
     t0 = time.perf_counter()
     bases = seq.basis_0.Lambda
     g = [np.asarray(b.greville_points(), dtype=np.float64) for b in bases]
-    n_z = bases[2].n
-    zetas = np.arange(AXIS_SAMPLES_PER_SPLINE * n_z + 1) / (AXIS_SAMPLES_PER_SPLINE * n_z + 1)
-    x_a = np.stack(np.broadcast_arrays(0.0, 0.0, zetas), 1)
-    n_modes = min(n_z // 2, (zetas.size - 1) // 2)
-    frame, rms = curve_frame(zetas, np.asarray(jax.vmap(position)(jnp.asarray(x_a, dtype=float))), seq.nfp, n_modes)
+    frame, curve_error = axis_frame(seq, position)
     zeros = jnp.zeros(seq.basis_0.shape[0], dtype=float)
-    plane_map = FrameMap(zeros, zeros, zeros, jnp.asarray(frame["cos"], dtype=float),
-                         jnp.asarray(frame["sin"], dtype=float), jnp.asarray(frame["n"] / seq.nfp, dtype=float),
-                         seq.basis_0.bases[0], seq.nfp)
+    plane_map = FrameMap(zeros, zeros, zeros, jnp.asarray(frame, dtype=float), seq.basis_0.bases[0], seq.nfp)
     x = np.stack(np.meshgrid(*g, indexing="ij"), -1)
     v = np.asarray(_cut(position, plane_map, jnp.asarray(x.reshape(-1, 3), dtype=float)), dtype=np.float64)
     v = v.reshape(*x.shape[:-1], 4)
@@ -679,7 +654,7 @@ def axis_normal_map(seq, position):
     pts = jnp.asarray(np.column_stack([rng.uniform(0.15, 1.0, 64), rng.uniform(0.0, 1.0, 64),
                                        rng.uniform(0.0, 1.0, 64)]))
     d = np.asarray(jax.vmap(lambda y: det33(jax.jacfwd(Phi)(y)))(pts))
-    info = dict(frame_modes=int(frame["n"].size), curve_rms=rms,
+    info = dict(frame_splines=int(frame.shape[2]), frame_degree=axis_basis(bases[2]).p, curve_error=curve_error,
                 tilt_before=float(section_tilt(position, planes).max()),
                 tilt_after=float(section_tilt(Phi, planes).max()), shift_max=float(np.abs(v[..., 2]).max()),
                 plane_miss=float(v[..., 3].max()), symmetry_defect=float(stellarator_symmetry_defect(Phi, pts)),
@@ -700,7 +675,7 @@ def write_map(path, Phi):
 
 
 #: The arrays of a map that a checkpoint holds (:func:`write_map`).
-MAP_ARRAYS = ("raw_X1", "raw_X2", "raw_X3", "frame_cos", "frame_sin", "frame_n")
+MAP_ARRAYS = ("raw_X1", "raw_X2", "raw_X3", "frame")
 
 
 def checkpoint_map(path):
@@ -720,8 +695,7 @@ def install_checkpoint_map(seq, path):
         return False
     Phi = seq.map.with_coordinates(*(jnp.asarray(arrays[k], dtype=seq.map.raw_X1.dtype)
                                      for k in ("raw_X1", "raw_X2", "raw_X3")))
-    Phi = Phi.with_frame(*(jnp.asarray(arrays[k], dtype=seq.map.frame_cos.dtype)
-                           for k in ("frame_cos", "frame_sin", "frame_n")))
+    Phi = Phi.with_frame(jnp.asarray(arrays["frame"], dtype=seq.map.frame.dtype))
     install_map(seq, Phi)
     return True
 

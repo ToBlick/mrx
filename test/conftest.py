@@ -127,7 +127,7 @@ def axis_error(eq, seq, B, minor, samples=8):
 
     c, _ = mm.magnetic_axis(seq, B)
     n = samples * seq.basis_0.Lambda[2].n
-    points = np.asarray(jax.vmap(seq.map)(jnp.asarray(mm.axis_points(c, np.arange(n) / n))))
+    points = np.asarray(jax.vmap(seq.map)(jnp.asarray(mm.axis_points(seq, c, np.arange(n) / n))))
     return float(np.max(np.linalg.norm(points - eq.axis(np.arctan2(points[:, 1], points[:, 0])), axis=1))) / minor
 
 

@@ -463,11 +463,9 @@ def _on_step_ends(seq, sections):
     """Whether the crossings of the ``sections`` (``"zeta"`` or ``"phi"``) are states at the ends of steps: always
     for ``"zeta"``, and for ``"phi"`` on a map whose sections ``zeta = const`` are the planes ``phi = const``. That
     is a map in the cylindrical frame with ``X3 = 0``, the map of every file but a GVEC state with its own frame."""
-    from mrx.equilibria import _frame_arrays, cylindrical_frame  # noqa: PLC0415  (imports the diagnostics' users)
+    from mrx.equilibria import cylindrical_frame  # noqa: PLC0415  (imports the diagnostics' users)
     Phi = seq.map
-    frame = _frame_arrays(cylindrical_frame(), Phi.nfp)
-    planes_of_phi = (all(np.array_equal(np.asarray(a), np.asarray(b))
-                         for a, b in zip((Phi.frame_cos, Phi.frame_sin, Phi.frame_n), frame))
+    planes_of_phi = (np.array_equal(np.asarray(Phi.frame), cylindrical_frame(Phi.frame.shape[2]))
                      and not np.asarray(Phi.raw_X3).any())
     return {"zeta": True, "phi": planes_of_phi}[sections]
 

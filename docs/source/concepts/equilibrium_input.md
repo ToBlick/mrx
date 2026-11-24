@@ -160,11 +160,19 @@ Phi = R_z(phi) (a + X1 N + X2 B + X3 T),    phi = 2 pi zeta / nfp,
 
 on `seq.basis_0`. The frame is the axis `a` and the orthonormal `N`, `B`
 that span the cross-section at each `zeta`, in the frame that turns with
-the field periods, and `T = N x B` the normal of that plane. The frame keeps
-its own Fourier series in `zeta` and is not projected.
+the field periods, and `T = N x B` the normal of that plane. The three
+vectors are periodic splines in `zeta` of degree `max(3, p)` on the knots
+of the mesh with every cell split in two (`axis_basis`), the same splines as
+the magnetic axis of a field (`mrx.relaxation.mesh_motion.magnetic_axis`).
+Their knots refine the mesh's, so the frame converges with the mesh and
+needs no resolution of its own. From degree 3 the axis has a continuous
+curvature, so the planes turn continuously and `dPhi/dzeta` has no jump at
+the knots.
 
 The frame is the one the file supplies. A GVEC state in the G-frame brings
-GVEC's frame. Every other file, VMEC, DESC or a cylindrical GVEC state, is
+GVEC's frame, its series projected in L2 onto the frame's splines
+(`map_frame`), and `info["frame_error"]` holds the rms error of that
+projection, of the axis in metres and of `N`, `B`. Every other file, VMEC, DESC or a cylindrical GVEC state, is
 read in the planes `phi = const` and has the cylindrical frame
 (`cylindrical_frame()`): `a = 0`, `N = e_R`, `B = e_z`, so that `X1 = R`
 and `X2 = Z`, and the cross-sections `zeta = const` are the planes
@@ -191,10 +199,12 @@ approximates.
 **Sections normal to the axis.** `build_sequence` (`zeta="axis-normal"`,
 the default) does not install that map. It cuts the state's own map by the
 planes normal to its axis (`mrx.relaxation.mesh_motion.axis_normal_map`).
-The frame is that of the axis: `a` the axis, `N` the radial direction made
-normal to the axis, `B = N x t` with `t` the axis tangent, so that
-`N x B = -t` as in the cylindrical frame and `X1`, `X2` are about `R`, `Z`
-about the axis. Each point keeps `r` and `theta` and slides along its
+The frame is that of the axis: `a` the L2 projection of the axis onto the
+frame's splines, `N` the radial direction made normal to the axis, `B = N x t`
+with `t` the tangent of `a`, so that `N x B = -t` as in the cylindrical frame
+and `X1`, `X2` are about `R`, `Z` about the axis. `N` and `B` are not
+splines, `t` being a ratio of them, and are projected in L2 onto the same
+splines (`mrx.relaxation.mesh_motion.axis_frame`). Each point keeps `r` and `theta` and slides along its
 surface into the plane of its `zeta`, `Phi'(r, theta, zeta) =
 position(r, theta, zeta + f)`, `f` found by Newton's method along the line.
 `X1`, `X2` and `f` are interpolated at the Greville points and projected

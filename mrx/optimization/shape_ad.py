@@ -4,7 +4,7 @@ This module makes the vacuum magnetic field of a stellarator a differentiable fu
 domain, so that ``jax.grad`` of an objective such as a quasi-symmetry residual gives the derivative with
 respect to the shape. The shape is the map Phi from logical to physical coordinates, a
 :class:`~mrx.equilibria.FrameMap` ``Phi = R_z(phi) (a + X1 N + X2 B + X3 T)``, ``phi = 2 pi zeta / nfp``, with
-``X1``, ``X2``, ``X3`` scalar splines and the frame ``(a, N, B)`` a Fourier series in ``zeta``. Every coefficient of
+``X1``, ``X2``, ``X3`` scalar splines and the frame ``(a, N, B)`` periodic splines in ``zeta``. Every coefficient of
 the map, of ``X1``, ``X2``, ``X3`` and of the frame, is a variable. The shapes of :class:`BoundaryShape` keep ``X3``
 of their start, zero for a map read from a file. In the cylindrical frame ``X1``, ``X2`` are ``R``, ``Z``.
 
@@ -28,7 +28,6 @@ import jax.numpy as jnp
 import numpy as np
 
 from mrx.differential_forms import DifferentialForm, inv33
-from mrx.equilibria import frame_derivatives
 from mrx.geometry import SequenceGeometry
 from mrx.incidence import diff_1d
 from mrx.symmetry import stellarator_symmetric_scalar
@@ -77,7 +76,7 @@ def _turn(v):
 def _frame_vectors(seq, Phi):
     """``(a, E)``, each with its first and second ``zeta`` derivatives: the axis ``(n_q, 3)`` and the directions of
     ``X1``, ``X2``, ``X3`` at the quadrature points, ``E[q, c]`` = ``N``, ``B``, ``T = N x B``, ``(n_q, 3, 3)``."""
-    F = jax.vmap(lambda z: frame_derivatives(Phi.frame_cos, Phi.frame_sin, Phi.frame_n, z))(seq.quad.x_z)
+    F = jax.vmap(Phi.frame_derivatives)(seq.quad.x_z)
     (a, N, B), (da, dN, dB), (dda, ddN, ddB) = (
         tuple(jnp.broadcast_to(f, seq.quad.shape + (3, 3)).reshape(-1, 3, 3)[:, r] for r in range(3)) for f in F)
     T = jnp.cross(N, B)
